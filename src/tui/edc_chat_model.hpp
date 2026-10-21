@@ -35,7 +35,8 @@ class ChatModel
     // task inputs / clear -- the view rebuilds from visible()).
     struct Change
     {
-        std::shared_ptr<Message> appended;
+        std::shared_ptr<Message> appended;               // one visible bubble appended (view appends it)
+        std::vector<std::shared_ptr<Message>> prepended; // older bubbles prepended, file order (view prepends them)
     };
     using Listener = std::function<void(const Change &)>;
 
@@ -45,6 +46,11 @@ class ChatModel
     // Append one bubble. Recorded whether or not it passes the filter; the view
     // only learns about it when it is visible.
     void AddMessage(std::shared_ptr<Message> message);
+
+    // Insert older bubbles (file order: oldest first) above the current head. The
+    // startup backfill uses it to fill the history in without a full blocking
+    // replay.
+    void PrependMessages(std::vector<std::shared_ptr<Message>> messages);
 
     // Drop every message (the log was re-pointed at another session).
     void Clear();

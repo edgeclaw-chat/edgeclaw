@@ -1,4 +1,6 @@
 #include "edc_task.h"
+
+#include "edc_payload.h"
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_session.h"
@@ -44,8 +46,6 @@ const char *edc_task_life_name(edc_task_life life)
         return "ALIVE";
     case EDC_LIFE_INTERRUPTED:
         return "INTERRUPTED";
-    case EDC_LIFE_SUSPENDED:
-        return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
         return "COMPLETED";
     case EDC_LIFE_CANCELLED:
@@ -83,9 +83,9 @@ edc_task_life edc_task_classify_life(const char *name)
         return EDC_LIFE_ALIVE;
     if (strcmp(name, "INTERRUPTED") == 0)
         return EDC_LIFE_INTERRUPTED;
-    /* Legacy: only the old load-time collapse ever wrote "SUSPENDED", and what it meant
-     * was exactly what INTERRUPTED now says (the user pause had no producer even then).
-     * When a real pause lands, this mapping has to be revisited. */
+    /* Legacy string only -- "SUSPENDED" is no longer a state (the old load-time collapse
+     * wrote it, and what it meant is exactly what INTERRUPTED says). Old archives must
+     * still load, so the spelling keeps its meaning here and nowhere else. */
     if (strcmp(name, "SUSPENDED") == 0)
         return EDC_LIFE_INTERRUPTED;
     if (strcmp(name, "COMPLETED") == 0)
@@ -153,6 +153,87 @@ edc_memo_kind edc_task_classify_memo_kind(const char *name)
 /* The display name (snapshot / logs / command text), derived straight from
  * (step, life) with life speaking first, matching the old order. WAITING_INPUT is
  * never returned. */
+const char *edc_task_end_name(edc_task_end end)
+{
+    switch (end)
+    {
+    case EDC_END_INTERRUPTED:
+        return "INTERRUPTED";
+    case EDC_END_STOPPED:
+        return "STOPPED";
+    case EDC_END_FAILED:
+        return "FAILED";
+    case EDC_END_BLOCKED:
+        return "BLOCKED";
+    case EDC_END_SKIPPED:
+        return "SKIPPED";
+    case EDC_END_NONE:
+        break;
+    }
+    return "NONE";
+}
+
+edc_task_end edc_task_classify_end(const char *name)
+{
+    if (!name)
+        return EDC_END_NONE;
+    if (strcmp(name, "INTERRUPTED") == 0)
+        return EDC_END_INTERRUPTED;
+    if (strcmp(name, "STOPPED") == 0)
+        return EDC_END_STOPPED;
+    if (strcmp(name, "FAILED") == 0)
+        return EDC_END_FAILED;
+    if (strcmp(name, "BLOCKED") == 0)
+        return EDC_END_BLOCKED;
+    if (strcmp(name, "SKIPPED") == 0)
+        return EDC_END_SKIPPED;
+    return EDC_END_NONE;
+}
+
+const char *edc_task_fail_name(edc_task_fail fail)
+{
+    switch (fail)
+    {
+    case EDC_FAIL_AUTH:
+        return "AUTH";
+    case EDC_FAIL_CONTEXT_OVERFLOW:
+        return "CONTEXT_OVERFLOW";
+    case EDC_FAIL_RATE_LIMIT:
+        return "RATE_LIMIT";
+    case EDC_FAIL_TRANSPORT:
+        return "TRANSPORT";
+    case EDC_FAIL_OTHER:
+        return "OTHER";
+    case EDC_FAIL_NONE:
+        break;
+    }
+    return "NONE";
+}
+
+edc_task_fail edc_task_classify_fail(const char *name)
+{
+    if (!name)
+        return EDC_FAIL_NONE;
+    if (strcmp(name, "AUTH") == 0)
+        return EDC_FAIL_AUTH;
+    if (strcmp(name, "CONTEXT_OVERFLOW") == 0)
+        return EDC_FAIL_CONTEXT_OVERFLOW;
+    if (strcmp(name, "RATE_LIMIT") == 0)
+        return EDC_FAIL_RATE_LIMIT;
+    if (strcmp(name, "TRANSPORT") == 0)
+        return EDC_FAIL_TRANSPORT;
+    if (strcmp(name, "OTHER") == 0)
+        return EDC_FAIL_OTHER;
+    return EDC_FAIL_NONE;
+}
+
+void edc_task_set_fail(struct edc_task *task, edc_task_fail fail)
+{
+    if (!task)
+        return;
+    task->fail = fail;
+}
+
 const char *edc_task_state_str(const struct edc_task *task)
 {
     if (!task)
@@ -161,8 +242,6 @@ const char *edc_task_state_str(const struct edc_task *task)
     {
     case EDC_LIFE_INTERRUPTED:
         return "INTERRUPTED";
-    case EDC_LIFE_SUSPENDED:
-        return "SUSPENDED";
     case EDC_LIFE_COMPLETED:
         return "COMPLETED";
     case EDC_LIFE_CANCELLED:
@@ -206,6 +285,19 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
         return false;
     task->step = step;
     task->life = life;
+    /* The reason for a past end belongs to that end: a task that can move again has no
+     * end, so resuming wipes the slate here instead of in every writer. */
+    if (life == EDC_LIFE_ALIVE)
+    {
+        task->end = EDC_END_NONE;
+        task->fail = EDC_FAIL_NONE;
+        task->blocked_end = EDC_END_NONE;
+        if (task->blocked_by)
+        {
+            free(task->blocked_by);
+            task->blocked_by = NULL;
+        }
+    }
     return true;
 }
 
@@ -238,6 +330,9 @@ bool edc_task_mark_completed(struct edc_task *task)
 
 /* Failure is BROADCAST to dependents (defined in the dependency section below). */
 static void task_notify_dependents_failed(struct edc_task *task);
+/* Cancel broadcast, declared here because mark_blocked (above the dependency section)
+ * passes the cascade on. */
+static void task_notify_dependents_cancelled(struct edc_task *task);
 
 /* Failure = set ERROR and broadcast to every dependent, so "a task failed"
  * propagates no matter who initiated it. Symmetric with send_signal: neither does
@@ -249,21 +344,47 @@ bool edc_task_mark_failed(struct edc_task *task)
     /* A failed self-transition = it was not failing (terminal/illegal phase), so nothing is broadcast -- idempotent. */
     if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR))
         return false;
+    task->end = EDC_END_FAILED;
     task_notify_dependents_failed(task);
     return true;
 }
 
 bool edc_task_mark_cancelled(struct edc_task *task)
 {
-    return edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED))
+        return false;
+    task->end = EDC_END_STOPPED;
+    return true;
 }
 
-/* Stopping speaks ONLY about life: it stops at whatever step it was on -- exactly what
- * the step/life split preserves (the old TASK_SUSPENDED meant the same, it just could not
- * say so). */
-bool edc_task_mark_suspended(struct edc_task *task)
+bool edc_task_mark_skipped(struct edc_task *task)
 {
-    return task && edc_task_move(task, task->step, EDC_LIFE_SUSPENDED);
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED))
+        return false;
+    task->end = EDC_END_SKIPPED;
+    return true;
+}
+
+bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const struct edc_task *source)
+{
+    if (!edc_task_move(task, EDC_TASKSTEP_DONE, life))
+        return false;
+    task->end = EDC_END_BLOCKED;
+    task->blocked_end = source ? source->end : EDC_END_NONE;
+    if (task->blocked_by)
+    {
+        free(task->blocked_by);
+        task->blocked_by = NULL;
+    }
+    if (source && source->task_id)
+        task->blocked_by = strdup(source->task_id);
+    /* A cascaded task will not produce either, so it passes the cascade on -- through the
+     * SAME broadcast its life implies, exactly as the stop and failure paths do. */
+    if (life == EDC_LIFE_CANCELLED)
+        task_notify_dependents_cancelled(task);
+    else
+        task_notify_dependents_failed(task);
+    return true;
 }
 
 /* An interruption speaks about life only (keeps the step) AND is broadcast like a
@@ -278,6 +399,7 @@ bool edc_task_mark_interrupted(struct edc_task *task)
      * nothing is broadcast -- idempotent. */
     if (!edc_task_move(task, task->step, EDC_LIFE_INTERRUPTED))
         return false;
+    task->end = EDC_END_INTERRUPTED;
     task_notify_dependents_failed(task);
     return true;
 }
@@ -296,17 +418,15 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         return false; /* terminal */
     case EDC_LIFE_CANCELLED:
         /* Resume: cancel only stops the task, so CANCELLED shares the target group
-         * with SUSPENDED / ERROR. */
+         * with ERROR. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
                (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
-    case EDC_LIFE_SUSPENDED:
-        /* resume re-decides: back to dep-wait / ready / re-request LLM / continue the tool chain, or cancel */
     case EDC_LIFE_INTERRUPTED:
-        /* Same as a user pause: nothing was decided, so resume re-decides. */
+        /* The process went down mid-flight: nothing was decided, so resume re-decides. */
     case EDC_LIFE_ERROR:
-        /* continue the failed round (same target set as SUSPENDED), or cancel. */
+        /* continue the failed round (same target set as INTERRUPTED), or cancel. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_READY || to_step == EDC_TASKSTEP_AWAIT_DEPS ||
                  to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_TOOLS)) ||
@@ -315,21 +435,20 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         break;
     }
 
-    /* An interruption keeps the step it was on and may land on any of them: unlike a
-     * user pause (restricted to the rows below), the process went down mid-request. */
+    /* An interruption keeps the step it was on and may land on any of them: the process
+     * went down mid-request. */
     if (to_life == EDC_LIFE_INTERRUPTED)
         return to_step == from_step;
 
     switch (from_step)
     {
     /* READY = parked with input, waiting to be dispatched: dispatch / hit a
-     * dependency / cancel / suspend / failure. Failure is allowed so a drive that
+     * dependency / cancel / failure. Failure is allowed so a drive that
      * cannot start any I/O fails instead of being rescanned forever. */
     case EDC_TASKSTEP_READY:
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
-               (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
-               (to_step == EDC_TASKSTEP_READY && to_life == EDC_LIFE_SUSPENDED);
+               (to_step == EDC_TASKSTEP_DONE && (to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_AWAIT_DEPS:
     case EDC_TASKSTEP_AWAIT_RESOURCE: /* no such step in the old vocabulary (mirrors to WAITING_DEPS): same row */
         /* deps satisfied -> back to ready; or cancel / fail */
@@ -346,16 +465,14 @@ static bool edc_task_is_valid_transition(edc_task_step from_step, edc_task_life 
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
                (to_step == EDC_TASKSTEP_DONE &&
-                (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR)) ||
-               (to_step == EDC_TASKSTEP_AWAIT_TOOLS && to_life == EDC_LIFE_SUSPENDED); /* suspend mid-run */
+                (to_life == EDC_LIFE_COMPLETED || to_life == EDC_LIFE_CANCELLED || to_life == EDC_LIFE_ERROR));
     case EDC_TASKSTEP_DONE:
         /* Malformed: DONE yet ALIVE (display name folds to IDLE, see edc_task_state_str's
          * fallback). No path produces it; reuse the READY row to avoid behaviour
          * outside default. */
         return (to_life == EDC_LIFE_ALIVE &&
                 (to_step == EDC_TASKSTEP_AWAIT_EXEC || to_step == EDC_TASKSTEP_AWAIT_DEPS)) ||
-               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED) ||
-               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_SUSPENDED);
+               (to_step == EDC_TASKSTEP_DONE && to_life == EDC_LIFE_CANCELLED);
     }
     return false;
 }
@@ -393,6 +510,92 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     edc_queue_init(&task->turns);
 
     return task;
+}
+
+static cJSON *turn_user_message(struct edc_turn *turn)
+{
+    if (!turn)
+        return NULL;
+    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    {
+        cJSON *msg = (cJSON *)turn->messages.data[i];
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
+        if (!role || strcmp(role, "user") != 0)
+            continue;
+        /* Pass output (synthetic) is not what the user typed: only their own line. */
+        cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
+        if (synthetic && cJSON_IsTrue(synthetic))
+            continue;
+        return msg;
+    }
+    return NULL;
+}
+
+void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload)
+{
+    if (!task || !task->active_turn)
+        return;
+    if (!mid && edc_payload_empty(payload))
+        return;
+
+    cJSON *msg = turn_user_message(task->active_turn);
+    if (!msg)
+        return;
+
+    if (mid && *mid)
+    {
+        cJSON_DeleteItemFromObject(msg, "mid");
+        cJSON_AddStringToObject(msg, "mid", mid);
+    }
+    if (!edc_payload_empty(payload))
+    {
+        cJSON *map = cJSON_CreateObject();
+        if (!map)
+            return;
+        for (int k = 0; k < payload->n; k++)
+            cJSON_AddStringToObject(map, payload->items[k].key, payload->items[k].text);
+        cJSON_DeleteItemFromObject(msg, "payload");
+        cJSON_AddItemToObject(msg, "payload", map);
+    }
+}
+
+cJSON *edc_task_user_payload(struct edc_task *task)
+{
+    if (!task)
+        return NULL;
+    cJSON *msg = turn_user_message(task->active_turn);
+    if (!msg)
+    {
+        for (size_t i = task->turns.tail; i > task->turns.head && !msg; i--)
+            msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
+    }
+    return msg ? cJSON_GetObjectItem(msg, "payload") : NULL;
+}
+
+cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
+{
+    if (!task || !mid || !*mid)
+        return NULL;
+
+    /* The in-flight turn first (a message sent moments ago is what a recall right after
+     * sending asks for), then the committed ones newest-first. */
+    cJSON *hit = NULL;
+    struct edc_turn *active = task->active_turn;
+    if (active)
+    {
+        cJSON *msg = turn_user_message(active);
+        const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
+        if (found && strcmp(found, mid) == 0)
+            hit = cJSON_GetObjectItem(msg, "payload");
+    }
+    for (size_t i = task->turns.tail; i > task->turns.head && !hit; i--)
+    {
+        cJSON *msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
+        const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
+        if (found && strcmp(found, mid) == 0)
+            hit = cJSON_GetObjectItem(msg, "payload");
+    }
+    return hit;
 }
 
 struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
@@ -500,9 +703,26 @@ static void edc_task_free_deps(struct edc_task *task)
                 }
             }
             dep->target->deps_total--;
+
+            /* Re-decide the dependent NOW. Dropping an edge is the one way a task can lose
+             * its last unsatisfied dependency without any task producing -- and nothing else
+             * would ever look at it again: it would sit in dep-wait forever, holding its
+             * group's front (a waiting task has an active turn), stalling everything queued
+             * behind it. Only a task that is still waiting can be released here; a task
+             * that already ENDED (BLOCKED included) keeps its state and its reason -- it is
+             * resumable, and "the dependency it was blocked on no longer exists" is not the
+             * same statement as "it produced". */
+            if (edc_task_awaits_deps(dep->target) && dep->target->deps_completed >= dep->target->deps_total)
+                edc_task_mark_ready(dep->target); /* the message-end scan drives it from here */
         }
         LL_DELETE(task->dependents, dep);
         free(dep);
+    }
+
+    if (task->blocked_by)
+    {
+        free(task->blocked_by);
+        task->blocked_by = NULL;
     }
 }
 
@@ -711,10 +931,35 @@ static bool edc_task_can_reach(struct edc_task *from, struct edc_task *to, int d
     struct edc_task_dep *dep;
     LL_FOREACH(from->deps, dep)
     {
+        /* A VOIDED edge imposes no order anymore (its source ended and released us), so it
+         * cannot deadlock: counting it would report a cycle for a pair that is free to run
+         * in the other direction now -- e.g. re-queueing the stopped task behind the one
+         * that took its place. */
+        if (dep->cancelled)
+            continue;
         if (edc_task_can_reach(dep->source, to, depth + 1))
             return true;
     }
     return false;
+}
+
+/* deps_total / deps_completed are the "active edge" counts: a voided edge is not a
+ * constraint anymore and does not count (which is exactly what task_void_barrier_dep
+ * leaves behind). Recomputing them from the flags keeps the two in step after a re-arm. */
+static void task_recount_deps(struct edc_task *task)
+{
+    size_t total = 0, completed = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->deps, dep)
+    {
+        if (dep->cancelled)
+            continue;
+        total++;
+        if (dep->completed)
+            completed++;
+    }
+    task->deps_total = total;
+    task->deps_completed = completed;
 }
 
 bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, edc_task_dep_type type)
@@ -726,12 +971,40 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     if (edc_task_can_reach(source, target, 0))
         return false;
 
-    /* Check for an already-existing identical dependency */
+    /* An edge to this source is the pair's dedup key. Still live -> nothing to do
+     * (idempotent). VOIDED -> the order it stood for is over, but asking for it again is a
+     * NEW constraint on the same pair: resume re-queues a task behind the one it was
+     * queued behind. Re-arm it in place; leaving it voided would keep it out of
+     * deps_total and let the target jump the queue it just rejoined. */
     struct edc_task_dep *existing;
     LL_FOREACH(target->deps, existing)
     {
         if (existing->source == source)
-            return false;
+            break;
+    }
+    if (existing && !existing->cancelled)
+        return false;
+    if (existing)
+    {
+        existing->cancelled = false;
+        existing->type = type;
+        struct edc_task_dep *sd;
+        LL_FOREACH(source->dependents, sd)
+        {
+            if (sd->target == target)
+            {
+                sd->cancelled = false;
+                sd->type = type;
+                break;
+            }
+        }
+        task_recount_deps(target);
+
+        if (edc_task_is_completed(source))
+            edc_task_on_dep_completed(target, source);
+        else if (edc_task_is_ready(target))
+            edc_task_mark_waiting_deps(target);
+        return true;
     }
 
     /* Add a node to target->deps */
@@ -765,8 +1038,20 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     return true;
 }
 
-bool edc_task_has_unresolved_deps(const struct edc_task *task)
+bool edc_task_depends_on(const struct edc_task *target, const struct edc_task *source)
 {
+    if (!target || !source)
+        return false;
+    struct edc_task_dep *dep;
+    LL_FOREACH(target->deps, dep)
+    {
+        if (dep->source == source && !dep->cancelled)
+            return true;
+    }
+    return false;
+}
+
+bool edc_task_has_unresolved_deps(const struct edc_task *task){
     if (!task)
         return false;
     struct edc_task_dep *dep;
@@ -779,18 +1064,20 @@ bool edc_task_has_unresolved_deps(const struct edc_task *task)
 }
 
 /* Ledger: the side-effect move recorder (defined in the dependency section below). */
-static void task_record_move(struct edc_task *source, struct edc_task *moved);
+static void task_record_move(struct edc_task *source, struct edc_task *moved, edc_task_move_kind kind, sds notice);
 
 void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 {
     if (!target || !source)
         return;
 
+    struct edc_task_dep *found = NULL;
     struct edc_task_dep *dep;
     LL_FOREACH(target->deps, dep)
     {
         if (dep->source == source && !dep->completed && !dep->cancelled)
         {
+            found = dep;
             dep->completed = true;
             target->deps_completed++;
 
@@ -808,6 +1095,57 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
         }
     }
 
+    /* `||` INVERTS the rule: the source SUCCEEDING is exactly the case in which the dependent
+     * must not run. Cancel it -- but only while it is still waiting: a task the user already
+     * resumed is theirs to run, and this same path replays on load (see deser_deps). The edge
+     * stays completed, and the reason is recorded as SKIPPED so that (a) a UI can tell it
+     * apart from a stop and (b) `/task resume` refuses it: the branch was not taken.
+     * NB a skipped task cancels its own dependents; `a || b ; c` is fine (the `;` edge is a
+     * BARRIER and releases c), while `a || b && c` takes c down with b -- unlike a shell,
+     * which would pass a's success through the skipped b. */
+    if (found && found->type == TASK_DEP_UNLESS)
+    {
+        if (edc_task_awaits_deps(target))
+        {
+            edc_task_step step_before = target->step;
+            edc_task_life life_before = target->life;
+            /* Not a stop: this branch is not taken. The reason says so, so no UI can
+             * confuse it with what the user did by hand. */
+            edc_task_mark_skipped(target);
+            if (target->step != step_before || target->life != life_before)
+                task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
+        }
+        return;
+    }
+
+    /* A task that ended BECAUSE a dependency never produced is not a human decision: when
+     * THAT dependency produces, put it back in dep-wait so the release just below (and the
+     * message-end scan) drive it -- no `/task resume` needed. Two guards keep this from
+     * overriding a decision:
+     *   - only EDC_END_BLOCKED (a stop, its own failure and a `||` skip stay explicit);
+     *   - only when the source completing NOW is the one that blocked it (blocked_by):
+     *     some OTHER dependency finishing says nothing about whether it may run again. */
+    if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id &&
+        strcmp(target->blocked_by, source->task_id) == 0 && !edc_task_awaits_deps(target))
+    {
+        /* The note the cascade wrote ("[failed: its dependency … ]") described a state that
+         * is over: the task is about to move again, and leaving it there makes /task output
+         * report a failure that no longer happened. Only that machine note is dropped --
+         * a real output (a stopped or interrupted task's) is not touched. */
+        edc_task_set_output(target, NULL);
+        edc_task_step step_before = target->step;
+        edc_task_life life_before = target->life;
+        edc_task_mark_waiting_deps(target);
+        if (target->step != step_before || target->life != life_before)
+            /* This one IS announced: the user was told the task had ended, and now it runs
+             * again because the dependency it was blocked on produced. A queue advance and
+             * a cascade are routine / already announced, so they carry no notice. */
+            task_record_move(source, target, EDC_MOVE_UNBLOCKED,
+                             sdscatprintf(sdsempty(), "`%s` is running again — its dependency `%s` produced.",
+                                          target->task_id ? target->task_id : "?",
+                                          source->task_id ? source->task_id : "?"));
+    }
+
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
         /* Completion also moves the dependent's phase, so it owes the same
@@ -816,7 +1154,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
         edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
         if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target);
+            task_record_move(source, target, EDC_MOVE_RELEASED, NULL);
     }
 }
 
@@ -824,24 +1162,37 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
 
 /* Record a debt: |moved|'s phase was moved as a side effect of an operation
  * |source| started. The debt is charged to the INITIATOR -- the host is about to
- * settle it and clears the list along the way. */
-static void task_record_move(struct edc_task *source, struct edc_task *moved)
+ * settle it and clears the list along the way. |notice| (optional) is a line the move
+ * deserves and is OWNED by the report; |kind| says why, so the host can decide whether
+ * the move is worth telling anyone. */
+static void task_record_move(struct edc_task *source, struct edc_task *moved, edc_task_move_kind kind, sds notice)
 {
     if (!source || !moved)
+    {
+        if (notice)
+            sdsfree(notice);
         return;
+    }
     struct edc_task_move_report *r = malloc(sizeof(*r));
     if (!r)
+    {
+        if (notice)
+            sdsfree(notice);
         return; /* a failed record only loses one notice; no phase changes */
+    }
     r->task = moved;
+    r->kind = kind;
+    r->notice = notice;
     r->next = source->moved_report;
     source->moved_report = r;
 }
 
-/* Void target's BARRIER edge to a source that has terminated and will never produce: the
- * order it stood for is over, so drop the edge and let target run. Reached only from the
- * barrier kind -- a user-authored dependency (JOIN / SEQUENCE) keeps its edge and takes the
- * target with it instead. */
-static void task_void_barrier_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
+/* Void a RELEASING edge to a source that has terminated: the constraint it stood for is
+ * over, so drop the edge and let target run. Two kinds release their target -- BARRIER (the
+ * source ending either way is all it needed) and UNLESS (`||`, where a source that did NOT
+ * succeed is exactly why the dependent exists). JOIN / SEQUENCE keep their edge and take the
+ * target with them instead. */
+static void task_void_dep(struct edc_task_dep *dep, struct edc_task *target, struct edc_task *source)
 {
     dep->cancelled = true;
 
@@ -866,7 +1217,10 @@ static void task_void_barrier_dep(struct edc_task_dep *dep, struct edc_task *tar
     }
     target->deps_total = active_deps;
 
-    if (target->deps_total == 0 && edc_task_awaits_deps(target))
+    /* Released when nothing unsatisfied is left -- not only when nothing is left at all:
+     * a task may hold a COMPLETED edge plus this one, and "the last count is zero" then
+     * never fires (that task would sit in dep-wait with everything satisfied). */
+    if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
     {
         /* Voiding the last invalid dependency moves this task from AWAIT_DEPS to
          * READY -- also a phase change (the sidebar's dep-wait clears), also recorded. */
@@ -874,11 +1228,31 @@ static void task_void_barrier_dep(struct edc_task_dep *dep, struct edc_task *tar
         edc_task_life life_before = target->life;
         edc_task_mark_ready(target);
         if (target->step != step_before || target->life != life_before)
-            task_record_move(source, target);
+            task_record_move(source, target, EDC_MOVE_RELEASED, NULL);
     }
 }
 
-void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx)
+bool edc_task_drop_dep(struct edc_task *target, struct edc_task *source)
+{
+    if (!target || !source)
+        return false;
+    struct edc_task_dep *dep;
+    LL_FOREACH(target->deps, dep)
+    {
+        if (dep->source != source || dep->completed || dep->cancelled)
+            continue;
+        /* Same bookkeeping as any other release: void the row and re-decide. `cancelled`
+         * is persisted, so the drop survives a restart (the constraint is gone, not the
+         * record of it). */
+        task_void_dep(dep, target, source);
+        return true;
+    }
+    return false; /* no live edge: nothing was waited for */
+}
+
+void edc_task_drain_moves(struct edc_task *task,
+                          void (*cb)(void *ctx, struct edc_task *moved, edc_task_move_kind kind, const char *notice),
+                          void *ctx)
 {
     if (!task)
         return;
@@ -889,7 +1263,9 @@ void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct ed
         struct edc_task_move_report *r = task->moved_report;
         task->moved_report = r->next;
         if (cb)
-            cb(ctx, r->task);
+            cb(ctx, r->task, r->kind, r->notice);
+        if (r->notice)
+            sdsfree(r->notice);
         free(r);
     }
 }
@@ -909,11 +1285,12 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    /* A barrier is released by the source ending either way: a fold / curation round that
-     * died must not take the tasks it was holding with it. */
-    if (dep->type == TASK_DEP_BARRIER)
+    /* Two kinds are released by the source ending badly: BARRIER (a fold / curation round
+     * that died must not take the tasks it was holding with it) and UNLESS (`||` -- "run the
+     * right-hand side only if the left one did not succeed", so this IS its turn). */
+    if (dep->type == TASK_DEP_BARRIER || dep->type == TASK_DEP_UNLESS)
     {
-        task_void_barrier_dep(dep, target, source);
+        task_void_dep(dep, target, source);
         return;
     }
 
@@ -921,15 +1298,17 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
      * source's output would have been injected: the source produced nothing, so this
      * dependent cannot continue => cancel it in a cascade. The EDGE STAYS (cancel does not
      * detach it), so a later resume sends it back to dep-wait until the source really
-     * produces. */
+     * produces. NOTE: mark_blocked, not send_signal -- this is not a stop by anyone, and
+     * the reason has to survive (/task status, the restart hint, and any future
+     * auto-release all read it). */
     edc_task_step step_before = target->step;
     edc_task_life life_before = target->life;
-    edc_task_send_signal(target, TASK_SIGTERM);
+    edc_task_mark_blocked(target, EDC_LIFE_CANCELLED, source);
     /* The cascade cancel is also a PHASE CHANGE -- this task now enters a terminal
      * state while the host only named the source task. Record a debt (repeated
      * cancels are idempotent: no real move, no record). */
     if (target->step != step_before || target->life != life_before)
-        task_record_move(source, target);
+        task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
 }
 
 /* Handle a failed source, symmetric with cancellation (neither will produce
@@ -949,10 +1328,10 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    /* A barrier is released by the source ending either way -- see on_dep_cancelled. */
-    if (dep->type == TASK_DEP_BARRIER)
+    /* Released by the source ending badly -- see on_dep_cancelled (BARRIER and `||`). */
+    if (dep->type == TASK_DEP_BARRIER || dep->type == TASK_DEP_UNLESS)
     {
-        task_void_barrier_dep(dep, target, source);
+        task_void_dep(dep, target, source);
         return;
     }
 
@@ -978,12 +1357,12 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     else
         edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: a dependency %s, %s]", what, why));
 
-    edc_task_mark_failed(target); /* edge not detached: see above */
+    edc_task_mark_blocked(target, EDC_LIFE_ERROR, source); /* edge not detached: see above */
     /* The cascade failure is also a PHASE CHANGE -- this task now enters a terminal
      * state while the host only named the source task. Record a debt (repeated
      * failures are idempotent: no real move, no record). */
     if (target->step != step_before || target->life != life_before)
-        task_record_move(source, target);
+        task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
 }
 
 /* Failure broadcast: snapshot the dependents before processing, since a JOIN
@@ -1028,12 +1407,35 @@ void edc_task_notify_dependents(struct edc_task *task)
     }
 }
 
+/* The CANCELLED twin of task_notify_dependents_failed: broadcast a cascade cancel. The
+ * list is snapshotted first because a nested cascade writes back into it. Shared by the
+ * stop path (send_signal) and by a dependency cascade (mark_blocked) so both keep the
+ * recursion the cancel semantics were built on. */
+static void task_notify_dependents_cancelled(struct edc_task *task)
+{
+    size_t n = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->dependents, dep)
+    n++;
+    if (n == 0)
+        return;
+    struct edc_task **targets = malloc(n * sizeof(*targets));
+    if (!targets)
+        return; /* losing a notice is better than a partial cascade */
+    size_t i = 0;
+    LL_FOREACH(task->dependents, dep)
+    targets[i++] = dep->target;
+    for (size_t k = 0; k < i; k++)
+        edc_task_on_dep_cancelled(targets[k], task);
+    free(targets);
+}
+
 /* ── Signals ───────────────────────────────────────────────── */
 
 bool edc_task_is_running(const struct edc_task *task)
 {
     /* Running = ALIVE and awaiting the executor/tool reply; stopped-while-awaiting tools
-     * (INTERRUPTED / SUSPENDED) does not count. */
+     * (INTERRUPTED) does not count. */
     return edc_task_awaits_exec(task) || edc_task_awaits_tools(task);
 }
 
@@ -1044,28 +1446,22 @@ void edc_task_send_signal(struct edc_task *task, edc_task_signal sig)
 
     task->cancelled_request = 1;
 
+    /* State FIRST, then tell the dependents: a cascade records what became of its source
+     * (EDC_END_BLOCKED's blocked_end), so "cancelled" has to be the truth before anyone
+     * is told about it. */
     if (sig == TASK_SIGTERM)
     {
-        /* Snapshot the dependent list first: a cascade cancel writes to them (voided
-         * edges) and the list itself may change during recursion -- taking it out
-         * before iterating is safest. */
-        size_t n = 0;
-        struct edc_task_dep *dep;
-        LL_FOREACH(task->dependents, dep)
-        n++;
-        if (n > 0)
-        {
-            struct edc_task **targets = malloc(n * sizeof(*targets));
-            if (targets)
-            {
-                size_t i = 0;
-                LL_FOREACH(task->dependents, dep)
-                targets[i++] = dep->target;
-                for (size_t k = 0; k < i; k++)
-                    edc_task_on_dep_cancelled(targets[k], task);
-                free(targets);
-            }
-        }
+        edc_task_mark_cancelled(task);
+        /* Cancelled: chasing in-flight tool records is pointless; drop the ledger */
+        edc_task_tool_calls_clear(task);
+        task_notify_dependents_cancelled(task);
+    }
+    else
+    {
+        /* SIGKILL: force cancel -- same ledger drop, no notification (the host already
+         * decided nothing behind it should hear about this). */
+        edc_task_tool_calls_clear(task);
+        edc_task_mark_cancelled(task);
     }
 
     /* It does NOT touch its own deps: cancel = stop, not delete/reclaim -- the task can
@@ -1226,7 +1622,7 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
             cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
             edc_turn_add_tool_message(turn, id->valuestring, (nm && cJSON_IsString(nm)) ? nm->valuestring : "",
                                       kInterruptedToolNote);
-            /* If the ledger still holds this one (INTERRUPTED / SUSPENDED / ERROR path: EXECUTING
+            /* If the ledger still holds this one (INTERRUPTED / ERROR path: EXECUTING
              * dispatched, result never returned), remove it too -- it now has a
              * response and must not count as incomplete. */
             edc_task_tool_call_remove(task, id->valuestring);
@@ -1404,7 +1800,9 @@ void edc_task_flush_redirects(struct edc_task *task)
     }
     if (task->redirect_stderr)
     {
-        FILE *f = fopen(task->redirect_stderr, "w");
+        /* `2>>` appends; `2>` truncates. (It used to always truncate -- that was half of the
+         * `2>>` bug; the other half is that nothing set the flag yet, see the lexer work.) */
+        FILE *f = fopen(task->redirect_stderr, task->redirect_stderr_append ? "a" : "w");
         if (f)
         {
             if (task->output)

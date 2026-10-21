@@ -292,8 +292,17 @@ cc_test(
 )
 
 cc_test(
-    name = "test_edc_shell",
-    srcs = ["test_edc_shell.c"],
+    name = "test_commands_help",
+    srcs = ["test_commands_help.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_commands_receipt",
+    srcs = ["test_commands_receipt.c"],
     deps = [
         "//src/shell:shell",
     ],
@@ -303,6 +312,42 @@ cc_test(
 cc_test(
     name = "test_commands_task_new",
     srcs = ["test_commands_task_new.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_sandbox_paths",
+    srcs = ["test_sandbox_paths.c"],
+    deps = [
+        "//src/sandbox:sandbox",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_file_index",
+    srcs = ["test_file_index.c"],
+    deps = [
+        "//src/common:edc_file_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_file_rename",
+    srcs = ["test_file_rename.c"],
+    deps = [
+        "//src/common:edc_file_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_mention_pass",
+    srcs = ["test_mention_pass.c"],
     deps = [
         "//src/shell:shell",
     ],
@@ -321,6 +366,15 @@ cc_test(
 cc_test(
     name = "test_shell_job_control",
     srcs = ["test_shell_job_control.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_shell_switch",
+    srcs = ["test_shell_switch.c"],
     deps = [
         "//src/shell:shell",
     ],
@@ -450,6 +504,56 @@ cc_test(
         "//src/common:common",
         "//src/kernel:kernel",
         "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_path_absolute",
+    srcs = ["test_path_absolute.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_sandbox_switch",
+    srcs = ["test_sandbox_switch.c"],
+    deps = [
+        "//src/common:common",
+        "//src/common:edc_file_utils",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_sandbox_verify_path",
+    srcs = ["test_sandbox_verify_path.c"],
+    deps = [
+        "//src/common:common",
+        "//src/sandbox:sandbox",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_path_contract",
+    srcs = ["test_path_contract.c"],
+    deps = [
+        "//src/common:edc_compat",
+        "//src/common:edc_file_utils",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_platform_caps",
+    srcs = ["test_platform_caps.c"],
+    deps = [
+        "//src/common:edc_platform",
     ],
     linkopts = LINK_OPTS,
 )
@@ -673,6 +777,20 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The bundled user manual: the table must be non-empty (the binary carries docs/), and
+# edc_init_env must release it to <edc_home>/docs and refresh a stale copy -- the path
+# the system prompt names.
+cc_test(
+    name = "test_bundled_docs",
+    srcs = ["test_bundled_docs.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # context_window 的配置面（默认 0 = 未配置/未知）：三个生产者都跑真的
 # —— edc_init_env 建/补 config.json + edc_config_load 读回。
 cc_test(
@@ -696,13 +814,36 @@ cc_test(
 )
 
 cc_test(
+    name = "test_config_shell_syntax",
+    srcs = ["test_config_shell_syntax.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
+    # Must run OUTSIDE bazel's own sandbox: on macOS the test asserts that the
+    # helper applies a Seatbelt profile, and sandbox_init() refuses to nest --
+    # under darwin-sandbox it fails with "Operation not permitted" and the helper
+    # (correctly) refuses to run the command.
+    tags = ["local"],
     deps = [
         "//src/common:common",
         "//src/sandbox:sandbox",
         "@libuv",
         "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_config_sandbox_defaults",
+    srcs = ["test_config_sandbox_defaults.c"],
+    deps = [
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )
@@ -765,6 +906,16 @@ cc_test(
         "//:debug": ["EDGECLAW_DEBUG"],
         "//conditions:default": [],
     }),
+)
+cc_test(
+    name = "test_command_palette",
+    srcs = ["test_command_palette.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
 )
 cc_test(
     name = "test_status_bar_view",
@@ -849,6 +1000,7 @@ cc_test(
     srcs = ["test_theme.cpp"],
     deps = [
         "//src/tui:tui",
+        "@ftxui//:dom",
         "@ftxui//:screen",
     ],
     linkstatic = True,
@@ -887,6 +1039,36 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+cc_test(
+    name = "test_token_style",
+    srcs = ["test_token_style.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_history_line",
+    srcs = ["test_history_line.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_edc_payload",
+    srcs = ["test_edc_payload.cpp"],
+    deps = [
+        "//src/common:common",
+        "//src/shell:shell",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
 cc_test(
     name = "test_edc_input",
     srcs = ["test_edc_input.cpp"],
@@ -957,6 +1139,20 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+cc_test(
+    name = "test_task_tree_model",
+    srcs = ["test_task_tree_model.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
 cc_test(
     name = "test_task_widget",
     srcs = ["test_task_widget.cpp"],
@@ -1032,9 +1228,38 @@ cc_test(
     name = "test_prompts",
     srcs = ["test_prompts.c"],
     deps = [
+        "//src/shell:lex",
         "//src/kernel:kernel",
         "@sds//:sds",
         "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_commands_reload",
+    srcs = ["test_commands_reload.c"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_resources",
+    srcs = ["test_resources.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@sds//:sds",
+        "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_commands_jobs",
+    srcs = ["test_commands_jobs.c"],
+    deps = [
+        "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
 )
@@ -1094,6 +1319,15 @@ cc_test(
         "@cjson//:cjson",
         "@log.c//:log.c",
         "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_lex",
+    srcs = ["test_lex.c"],
+    deps = [
+        "//src/shell:lex",
     ],
     linkopts = LINK_OPTS,
 )

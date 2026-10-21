@@ -40,10 +40,13 @@ constexpr int kH = 20;
 constexpr const char *kDot = "●";
 constexpr const char *kBlock = edc::style::kBlockGlyph; // the working bar's own block
 constexpr const char *kHollow = "□";                     // INTERRUPTED's marker
+constexpr const char *kStopped = "×";                    // the user stopped it
+constexpr const char *kSkipped = "–";                    // `||` said this branch is not taken
+constexpr const char *kBlocked = "⊘";                    // a dependency ended without producing
 
 bool IsMarker(const std::string &s)
 {
-    return s == kDot || s == kBlock || s == kHollow;
+    return s == kDot || s == kBlock || s == kHollow || s == kStopped || s == kSkipped || s == kBlocked;
 }
 
 struct TaskSpec
@@ -51,6 +54,7 @@ struct TaskSpec
     const char *id;
     const char *state;
     const char *desc;
+    const char *end = ""; // WHY it ended; "" = not over (drives the marker's shape)
 };
 
 // One group holding `specs.size()` tasks, with `active` marked as the active
@@ -68,6 +72,7 @@ std::shared_ptr<edc::TaskWidget> MakeWidget(const std::vector<TaskSpec> &specs, 
         edc::TaskInfo task;
         task.task_id = specs[i].id;
         task.state = specs[i].state;
+        task.end = specs[i].end;
         task.description = specs[i].desc;
         // A group only starts expanded when it holds the active task, so there is
         // always one: the test cares about the task rows, not about folding.
@@ -160,6 +165,27 @@ int RowWith(const ::ftxui::Screen &screen, const std::string &needle)
     return screen.CellAt(markers[0].first, markers[0].second).foreground_color;
 }
 
+// The state's colour cannot tell a stop from a `||` skip or from a dependency cascade --
+// all three are CANCELLED/ERROR. The marker's SHAPE is what says which.
+void TestMarkerShapeFollowsTheEndReason(void)
+{
+    std::cout << "the marker's shape says WHY a task is over\n";
+    const std::vector<TaskSpec> specs = {
+        {"1", "INTERRUPTED", "interrupted", "INTERRUPTED"},
+        {"2", "CANCELLED", "stopped", "STOPPED"},
+        {"3", "CANCELLED", "skipped", "SKIPPED"},
+        {"4", "ERROR", "blocked", "BLOCKED"},
+    };
+    auto widget = MakeWidget(specs);
+    const auto screen = Render(*widget);
+    const auto cells = MarkerCells(screen);
+    const std::vector<std::string> want = {kHollow, kStopped, kSkipped, kBlocked};
+    Check(cells.size() == specs.size(), "one marker per task");
+    for (size_t i = 0; i < cells.size() && i < want.size(); i++)
+        Check(screen.CellAt(cells[i].first, cells[i].second).character == want[i],
+              std::string("marker ") + std::to_string(i) + " is " + want[i]);
+}
+
 void TestMarkerPerStateInItsColor(void)
 {
     std::cout << "each task shows one marker, tinted with its state's color\n";
@@ -167,9 +193,9 @@ void TestMarkerPerStateInItsColor(void)
     // Processing states are excluded here: they breathe, so their color is not
     // a fixed value (see TestProcessingMarkerBreathes).
     const std::vector<TaskSpec> specs = {
-        {"1", "IDLE", "idle task"},         {"3", "COMPLETED", "done task"},
-        {"4", "ERROR", "failed task"},      {"5", "SUSPENDED", "paused task"},
-        {"6", "CANCELLED", "dropped task"}, {"7", "INTERRUPTED", "interrupted task"},
+        {"1", "IDLE", "idle task"},      {"3", "COMPLETED", "done task"},
+        {"4", "ERROR", "failed task"},   {"6", "CANCELLED", "dropped task"},
+        {"7", "INTERRUPTED", "interrupted task"},
     };
     auto widget = MakeWidget(specs);
     const auto screen = Render(*widget);
@@ -177,12 +203,11 @@ void TestMarkerPerStateInItsColor(void)
 
     const auto &pal = edc::style::palette();
     const std::vector<::ftxui::Color> expected = {
-        pal.warn,       // IDLE (and the active task)
-        pal.ok,         // COMPLETED
-        pal.error,      // ERROR
-        pal.suspended, // SUSPENDED
-        pal.text_dim,  // CANCELLED
-        pal.error,     // INTERRUPTED (red like ERROR; the shape tells them apart)
+        pal.warn,     // IDLE (and the active task)
+        pal.ok,       // COMPLETED
+        pal.error,    // ERROR
+        pal.text_dim, // CANCELLED
+        pal.interrupted, // INTERRUPTED (orange: the loop stopped under it, it did not fail)
     };
 
     Check(markers.size() == specs.size(), "one marker per task (and nothing else draws one)");
@@ -195,7 +220,7 @@ void TestMarkerPerStateInItsColor(void)
 
 void TestInterruptedWearsTheHollowSquare(void)
 {
-    std::cout << "an INTERRUPTED task wears the hollow square, in the error colour\n";
+    std::cout << "an INTERRUPTED task wears the hollow square, in its own orange\n";
 
     // The interrupted row is deliberately NOT the active one: the hollow square follows
     // the state, the block follows the flag, and the two must not be confused.
@@ -205,6 +230,7 @@ void TestInterruptedWearsTheHollowSquare(void)
     auto widget = MakeWidget(specs, 0);
     const auto screen = Render(*widget);
     const auto markers = MarkerCells(screen);
+    const auto &pal = edc::style::palette();
 
     Check(markers.size() == 3, "every row still draws a marker");
     if (markers.size() == 3)
@@ -213,9 +239,13 @@ void TestInterruptedWearsTheHollowSquare(void)
               "INTERRUPTED wears the hollow square (not the active block, not the dot)");
         Check(screen.CellAt(markers[2].first, markers[2].second).character == kDot,
               "ERROR keeps the dot -- that is what tells the two apart");
-        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color ==
+        // Colour AND shape say it: orange (interrupted) versus red (failed). They used to
+        // share the error colour, which made "the process died under it" look like "it failed".
+        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color == pal.interrupted,
+              "INTERRUPTED is orange");
+        Check(screen.CellAt(markers[1].first, markers[1].second).foreground_color !=
                   screen.CellAt(markers[2].first, markers[2].second).foreground_color,
-              "same colour, different shape");
+              "different colour from ERROR, and the shape differs too");
         // All three glyphs must be one terminal cell wide, or the id column shifts.
         Check(markers[0].first == markers[1].first && markers[1].first == markers[2].first,
               "block, hollow square and dot share one column");
@@ -596,6 +626,7 @@ void TestGroupUsageLine(void)
 int main()
 {
     TestMarkerPerStateInItsColor();
+    TestMarkerShapeFollowsTheEndReason();
     TestActiveTaskWearsTheBlock();
     TestInterruptedWearsTheHollowSquare();
     TestLeaderMarkerIsGone();

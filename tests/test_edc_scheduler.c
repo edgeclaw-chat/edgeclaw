@@ -331,7 +331,9 @@ static void test_task_placement(void)
     CHECK(g1 && g1->leader == t1, "leader unchanged");
     /* 前台组一次只跑一个: t1 还攥着前台, 所以新任务排在它后面。 */
     CHECK(t2 && edc_task_awaits_deps(t2), "queued behind the member in front");
-    CHECK(t2 && t2->deps_total == 1, "one SEQUENCE edge");
+    CHECK(t2 && t2->deps_total == 1, "one edge");
+    /* 组内顺序是 BARRIER: 前一个死了要放行, 不能把它后面排队的一起取消。 */
+    CHECK(t2 && t2->deps && t2->deps->type == TASK_DEP_BARRIER, "and it is a BARRIER, not a SEQUENCE");
     CHECK(edc_session_get_active_task(sess) == t1, "the front stays on the one that holds it");
 
     TEST("PLACE_FOREGROUND with nothing in front makes a group");
@@ -425,9 +427,8 @@ static void test_current_task(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
 
-    TEST("no foreground group -> no current task, nothing resumable");
+    TEST("no foreground group -> no current task");
     CHECK(edc_scheduler_current_task(sess) == NULL, "NULL without a foreground group");
-    CHECK(edc_scheduler_resumable_task(sess) == NULL, "and for resume too");
 
     /* 前台组三个成员: 已完成 / 已取消 / 还活着; 焦点故意放在已完成的那个上。 */
     struct edc_task *done = edc_scheduler_task_new(sched, sess, "done", edc_channel_adapter);
@@ -447,23 +448,19 @@ static void test_current_task(void)
 
     TEST("current task: the last unfinished member, not the focus");
     CHECK(edc_scheduler_current_task(sess) == alive, "the finished ones are skipped");
-    CHECK(edc_scheduler_resumable_task(sess) == alive, "alive is the resumable pick too");
 
-    TEST("a CANCELLED member stays resumable while an unfinished one exists");
+    TEST("a CANCELLED member is not picked once nothing is unfinished");
     edc_task_await_exec(alive);
     edc_task_mark_completed(alive);
     CHECK(edc_scheduler_current_task(sess) == NULL, "nothing unfinished left to act on");
-    CHECK(edc_scheduler_resumable_task(sess) == cancelled,
-          "only COMPLETED is final, so the cancelled one is still a resume candidate");
 
-    TEST("all members COMPLETED -> neither derivation yields anything");
+    TEST("all members COMPLETED -> no derivation yields anything");
     struct edc_task *d2 = edc_scheduler_task_new(sched, sess, "done 2", edc_channel_adapter);
     struct edc_task_group *g2 = edc_scheduler_create_group(sched, sess, d2);
     edc_scheduler_set_foreground(sess, g2);
     edc_task_await_exec(d2);
     edc_task_mark_completed(d2);
     CHECK(edc_scheduler_current_task(sess) == NULL, "current: NULL");
-    CHECK(edc_scheduler_resumable_task(sess) == NULL, "resumable: NULL");
 
     edc_scheduler_free(sched);
     free(sess);
@@ -489,14 +486,15 @@ static void test_resume_queues(void)
     struct edc_task *b = edc_scheduler_task_new(sched, sess, "b", edc_channel_adapter);
     edc_task_group_add_task(g, b);
     edc_scheduler_attach_input(sched, b, "b's input");
-    edc_task_mark_suspended(b);
-    CHECK(edc_task_is_suspended(b), "B starts parked");
+    edc_task_mark_interrupted(b);
+    CHECK(edc_task_is_interrupted(b), "B starts parked");
 
     TEST("resume does not jump the queue of the group in front");
     edc_scheduler_resume_task(sched, b);
     CHECK(edc_task_awaits_deps(b), "B is parked behind A");
-    CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "one SEQUENCE edge, pointing at A");
-    CHECK(!edc_task_is_suspended(b), "it is no longer suspended -- it is queued now");
+    CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "one order edge, pointing at A");
+    CHECK(b->deps && b->deps->type == TASK_DEP_BARRIER, "it is a BARRIER (group order)");
+    CHECK(!edc_task_is_interrupted(b), "it is no longer interrupted -- it is queued now");
 
     TEST("a second resume changes nothing while it still waits");
     edc_scheduler_resume_task(sched, b);
@@ -685,6 +683,79 @@ static void mock_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
     (void)request_id;
     g_llm_calls++;
     g_llm_task = task;
+}
+
+/* ── 组内队列: 前面的死了, 后面排队的接上 ─────────────────────
+ * 组队列连接的是两件互不相关的活 —— 前一个"结束"(无论怎么结束)只等于"轮到你了"。
+ * 用 SEQUENCE 会把顺序约束当成数据依赖: stop 掉正在跑的那个, 排在它后面的一起被
+ * 级联取消, 整条队列被清空。所以队列边必须是 BARRIER。 */
+static void test_queue_advances_when_front_dies(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    sched->send_llm = mock_send_llm;
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "front";
+    spec.input = "front";
+    spec.place = EDC_TASK_PLACE_NEW_GROUP;
+    spec.take_foreground = true;
+    struct edc_task *a = edc_scheduler_task_create(sched, sess, &spec);
+    CHECK(a != NULL, "A created in a fresh group");
+
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "queued";
+    spec.input = "queued";
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    struct edc_task *b = edc_scheduler_task_create(sched, sess, &spec);
+
+    TEST("the queue edge is a BARRIER, not a SEQUENCE");
+    CHECK(b && a && b->group == a->group, "B joined A's group");
+    CHECK(b && edc_task_awaits_deps(b), "B is queued behind A");
+    CHECK(b && b->deps_total == 1 && b->deps && b->deps->source == a, "one edge, pointing at A");
+    CHECK(b && b->deps->type == TASK_DEP_BARRIER, "and it is a BARRIER");
+
+    TEST("A runs first");
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == a, "A was driven");
+    CHECK(b && edc_task_awaits_deps(b), "B still waits");
+
+    TEST("stopping the task in front ADVANCES the queue instead of cancelling it");
+    edc_scheduler_send_signal_to_task_ptr(sched, a, TASK_SIGTERM);
+    CHECK(a && edc_task_is_cancelled(a), "A was stopped");
+    CHECK(b && !edc_task_is_cancelled(b), "B was NOT taken down with it");
+    CHECK(b && b->deps && b->deps->cancelled, "the order edge was voided");
+    CHECK(b && b->deps_total == 0, "and it no longer counts as a constraint");
+
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    edc_scheduler_schedule(sched);
+    CHECK(g_llm_task == b, "B took the front and ran");
+    CHECK(b && edc_task_awaits_exec(b), "B is running");
+
+    TEST("resuming the stopped one queues it behind whoever took its place");
+    edc_scheduler_resume_task(sched, a);
+    CHECK(a && edc_task_awaits_deps(a), "A waits for B");
+    CHECK(a && a->deps_total == 1 && a->deps && a->deps->source == b, "one edge, pointing at B");
+    /* 这里钉住 can_reach: B 对 A 还挂着一条**已作废**的边, 若把它当成真边, A->B 会被
+     * 判成环而加不上, resume 就会让 A 与 B 并跑。 */
+    CHECK(a && a->deps && a->deps->type == TASK_DEP_BARRIER, "the voided A<-B edge must not read as a cycle");
+
+    TEST("and B finishing releases A");
+    edc_task_mark_completed(b);
+    edc_task_notify_dependents(b); /* what the scheduler does when a task completes */
+    CHECK(edc_task_is_ready(a), "A was released");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
 }
 
 /* 发起请求的那个 request_id 现在由**调度**发号 (唯一驱动入口), 测试不能再自己写死
@@ -1187,6 +1258,7 @@ static void test_input_routing(void)
 static int g_dispatch_calls = 0;
 static int g_reply_calls = 0;
 static char g_reply_content[512];
+static edc_channel_message_type g_reply_type = EDC_CHANNEL_MESSAGE_USER_TYPE;
 
 static void mock_dispatch_tools(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                 void *request_id)
@@ -1203,8 +1275,8 @@ static void mock_send_reply(struct edc_scheduler *sched, struct edc_task *task, 
 {
     (void)sched;
     (void)task;
-    (void)message_type;
     (void)request_id;
+    g_reply_type = message_type;
     g_reply_calls++;
     snprintf(g_reply_content, sizeof(g_reply_content), "%s", content ? content : "");
 }
@@ -1600,7 +1672,150 @@ static void test_cancelled_task_resume_accepts_reply(void)
     free_config(cfg);
 }
 
+
+/* 队列边不许被"前一个任务那条 JSON/`;` 边"遮住。sched_chain_behind_unfinished 回答的是
+ * "这个任务排在前台那个后面吗", 而不是"我刚加了一行边吗": add_dependency 按 source 去重,
+ * `a ; b` 早就把那条边建好了, 再问一次会答 false —— 调用方于是把屏幕焦点抢到 b 身上, 而
+ * b 还在队列里没跑, 正在跑的 a 的输出就被黑掉了(实测)。 */
+static void test_queue_edge_not_shadowed_by_prev_edge(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "a";
+    spec.input = "a";
+    spec.place = EDC_TASK_PLACE_NEW_GROUP;
+    spec.take_foreground = true;
+    struct edc_task *a = edc_scheduler_task_create(sched, sess, &spec);
+    CHECK(a && edc_session_get_active_task(sess) == a, "A holds the focus");
+
+    /* `a ; b`: 边由 interp 通过 spec.prev 先建好, 队列随后再问一次。 */
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "b";
+    spec.input = "b";
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    spec.prev = a;
+    spec.prev_type = TASK_DEP_BARRIER;
+    struct edc_task *b = edc_scheduler_task_create(sched, sess, &spec);
+
+    CHECK(b && edc_task_awaits_deps(b), "B is queued behind A");
+    CHECK(b && b->deps_total == 1, "one edge (the queue's is deduped into the same pair)");
+    CHECK(edc_session_get_active_task(sess) == a, "and the focus stays on A -- B is not running yet");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* 被依赖拖下水(BLOCKED)的任务，在依赖真的产出后自动恢复 —— 而且这件事要**说出来**：
+ * 用户先前收到的是"它失败了，因为 7 被中断"，现在它自己跑起来了。队列前进不算这件事
+ * （那是日常），所以不能发同一条提示。 */
+static void test_unblocked_dependent_is_announced(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+    sched->send_reply = mock_send_reply;
+
+    TEST("an UNBLOCKED dependent is announced: it was told 'failed', now it runs");
+    struct edc_task *up = edc_scheduler_task_new(sched, sess, "upstream", edc_channel_adapter);
+    struct edc_task_group *g = edc_scheduler_create_group(sched, sess, up);
+    edc_scheduler_set_foreground(sess, g);
+    struct edc_task *down = edc_scheduler_task_new(sched, sess, "downstream", edc_channel_adapter);
+    edc_task_group_add_task(g, down);
+    CHECK(edc_task_add_dependency(down, up, TASK_DEP_SEQUENCE), "down 依赖 up (`&&`)");
+
+    edc_task_await_exec(up);
+    CHECK(edc_task_mark_interrupted(up), "up 被中断");
+    CHECK(down->end == EDC_END_BLOCKED, "down 被拖下水 (BLOCKED)");
+
+    /* 源恢复并真的产出。 */
+    edc_task_force_move(up, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
+    edc_task_await_exec(up);
+    CHECK(edc_task_mark_completed(up), "up 恢复后完成");
+
+    g_reply_calls = 0;
+    g_reply_content[0] = '\0';
+    g_reply_type = EDC_CHANNEL_MESSAGE_USER_TYPE;
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_DONE;
+    res.settled = true;
+    res.changed = true;
+    edc_scheduler_apply_advance(sched, up, NULL, &res);
+
+    CHECK(edc_task_is_ready(down), "down 自动放行 (不再需要 /task resume)");
+    CHECK(g_reply_type == EDC_CHANNEL_MESSAGE_SYS_TYPE && strstr(g_reply_content, "running again") != NULL,
+          "而且发了一条 SYS: 告诉用户它又跑起来了");
+    CHECK(strstr(g_reply_content, up->task_id) != NULL && strstr(g_reply_content, down->task_id) != NULL,
+          "两边都点名了");
+
+    TEST("a queue advance is routine: it must NOT be announced");
+    struct edc_task *first = edc_scheduler_task_new(sched, sess, "first", edc_channel_adapter);
+    struct edc_task_group *g2 = edc_scheduler_create_group(sched, sess, first);
+    edc_scheduler_set_foreground(sess, g2);
+    struct edc_task *second = edc_scheduler_task_new(sched, sess, "second", edc_channel_adapter);
+    edc_task_group_add_task(g2, second);
+    /* 组队列边就是 BARRIER（前一个怎么结束，后面都接上）。 */
+    CHECK(edc_task_add_dependency(second, first, TASK_DEP_BARRIER), "second 排在 first 后面");
+    edc_task_await_exec(first);
+    edc_task_mark_completed(first);
+
+    g_reply_calls = 0;
+    g_reply_content[0] = '\0';
+    g_reply_type = EDC_CHANNEL_MESSAGE_USER_TYPE;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_DONE;
+    res.settled = true;
+    res.changed = true;
+    edc_scheduler_apply_advance(sched, first, NULL, &res);
+
+    CHECK(edc_task_is_ready(second), "队列前进: 第二个就绪");
+    CHECK(strstr(g_reply_content, "running again") == NULL, "但那条提示没有发 (日常事件，不值得说)");
+
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
+/* 跨会话依赖解析不出来时只留下一条 pending 约束（没有 task 对象可以作废边）。
+ * /task dep --drop 走的就是这里：删掉它，目标才可能跑起来。 */
+static void test_pending_dep_drop(void)
+{
+    struct edc_config *cfg = make_config();
+    clean_task_seq(cfg);
+    struct edc_session *sess = make_session(cfg);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, sess);
+
+    TEST("a pending (unresolvable) dependency holds, is listed, and can be dropped");
+    struct edc_task *probe = edc_task_new("pend-t", "sess-pd", "g", "probe", edc_channel_adapter);
+    edc_scheduler_add_pending_dep(sched, "pend-t", "gone-src", TASK_DEP_SEQUENCE, false, false, false);
+    CHECK(edc_scheduler_first_unresolved_dep(sched, probe) != NULL, "the task is held");
+    {
+        const struct edc_pending_dep *pd = edc_scheduler_next_pending_dep(sched, "pend-t", NULL);
+        CHECK(pd && pd->source_task_id && strcmp(pd->source_task_id, "gone-src") == 0, "and listed with its source id");
+    }
+    CHECK(edc_scheduler_drop_pending_dep(sched, "pend-t", "gone-src") == 1, "the drop removes it");
+    CHECK(edc_scheduler_first_unresolved_dep(sched, probe) == NULL, "the hold is gone");
+    CHECK(edc_scheduler_drop_pending_dep(sched, "pend-t", NULL) == 0, "dropping again finds nothing");
+
+    edc_task_free(probe);
+    edc_scheduler_free(sched);
+    free(sess);
+    free_config(cfg);
+}
+
 int main(void)
+
 {
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
     log_info("");
@@ -1613,7 +1828,11 @@ int main(void)
     test_scheduler_fg_bg();
     test_task_placement();
     test_current_task();
+    test_unblocked_dependent_is_announced();
+    test_pending_dep_drop();
     test_resume_queues();
+    test_queue_edge_not_shadowed_by_prev_edge();
+    test_queue_advances_when_front_dies();
     test_scheduler_signals();
     test_scheduler_group_signals();
     test_signal_cascade_settles_dependents();

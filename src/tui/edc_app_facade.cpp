@@ -69,6 +69,23 @@ bool AppFacade::SandboxEnabled() const
     return app_ && edc_app_sandbox_enabled(app_);
 }
 
+bool AppFacade::ShellSyntax() const
+{
+    return app_ && edc_app_shell_syntax(app_);
+}
+
+edc_input_mode AppFacade::InputMode(const std::string &text) const
+{
+    if (!app_)
+        return EDC_INPUT_TEXT;
+    return edc_app_input_mode(app_, text.c_str());
+}
+
+int AppFacade::ContextWindow() const
+{
+    return app_ ? edc_app_config_context_window(app_) : 0;
+}
+
 bool AppFacade::Onboarded() const
 {
     return app_ && edc_app_onboarded(app_);
@@ -162,10 +179,177 @@ bool AppFacade::ModelInfo(const std::string &model_id, ModelFacts *out) const
     return true;
 }
 
-void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content)
+std::vector<model::CommandFact> AppFacade::Commands() const
+{
+    std::vector<model::CommandFact> out;
+    const size_t n = edc_app_cmd_count();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        const char *t = edc_app_cmd_text(i);
+        const char *b = edc_app_cmd_brief(i);
+        if (t)
+            out.push_back({t, b ? b : ""});
+    }
+    return out;
+}
+
+/* Only meaningful with the shell switch ON: with it off a line that opens with a quote is
+ * a message, so offering options would suggest a syntax that is not in force. */
+std::vector<model::CommandFact> AppFacade::ShellOptions() const
+{
+    std::vector<model::CommandFact> out;
+    if (!ShellSyntax())
+        return out;
+    const size_t n = edc_app_shell_option_count();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        const char *t = edc_app_shell_option_text(i);
+        const char *b = edc_app_shell_option_brief(i);
+        if (t)
+            out.push_back({t, b ? b : ""});
+    }
+    return out;
+}
+
+std::vector<model::CommandFact> AppFacade::CommandFamilies() const
+{
+    std::vector<model::CommandFact> out;
+    const size_t n = edc_app_cmd_family_count();
+    out.reserve(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        const char *t = edc_app_cmd_family_name(i);
+        const char *b = edc_app_cmd_family_brief(i);
+        if (t)
+            out.push_back({t, b ? b : ""});
+    }
+    return out;
+}
+
+std::vector<model::CommandFact> AppFacade::FileCandidates(const std::string &workdir,
+                                                           const std::string &query) const
+{
+    std::vector<model::CommandFact> out;
+    if (!app_)
+        return out;
+    /* An unbound session has no directory of its own: the kernel falls back to the
+     * workspace, so an empty |workdir| must NOT stop us here (it did, and the popup simply
+     * never opened for those sessions). */
+
+    // The kernel answers "<relative path>\t<f|d>" rows, already filtered and ranked.
+    std::vector<char> buf(8192, '\0');
+    const size_t rows =
+        edc_app_file_candidates(app_, workdir.c_str(), query.empty() ? NULL : query.c_str(), buf.data(), buf.size());
+    if (rows == 0)
+        return out;
+
+    std::string text(buf.data());
+    size_t pos = 0;
+    while (pos < text.size())
+    {
+        const size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos)
+            break;
+        const std::string row = text.substr(pos, nl - pos);
+        pos = nl + 1;
+        const size_t tab = row.rfind('\t');
+        if (tab == std::string::npos)
+            continue;
+        model::CommandFact fact;
+        fact.text = row.substr(0, tab); /* a directory already ends with '/' */
+        fact.brief.clear();             /* the popup shows the path alone */
+        /* 's' = the directory the query names; 'd'/'f' = an entry inside it. */
+        fact.mention_completes = row.size() > tab + 1 && row[tab + 1] == 's';
+        out.push_back(std::move(fact));
+    }
+    return out;
+}
+
+bool AppFacade::MentionExists(const std::string &workdir, const std::string &path) const
+{
+    if (!app_ || path.empty())
+        return false;
+    return edc_app_mention_exists(app_, workdir.c_str(), path.c_str()) != 0;
+}
+
+void AppFacade::ResetFileCandidates() const
+{
+    edc_app_file_candidates_reset();
+}
+
+std::vector<model::CommandFact> AppFacade::SkillNames(const std::string &workdir) const
+{
+    std::vector<model::CommandFact> out;
+    if (!app_)
+        return out;
+
+    // "<name>\t<description>\n" per skill (see edc_app_skills) -- the same shape prompts use.
+    char buf[4096] = {0};
+    edc_app_skills(app_, workdir.c_str(), buf, sizeof(buf));
+    const std::string all(buf);
+    size_t pos = 0;
+    while (pos < all.size())
+    {
+        const size_t nl = all.find('\n', pos);
+        const std::string line =
+            (nl == std::string::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? all.size() : nl + 1;
+        if (line.empty())
+            continue;
+        const size_t tab = line.find('\t');
+        const std::string name = (tab == std::string::npos) ? line : line.substr(0, tab);
+        const std::string desc = (tab == std::string::npos) ? "" : line.substr(tab + 1);
+        if (!name.empty())
+            out.push_back({"/skill " + name, desc});
+    }
+    return out;
+}
+
+std::vector<model::CommandFact> AppFacade::PromptNames(const std::string &workdir) const
+{
+    std::vector<model::CommandFact> out;
+    if (!app_)
+        return out;
+
+    // "<name>\t<description>\n" per template (see edc_app_prompts). No workdir: the frontend
+    // passes the DISPLAYED session's directory when it has one (the project roots are found
+    // by walking up from it); "" falls back to the process cwd.
+    char buf[4096] = {0};
+    edc_app_prompts(app_, workdir.c_str(), buf, sizeof(buf));
+    const std::string all(buf);
+    size_t pos = 0;
+    while (pos < all.size())
+    {
+        const size_t nl = all.find('\n', pos);
+        const std::string line =
+            (nl == std::string::npos) ? all.substr(pos) : all.substr(pos, nl - pos);
+        pos = (nl == std::string::npos) ? all.size() : nl + 1;
+        if (line.empty())
+            continue;
+        const size_t tab = line.find('\t');
+        const std::string name = (tab == std::string::npos) ? line : line.substr(0, tab);
+        const std::string desc = (tab == std::string::npos) ? "" : line.substr(tab + 1);
+        if (!name.empty())
+            out.push_back({"/prompt " + name, desc});
+    }
+    return out;
+}
+
+void AppFacade::SendUserMessage(const std::string &session_id, const std::string &content,
+                                const std::string &payload_json, const std::string &mid)
 {
     if (app_)
-        edc_app_send_user_message(app_, session_id.c_str(), content.c_str());
+        edc_app_send_user_message(app_, session_id.c_str(), content.c_str(),
+                                  payload_json.empty() ? nullptr : payload_json.c_str(),
+                                  mid.empty() ? nullptr : mid.c_str());
+}
+
+void AppFacade::RequestMessagePayload(const std::string &mid)
+{
+    if (app_)
+        edc_app_request_message_payload(app_, mid.c_str());
 }
 
 void AppFacade::RequestTaskSnapshot(const std::string &session_id)
@@ -231,6 +415,17 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         return;
 
     const auto *content = edc_app_message_content(message);
+
+    // A payload pull reply: header = the mid it answers, content = the payload JSON.
+    if (edc_app_message_is_message_payload(message))
+    {
+        const char *mid_c = edc_app_message_mid(message);
+        const std::string mid = mid_c ? mid_c : "";
+        const std::string payload = content ? content : "";
+        IChannelSink *sink = sink_;
+        dispatcher_->Post([sink, mid, payload]() { sink->OnMessagePayload(mid, payload); });
+        return;
+    }
 
     // Structured reply for `/task history <id>` / `/group history <id>`.
     if (edc_app_message_is_task_history(message))

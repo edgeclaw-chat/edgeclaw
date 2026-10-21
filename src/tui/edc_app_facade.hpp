@@ -21,6 +21,7 @@
 // synchronously.
 
 #include "edc_api.h" /* struct edc_channel_message + message_* read-only views + EDC_APP_RENDER_* */
+#include "edc_command_palette.hpp" /* model::CommandFact (the completion popup's rows) */
 
 #include <cstddef>
 #include <ctime>
@@ -80,6 +81,8 @@ class IChannelSink
     virtual void OnTreeChanged(const std::string &session_id, const std::string &reason) = 0;
     // Structured payload for `/task history` / `/group history`.
     virtual void OnTaskHistory(const std::string &payload) = 0;
+    // The folded-paste payload of the user message named by |mid| ("" = gone for good).
+    virtual void OnMessagePayload(const std::string &mid, const std::string &payload_json) = 0;
 };
 
 // The config submitted by the first-run setup page (the wizard): the LLM settings plus
@@ -116,6 +119,16 @@ class IAppFacade
     virtual bool ConfigApiUrl(std::string *out) const = 0;
     virtual bool ConfigApiKey(std::string *out) const = 0;
     virtual bool SandboxEnabled() const = 0;
+    // Whether the shell-like input syntax is on (see /shell). Read per frame so the input
+    // line can say how the current line will be read -- /shell flips it while the TUI runs.
+    // (Deliberately not a footer field: the switch is not worth a permanent cell.)
+    virtual bool ShellSyntax() const = 0;
+    // How the command layer would read |text| right now: the input line's mode tag
+    // reads this per frame, so the tag and Enter can never disagree.
+    virtual edc_input_mode InputMode(const std::string &text) const = 0;
+    // The configured model's context window in tokens (0 = unknown). The status bar
+    // reads it to show "ctx used/window".
+    virtual int ContextWindow() const = 0;
 
     // ── first-run wizard + model catalog ─────────────────────────
     // False until the user finished/skipped the setup page (config.json "onboarded").
@@ -137,9 +150,36 @@ class IAppFacade
     virtual size_t Models(const std::string &provider_id, std::vector<std::string> *ids) const = 0;
     virtual bool ModelInfo(const std::string &model_id, ModelFacts *out) const = 0;
 
+    // ── command surface (the input's completion popup) ───────────
+    // Static data from the shell's command table: every row, and the families (first
+    // tokens) a bare "/" lists.
+    virtual std::vector<model::CommandFact> Commands() const = 0;
+    virtual std::vector<model::CommandFact> CommandFamilies() const = 0;
+    // The option vocabulary of a shell line (what may follow its quoted description):
+    // completion rows for the palette, empty when the shell switch is off.
+    virtual std::vector<model::CommandFact> ShellOptions() const = 0;
+    // The prompt templates, as palette rows ("/prompt <name>", brief = its description):
+    // the vocabulary of the `/prompt <name>` argument.
+    virtual std::vector<model::CommandFact> PromptNames(const std::string &workdir) const = 0;
+    virtual std::vector<model::CommandFact> SkillNames(const std::string &workdir) const = 0;
+    // `@` completion: the files under |workdir| matching |query| (the kernel walks and
+    // filters; a directory's row ends with '/'). Empty when it cannot be listed.
+    virtual std::vector<model::CommandFact> FileCandidates(const std::string &workdir,
+                                                           const std::string &query) const = 0;
+    // Whether an `@path` names something the mention pass would read (the sandbox's own
+    // resolution, plus existence). The input line marks a reference only when this is true.
+    virtual bool MentionExists(const std::string &workdir, const std::string &path) const = 0;
+    // The tree may have changed (a message was submitted): walk again next time.
+    virtual void ResetFileCandidates() const = 0;
+
     // ── a few things the frontend does ───────────────────────────
-    virtual void SendUserMessage(const std::string &session_id, const std::string &content) = 0;
+    // |payload_json| = folded paste blocks (placeholder -> real bytes); the app expands
+    // them through the text-layer passes before classifying the line. "" = none.
+    virtual void SendUserMessage(const std::string &session_id, const std::string &content,
+                                 const std::string &payload_json, const std::string &mid) = 0;
     virtual void RequestTaskSnapshot(const std::string &session_id) = 0;
+    // Ask the scheduler thread for that payload (the store is not ours to read).
+    virtual void RequestMessagePayload(const std::string &mid) = 0;
 
     // ── paths / files the frontend owns ──────────────────────────
     virtual bool HistoryPath(std::string *out) const = 0;
@@ -173,6 +213,9 @@ class AppFacade : public IAppFacade
     bool ConfigApiUrl(std::string *out) const override;
     bool ConfigApiKey(std::string *out) const override;
     bool SandboxEnabled() const override;
+    bool ShellSyntax() const override;
+    edc_input_mode InputMode(const std::string &text) const override;
+    int ContextWindow() const override;
 
     bool Onboarded() const override;
     bool SetSetup(const SetupConfig &config) override;
@@ -185,8 +228,20 @@ class AppFacade : public IAppFacade
     size_t Models(const std::string &provider_id, std::vector<std::string> *ids) const override;
     bool ModelInfo(const std::string &model_id, ModelFacts *out) const override;
 
-    void SendUserMessage(const std::string &session_id, const std::string &content) override;
+    std::vector<model::CommandFact> Commands() const override;
+    std::vector<model::CommandFact> CommandFamilies() const override;
+    std::vector<model::CommandFact> ShellOptions() const override;
+    std::vector<model::CommandFact> PromptNames(const std::string &workdir) const override;
+    std::vector<model::CommandFact> SkillNames(const std::string &workdir) const override;
+    std::vector<model::CommandFact> FileCandidates(const std::string &workdir,
+                                                   const std::string &query) const override;
+    bool MentionExists(const std::string &workdir, const std::string &path) const override;
+    void ResetFileCandidates() const override;
+
+    void SendUserMessage(const std::string &session_id, const std::string &content,
+                         const std::string &payload_json, const std::string &mid) override;
     void RequestTaskSnapshot(const std::string &session_id) override;
+    void RequestMessagePayload(const std::string &mid) override;
 
     bool HistoryPath(std::string *out) const override;
     bool ChatLogPathFor(const std::string &session_id, std::string *out) const override;

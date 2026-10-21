@@ -73,6 +73,10 @@ class FakeHost : public edc::control::IChannelHost
     {
         history.push_back(payload);
     }
+    void PresentMessagePayload(const std::string &mid, const std::string &payload_json) override
+    {
+        payloads.push_back(mid + "\t" + payload_json);
+    }
     void RequestTaskSnapshot() override
     {
         pulls++;
@@ -86,6 +90,7 @@ class FakeHost : public edc::control::IChannelHost
     std::vector<std::string> presented;
     std::vector<std::string> loads;
     std::vector<std::string> history;
+    std::vector<std::string> payloads; /* "mid\tpayload-json" */
     int background_presented = 0;
     int tree_sets = 0;
     int syncs = 0;

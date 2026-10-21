@@ -8,12 +8,19 @@
 #include "edc_task_snapshot.hpp"
 #include "edc_transcript_store.hpp"
 #include "edc_working_indicator_view.hpp"
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <functional>
 #include <memory>
+#include <map>
+#include <set>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace edc
 {
@@ -83,6 +90,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Pace the window's own animations from the main-loop iteration.
     void TickAnimations();
 
+    // Ctrl+C: the first press clears the input box, a second one in a row (within a
+    // short window) quits. Returns true when the caller should exit the screen. Called
+    // by main()'s top-level CatchEvent -- Ctrl+C never reaches OnEvent.
+    bool OnInterrupt();
+
     // ── IChannelHost hooks ───────────────────────────────────────
     // Called by ChannelDispatcher for the view actions that live outside the
     // models; events themselves are handled by the dispatcher (the AppFacade
@@ -97,6 +109,8 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void SyncWorking(const TaskSnapshot &snap) override;
     void SetTodos(const TaskSnapshot &snap) override;
     void PresentHistory(const std::string &payload) override;
+    // A payload pull came back: header = the mid it answers ("" = that message is gone).
+    void PresentMessagePayload(const std::string &mid, const std::string &payload_json) override;
     void RequestTaskSnapshot() override;
     void RequestFrame() override;
 
@@ -122,6 +136,17 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the setup wizard instead of sending anything.
     void Submit();
+    // Clear the sidebar's unread marker when a command names that task.
+    void MarkReadFromInput(const std::string &line);
+    // Esc: stop the foreground group's running task. Sends the same "/task stop" a user
+    // would type (no chat bubble: the command layer's reply is the feedback).
+    void StopForegroundTask();
+    // While the "press Ctrl+C again to quit" hint is up: push its text to whichever
+    // bottom row is showing (the footer, or the working row that replaces it).
+    void PushInterruptHint();
+    void ClearInterruptHint();
+    // Expire the hint (called once per main-loop iteration from TickAnimations).
+    void TickInterruptHint(std::chrono::steady_clock::time_point now);
     // Seed + open the setup wizard (reads the persisted config).
     void OpenConnect();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
@@ -135,6 +160,17 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void LoadChatTranscript(const char *session_id);
     // Replay |path| into the (already cleared) log.
     void LoadChatTranscriptFile(const std::string &path);
+    // Progressive transcript backfill (see LoadChatTranscriptFile): the newest
+    // bubbles are shown at once; the older history is decoded on a worker thread and
+    // prepended a bounded batch per TickAnimations, so no single step blocks a frame.
+    void StartTranscriptBackfill(const std::string &path, size_t prefix_end);
+    void PumpTranscriptBackfill();
+    void CancelTranscriptBackfill();
+    // Join the backfill worker and clear its state. Caller must hold |backfill_mutex_|.
+    void ReleaseBackfillWorkerLocked();
+    // True while older history is still being decoded or prepended -- drives the
+    // "Loading earlier history…" hint.
+    bool TranscriptBackfillActive() const;
     // Record one displayed bubble at the tail of the current session's transcript.
     void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
                               const std::string &task_id, int render_pref);
@@ -147,6 +183,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Switch the log to |session_id|: the log is cleared and that session's
     // messages re-derived, so it always belongs to the displayed session.
     ::ftxui::Element RenderMain();
+    // The input box's top rule, which doubles as the "how will this line be read" label
+    // ("──── shell ────") when the line is anything but a plain message. Reads the live
+    // draft through the facade (the same predicate the dispatch uses), so it is
+    // re-evaluated every frame and cannot drift from what Enter will do.
+    ::ftxui::Element InputSeparatorElement();
     // Put the selection on the clipboard and raise the chip; runs on the frame
     // after the drag was released, once FTXUI's selection is complete.
     void CopySelectionToClipboard();
@@ -169,9 +210,21 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
         return InputMode::Normal;
     }
     bool HandlePasteEvent(::ftxui::Event event);
+    // Insert the collected paste (folded, when it is large enough to be worth folding).
+    void CommitPasteBuffer();
     // true = consumed; false = pass through to the normal path (mouse/wheel/Alt+Enter).
     bool HandleHistoryEvent(::ftxui::Event event);
     bool HandleNormalEvent(::ftxui::Event event);
+    // Refresh the completion popup from the current input text (and load its source
+    // from the command table on first use).
+    void RecomputeCommandPalette();
+    // Fold the highlighted popup row into the input -- what Tab does, and what Enter does
+    // once the user has walked the list (so Enter picks instead of sending). Returns true
+    // when the input text actually changed (Enter only falls back to sending when it did
+    // not: there was nothing to pick).
+    // |take_selected|: Enter (the user walked the list with Up/Down) takes the highlighted
+    // row whole; Tab (the default) grows the word being typed.
+    bool AcceptCompletion(bool take_selected = false);
 
     std::shared_ptr<edc::ChatWidget> chat_widget_;
     std::shared_ptr<edc::TaskWidget> task_widget_;
@@ -179,7 +232,19 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Multi-line input with soft wrapping; also handed to |container_| for focus.
     std::shared_ptr<edc::EdcInput> input_;
     ::ftxui::Element prompt_;
+    /* Tasks whose output was presented since the last task-tree snapshot: finished
+     * ones among them are read, not unread. */
+    std::set<std::string> presented_tasks_;
+    /* The startup hint about interrupted tasks is a once-per-session line: the first
+     * snapshot that actually carries tasks decides it. */
+    bool interrupted_hint_done_ = false;
+
     std::string input_text_;
+
+    // The completion popup, shown while the input starts with '/'. Hangs just below the
+    // input. Its source (the shell's command table, via the facade) is loaded once, lazily.
+    model::CommandPalette command_palette_;
+    bool palette_loaded_ = false;
 
     // Routes keyboard focus between the chat log and the input (1 = input).
     // Declared before |container_| because the container borrows it.
@@ -196,6 +261,32 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Set between the bracketed-paste ESC[200~ and ESC[201~, where Return is
     // inserted as a newline instead of submitting.
     bool in_paste_ = false;
+    // Everything between the two markers, held until the paste ends. Pastes are
+    // inserted in one go at ESC[201~: only there do we know the whole thing, and only
+    // there can a large paste become ONE folded block instead of forty rows of text.
+    std::string paste_buffer_;
+    // Monotone per-run counter for the block labels (`[Pasted #3 · 42 lines]`): the label
+    // is the payload key, so two pastes in one draft must never share one.
+    int paste_seq_ = 0;
+
+    // The mid of a submitted message: `<session>#<n>#<ms>` -- unique in this run and
+    // across restarts, opaque to the kernel, remembered by the input history. It is how a
+    // recalled folded block asks the store for its bytes (RequestMessagePayload).
+    long long mid_seq_ = 0;
+    std::string NewMessageMid();
+    // history entry text -> mid. Entries submitted before this feature existed have none.
+    std::map<std::string, std::string> history_mid_;
+    // Mids the store no longer knows: the entry is dropped from the history instead of
+    // being offered again, and nothing is asked a second time.
+    std::set<std::string> dead_mids_;
+    // Raised when a recall needs its payload.
+    void OnRecalledHistory(const std::string &entry);
+    // Ask for the payload of the draft's placeholders. False when there is nothing to ask
+    // (no matching history entry: those placeholders were typed by hand).
+    bool RequestPayloadForDraft();
+    void RaisePasteHint(const std::string &label);
+    std::string paste_hint_label_;
+    Toast paste_hint_;
 
     // Chat log state (messages + filter + task inputs) and the displayed
     // session's identity. Widgets render them; the dispatcher writes them.
@@ -215,6 +306,10 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     bool bracketed_paste_on_ = false;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
     ClipboardToast clipboard_toast_;
+    // The "Loading earlier history…" chip (same look as the clipboard toast): raised
+    // only while the reader is scrolled up into a backfill that is still running, then
+    // left to fade out once it finishes or they return to the tail.
+    Toast backfill_hint_;
     // Where the left-button drag started, and whether a copy is still due. The
     // copy waits for the next frame: FTXUI rebuilds its selection while that
     // frame is drawn, and a click without movement is not a selection.
@@ -234,6 +329,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     std::shared_ptr<ui::StatusBarView> status_bar_;
     // When the spinner's next repaint is due.
     std::chrono::steady_clock::time_point last_spinner_frame_;
+    // When Ctrl+C was last pressed (the second press within a short window quits).
+    std::chrono::steady_clock::time_point last_interrupt_{};
+    // The "press Ctrl+C again to quit" hint: its text ("" = hidden) and when it expires.
+    std::string interrupt_hint_;
+    std::chrono::steady_clock::time_point interrupt_hint_until_{};
     // When the chat log's next post-resize re-measure frame is due (see
     // TickAnimations).
     std::chrono::steady_clock::time_point last_remeasure_frame_;
@@ -243,5 +343,25 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // Throttles the periodic snapshot refresh (which is what catches background
     // task-state changes, since they send no channel message).
     std::chrono::steady_clock::time_point last_snapshot_request_;
+
+    /* Startup transcript backfill.
+     *
+     * Threading: only the decode runs off the UI thread (|backfill_thread_|); its
+     * result is published through |backfill_ready_| with a release store, and read
+     * only after an acquire load returns true -- so the decoded vector crosses
+     * threads without sharing a lock with the decode itself. Every other access to
+     * the fields below (Start/Pump/Cancel, reached from UI-thread callbacks and
+     * TickAnimations) is serialized by |backfill_mutex_|. The worker is always
+     * joined before its state is reused or destroyed (see CancelTranscriptBackfill),
+     * so capturing |this| in the lambda is safe. Note the widget/model calls that
+     * Start leads to still require the UI thread (all IChannelHost callbacks are
+     * marshalled there by AppFacade) -- the mutex only guards this handoff state. */
+    mutable std::mutex backfill_mutex_;
+    std::thread backfill_thread_;
+    std::atomic<bool> backfill_cancel_{false};
+    std::atomic<bool> backfill_ready_{false};
+    std::vector<ChatTranscriptEntry> backfill_result_; // worker writes; UI reads after |backfill_ready_|
+    std::vector<ChatTranscriptEntry> backfill_queue_;  // file order; consumed from the back
+    size_t backfill_remaining_ = 0;
 };
 } // namespace edc

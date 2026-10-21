@@ -23,6 +23,9 @@ typedef enum
     BC_ACTOR_MSG_CHANNEL_SEND,
     BC_ACTOR_MSG_CHANNEL_RECV,
     BC_ACTOR_MSG_TASK_SNAPSHOT,   /* TUI requests the current session's task-tree snapshot */
+    BC_ACTOR_MSG_MESSAGE_PAYLOAD, /* TUI asks for the folded-paste payload of a user message by
+                                   * its mid (data = the mid); answered as MESSAGE_PAYLOAD: the
+                                   * payload lives in the store, which only this thread touches */
     BC_ACTOR_MSG_TOOL_EMIT,       /* toolbox -> scheduler: a tool result to forward past the active-task gate */
     BC_ACTOR_MSG_TOOL_STARTED,    /* toolbox -> scheduler: a tool REALLY started executing
                                    * (data = strdup(call_id)); lets the resume ledger tell

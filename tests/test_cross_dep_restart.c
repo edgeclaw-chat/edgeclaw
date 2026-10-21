@@ -9,7 +9,7 @@
  *
  * Scenarios:
  *   1. A depends on B; both on disk. After restart the edge is restored by
- *      lazy-loading B, A's task stays SUSPENDED, resume waits for the dep, and
+ *      lazy-loading B, A's task stays INTERRUPTED, resume waits for the dep, and
  *      A wakes when B completes.
  *   2. B's state file is gone. The edge cannot be restored → the task is held
  *      and /task resume is refused.
@@ -131,10 +131,10 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     struct edc_task *bt = edc_scheduler_task_new(sched, sb, "b-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sb, bt);
     /* 新模型: task 创建时就带着它的 input (没装 turn 的任务落盘时会被丢弃):
-     * docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED —— 本用例要验的
+     * 装上 input 停到 INTERRUPTED —— 本用例要验的
      * 是跨会话依赖的恢复, 所以 B 这条任务必须真的出现在它自己的 session.json 里。 */
     give_input(bt);
-    edc_task_mark_suspended(bt);
+    edc_task_mark_interrupted(bt);
     edc_session_save_state(sb, sched);
     *out_bt_id = sdsnew(bt->task_id);
 

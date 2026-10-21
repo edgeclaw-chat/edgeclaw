@@ -1,0 +1,80 @@
+#ifndef EDC_PLATFORM_H
+#define EDC_PLATFORM_H
+
+#include <stdbool.h>
+#include <stddef.h>
+
+/* What this build can DO, as data -- and the few OPERATIONS whose implementation differs.
+ *
+ * Some platform differences are implementation details and belong in the file that owns
+ * them: the Windows CRT's rename, _fullpath, the two path separators (edc_compat.h,
+ * edc_path.c), DPAPI versus termios (edc_secret.c). Others are CHOICES the caller has to
+ * make -- which shell to spawn, how to start it, whether anything enforces a filesystem
+ * policy -- and those were spelled as #ifdef at each call site. That is how one decision
+ * ends up in four files and drifts: the shell tool, the kill path and the key-locking code
+ * each knew their own answer, and the answers were only visible one file at a time.
+ *
+ * The split used here:
+ *   - a CHOICE is a field of the table below (one place to read, one place to change);
+ *   - an OPERATION whose implementation differs (mlock, signalling a process group) is a
+ *     function in edc_platform.c. A flag would not help: the call itself does not compile
+ *     on the other platform, so a caller testing a flag would still need #ifdef. */
+
+enum edc_spawn_mode
+{
+    /* POSIX: run the child in its own session (setsid). It then has no controlling
+     * terminal, so interactive prompts (sudo, ssh, apt) cannot be written over the TUI and
+     * block forever -- open("/dev/tty") fails and the command aborts with a message the
+     * model can act on. */
+    EDC_SPAWN_DETACH = 1,
+    /* Windows: DETACHED_PROCESS has the same NAME but the opposite effect -- a console
+     * program started that way exits without writing to the redirected pipes, so every
+     * tool call came back empty. UV_PROCESS_WINDOWS_HIDE gives what is actually wanted: no
+     * console window, no interactive prompt surface, pipes still connected. */
+    EDC_SPAWN_HIDE = 2,
+};
+
+struct edc_platform_caps
+{
+    /* A kernel filesystem sandbox exists (Landlock/seccomp/BPF, or Seatbelt). Everything
+     * that would turn the sandbox ON asks this: where it is false, config load clamps the
+     * switch off, /sandbox on is refused and the CLI override does not take effect. */
+    bool kernel_sandbox;
+
+    enum edc_spawn_mode spawn_mode;
+
+    /* "Run this command line": the file to spawn and the argument prefix the command
+     * string is appended to. POSIX is /bin/sh with "sh -c"; Windows is powershell.exe,
+     * whose -Command takes the rest of the line. */
+    const char *shell_file;
+    const char *const *shell_argv_head; /* NULL-terminated */
+};
+
+const struct edc_platform_caps *edc_platform_caps(void);
+
+/* The readable name for the one field that gates the whole sandbox subsystem. */
+static inline bool edc_platform_has_sandbox(void)
+{
+    return edc_platform_caps()->kernel_sandbox;
+}
+
+/* The result is an enum rather than a bool because the caller has to tell the two
+ * "no" answers apart: a platform that HAS mlock and failed it is worth a warning, a
+ * platform that has none is normal (the key is usable either way, it is just not pinned). */
+enum edc_lock_result
+{
+    EDC_LOCK_OK = 0,
+    EDC_LOCK_UNSUPPORTED, /* no mlock on this platform */
+    EDC_LOCK_FAILED,      /* mlock exists and refused */
+};
+
+enum edc_lock_result edc_platform_lock_memory(void *addr, size_t len);
+void edc_platform_unlock_memory(void *addr, size_t len);
+
+/* SIGKILL the process group led by |pid| (POSIX: the child was spawned detached, so the
+ * group signal is what also takes down grandchildren -- for `sh -c 'a && sudo b'`, killing
+ * only the shell leaves the grandchild running and holding the pipes open). A no-op where
+ * there are no process groups; the caller still terminates the child itself. */
+void edc_platform_kill_process_group(long pid);
+
+#endif /* EDC_PLATFORM_H */

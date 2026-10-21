@@ -1,5 +1,6 @@
 #include "edc_chat_model.hpp"
 
+#include <algorithm>
 #include <ctime>
 #include <utility>
 
@@ -41,6 +42,28 @@ void ChatModel::AddMessage(std::shared_ptr<Message> message)
     // Hidden: nothing on screen changes, so no notification.
 }
 
+void ChatModel::PrependMessages(std::vector<std::shared_ptr<Message>> messages)
+{
+    messages.erase(std::remove(messages.begin(), messages.end(), nullptr), messages.end());
+    if (messages.empty())
+        return;
+
+    // The log keeps everything; the filter only decides what is drawn.
+    all_.insert(all_.begin(), messages.begin(), messages.end());
+
+    if (filter_)
+    {
+        // A filtered view is derived from all_ + task inputs, so rebuild it rather
+        // than splice (rare: the backfill runs at session load, before any filter).
+        Rebuild();
+        Notify(Change{});
+        return;
+    }
+
+    visible_.insert(visible_.begin(), messages.begin(), messages.end());
+    Notify(Change{nullptr, std::move(messages)});
+}
+
 void ChatModel::Clear()
 {
     all_.clear();
@@ -48,7 +71,6 @@ void ChatModel::Clear()
     input_shown_.clear();
     Notify(Change{});
 }
-
 void ChatModel::SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label)
 {
     filter_ = std::move(allowed);

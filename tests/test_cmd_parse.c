@@ -118,62 +118,68 @@ static void test_flags_after_quotes(void)
 static sds shape_resolver(const char *name, void *user_data)
 {
     (void)user_data;
-    if (strcmp(name, "$") == 0)
+    if (strcmp(name, "SELF") == 0)
         return sdsnew("<front>");
     if (strcmp(name, "1") == 0)
         return sdsnew("<task1-output>");
     if (strcmp(name, "LAST") == 0)
         return sdsnew("<last-output>");
-    if (strcmp(name, "NAME") == 0)
-        return sdsnew("<name-output>");
     return NULL;
 }
 
-static void test_expand_vars_dollar_syntax(void)
+/* Task references are `{{…}}`, not `$…`: `$` belongs to the PROMPT TEMPLATE layer
+ * (pi / Claude Code / opencode spell their parameters `$1`, `$@`, `${1:-x}`), so the two
+ * layers get one sigil each and can never collide. */
+static void test_expand_task_refs(void)
 {
     sds err = NULL;
     sds out = NULL;
 
-    out = edc_shell_expand_vars("$$", shape_resolver, NULL, &err);
-    T_STREQ(out, "<front>", "expand: `$$` = 当前前台任务，**不是**字面 $");
+    out = edc_shell_expand_vars("{{SELF}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "<front>", "expand: `{{SELF}}` = 当前前台任务（原 `$$`）");
     sdsfree(out);
 
-    out = edc_shell_expand_vars("$1", shape_resolver, NULL, &err);
-    T_STREQ(out, "<task1-output>", "expand: `$1` = 任务 1 的输出");
+    out = edc_shell_expand_vars("{{1}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "<task1-output>", "expand: `{{1}}` = 任务 1 的输出");
     sdsfree(out);
 
-    out = edc_shell_expand_vars("$NAME", shape_resolver, NULL, &err);
-    T_STREQ(out, "<name-output>", "expand: `$NAME` = 任务 NAME 的输出");
+    out = edc_shell_expand_vars("{{LAST}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "<last-output>", "expand: `{{LAST}}` = 最后完成的任务输出");
     sdsfree(out);
 
-    /* 单引号是**唯一**能挡住这一层的东西；双引号挡不住（两种引号只差 $VAR 插值）。 */
-    out = edc_shell_expand_vars("'$1'", shape_resolver, NULL, &err);
-    T_STREQ(out, "'$1'", "expand: 单引号内不展开——但**引号本身留在文本里**");
+    /* 单引号是**唯一**能挡住这一层的东西；双引号挡不住。 */
+    out = edc_shell_expand_vars("'{{1}}'", shape_resolver, NULL, &err);
+    T_STREQ(out, "'{{1}}'", "expand: 单引号内不展开——但**引号本身留在文本里**");
     sdsfree(out);
 
-    out = edc_shell_expand_vars("\"$1\"", shape_resolver, NULL, &err);
-    T_STREQ(out, "\"<task1-output>\"", "expand: 双引号挡不住 $");
+    out = edc_shell_expand_vars("\"{{1}}\"", shape_resolver, NULL, &err);
+    T_STREQ(out, "\"<task1-output>\"", "expand: 双引号挡不住 `{{…}}`");
     sdsfree(out);
 
-    /* 后跟分隔符的 `$` 没有东西可解析 → 它被**丢掉**（不是原样留下）。 */
-    out = edc_shell_expand_vars("a $ b", shape_resolver, NULL, &err);
-    T_STREQ(out, "a  b", "expand: `$` 后跟分隔符 → 这个 $ 被丢掉");
+    /* 不是我们的形式 → **原样保留**，不报错。这是粘贴安全的那条规则：`{{ var }}`
+     * （Jinja / Handlebars）、`$HOME`、`$5.00` 都照原样过去。 */
+    out = edc_shell_expand_vars("{{ var }}", shape_resolver, NULL, &err);
+    T_STREQ(out, "{{ var }}", "expand: 不认识的形式原样保留（不报错）");
     sdsfree(out);
 
-    /* 结尾的 `$` 走另一个分支（`*(p+1)` 为假）→ 原样留下。 */
-    out = edc_shell_expand_vars("a$", shape_resolver, NULL, &err);
-    T_STREQ(out, "a$", "expand: 结尾的 $ 原样留下");
+    out = edc_shell_expand_vars("a $ b and $HOME", shape_resolver, NULL, &err);
+    T_STREQ(out, "a $ b and $HOME", "expand: `$` 不再是引用 → 原样");
+    sdsfree(out);
+
+    /* 未闭合的 `{{` 就是两个普通字节。 */
+    out = edc_shell_expand_vars("a {{ b", shape_resolver, NULL, &err);
+    T_STREQ(out, "a {{ b", "expand: 未闭合的 `{{` 原样留下");
     sdsfree(out);
 }
 
-/* ── $VAR 展开的出参契约 ──────────────────────────────────────
+/* ── 展开的出参契约 ──────────────────────────────────────────
  * `edc_shell_expand_vars` 是"出参一定写定"的: **成功**也要把 *out_error 置 NULL,
  * 这样调用方可以传一个未初始化的 `sds err;` 而不必自己先清零 (同 `edc_shell_spawn_task`)。
  * 用毒值 (绝不解引用的 0x1) 验"是函数在写它", 而不是调用方自己清的。 */
 static sds stub_resolver(const char *name, void *user_data)
 {
     (void)user_data;
-    if (strcmp(name, "GOOD") == 0)
+    if (strcmp(name, "LAST") == 0)
         return sdsnew("value");
     return NULL; /* 其余一律"查不到" */
 }
@@ -182,18 +188,19 @@ static void test_expand_vars_out_error(void)
 {
     sds err = (sds)(uintptr_t)1;
     sds out = edc_shell_expand_vars("plain text", stub_resolver, NULL, &err);
-    T_STREQ(out, "plain text", "expand: 无变量 → 原样返回");
+    T_STREQ(out, "plain text", "expand: 无引用 → 原样返回");
     T_CHECK(err == NULL, "expand: **成功**也要把 *out_error 置 NULL");
     sdsfree(out);
 
+    /* 认识的形式但查不到 → 报错（打字错要吵）；不认识的形式 → 原样（粘贴要安全）。 */
     err = (sds)(uintptr_t)1;
-    out = edc_shell_expand_vars("$MISSING", stub_resolver, NULL, &err);
-    T_CHECK(out == NULL, "expand: 查不到变量 → 返回 NULL");
+    out = edc_shell_expand_vars("{{7}}", stub_resolver, NULL, &err);
+    T_CHECK(out == NULL, "expand: 认识的形式查不到 → 返回 NULL");
     T_CHECK(err != NULL, "expand: 失败时 *out_error 带文案");
     sdsfree(err);
 
     err = (sds)(uintptr_t)1;
-    out = edc_shell_expand_vars("$GOOD", stub_resolver, NULL, &err);
+    out = edc_shell_expand_vars("{{LAST}}", stub_resolver, NULL, &err);
     T_STREQ(out, "value", "expand: 查得到 → 展开");
     T_CHECK(err == NULL, "expand: 成功路径 *out_error 仍被置 NULL");
     sdsfree(out);
@@ -253,7 +260,7 @@ int main(void)
     test_escapes();
     test_desc_needs_quotes();
     test_expand_vars_out_error();
-    test_expand_vars_dollar_syntax();
+    test_expand_task_refs();
 
     printf("test_cmd_parse: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

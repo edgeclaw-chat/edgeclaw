@@ -65,6 +65,24 @@ extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t ca
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
+/* Whether the shell-like input syntax is on (sigil + operators). ON by default;
+ * /shell off turns it off, and /shell alone reports it. It is read per frame so the input
+ * line can say how the current line will be read. */
+extern bool edc_app_shell_syntax(const struct edc_app *app);
+
+/* How the command layer will read the line currently being typed -- the frontend's copy
+ * of the ONE predicate (edc_commands_input_kind), so a tag on the input line can never
+ * disagree with what Enter does. |text| is the raw draft (not trimmed). */
+typedef enum
+{
+    EDC_INPUT_TEXT = 0, /* one task, verbatim -- the default, and the common case */
+    EDC_INPUT_COMMAND,  /* /… */
+    EDC_INPUT_LOCALSHELL, /* !… (never gated by the shell switch) */
+    EDC_INPUT_SHELL,    /* a shell line: quoted strings ± the sigil + */
+    EDC_INPUT_REJECTED, /* the line is already an error (unterminated quote, "+!cmd", …) */
+} edc_input_mode;
+
+extern edc_input_mode edc_app_input_mode(const struct edc_app *app, const char *text);
 /* First-run wizard: false until the user finished/skipped the setup page. */
 extern int edc_app_onboarded(const struct edc_app *app);
 /* The configured context window (tokens), for the setup page's default. */
@@ -86,6 +104,53 @@ extern int edc_app_models_model_output(const char *model_id);
 extern int edc_app_models_model_is_chat(const char *model_id);
 extern int edc_app_models_provider_matches(const char *provider_id, const char *query);
 extern int edc_app_models_model_matches(const char *model_id, const char *query);
+
+/* ── Command surface (read-only projection of the shell's command table) ──────
+ * The TUI's completion palette reads these. Static data -> no `struct edc_app`
+ * parameter (same rule as edc_app_models_*). Borrowed strings. */
+extern size_t edc_app_cmd_count(void);
+extern const char *edc_app_cmd_text(size_t index);
+extern const char *edc_app_cmd_brief(size_t index);
+extern size_t edc_app_cmd_family_count(void);
+extern const char *edc_app_cmd_family_name(size_t index);
+extern const char *edc_app_cmd_family_brief(size_t index);
+
+/* The shell line's option vocabulary (what may follow a quoted description), used by the
+ * completion popup when the input is a shell line. Same shape as the command rows. */
+extern size_t edc_app_shell_option_count(void);
+extern const char *edc_app_shell_option_text(size_t index);
+extern const char *edc_app_shell_option_brief(size_t index);
+/* ── Prompt library (read-only projection of <workspace>/prompts) ────────────
+ * The frontend's completion popup offers `/prompt <name>`, so it needs the template
+ * names: one "<name>\t<description>" line per template (the description is empty when the
+ * front matter has none). Returns how many templates exist; |buf| is always
+ * NUL-terminated and truncated to |cap| when the list does not fit.
+ *
+ * |workdir| is the DISPLAYED session's bound directory (the frontend already holds it):
+ * the project roots are looked for by walking up from it. Pass NULL/"" when there is no
+ * session bound yet. */
+extern size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
+
+/* The skills, as "<name>\t<description>" lines, for `/skill`'s completion vocabulary.
+ * Reads the same resource roots as everything else (|workdir| = the displayed session's
+ * directory; NULL/"" = the process cwd). Returns how many skills exist. */
+/* `@` completion: up to |cap| bytes of "<relative path>\t<f|d>\n" rows, best match
+ * first (20 max), under |workdir|. The directory is sandbox-checked: one that cannot be
+ * listed answers 0 rows. Safe to call on the UI thread -- the tree is cached after the
+ * first walk. */
+/* Does |path| name something the mention pass would actually read? Same resolution as the
+ * pass (relative to the session's directory, through the sandbox), plus an existence check.
+ * The input line colours a reference only when this says yes: the mark means "this is a
+ * real reference". */
+extern int edc_app_mention_exists(struct edc_app *app, const char *workdir, const char *path);
+
+extern size_t edc_app_file_candidates(struct edc_app *app, const char *workdir, const char *query, char *buf,
+                                      size_t cap);
+/* The tree may have changed (a message was just submitted): walk again next time. */
+extern void edc_app_file_candidates_reset(void);
+
+extern size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
+
 /* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
  * Built by convention, does not query the store; |session_id| must be an id (as
  * carried by snapshots/messages), not a display name. */
@@ -98,8 +163,31 @@ extern bool edc_app_history_path(char *buf, size_t cap);
  * reaches |on_send|. */
 extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
                                          void (*on_send)(void *, struct edc_channel_message *));
-/* Send a user input; |session_id| names its session (NULL/"" = the active one). */
-extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content);
+/* Send a user input; |session_id| names its session (NULL/"" = the active one).
+ *
+ * |payload_json| is the frontend's folded-paste map (placeholder -> real bytes, JSON
+ * object) or NULL. It is applied HERE, through the text-layer passes, before anything
+ * looks at the line: the content this function queues is always the finished text, so
+ * classification (edc_commands_input_kind), the lexer and the {{…}} expansion all see
+ * bytes that a typed line would have produced. A caller that already expanded its text
+ * (the TUI does, to show the bubble) just gets a no-op -- the pass is idempotent.
+ *
+ * The payload itself rides along on the queued message as provenance and is stored on
+ * the task's user message (fork/serialize copy it with the message). */
+/* |mid| is the frontend-generated id of this user message (NULL = none). It is stored on
+ * the message next to the payload; the input history remembers it, and
+ * edc_app_request_message_payload() hands the payload back by that id. */
+extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
+                                      const char *payload_json, const char *mid);
+/* Ask for the folded-paste payload of the user message named by |mid|. The store belongs
+ * to the scheduler thread, so the answer arrives as a MESSAGE_PAYLOAD channel message
+ * (header = the mid, content = the payload JSON, "" = no such message). */
+extern void edc_app_request_message_payload(struct edc_app *app, const char *mid);
+/* That reply's mid (the header), or NULL. */
+extern const char *edc_app_message_mid(const struct edc_channel_message *message);
+/* True for the MESSAGE_PAYLOAD reply above. */
+extern int edc_app_message_is_message_payload(const struct edc_channel_message *message);
+
 /* Request a task tree: built on the scheduler thread, answered as a TASK_SNAPSHOT
  * message. */
 extern void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id);

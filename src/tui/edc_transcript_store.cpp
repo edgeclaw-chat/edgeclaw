@@ -1,5 +1,7 @@
 #include "edc_transcript_store.hpp"
 
+#include <vector>
+
 namespace edc::port
 {
 
@@ -16,6 +18,26 @@ size_t TranscriptStore::Replay(const std::string &path,
                                const std::function<void(const ChatTranscriptEntry &)> &emit) const
 {
     return LoadTranscript(path, emit);
+}
+
+size_t TranscriptStore::ReplayTail(const std::string &path, size_t max_entries, size_t *prefix_end,
+                                   const std::function<void(const ChatTranscriptEntry &)> &emit) const
+{
+    std::vector<ChatTranscriptEntry> entries;
+    const size_t count = LoadTranscriptTail(path, max_entries, prefix_end, &entries);
+    for (const ChatTranscriptEntry &entry : entries)
+        emit(entry);
+    return count;
+}
+
+size_t TranscriptStore::ReplayPrefix(const std::string &path, size_t prefix_end,
+                                     const std::function<void(const ChatTranscriptEntry &)> &emit) const
+{
+    std::vector<ChatTranscriptEntry> entries;
+    const size_t count = LoadTranscriptPrefix(path, prefix_end, &entries);
+    for (const ChatTranscriptEntry &entry : entries)
+        emit(entry);
+    return count;
 }
 
 void TranscriptStore::Append(const std::string &path, const ChatTranscriptEntry &entry)

@@ -1,0 +1,58 @@
+diff --git a/src/ftxui/component/app.cpp b/src/ftxui/component/app.cpp
+index e52d33a..f149af4 100644
+--- a/src/ftxui/component/app.cpp
++++ b/src/ftxui/component/app.cpp
+@@ -617,7 +617,13 @@ void App::Internal::Install() {
+   const int enable_line_input = 0x0002;
+   const int enable_echo_input = 0x0004;
+   const int enable_virtual_terminal_input = 0x0200;
+   const int enable_window_input = 0x0008;
++  // Ctrl+C has to reach the application as the 0x03 byte instead of a
++  // CTRL_C_EVENT the CRT turns into SIGINT -- this is the Windows counterpart
++  // of the ISIG line the POSIX branch clears below. The application then sees
++  // Event::CtrlC and decides for itself what a press means.
++  const int enable_processed_input = 0x0001;
++  in_mode &= ~enable_processed_input;
+   in_mode &= ~enable_echo_input;
+   in_mode &= ~enable_line_input;
+   in_mode |= enable_virtual_terminal_input;
+@@ -1303,6 +1309,39 @@ void App::Internal::Signal(int signal) {
+ size_t App::Internal::FetchTerminalEvents() {
+ #if defined(_WIN32)
++  // Install() puts stdin into ENABLE_VIRTUAL_TERMINAL_INPUT mode (0x0200), whose contract
++  // is that the application reads a VT *byte* stream. Reading it through
++  // ReadConsoleInput instead makes conhost re-encode every byte into its own
++  // INPUT_RECORD -- and hold the tail of a multi-byte character back until the next key
++  // arrives, so CJK text reached the application double-encoded and one character late.
++  // Read the stream the way the mode intends: terminal_input_parser is a VT/UTF-8 state
++  // machine and decodes it directly, which also keeps keys, SGR mouse reports and
++  // bracketed-paste markers as the sequences the rest of the code expects.
++  // ReadConsoleInput stays as the fallback for a console that is not in VT mode.
++  {
++    const auto stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
++    DWORD mode = 0;
++    DWORD pending_records = 0;
++    const bool vt_input = GetConsoleMode(stdin_handle, &mode) != 0 &&
++                          (mode & 0x0200) != 0;  // ENABLE_VIRTUAL_TERMINAL_INPUT
++    const bool pending =
++        (GetNumberOfConsoleInputEvents(stdin_handle, &pending_records) != 0 &&
++         pending_records > 0) ||
++        WaitForSingleObject(stdin_handle, 0) == WAIT_OBJECT_0;
++    if (vt_input && pending) {
++      char buffer[1024];
++      DWORD read_bytes = 0;
++      if (ReadFile(stdin_handle, buffer, static_cast<DWORD>(sizeof(buffer)),
++                   &read_bytes, nullptr) &&
++          read_bytes > 0) {
++        last_char_time = std::chrono::steady_clock::now();
++        for (DWORD i = 0; i < read_bytes; ++i) {
++          terminal_input_parser.Add(buffer[i]);
++        }
++        return static_cast<size_t>(read_bytes);
++      }
++    }
++  }
+   auto get_input_records = [&]() -> std::vector<INPUT_RECORD> {
+     // Check if there is input in the console.
+     auto console = GetStdHandle(STD_INPUT_HANDLE);
+     DWORD number_of_events = 0;

@@ -187,6 +187,9 @@ static void test_single_task(void)
     task->completion_seq = 42;
     /* 用户原文 (由哪条输入建成): 可选键, 但要能原样来回。 */
     task->raw_input = sdsnew("do something");
+    /* `{{…}}` 引用已收集、尚未展开：这个标志不落盘的话，重启后消息里就只剩字面量
+     * （展开阶段被它 gate 住）——静默丢语义。 */
+    task->has_deferred_vars = 1;
 
     /* Add a turn with messages */
     struct edc_turn *turn = edc_turn_new();
@@ -215,6 +218,7 @@ static void test_single_task(void)
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "step")), "DONE", "step DONE");
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "is_group_leader")), "is_group_leader");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t0, "raw_input")), "do something", "raw_input persisted");
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(t0, "deferred_vars")), "deferred_vars persisted");
 
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     CHECK(cJSON_GetArraySize(turns_j) == 1, "1 turn serialized");
@@ -236,6 +240,7 @@ static void test_single_task(void)
     CHECK(rtask->completion_seq == 42, "completion_seq preserved");
     CHECK_STREQ(rtask->output, "task output result", "output preserved");
     CHECK_STREQ(rtask->raw_input, "do something", "raw_input restored");
+    CHECK(rtask->has_deferred_vars == 1, "deferred_vars restored -- a {{…}} is still expanded after a restart");
 
     /* Check turn messages */
     CHECK(edc_queue_length(&rtask->turns) == 1, "1 turn in turns queue");
@@ -303,7 +308,7 @@ static void test_fork_chain(void)
 
     struct edc_task *child2 = edc_task_fork(parent, "task-child2", "child 2", 10, edc_channel_adapter);
     /* 新模型: fork 子任务创建时就带着它的 input —— /task fork 现在把 desc 当 input
-     * 装上并派发 (--suspended 时停住)。旧 fixture 让子任务停在 WAITING_INPUT 等
+     * 装上并派发。旧 fixture 让子任务停在 WAITING_INPUT 等
      * attach 喂输入, 那种 turn-less 任务现在落盘时会被丢掉
      * (docs/retire-waiting-input.md §4)。 */
     {
@@ -647,7 +652,7 @@ static void test_turnless_shell_is_dropped(void)
 
 static void test_state_degradation(void)
 {
-    TEST("interrupted STEPS are preserved; only life collapses to SUSPENDED");
+    TEST("interrupted STEPS are preserved; only life collapses to INTERRUPTED");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-deg", "Degrade");
@@ -700,7 +705,7 @@ static void test_state_degradation(void)
     struct edc_task *rt1 = find_task(session2, "t-llm");
     struct edc_task *rt2 = find_task(session2, "t-tool");
 
-    /* P2 之前这里断言的是"相位被丢掉": 两个 task 都变成 SUSPENDED, 分不出谁在哪一步。
+    /* P2 之前这里断言的是"相位被丢掉": 两个 task 都变成 INTERRUPTED, 分不出谁在哪一步。
      * 现在 life 仍然收敛 (重启后没有东西在跑), 但 **step 原样保留** —— 这正是能够让
      * resume 不再靠残留物猜的那份信息。 */
     CHECK(rt1->step == EDC_TASKSTEP_AWAIT_EXEC, "step AWAIT_EXEC preserved");
@@ -1645,7 +1650,7 @@ static void test_fork_new_group_snapshot(void)
         cturn->task_id = strdup(child->task_id);
         edc_turn_add_user_message(cturn, "child input");
         child->active_turn = cturn;
-        edc_task_mark_suspended(child);
+        edc_task_mark_interrupted(child);
     }
 
     /* ── runtime invariants ── */
@@ -1956,7 +1961,7 @@ static void test_fold_watermark(void)
 
 static void test_schema_version_is_current(void)
 {
-    TEST("serialize writes version 9; older versions are still accepted, older/newer fails loudly");
+    TEST("serialize writes the current version; older versions are still accepted, older/newer fails loudly");
 
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-ver", "Ver");
@@ -1966,7 +1971,7 @@ static void test_schema_version_is_current(void)
     struct edc_task *task = edc_task_new("1", "sess-ver", "1", "task", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
-    edc_task_mark_suspended(task);
+    edc_task_mark_interrupted(task);
     struct edc_task_group *grp = edc_task_group_new(task);
     grp->memory = sdsnew("# remembered");
     grp->memory_created_at = 111;
@@ -1978,7 +1983,7 @@ static void test_schema_version_is_current(void)
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 9, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 11, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -2016,7 +2021,7 @@ static void test_schema_version_is_current(void)
     edc_scheduler_free(sched3);
 
     /* A version NEWER than this binary also refuses (do not guess a future shape). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(10));
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(12));
     struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
     install_resolver(sched9, s9);
@@ -2046,7 +2051,7 @@ static void test_message_unknown_keys_round_trip(void)
     struct edc_task *task = edc_task_new("1", "sess-disp", "1", "task", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
-    edc_task_mark_suspended(task);
+    edc_task_mark_interrupted(task);
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
@@ -2103,7 +2108,7 @@ static void test_message_unknown_keys_round_trip(void)
  *
  * 现状 (runtime-model.md §1.4, 台账第 4 条): 相位**存得下来** —— 上面
  * test_state_degradation 自己就断言了 JSON 里写着 "LLM_PROCESSING"/"TOOL_CALLING"
- * —— 但**读不回**: normalize_interrupted_state 把五个相位一起塌成 SUSPENDED,
+ * —— 但**读不回**: normalize_interrupted_state 把五个相位一起塌成 INTERRUPTED,
  * resume 再靠顺序探测 (deps -> 工具账本 -> active_turn) 把相位猜回来。
  *
  * 丢的不只是"叫什么名字": 一个正在等工具结果的 task, 和一个刚建好还没跑的
@@ -2113,7 +2118,7 @@ static void test_message_unknown_keys_round_trip(void)
  * P2 之后: 相位原样回来, 下面的断言全绿; 而 test_state_degradation 要改成
  * 表达新契约 (它现在钉的是旧行为, 这正是"行为变更先补测试"要面对的东西)。
  *
- * 变异测试: 把 step 再粗化回 SUSPENDED, 这条必须**红**。 */
+ * 变异测试: 把 step 再粗化回 INTERRUPTED, 这条必须**红**。 */
 static void test_continuation_preserved(void)
 {
     TEST("interrupted phases survive the round trip");
@@ -2176,6 +2181,199 @@ static void test_continuation_preserved(void)
     edc_config_free(cfg);
 }
 
+
+/* ── `||` (UNLESS) 的存档往返 ────────────────────────────────────────────
+ * 两类"放行型"边的名字必须落盘成字符串且能读回（`dep_type_from_name` 缺一条就会**静默降级
+ * 成 JOIN**）。同时钉住加载时的镜像：源已完成 ⇒ 后件被跳过，即使文件里那条边还是 outstanding。 */
+static void test_unless_dep_roundtrip(void)
+{
+    TEST("|| (UNLESS) dep roundtrip: name survives, and a completed source skips the dependent");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-unless", "Unless");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *ta = edc_task_new("task-OK", "sess-unless", "task-OK", "the one that works",
+                                       edc_channel_adapter);
+    ta->is_group_leader = 1;
+    edc_task_mark_ready(ta);
+    edc_task_await_exec(ta);
+    edc_task_mark_completed(ta);
+    ta->output = sdsnew("fine");
+
+    struct edc_task *tb = edc_task_new("task-FALLBACK", "sess-unless", "task-OK", "the fallback",
+                                       edc_channel_adapter);
+    edc_task_mark_waiting_deps(tb);
+    {
+        /* 带 turn 才会落盘（README 判据：无 turn 的 READY 任务被丢弃）。 */
+        struct edc_turn *turn = edc_turn_new();
+        turn->task_id = strdup(tb->task_id);
+        edc_turn_add_user_message(turn, "fallback input");
+        tb->active_turn = turn;
+    }
+    CHECK(edc_task_add_dependency(tb, ta, TASK_DEP_UNLESS), "tb -UNLESS-> ta");
+
+    struct edc_task_group *group = edc_task_group_new(ta);
+    edc_task_group_add_task(group, tb);
+    edc_session_add_group(session, group);
+
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+
+    struct edc_session *session2 = edc_session_new(cfg, "sess-unless", "Unless");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize succeeds");
+
+    struct edc_task *rb = find_task(session2, "task-FALLBACK");
+    CHECK(rb != NULL, "the dependent came back");
+    if (rb)
+    {
+        CHECK(rb->deps != NULL, "with its edge");
+        CHECK(rb->deps && rb->deps->type == TASK_DEP_UNLESS,
+              "and the type is UNLESS (a missing name in dep_type_from_name would make it JOIN)");
+        CHECK(edc_task_is_cancelled(rb), "the source succeeded, so the `||` branch was skipped");
+    }
+
+    cJSON_Delete(json);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_session_free(session2);
+    edc_scheduler_free(sched2);
+    edc_config_free(cfg);
+}
+
+/* v10: the reason a task ended must survive the save, and an older file (no `end`) must
+ * map conservatively -- never to BLOCKED, because that is the value a future auto-release
+ * would act on. Backed by the two facts this axis exists for: CANCELLED covers "the user
+ * stopped it" / "a `||` branch was skipped" / "a dependency took it down", and ERROR
+ * covers "it failed" / "a dependency never produced". */
+static void test_task_end_roundtrip(void)
+{
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, "sess-end", "Ends");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task *leader = edc_task_new("end-leader", "sess-end", "end-leader", "leader", edc_channel_adapter);
+    /* Mid-request: the persist predicate drops a task that sits READY+ALIVE with nothing
+     * in flight (its committed turns do not count), and a group whose leader is dropped is
+     * restored as nothing at all. */
+    edc_task_await_exec(leader);
+    struct edc_task_group *group = edc_task_group_new(leader);
+    edc_session_add_group(session, group);
+
+    struct edc_task *source = edc_task_new("end-src", "sess-end", "end-leader", "source", edc_channel_adapter);
+    edc_task_group_add_task(group, source);
+    struct edc_task *blocked = edc_task_new("end-blocked", "sess-end", "end-leader", "blocked", edc_channel_adapter);
+    edc_task_group_add_task(group, blocked);
+    struct edc_task *stopped = edc_task_new("end-stopped", "sess-end", "end-leader", "stopped", edc_channel_adapter);
+    edc_task_group_add_task(group, stopped);
+    struct edc_task *running = edc_task_new("end-running", "sess-end", "end-leader", "running", edc_channel_adapter);
+    edc_task_group_add_task(group, running);
+    edc_task_await_exec(running); /* mid-request: the state a restart interrupts */
+    struct edc_task *failed = edc_task_new("end-failed", "sess-end", "end-leader", "failed", edc_channel_adapter);
+    edc_task_group_add_task(group, failed);
+
+    /* A dependency that is interrupted takes its dependent down: BLOCKED, not FAILED. */
+    edc_task_add_dependency(blocked, source, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(source);
+    edc_task_mark_interrupted(source);
+    /* The user's own stop: STOPPED, not SKIPPED. */
+    edc_task_send_signal(stopped, TASK_SIGTERM);
+    /* A failure whose cause is knowable: the class must survive the save, or a resume
+     * cannot warn "this will fail the same way". */
+    edc_task_await_exec(failed);
+    edc_task_mark_failed(failed);
+    edc_task_set_fail(failed, EDC_FAIL_AUTH);
+
+    TEST("end: reason / blocker / the source's own reason are written");
+    cJSON *json = edc_state_serialize(session, sched);
+    CHECK(json != NULL, "serialize returns non-NULL");
+    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
+    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(json, "groups")) == 1, "the group is written");
+    CHECK(cJSON_GetArraySize(tasks_j) == 6, "six tasks are written");
+    for (int i = 0; i < cJSON_GetArraySize(tasks_j); i++)
+    {
+        cJSON *t = cJSON_GetArrayItem(tasks_j, i);
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(t, "task_id"));
+        if (!id)
+            continue;
+        const char *end = cJSON_GetStringValue(cJSON_GetObjectItem(t, "end"));
+        if (strcmp(id, "end-src") == 0)
+            CHECK_STREQ(end, "INTERRUPTED", "the interrupted source says INTERRUPTED");
+        else if (strcmp(id, "end-blocked") == 0)
+        {
+            CHECK_STREQ(end, "BLOCKED", "the cascaded dependent says BLOCKED");
+            CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t, "blocked_by")), "end-src", "the blocker is named");
+            CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t, "blocked_end")), "INTERRUPTED",
+                        "and what became of it");
+        }
+        else if (strcmp(id, "end-stopped") == 0)
+            CHECK_STREQ(end, "STOPPED", "the user's stop says STOPPED");
+        else if (strcmp(id, "end-running") == 0)
+            CHECK_STREQ(end, "NONE", "a task that was still running has no reason");
+        else if (strcmp(id, "end-failed") == 0)
+        {
+            CHECK_STREQ(end, "FAILED", "its own failure says FAILED");
+            CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(t, "fail")), "AUTH", "and the failure class rides along");
+        }
+    }
+
+    TEST("end: the reasons survive a roundtrip, and a running task lands as INTERRUPTED");
+    struct edc_session *session2 = edc_session_new(cfg, "sess-end", "Ends");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    install_resolver(sched2, session2);
+    CHECK(edc_state_deserialize(json, session2, sched2), "deserialize succeeds");
+
+    struct edc_task *r_src = find_task(session2, "end-src");
+    struct edc_task *r_blocked = find_task(session2, "end-blocked");
+    struct edc_task *r_stopped = find_task(session2, "end-stopped");
+    struct edc_task *r_running = find_task(session2, "end-running");
+    CHECK(r_src && r_src->end == EDC_END_INTERRUPTED, "INTERRUPTED preserved");
+    CHECK(r_blocked && r_blocked->end == EDC_END_BLOCKED, "BLOCKED preserved");
+    CHECK(r_blocked && r_blocked->blocked_by && strcmp(r_blocked->blocked_by, "end-src") == 0,
+          "the blocker id is preserved");
+    CHECK(r_blocked && r_blocked->blocked_end == EDC_END_INTERRUPTED, "and the source's reason");
+    CHECK(r_stopped && r_stopped->end == EDC_END_STOPPED, "STOPPED preserved");
+    CHECK(r_running && r_running->life == EDC_LIFE_INTERRUPTED, "a running task reloads as INTERRUPTED");
+    CHECK(r_running && r_running->end == EDC_END_INTERRUPTED, "and says why");
+    struct edc_task *r_failed = find_task(session2, "end-failed");
+    CHECK(r_failed && r_failed->end == EDC_END_FAILED, "FAILED preserved");
+    CHECK(r_failed && r_failed->fail == EDC_FAIL_AUTH, "and its failure class (v11)");
+
+    TEST("end: an older file without `end` maps conservatively (never BLOCKED)");
+    /* Same archive, v9: the reason keys are gone, exactly as an older binary wrote them. */
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(9));
+    for (int i = 0; i < cJSON_GetArraySize(tasks_j); i++)
+    {
+        cJSON *t = cJSON_GetArrayItem(tasks_j, i);
+        cJSON_DeleteItemFromObject(t, "end");
+        cJSON_DeleteItemFromObject(t, "blocked_by");
+        cJSON_DeleteItemFromObject(t, "blocked_end");
+        cJSON_DeleteItemFromObject(t, "fail"); /* v10 and older never wrote it */
+    }
+    struct edc_session *session3 = edc_session_new(cfg, "sess-end", "Ends");
+    struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
+    install_resolver(sched3, session3);
+    CHECK(edc_state_deserialize(json, session3, sched3), "v9 deserialize succeeds");
+
+    struct edc_task *o_blocked = find_task(session3, "end-blocked");
+    struct edc_task *o_stopped = find_task(session3, "end-stopped");
+    CHECK(o_blocked && o_blocked->end == EDC_END_FAILED,
+          "an ERROR row with no reason is FAILED -- never BLOCKED, so nothing is auto-released on a guess");
+    CHECK(o_blocked && o_blocked->blocked_by == NULL, "and no blocker is invented");
+    CHECK(o_stopped && o_stopped->end == EDC_END_STOPPED, "a CANCELLED row reads back as STOPPED");
+    struct edc_task *o_failed = find_task(session3, "end-failed");
+    CHECK(o_failed && o_failed->fail == EDC_FAIL_NONE,
+          "no failure class in an old archive -> NONE (a resume cannot claim to know)");
+
+    cJSON_Delete(json);
+    /* The fixtures are owned by their sessions here (freed with the process), as in the
+     * rest of this file. */
+}
+
 int main(void)
 {
     log_info("=== Phase 1: edc_state_serializer module tests ===");
@@ -2188,6 +2386,7 @@ int main(void)
     test_fork_snapshot_turns_flushed();
     test_fork_snapshot_turns_unflushed();
     test_dependency_graph();
+    test_unless_dep_roundtrip();
     test_complex_topology();
     test_turnless_shell_is_dropped();
     test_state_degradation();
@@ -2207,6 +2406,7 @@ int main(void)
     test_orphaned_group();
     test_message_provenance();
     test_fold_watermark();
+    test_task_end_roundtrip();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

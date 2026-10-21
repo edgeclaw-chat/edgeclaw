@@ -365,6 +365,18 @@ TUI Submit()
 
 ## 实现记录（2026-10-14）
 
+### 2026-10-19 补志：`!` 不再受 `shell_syntax` 开关管
+
+落实现时把 `!` 的拦截写成了 `if (shell_on && content[0] == '!')`，于是开关关闭（**默认**）时 `!git status`
+走的是消息路径 —— 和本文 §2「行首 `!` 即本地任务」的设计不符（设计稿里这层本来就没有开关）。
+用户 2026-10-19 确认：**开关管的是"进 shell 解析器的那套词汇表"（`+`、引号、算符），`!` 不在其中** ——
+`!cmd` 是一个单 token 派发，根本不进 parser，所以开关开或关必须是同一件事。
+
+改动：`edc_commands_handler` 的 `!` 分支删掉 `shell_on &&`（唯一的门；词法器里 OFF 模式不产出
+`TK_SIGIL_LOCALSHELL` 不影响它，因为 `!` 在到达 `edc_shell_execute` 之前就被截走了）。
+`tests/test_shell_switch.c` 加 pin（开关 OFF 时 `!cmd` 仍建 tool-only 任务、不发 LLM 请求）。
+文档同改：`edgeclaw.md`、`edgeclaw.1`、`input-syntax.zh.md`。
+
 ### 落地时与设计稿的三处偏差
 
 1. **`READY → AWAIT_TOOLS` 被状态机禁止**（`tests/test_edc_task.c:122` 明确钉住

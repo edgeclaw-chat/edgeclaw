@@ -556,6 +556,47 @@ void test_squeezed_sidebar_keeps_the_working_row_and_both_headings()
     PASS();
 }
 
+// The "Loading earlier history…" gate (TUIWindow::TickAnimations): the chip
+// reports a load landing above what the reader is looking at, so it belongs to the
+// reader who scrolled up past the bubbles painted at startup -- not to any upward
+// scroll. (The regression: one wheel notch flipped "not pinned to the tail" and the
+// chip popped up while the reader was still inside the 200 bubbles already drawn.)
+static void test_reading_backfilled_history_gate(void)
+{
+    TEST("backfill hint gate: only past the startup bubbles");
+    auto chat = std::make_shared<edc::ChatWidget>();
+    const auto now = ::time(nullptr);
+    for (int i = 0; i < 40; i++)
+        chat->AddMessage(std::make_shared<edc::Message>("msg " + std::to_string(i), now));
+    chat->ScrollToBottom();
+    (void)Draw(chat);
+
+    ASSERT(!chat->ReadingBackfilledHistory(), "the hint was up before anything was backfilled");
+
+    // The older history lands above the painted bubbles.
+    std::vector<std::shared_ptr<edc::Message>> older;
+    for (int i = 0; i < 20; i++)
+        older.push_back(std::make_shared<edc::Message>("old " + std::to_string(i), now));
+    chat->PrependMessages(std::move(older));
+    (void)Draw(chat);
+    ASSERT(!chat->ReadingBackfilledHistory(), "the hint was up while the reader sat at the tail");
+
+    // One wheel notch up: still inside the startup bubbles, nothing missing above.
+    ASSERT(chat->OnEvent(ftxui::Event::ArrowUp), "ArrowUp was not handled");
+    (void)Draw(chat);
+    ASSERT(!chat->ReadingBackfilledHistory(), "one notch up already raised the hint");
+
+    // Scrolling further up into the older history does raise it.
+    ScrollToTop(chat);
+    ASSERT(chat->ReadingBackfilledHistory(), "the reader reached the backfilled head and the hint stayed down");
+
+    // ...and coming back to the tail lowers it again.
+    chat->ScrollToBottom();
+    (void)Draw(chat);
+    ASSERT(!chat->ReadingBackfilledHistory(), "the hint stayed up after the reader returned to the tail");
+    PASS();
+}
+
 } // namespace
 
 int main()
@@ -570,6 +611,7 @@ int main()
     test_new_message_does_not_disturb_reader();
     test_chat_is_not_keyboard_focusable();
     test_pinned_section_header_stays_put();
+    test_reading_backfilled_history_gate();
     test_squeezed_sidebar_keeps_the_working_row_and_both_headings();
 
     printf("\n=== Results: %d/%d tests passed ===\n", tests_passed, tests_run);

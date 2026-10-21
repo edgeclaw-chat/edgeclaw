@@ -35,6 +35,10 @@ struct TaskInfo
 {
     std::string task_id;
     std::string state; /* scheduler state name, e.g. "COMPLETED" */
+    /* WHY it ended: "" / "NONE" (not over), "INTERRUPTED", "STOPPED", "FAILED",
+     * "BLOCKED", "SKIPPED". `state` alone cannot tell a stop from a `||` skip or from a
+     * dependency cascade -- the sidebar's marker shape is driven by this. */
+    std::string end;
     bool is_leader = false;
     bool is_active = false;
     std::string description;
@@ -42,6 +46,10 @@ struct TaskInfo
      * the task/group is selected it renders as the task's first user message
      * (see ChatWidget::ApplyFilter). */
     std::string input;
+    /* The folded-paste map of that input (a JSON object, "" when nothing was folded):
+     * |input| is the expanded text, so a display folds the bytes back to their
+     * placeholders with it (edc::FoldPastedText). */
+    std::string payload;
     std::vector<TodoItem> todos; /* the todo list this task holds (todowrite items) */
     /* Accumulated LLM token usage for this task (0 when none reported yet). */
     long long tokens_prompt = 0;

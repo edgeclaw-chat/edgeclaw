@@ -20,6 +20,20 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Platform capabilities: the CHOICES (is there a kernel sandbox, which shell to spawn,
+# how to start it) and the OPERATIONS whose implementation differs (mlock, signalling a
+# process group). Its own target rather than part of //src/common:common, because
+# edc_secret_lib needs it and common depends on edc_secret_lib -- putting it in common
+# would close a cycle.
+cc_library(
+    name = "edc_platform",
+    srcs = ["edc_platform.c"],
+    hdrs = ["edc_platform.h"],
+    includes = ["."],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "edc_error",
     srcs = ["edc_error.c"],
@@ -32,10 +46,22 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Path semantics (edc_path.h/.c) live in this target rather than their own: every one of
+# these files is built on them, and edc_path.c needs nothing they do not already pull in.
 cc_library(
     name = "edc_file_utils",
-    srcs = ["edc_file_utils.c"],
-    hdrs = ["edc_file_utils.h"],
+    srcs = [
+        "edc_file_index.c",
+        "edc_file_utils.c",
+        "edc_path.c",
+        "edc_path_guard.c",
+    ],
+    hdrs = [
+        "edc_file_index.h",
+        "edc_file_utils.h",
+        "edc_path.h",
+        "edc_path_guard.h",
+    ],
     includes = ["."],
     deps = [
         "//src/common:edc_compat",
@@ -68,6 +94,7 @@ cc_library(
     hdrs = ["edc_datetime_utils.h"],
     includes = ["."],
     deps = [
+        "//src/common:edc_compat",
         "@sds//:sds",
     ],
     linkstatic = True,
@@ -93,6 +120,7 @@ cc_library(
     deps = [
         "//src/common:edc_error",
         "//src/common:edc_file_utils",
+        "//src/common:edc_platform",
         "//src/common:mbedtls_config",
         "@log.c//:log.c",
         "@mbedtls//:mbedtls",
@@ -122,24 +150,32 @@ cc_library(
     name = "common",
     srcs = [
         ":workspace_embedded.c",
+        "//:docs_embedded_c",
         "//:models_catalog_embedded_c",
         "edc_config.c",
         "edc_containers.c",
+        "edc_crontab_jobs.c",
         "edc_endpoint_probe.c",
         "edc_https_client.c",
         "edc_init_env.c",
         "edc_log.c",
+        "edc_payload.c",
     ],
     hdrs = [
+        "edc_bundled_docs.h",
+        "edc_bundled_files.h",
         "edc_bundled_workspace.h",
         "edc_bundled_models_catalog.h",
         "edc_compat.h",
         "edc_config.h",
         "edc_containers.h",
+        "edc_crontab_jobs.h",
         "edc_endpoint_probe.h",
         "edc_https_client.h",
         "edc_init_env.h",
         "edc_log.h",
+        "edc_msg_part.h",
+        "edc_payload.h",
         "edc_string.h",
     ],
     includes = ["."],
@@ -147,6 +183,7 @@ cc_library(
         "//src/common:edc_datetime_utils",
         "//src/common:edc_error",
         "//src/common:edc_file_utils",
+        "//src/common:edc_platform",
         "//src/common:edc_secret_lib",
         "//src/common:edc_string_utils",
         "//src/common:mbedtls_config",

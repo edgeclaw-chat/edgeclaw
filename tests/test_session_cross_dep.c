@@ -179,14 +179,14 @@ int main(void)
     edc_scheduler_create_group(sched, sb, bt2);
     edc_session_set_active_task(sb, bt2);
     /* 新模型: task 创建时就带着它的 input —— 没装 turn 的任务落盘时会被丢掉
-     * (docs/retire-waiting-input.md §4)。装上 input 停到 SUSPENDED, 它才会出现在
+     * 装上 input 停到 INTERRUPTED, 它才会出现在
      * B 的 session.json 里; 本用例要验的是"属主 session 未激活时靠磁盘反解 task id"。 */
     {
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(bt2->task_id);
         edc_turn_add_user_message(turn, "b2-task input");
         bt2->active_turn = turn;
-        edc_task_mark_suspended(bt2);
+        edc_task_mark_interrupted(bt2);
     }
     sds bt2_id = sdsnew(bt2->task_id);
     CHECK(edc_session_save_state(sb, sched), "B state saved to disk");

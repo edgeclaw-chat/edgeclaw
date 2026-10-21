@@ -4,6 +4,7 @@
 #include "edc_actor.h"
 #include "edc_config.h"
 #include "edc_executor.h"
+#include "edc_msg_part.h" /* struct edc_msg_part：pass 追加的消息 */
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "sds.h"
@@ -46,6 +47,9 @@ typedef bool (*edc_scheduler_command_fn)(struct edc_scheduler *sched, struct edc
                                          const struct edc_sched_input *input);
 /** Answer to a pull: the serialized tree the frontend asked for. */
 typedef void (*edc_scheduler_snapshot_fn)(struct edc_scheduler *sched, sds serialized);
+/** Answer to a "payload by mid" pull: |mid| names the user message, |payload| is its
+ *  folded-paste map as JSON ("" = that message is gone). Never rendered as chat text. */
+typedef void (*edc_scheduler_message_payload_fn)(struct edc_scheduler *sched, const char *mid, sds payload);
 /** "The tree of session X changed" -- an event carrying no tree; the frontend
  *  pulls what it displays. `reason` is trace-only. */
 typedef void (*edc_scheduler_snapshot_changed_fn)(struct edc_scheduler *sched, const char *session_id,
@@ -106,6 +110,7 @@ struct edc_scheduler
     edc_scheduler_abort_tools_fn abort_tools;
     edc_scheduler_command_fn handle_command;
     edc_scheduler_snapshot_fn snapshot_reply;
+    edc_scheduler_message_payload_fn message_payload_reply;
     edc_scheduler_snapshot_changed_fn snapshot_changed;
 
     /* Raw text of the input being handled (not owned, valid during the message);
@@ -142,6 +147,19 @@ extern bool edc_scheduler_task_has_unresolved_deps(struct edc_scheduler *sched, 
 
 /** Source id of |task|'s first unresolved cross-session dep, or NULL. */
 extern const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task);
+
+/** Walk the pending (unresolvable) edges of |task_id|: pass NULL to start, then the
+ *  returned node as |prev|. Read-only, for `/task dep`'s listing. */
+extern const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched,
+                                                                   const char *task_id,
+                                                                   const struct edc_pending_dep *prev);
+
+/** Forget the unresolved edge |target| -> |source| (or every one of |target|'s when
+ *  |source_task_id| is NULL): the answer to "that session is gone for good". The caller
+ *  re-decides the target -- there is no edge row to void here (the source task was never
+ *  loaded), only this constraint. Returns how many were removed. */
+extern int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
+                                          const char *source_task_id);
 
 extern struct edc_scheduler *edc_scheduler_new(struct edc_config *config);
 extern void edc_scheduler_free(struct edc_scheduler *sched);
@@ -225,6 +243,15 @@ struct edc_task_spec
     /* The turn this task runs on. NULL attaches none (system tasks, and any caller
      * that builds its own turn); an empty string still attaches an empty turn. */
     const char *input;
+    /* Extra messages the model sees next to |input|, in order (an @file's contents, and
+     * whatever the next pass adds). Borrowed, not owned: the caller keeps the AST alive
+     * for the duration of creation, and the turn copies each content.
+     *
+     * A LIST, not one field per kind: a new pass appends to it, and creation just loops.
+     * Kept apart from |input| on purpose -- the request phase expands {{…}} in USER
+     * messages, so an expansion's bytes must never share a message with them. */
+    const struct edc_msg_part *parts;
+    int nparts;
 
     edc_task_place place;
     const char *group_id; /* EDC_TASK_PLACE_GROUP */
@@ -317,15 +344,8 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
  *  member, or NULL when there is no foreground group or all of its members have
  *  finished. Deliberately NOT `session->active_task` -- that one is the screen focus
  *  and may sit on a task that already finished, which makes it a poor default for
- *  "/task stop", "/task status" and `$$`. */
+ *  "/task stop", "/task status" and `{{SELF}}`. */
 extern struct edc_task *edc_scheduler_current_task(struct edc_session *session);
-
-/** Same as edc_scheduler_current_task, but the last member that is not COMPLETED --
- *  what `/task resume` can pick up. INTERRUPTED, SUSPENDED, ERROR and CANCELLED can all
- *  be resumed
- *  (only COMPLETED is final), so they are candidates where the plain "in front"
- *  derivation would skip them. */
-extern struct edc_task *edc_scheduler_resumable_task(struct edc_session *session);
 
 /** The foreground group is a property of the session, not the scheduler. */
 extern void edc_scheduler_set_foreground(struct edc_session *session, struct edc_task_group *group);
@@ -365,9 +385,8 @@ extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, st
 extern void edc_scheduler_send_signal_to_all(struct edc_scheduler *sched, struct edc_session *session,
                                              edc_task_signal sig);
 
-/** Resume a stopped task (interrupted / suspended / failed / cancelled): dependency gate,
- *  then drive it
- *  through the executor's START (the same path a READY task takes). */
+/** Resume a stopped task (interrupted / failed / cancelled): dependency gate, then drive
+ *  it through the executor's START (the same path a READY task takes). */
 extern void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *task);
 
 /** Drive every runnable task (READY/ALIVE + turn + deps satisfied). Called at the

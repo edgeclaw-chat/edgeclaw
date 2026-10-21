@@ -1,4 +1,6 @@
 #include "edc_channel_actor.h"
+
+#include "edc_payload.h"
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -91,6 +93,12 @@ void edc_channel_message_free(struct edc_channel_message *msg)
         sdsfree(msg->task_id);
     if (msg->session_id)
         sdsfree(msg->session_id);
+    if (msg->payload)
+        edc_payload_free(msg->payload);
+    if (msg->mid)
+        sdsfree(msg->mid);
+    if (msg->task_desc)
+        sdsfree(msg->task_desc);
     sdsfree(msg->content);
     free(msg);
 }
@@ -272,6 +280,21 @@ static struct edc_reply_to edc_channel_to(struct edc_scheduler *sched, edc_chann
     return to;
 }
 
+/* Like edc_channel_publish, plus the header: the payload reply names the mid it answers. */
+void edc_channel_publish_keyed(struct edc_reply_to to, const char *header, sds content)
+{
+    if (!to.channel_actor)
+    {
+        if (content)
+            sdsfree(content);
+        return;
+    }
+    struct edc_channel_message *msg = edc_channel_message_new(edc_channel_adapter, to.type, content);
+    if (header && *header)
+        msg->header = sdsnew(header);
+    edc_channel_send_msg(to, msg, NULL);
+}
+
 static void edc_channel_cb_send_reply(struct edc_scheduler *sched, struct edc_task *task, const char *content,
                                       edc_channel_message_type message_type, void *request_id)
 {
@@ -298,6 +321,11 @@ static void edc_channel_cb_snapshot_changed(struct edc_scheduler *sched, const c
                         sdsnew(reason ? reason : ""));
 }
 
+static void edc_channel_cb_message_payload(struct edc_scheduler *sched, const char *mid, sds payload)
+{
+    edc_channel_publish_keyed(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE), mid, payload);
+}
+
 void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched)
 {
     if (!actor || !sched)
@@ -308,4 +336,5 @@ void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *
     sched->send_tool_message = edc_channel_cb_send_tool_message;
     sched->snapshot_reply = edc_channel_cb_snapshot_reply;
     sched->snapshot_changed = edc_channel_cb_snapshot_changed;
+    sched->message_payload_reply = edc_channel_cb_message_payload;
 }

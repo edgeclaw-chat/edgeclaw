@@ -1,6 +1,7 @@
 ﻿#include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_datetime_utils.h"
@@ -88,7 +89,7 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
         candidate = workdir[1] ? edc_path_join(home, workdir + 2, NULL) : sdsnew(home);
         sdsfree(home);
     }
-    else if (workdir[0] == '/')
+    else if (edc_path_is_absolute(workdir))
     {
         candidate = sdsnew(workdir);
     }
@@ -126,10 +127,13 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
         return NULL;
     }
 
-    sds out = sdsnew(resolved);
+    /* Normal form at the boundary: everything downstream (the tools' path anchoring,
+     * the sandbox lists, the prompt) then sees one spelling of the same directory --
+     * no trailing separator, no mixed ones. */
+    sds out = edc_path_norm(resolved);
     free(resolved);
     sdsfree(candidate);
-    return out;
+    return out ? out : sdsnew(".");
 }
 
 struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id, const char *name,
@@ -308,8 +312,7 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
      * missed state-machine edit -- then warn, do not silently drop.
      * WAITING_INPUT is retired (old name = READY), always 0, kept only for order. */
     static const char *const k_state_order[] = {"IDLE",        "WAITING_DEPS", "WAITING_INPUT", "LLM_PROCESSING",
-                                                "TOOL_CALLING", "SUSPENDED",    "COMPLETED",     "CANCELLED",
-                                                "ERROR"};
+                                                "TOOL_CALLING", "COMPLETED",     "CANCELLED",     "ERROR"};
     enum
     {
         k_state_order_n = sizeof(k_state_order) / sizeof(k_state_order[0])
@@ -447,13 +450,19 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
         return false;
     }
 
-    /* atomic rename */
-    if (rename(tmp, path) != 0)
+    /* atomic replace (POSIX rename / Windows MoveFileEx REPLACE_EXISTING) */
     {
-        log_error("save_state: rename %s -> %s failed: %s", tmp, path, strerror(errno));
-        sdsfree(path);
-        sdsfree(tmp);
-        return false;
+        EdcError *rerr = NULL;
+        bool renamed = edc_file_rename_replace(tmp, path, &rerr);
+        if (!renamed)
+        {
+            log_error("save_state: %s", rerr ? rerr->message : "rename failed");
+            if (rerr)
+                edc_error_free(rerr);
+            sdsfree(path);
+            sdsfree(tmp);
+            return false;
+        }
     }
 
     sdsfree(path);
@@ -469,10 +478,13 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
 static void session_quarantine_state(struct edc_session *session, const char *path, const char *why)
 {
     sds broken = edc_path_join(session->history_dir, "session.json.broken", NULL);
-    if (rename(path, broken) == 0)
+    EdcError *rerr = NULL;
+    if (edc_file_rename_replace(path, broken, &rerr))
         log_warn("load_state: quarantined %s -> %s (%s)", path, broken, why);
     else
-        log_error("load_state: cannot quarantine %s (%s): %s", path, why, strerror(errno));
+        log_error("load_state: cannot quarantine %s (%s): %s", path, why, rerr ? rerr->message : "rename failed");
+    if (rerr)
+        edc_error_free(rerr);
     sdsfree(broken);
     /* Whether or not the rename worked, this session's slot is no longer this
      * process's responsibility: on failure the original file is still at path and a

@@ -17,7 +17,9 @@
 #include "edc_tui_window.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
+#include <chrono>
 #include <iostream>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -407,6 +409,76 @@ void TestRowIsOneLineTall()
     Check(!overflow, "nothing is drawn below the first line");
 }
 
+// The elapsed label: a compact duration, negative clamped to zero.
+void TestElapsedLabel()
+{
+    std::cout << "the elapsed label is a compact duration\n";
+    using V = edc::ui::WorkingIndicatorView;
+    Check(V::ElapsedLabel(0) == "0s", "0ms -> 0s");
+    Check(V::ElapsedLabel(45000) == "45s", "45s");
+    Check(V::ElapsedLabel(192000) == "3m12s", "3m12s");
+    Check(V::ElapsedLabel(3660000) == "1h01m", "1h01m");
+    Check(V::ElapsedLabel(-1) == "0s", "a negative elapsed clamps to 0s");
+}
+
+// A clock the test can advance by hand.
+struct TestClock : public edc::port::IClock
+{
+    TimePoint t{};
+    TimePoint now() const override
+    {
+        return t;
+    }
+};
+
+// The row the view actually draws: the bar, then the elapsed label, then the stop hint.
+void TestViewRowShowsElapsedAndStopHint()
+{
+    std::cout << "the working row carries the elapsed label and the stop hint\n";
+    auto clock = std::make_shared<TestClock>();
+    edc::ui::WorkingIndicatorView view(clock);
+    view.Restart();
+    clock->t += std::chrono::milliseconds(192000);
+
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kScreenWidth), ::ftxui::Dimension::Fixed(1));
+    ::ftxui::Render(screen, view.Render());
+    const std::string row = screen.ToString();
+    Check(row.find("3m12s") != std::string::npos, "the elapsed duration is drawn");
+    Check(row.find("Esc to stop") != std::string::npos, "the stop hint is drawn");
+}
+
+// The same transient hint the footer shows (this row replaces the footer while busy).
+void TestViewRowShowsTheTransientHint()
+{
+    std::cout << "the working row can carry the transient hint too\n";
+    auto clock = std::make_shared<TestClock>();
+    edc::ui::WorkingIndicatorView view(clock);
+    view.Restart();
+    view.SetHint("Ctrl+C again to quit");
+
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(60), ::ftxui::Dimension::Fixed(1));
+    ::ftxui::Render(screen, view.Render());
+
+    // Read the row off the cells, one character per column, so a byte offset in a
+    // multi-byte bar glyph cannot shift the index (ToString() is not column-aligned
+    // either).
+    std::string line;
+    for (int x = 0; x < 60; x++)
+    {
+        const std::string &ch = screen.CellAt(x, 0).character;
+        line += (ch.size() == 1) ? ch : "."; // a bar glyph (multi-byte) -> one column
+    }
+    const size_t at = line.find("Ctrl+C again to quit");
+    Check(at != std::string::npos, "the hint is drawn");
+    Check(line.find("Esc to stop") != std::string::npos, "the stop hint survives next to it");
+    if (at != std::string::npos)
+    {
+        const ::ftxui::Cell &c = screen.CellAt(static_cast<int>(at), 0);
+        Check(!c.bold && c.foreground_color == edc::style::palette().text_dim,
+              "the hint is dim, not highlighted");
+    }
+}
+
 void TestSlidesBetweenCells()
 {
     std::cout << "the run slides between cells instead of snapping\n";
@@ -443,6 +515,9 @@ int main()
     TestRowHasNoLabel();
     TestNegativeElapsedIsClamped();
     TestRowIsOneLineTall();
+    TestElapsedLabel();
+    TestViewRowShowsElapsedAndStopHint();
+    TestViewRowShowsTheTransientHint();
 
     if (g_failures == 0)
     {

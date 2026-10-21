@@ -84,6 +84,24 @@ bool SetupHome(std::string *out_home)
             R"("model":"harness-model","api_key":"harness-plaintext-key","onboarded":true})";
     conf.close();
 
+    // 一个 prompt 模板：给补全弹层的 `/prompt <name>` 词表用（否则那份词表是空的）。
+    const std::string prompts = dir + "/workspace/prompts";
+    std::filesystem::create_directories(prompts);
+    std::ofstream pf(prompts + "/review.md");
+    if (!pf)
+        return false;
+    pf << "---\ndescription: review the staged changes\n---\nReview the staged changes.\n";
+    pf.close();
+
+    // 一个 skill：给 `/skill <name>` 的词表用（与上面的模板同一套路）。
+    const std::string skill = dir + "/workspace/skills/demo";
+    std::filesystem::create_directories(skill);
+    std::ofstream sf(skill + "/SKILL.md");
+    if (!sf)
+        return false;
+    sf << "---\ndescription: a harness skill\n---\nbody\n";
+    sf.close();
+
     setenv("HOME", home.c_str(), 1);
     setenv("EDGECLAW_MASTER_KEY", "harness-master-key", 1);
     setenv("EDGECLAW_TUI_NO_PULL", "1", 1); /* 接缝 2：构造期/回调里都不拉树 */
@@ -169,6 +187,48 @@ std::string SnapJson(const char *session_id, const char *task_desc)
     json += task_desc;
     json += R"(","tokens_prompt":1,"tokens_completion":2,"tokens_total":3,"tokens_cached":0}]}]})";
     return json;
+}
+
+// 同 SnapJson，但把前台 active task 的状态设成 |state|（用来驱动工作态：只有
+// 处理态才让 working_ 立起来）。
+std::string SnapJsonState(const char *session_id, const char *task_desc, const char *state)
+{
+    std::string json = R"({"session_id":")";
+    json += session_id;
+    json += R"(","session_name":"harness","message_count":1,"created_at":"2026-09-16 05:00:00","groups":[)"
+            R"({"id":"1","kind":"user","member_count":1,"msg_count":1,"orphaned":false,"fg":true,)"
+            R"("tokens_total":3,"ctx_tokens":45000,"tasks":[{"id":"4242","state":")";
+    json += state;
+    json += R"(","leader":true,"active":true,"desc":")";
+    json += task_desc;
+    json += R"(","tokens_prompt":1,"tokens_completion":2,"tokens_total":3,"tokens_cached":0}]}]})";
+    return json;
+}
+
+// 同 SnapJsonState，但带上 end —— 侧栏字形与启动提示都靠它。
+std::string SnapJsonEnd(const char *session_id, const char *task_id, const char *state, const char *end)
+{
+    std::string json = R"({"session_id":")";
+    json += session_id;
+    json += R"(","session_name":"harness","message_count":1,"created_at":"2026-09-16 05:00:00","groups":[)"
+            R"({"id":"1","kind":"user","member_count":1,"msg_count":1,"orphaned":false,"fg":true,)"
+            R"("tokens_total":3,"ctx_tokens":45000,"tasks":[{"id":")";
+    json += task_id;
+    json += R"(","state":")";
+    json += state;
+    json += R"(","end":")";
+    json += end;
+    json += R"(","leader":true,"active":false,"desc":"hint task","tokens_prompt":1,"tokens_completion":2,)"
+            R"("tokens_total":3,"tokens_cached":0}]}]})";
+    return json;
+}
+
+int CountOf(const std::string &hay, const std::string &needle)
+{
+    int n = 0;
+    for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + needle.size()))
+        n++;
+    return n;
 }
 
 // 让窗口把 |session_id| 当成"正在显示的那一棵" —— 走的是生产路径的同一条：
@@ -393,6 +453,395 @@ void TestTaskHistoryPayloadBecomesBubbles(edc::TUIWindow &win)
     Check(Has(frame, "LIVE_AFTER_ESC_MARKER"), "Esc 之后实时产出又上屏");
 }
 
+// 帧里包含 |needle| 的那一行的行号（找不到返回 -1）。
+int RowOf(const std::string &frame, const std::string &needle)
+{
+    int row = 0;
+    size_t pos = 0;
+    while (pos <= frame.size())
+    {
+        const size_t end = frame.find('\n', pos);
+        const std::string line = end == std::string::npos ? frame.substr(pos) : frame.substr(pos, end - pos);
+        if (line.find(needle) != std::string::npos)
+            return row;
+        if (end == std::string::npos)
+            break;
+        row++;
+        pos = end + 1;
+    }
+    return -1;
+}
+
+// |row| 那一行的内容（超界返回空串）。
+std::string LineOf(const std::string &frame, int row)
+{
+    if (row < 0)
+        return "";
+    int r = 0;
+    size_t pos = 0;
+    while (pos <= frame.size())
+    {
+        const size_t end = frame.find('\n', pos);
+        if (r == row)
+            return end == std::string::npos ? frame.substr(pos) : frame.substr(pos, end - pos);
+        if (end == std::string::npos)
+            break;
+        r++;
+        pos = end + 1;
+    }
+    return "";
+}
+
+// ── 输入框的命令补全弹层 ────────────────────────────────────────────────────
+// 打 "/" 弹家族、"ta" 收敛、Tab 补全、Esc 关掉；Enter 默认仍是 Submit，只在上下浏览过
+// 列表之后变成"选中"（见下面 TestPaletteEnterPicks）。
+void TestCommandPalette(edc::TUIWindow &win)
+{
+    std::cout << "输入框补全弹层\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+
+    // 起点：输入框是空的（上一条输入用例提交后清空了它）。
+    type("/");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/task") && Has(f, "/session") && Has(f, "/group"), "裸 / 先列三个容器家族");
+        Check(Has(f, "Tab complete"), "带了提示行");
+
+        // 面板是输入框**上方**的一块，而且在输入框的**上分割线之上**（中间正好隔着那条
+        // 规则线）—— 不然它会看起来像输入框长高了。
+        const int input_row = RowOf(f, "❯");
+        const int hint_row = RowOf(f, "Tab complete");
+        Check(input_row >= 0 && hint_row >= 0 && hint_row < input_row, "补全列表在输入框上方");
+        Check(input_row - hint_row == 2 && LineOf(f, input_row - 1).find("─") != std::string::npos,
+              "列表在上分割线之上（两者之间隔着规则线）");
+    }
+
+    // 唯一命中一个家族（"/ta" -> /task）时直接列出它的子命令 —— 家族那一行只是把名字和
+    // 简介再念一遍，没有用处。
+    type("ta");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/task new"), "唯一命中一个家族 -> 直接列出子命令");
+        Check(!Has(f, "create, inspect and control tasks"), "家族行的简介不再单独占一行");
+        Check(!Has(f, "/session"), "无关家族被过滤");
+
+        // 同一件事在 10 行子的列表上也成立（面板最多 8 行 + 提示行）。
+        const int hint_row = RowOf(f, "Tab complete");
+        const int prompt_row = RowOf(f, "❯");
+        Check(hint_row >= 0 && prompt_row >= 0 && prompt_row - hint_row == 2 &&
+                  LineOf(f, prompt_row - 1).find("─") != std::string::npos,
+              "子命令列表在上分割线之上");
+    }
+
+    // Tab 一次只补一个词：'/ta' -> '/task '（列表继续列出子命令）。
+    win.OnEvent(::ftxui::Event::Tab);
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "❯ /task "), "Tab 补成了一个词：'/task '");
+        Check(Has(f, "Tab complete") && Has(f, "/task new"), "列表还在，继续列子命令");
+    }
+    // 再按一次才落到高亮那一行的下一个词；此时已无可补 -> 同一次 Tab 收起。
+    win.OnEvent(::ftxui::Event::Tab);
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "❯ /task new"), "再一次 Tab 取高亮行的下一个词");
+        Check(!Has(f, "Tab complete"), "无可再补 -> 同一次 Tab 收起列表");
+    }
+
+    // Esc 仍然只是关列表、内容留着：重新开一次验证。
+    win.OnEvent(::ftxui::Event::Return); // 提交上一条，输入清空
+    type("/task");
+    Check(Has(FrameOf(win), "Tab complete"), "重新敲 /task 又开出子命令列表");
+    win.OnEvent(::ftxui::Event::Escape);
+    {
+        const std::string f = FrameOf(win);
+        Check(!Has(f, "Tab complete"), "Esc 关掉弹层");
+        Check(Has(f, "/task"), "输入内容留着");
+    }
+
+    // Tab 补到"最后一个"时，同一次 Tab 就是"就这个了"：列表当即收起，不再多按一次。
+    // 先提交上一条把输入清空，再从干净状态走一遍。
+    win.OnEvent(::ftxui::Event::Return);
+    type("/model");
+    win.OnEvent(::ftxui::Event::Tab); // -> "/model "
+    win.OnEvent(::ftxui::Event::Tab); // -> "/model search "，已无可补 -> 同一次即收起
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/model search"), "子命令 search 是独立的表行，能进补全列表");
+        Check(Has(f, "❯ /model search "), "Tab 补到了 '/model search '");
+        Check(!Has(f, "Tab complete"), "补到最后一个即收起（不再多按一次）");
+    }
+
+    // 收尾：把 '/model ' 提交掉，别把脏输入留给后面的用例。
+    win.OnEvent(::ftxui::Event::Return);
+
+    // "/session memo" 的子命令是独立的表行，所以它们能进补全列表并被 Tab 补上（以前它们挤
+    // 在同一行的参数形状 "[show [id] | search <q> | ...]" 里，按整行前缀永远匹配不到）。
+    type("/session memo ");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/session memo show") && Has(f, "/session memo search") &&
+                  Has(f, "/session memo curate") && Has(f, "/session memo compact"),
+              "/session memo 的子命令进入补全列表");
+    }
+    win.OnEvent(::ftxui::Event::Tab);
+    Check(Has(FrameOf(win), "❯ /session memo show"), "Tab 补到 '/session memo show '");
+    win.OnEvent(::ftxui::Event::Escape);
+    win.OnEvent(::ftxui::Event::Return); // 清空，别把脏输入留给后面的用例
+
+    // `/prompt <name>`：它的参数词表来自 workspace/prompts/*.md 的模板名（harness 预置了
+    // review.md）。模板名**从命令词打完那一刻**就在列表里（不必先打空格）。
+    type("/prompt");
+    Check(Has(FrameOf(win), "/prompt review"), "只打到 /prompt（还没空格）模板名已在列");
+    Check(!Has(FrameOf(win), "/prompt <name>"), "占位行（/prompt <name> …）不再是候选");
+    win.OnEvent(::ftxui::Event::Tab); // 先把命令词补完 -> "/prompt "
+    Check(Has(FrameOf(win), "❯ /prompt "), "Tab 先补完命令词");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/prompt review"), "空格之后模板名仍在");
+        Check(Has(f, "review the staged changes"), "带上模板自己的 description");
+    }
+    win.OnEvent(::ftxui::Event::Tab);
+    Check(Has(FrameOf(win), "❯ /prompt review "), "Tab 补全到模板名");
+    win.OnEvent(::ftxui::Event::Return); // 收尾清空
+
+    // `/skill <name>` 走同一条路：词表来自 workspace/skills/*/SKILL.md 的技能名（harness
+    // 预置了 demo）。
+    type("/skill");
+    Check(Has(FrameOf(win), "/skill demo"), "只打到 /skill（还没空格）技能名已在列");
+    Check(!Has(FrameOf(win), "/skill <name>"), "占位行（/skill <name> …）不再是候选");
+    win.OnEvent(::ftxui::Event::Tab); // 先把命令词补完 -> "/skill "
+    Check(Has(FrameOf(win), "❯ /skill "), "Tab 先补完命令词");
+    {
+        const std::string f = FrameOf(win);
+        Check(Has(f, "/skill demo"), "空格之后技能名仍在");
+        Check(Has(f, "a harness skill"), "带上技能自己的 description");
+    }
+    win.OnEvent(::ftxui::Event::Tab);
+    Check(Has(FrameOf(win), "❯ /skill demo "), "Tab 补全到技能名");
+    win.OnEvent(::ftxui::Event::Return); // 收尾清空
+}
+// 上下浏览过补全列表之后，Enter 是"就选这条"，不是发送：光标在列表里指着某一行，按下去
+// 显然不是要把半截命令发出去。没浏览过（只是打字）时 Enter 照旧发送，`/help⏎` 那条老路不变。
+void TestPaletteEnterPicks(edc::TUIWindow &win)
+{
+    std::cout << "补全列表里 Enter 是选中而不是发送\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+    // 输入行整行文本（行尾填充空格去掉）。
+    auto input_line = [&](const std::string &f) {
+        std::string line = LineOf(f, RowOf(f, "❯"));
+        // 行首是固定的模式槽（"cmd" / "sh" / "!sh" / "err"，普通消息是 3 个空格）。
+        // 这里只比从 "❯" 起的部分 —— 槽的可见性由 TestInputModeTag 单独钉。
+        const size_t at = line.find("❯");
+        if (at != std::string::npos)
+            line = line.substr(at);
+        while (!line.empty() && line.back() == ' ')
+            line.pop_back();
+        return line;
+    };
+
+    const std::string empty_line = input_line(FrameOf(win));
+
+    // 1) 只打字、没上下浏览：Enter 仍然是发送（输入清空、弹层收起）。
+    type("/model");
+    Check(Has(FrameOf(win), "Tab complete"), "敲 /model 弹出列表");
+    win.OnEvent(::ftxui::Event::Return);
+    Check(input_line(FrameOf(win)) == empty_line, "没浏览时 Enter 仍然发送（输入被清空）");
+
+    // 2) 基准：'↓' 走一行后按 Tab，取到高亮那一行的补全结果。
+    type("/task ");
+    Check(Has(FrameOf(win), "Tab complete"), "敲 '/task ' 弹出子命令列表");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    win.OnEvent(::ftxui::Event::Tab);
+    const std::string picked_by_tab = input_line(FrameOf(win));
+    Check(picked_by_tab.size() > std::string("❯ /task").size(), "Tab 落到了高亮那一行（实际 '" + picked_by_tab + "'）");
+    win.OnEvent(::ftxui::Event::Return); // 清空，准备第二轮
+
+    // 3) 同样 '↓' 走一行，这次按 Enter：结果与 Tab 完全相同，而且**没有发送**。
+    type("/task ");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    win.OnEvent(::ftxui::Event::Return);
+    const std::string picked_by_enter = input_line(FrameOf(win));
+    Check(picked_by_enter == picked_by_tab,
+          "浏览后 Enter 与 Tab 选中同一行（Enter '" + picked_by_enter + "' vs Tab '" + picked_by_tab + "'）");
+    Check(picked_by_enter != empty_line, "而且没有发送：输入框没被清空");
+
+    // 4) 选中改变了文本，"走列表"状态清零 —— 再按一次 Enter 才是发送。
+    win.OnEvent(::ftxui::Event::Return);
+    Check(input_line(FrameOf(win)) == empty_line, "再按一次 Enter 才发送（输入被清空）");
+
+    // 5) 正在打的词还能再长的时候（'/tas' 的词是 '/task'），Enter 不能只补那个词：上下
+    //    浏览过之后 Enter 采纳的是高亮那一行整条。这里落到第二行，结果是 '/task ' 加一个词。
+    type("/tas");
+    Check(Has(FrameOf(win), "Tab complete"), "敲 /tas 弹出 task 的子命令");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    win.OnEvent(::ftxui::Event::Return);
+    const std::string picked_after_growing = input_line(FrameOf(win));
+    Check(picked_after_growing.size() > std::string("❯ /task ").size(),
+          "Enter 采纳整行，不是只补一个词（实际 '" + picked_after_growing + "'）");
+    win.OnEvent(::ftxui::Event::Return); // 清空
+}
+
+// 回翻历史时补全弹层不能抢走上下键。历史里只要有一条以 '/' 开头的条目（`/task new` 这种
+// 太常见了），回翻到它时弹层就会弹出来并接管 ArrowUp/ArrowDown —— 于是历史就地卡死在
+// 那条上，再往上是"在列表里移动"而不是"回翻更早的一条"。
+void TestHistoryRecallKeepsArrows(edc::TUIWindow &win)
+{
+    std::cout << "历史回翻不被补全弹层抢键\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+
+    // 输入行整行文本（行尾填充空格去掉）。必须整行比：`❯ /task` 是 `❯ /task new` 的前缀,
+    // 用子串判定会让"根本没回翻"也通过。
+    auto input_line = [&](const std::string &f) {
+        std::string line = LineOf(f, RowOf(f, "❯"));
+        // 行首是固定的模式槽（"cmd" / "sh" / "!sh" / "err"，普通消息是 3 个空格）。
+        // 这里只比从 "❯" 起的部分 —— 槽的可见性由 TestInputModeTag 单独钉。
+        const size_t at = line.find("❯");
+        if (at != std::string::npos)
+            line = line.substr(at);
+        while (!line.empty() && line.back() == ' ')
+            line.pop_back();
+        return line;
+    };
+
+    // 两条历史：较新的 `/task new`（本来会开弹层的那种），较旧的 `/model`（两者前缀无关，
+    // 回翻了哪一条一眼能分辨）。
+    type("/model");
+    win.OnEvent(::ftxui::Event::Return);
+    type("/task new");
+    win.OnEvent(::ftxui::Event::Return);
+    Check(!Has(FrameOf(win), "Tab complete"), "提交后输入框清空，弹层收着");
+    // 空草稿时输入行长什么样（带 dim placeholder 提示语）：下面"回到草稿"就是回到它。
+    const std::string empty_line = input_line(FrameOf(win));
+
+    // 空输入框 -> ArrowUp 回翻到最近一条。
+    win.OnEvent(::ftxui::Event::ArrowUp);
+    {
+        const std::string f = FrameOf(win);
+        Check(input_line(f) == "❯ /task new", "上键回翻到最近一条 /task new（实际 '" + input_line(f) + "'）");
+        Check(!Has(f, "Tab complete"), "回翻出来的命令不算在打字：弹层不弹");
+    }
+
+    // 关键：这一次上键必须继续走历史（以前被弹层吃掉了，历史就停在这儿）。
+    win.OnEvent(::ftxui::Event::ArrowUp);
+    {
+        const std::string f = FrameOf(win);
+        Check(input_line(f) == "❯ /model", "上键继续回翻更早的一条（实际 '" + input_line(f) + "'）");
+        Check(!Has(f, "Tab complete"), "回翻期间弹层一直收着");
+    }
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    Check(input_line(FrameOf(win)) == "❯ /task new", "下键回到较新的一条");
+    win.OnEvent(::ftxui::Event::ArrowDown);
+    Check(input_line(FrameOf(win)) == empty_line,
+          "再下键越过最新一条：回到空草稿（实际 '" + input_line(FrameOf(win)) + "'）");
+    Check(!Has(FrameOf(win), "Tab complete"), "草稿是空的，弹层也不该弹");
+
+    // 一开始编辑就离开历史态：弹层按正常规则回来。
+    win.OnEvent(::ftxui::Event::ArrowUp); // 重新回翻 /task new
+    win.OnEvent(::ftxui::Event::Backspace);
+    {
+        const std::string f = FrameOf(win);
+        Check(input_line(f) == "❯ /task ne", "退格编辑了回翻出来的那一行（实际 '" + input_line(f) + "'）");
+        Check(Has(f, "Tab complete") && Has(f, "/task new"), "一编辑，补全弹层就回来");
+    }
+
+    // 收尾：Esc 关弹层，退格清空，别把脏输入留给后面的用例。
+    win.OnEvent(::ftxui::Event::Escape);
+    for (int i = 0; i < 32; i++)
+        win.OnEvent(::ftxui::Event::Backspace);
+}
+
+// 输入框上面那条分割线兼做"这行会被怎么读"的标签（"──── shell ────"）：
+// 普通消息保持整条线，其它情况把名字写进线里。它读的是派发用的同一个谓词
+// （edc_commands_input_kind），所以标签和回车永远一致。
+void TestInputModeTag(edc::TUIWindow &win)
+{
+    std::cout << "输入框分割线上的模式标签\n";
+    auto type = [&](const char *s) {
+        for (const char *p = s; *p; p++)
+            win.OnEvent(::ftxui::Event::Character(std::string(1, *p)));
+    };
+    auto clear = [&]() {
+        for (int i = 0; i < 40; i++)
+            win.OnEvent(::ftxui::Event::Backspace);
+    };
+
+    // 普通消息：也标 message（空输入框是唯一不标的状态）。
+    type("hello");
+    Check(Has(FrameOf(win), "─── message "), "普通消息也标 message");
+    Check(Has(FrameOf(win), "❯ hello"), "提示符位置不动（❯ 仍贴左）");
+    clear();
+    Check(!Has(FrameOf(win), "─── message ") && !Has(FrameOf(win), "─── command "), "清空后回到无标签");
+
+    // `/` 命令：名字写进线里，靠左（不是居中 —— 居中看着像个装饰）。
+    type("/task");
+    Check(Has(FrameOf(win), "─── command "), "命令行：线上靠左标 command");
+    Check(Has(FrameOf(win), "❯ /task"), "提示符位置不动（❯ 仍贴左）");
+    clear();
+}
+
+// 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
+// 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
+// 重启后侧栏里那批 INTERRUPTED 任务：启动时在聊天流里说一次，并给出恢复方式。
+// 只出一次（同一个 session），而且不写 transcript —— 换会话就看不到。
+void TestInterruptedStartupHint(edc::TUIWindow &win)
+{
+    std::cout << "启动提示：被中断的任务\n";
+
+    // 切到一个别的 session：切会话会重置"只提示一次"的开关（生产路径同一条）。
+    AdoptDisplayedSession(win, kOther);
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
+                      kOther));
+    {
+        const std::string f = FrameOf(win);
+        Check(CountOf(f, "was interrupted") == 1, "一行提示说有个任务被中断");
+        Check(Has(f, "/task resume"), "并给出恢复方式");
+    }
+
+    // 同一会话再来一帧：不再重复。
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
+                      kOther));
+    Check(CountOf(FrameOf(win), "was interrupted") == 1, "同一个 session 只提示一次");
+
+    // 换回原会话：提示不在 transcript 里，所以看不到它了。
+    AdoptDisplayedSession(win, kShown);
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kShown, "HARNESS_IDLE", "IDLE", "NONE").c_str(), kShown));
+    Check(!Has(FrameOf(win), "was interrupted"), "提示不写 transcript：换个会话就没了");
+}
+
+void TestInterruptKeys(edc::TUIWindow &win)
+{
+    std::cout << "键盘中断：Esc 停任务 / Ctrl+C 两段退出\n";
+
+    // 空闲：前台任务不是处理态 → 没有任务可停，Esc 放行。
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonState(kShown, "HARNESS_ESC_IDLE", "IDLE").c_str(), kShown));
+    Check(!win.OnEvent(::ftxui::Event::Escape), "空闲时 Esc 放行（没有任务可停）");
+
+    // 前台任务进入处理态 → 工作态立起来，Esc 被吃掉。
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonState(kShown, "HARNESS_ESC_BUSY", "LLM_PROCESSING").c_str(),
+                      kShown));
+    Check(win.OnEvent(::ftxui::Event::Escape), "忙时 Esc 被吃掉（停前台任务）");
+
+    // Ctrl+C：第一次清空输入框（不退出），紧接着第二次才退出。
+    const std::string draft = "HARNESS_CTRLC_DRAFT";
+    for (char c : draft)
+        win.OnEvent(::ftxui::Event::Character(std::string(1, c)));
+    Check(Has(FrameOf(win), draft), "打字后草稿在输入框里");
+    Check(!win.OnInterrupt(), "第一次 Ctrl+C 不退出");
+    Check(!Has(FrameOf(win), draft), "第一次 Ctrl+C 清空输入框");
+    Check(Has(FrameOf(win), "Ctrl+C again to quit"), "第一次 Ctrl+C 后提示再按一次退出");
+    Check(win.OnInterrupt(), "紧接着第二次 Ctrl+C 退出");
+}
+
 } // namespace
 
 int main()
@@ -428,6 +877,12 @@ int main()
     TestUnknownMessageIgnored(win);
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
+    TestCommandPalette(win);
+    TestPaletteEnterPicks(win);
+    TestHistoryRecallKeepsArrows(win);
+    TestInputModeTag(win);
+    TestInterruptKeys(win);
+    TestInterruptedStartupHint(win);
 
     if (g_failures)
     {

@@ -1,5 +1,6 @@
 #include "edc_context.h"
 #include "edc_file_utils.h"
+#include "edc_resources.h"
 #include "edc_skills.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -156,7 +157,8 @@ static void sds_replace_all(sds *s, const char *find, const char *replacement)
     *s = result;
 }
 
-static sds edc_context_get_identity(const char *os_name, const char *workspace, const char *workdir)
+static sds edc_context_get_identity(const char *os_name, const char *edc_home, const char *workspace,
+                                    const char *workdir)
 {
     const char *identity_fmt = "# EdgeClaw\n"
                                "You are EdgeClaw, a helpful AI assistant. You have access to tools "
@@ -172,15 +174,31 @@ static sds edc_context_get_identity(const char *os_name, const char *workspace, 
                                "## Workspace\n"
                                "Your workspace is at: {{workspace}}\n"
                                "- Custom skills: {{workspace}}/skills/{{skill-name}}/SKILL.md\n"
-                               "\n"
-                               "IMPORTANT: When responding to direct questions or conversations, "
-                               "reply directly with your text response.\n"
-                               "\n"
-                               "Always be helpful, accurate, and concise. When using tools, explain "
-                               "what you're doing.\n"
-                               "\n"
-                               "This prompt carries no clock: when you need the current date or time, run "
-                               "`date` (or check the OS).\n\n";
+                               "\n";
+
+    /* The manual line, added only when $EDC_HOME is known (a config built by a test may
+     * carry a workspace and nothing else). Template + sds_replace_all like the paths
+     * above: no printf, so a '%' in the path cannot be read as a conversion. */
+    const char *manual_fmt = "## Usage Manual\n"
+                             "EdgeClaw's own manual is embedded in this binary and released to:\n"
+                             "`{{edc_home}}/docs/edgeclaw.md`\n"
+                             "\n"
+                             "Read it (read_file) whenever you need to know how EdgeClaw itself works: "
+                             "commands and their options, sessions, tasks and groups, the input syntax, "
+                             "tools and their limits. The other chapters live in the same directory "
+                             "(`edgeclaw.1`, `input-syntax.zh.md`, `local-shell-command.zh.md`, "
+                             "`tool-output-limits.zh.md`, `prompt-library.md`, ...). It documents THIS "
+                             "binary -- prefer it to guessing, and to any older copy of the docs.\n"
+                             "\n";
+
+    const char *identity_tail = "IMPORTANT: When responding to direct questions or conversations, "
+                                "reply directly with your text response.\n"
+                                "\n"
+                                "Always be helpful, accurate, and concise. When using tools, explain "
+                                "what you're doing.\n"
+                                "\n"
+                                "This prompt carries no clock: when you need the current date or time, run "
+                                "`date` (or check the OS).\n\n";
 
     /* The session's bound working directory is the "current directory" the
      * model is told about; unbound sessions fall back to the process cwd. */
@@ -191,6 +209,15 @@ static sds edc_context_get_identity(const char *os_name, const char *workspace, 
     sds_replace_all(&identity, "{{workspace}}", workspace);
     sdsfree(cwd);
 
+    if (edc_home && edc_home[0])
+    {
+        sds manual = sdsnew(manual_fmt);
+        sds_replace_all(&manual, "{{edc_home}}", edc_home);
+        identity = sdscatsds(identity, manual);
+        sdsfree(manual);
+    }
+
+    identity = sdscat(identity, identity_tail);
     return identity;
 }
 
@@ -228,21 +255,33 @@ static sds edc_context_load_bootstrap_files(const char *workspace)
     return result;
 }
 
-static sds edc_context_load_skills(const char *workspace)
+static sds edc_context_load_skills(const struct edc_config *conf, const char *workdir)
 {
     sds result = sdsempty();
-    sds tmp = edc_path_join(workspace, "skills", NULL);
-    UT_array *skills = edc_skills_load(tmp);
-    sdsfree(tmp);
+    /* Every resource root, ours first -- so a skill the user brought over from pi /
+     * Claude Code / opencode shows up here without being moved. The project roots come
+     * from the SESSION's directory (see edc_resource_dirs). */
+    UT_array *roots = edc_resource_dirs(conf, workdir);
+    UT_array *skills = edc_skills_load_roots(roots, conf);
 
     result = sdscatprintf(result, "## Skills\n\n"
                                   "The following skills extend your capabilities. To use a skill, read its SKILL.md "
-                                  "file using the read_file tool.\n\n");
+                                  "file using the read_file tool. (`/skill <name>` runs one directly.)\n\n");
 
+    bool wrote_any = false;
     for (size_t i = 0; i < utarray_len(skills); i++)
     {
         struct edc_skill **skill_ptr = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
         struct edc_skill *skill = *skill_ptr;
+
+        /* The author said the model must not reach for it on its own: it stays off this
+         * list (an explicit `/skill <name>` still runs it). */
+        if (!skill->model_invocable)
+        {
+            edc_skill_free(skill);
+            continue;
+        }
+
         struct edc_skill_meta_entry *e;
         HASH_FIND_STR(skill->meta, "description", e);
         const char *desc = e ? e->value : NULL;
@@ -252,19 +291,18 @@ static sds edc_context_load_skills(const char *workspace)
             continue;
         }
 
-        sds loc = edc_path_join(workspace, "skills", skill->name, "SKILL.md", NULL);
-        result = sdscatprintf(result, "### Skill: %s\n\n", skill->name);
-        result = sdscatprintf(result, "description: %s\nSKILL.md localtion: %s\n", desc, loc);
-        sdsfree(loc);
-        if (i < utarray_len(skills) - 1)
-        {
+        sds loc = edc_path_join(skill->source ? skill->source : "", "skills", skill->name, "SKILL.md", NULL);
+        if (wrote_any)
             result = sdscat(result, "\n\n---\n\n");
-        }
-
+        result = sdscatprintf(result, "### Skill: %s\n\n", skill->name);
+        result = sdscatprintf(result, "description: %s\nSKILL.md location: %s\n", desc, loc);
+        sdsfree(loc);
+        wrote_any = true;
         edc_skill_free(skill);
     }
 
     utarray_free(skills);
+    edc_resource_dirs_free(roots);
     return result;
 }
 
@@ -328,14 +366,14 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     const char *workspace = conf->workspace;
     sds os_name = edc_os_name();
 
-    sds identity = edc_context_get_identity(os_name, workspace, workdir);
+    sds identity = edc_context_get_identity(os_name, conf->edc_home, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds bootstrap = edc_context_load_bootstrap_files(workspace);
     /* Context files (pi §3.6): user-global + an upward walk from THIS session's workdir
      * -- so a session bound to a project directory really picks up that project's
      * AGENTS.md. */
     sds project_context = load_project_context(workspace, workdir, conf->skip_context_files);
-    sds skills = edc_context_load_skills(workspace);
+    sds skills = edc_context_load_skills(conf, workdir);
 
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);

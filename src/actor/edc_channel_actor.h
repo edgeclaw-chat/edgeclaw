@@ -18,6 +18,8 @@
  * task/message and WRITTEN TO DISK -- that part is format compatibility (see
  * edc_channel_to_json), not "there are other channels". */
 
+struct edc_payload; /* folded paste blocks: placeholder -> real bytes (common/edc_payload.h) */
+
 struct edc_channel_message
 {
     sds content;
@@ -33,6 +35,23 @@ struct edc_channel_message
     edc_channel_type type;
     edc_channel_message_type message_type;
     edc_render_pref_t render_pref; /* render preference declared by the sender; 0 = PLAIN (plain text) */
+    /* A fact the sender declares: the LABEL to give a task created from this message when
+     * that must differ from the content. The template paths set it to the line the user
+     * typed (`/prompt review ars`) while the content is the expanded body -- so the task
+     * reads as what was asked for, not as the body it turned into. NULL = derive the label
+     * from the content, the usual way. */
+    sds task_desc;
+    /* The user input's own id (only on USER messages): the frontend generates it, the
+     * store keeps it on the message, and the input history remembers it -- that is how a
+     * recalled folded block finds its bytes back (request_member_payload). Opaque to the
+     * kernel. */
+    sds mid;
+    /* The sender's folded paste blocks (a user input only). |content| is already the
+     * EXPANDED text: this rides along as provenance (what was pasted, under which
+     * placeholder) and is stored on the task's user message. NULL when nothing was
+     * folded -- the ordinary case, and the reason no code needs to test for null
+     * everywhere but the two places that care. Owned by this message. */
+    struct edc_payload *payload;
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is
@@ -84,6 +103,8 @@ struct edc_reply_to
 /* ── Outbound: publish a message to the channel (frontend) ───
  * Ownership of |content| goes to this message (taken on success and failure alike). */
 extern void edc_channel_publish(struct edc_reply_to to, const char *session_id, sds content);
+/* Same, with a header (the payload reply names the mid it answers). */
+extern void edc_channel_publish_keyed(struct edc_reply_to to, const char *header, sds content);
 
 /* "the active session became X": emitted by the command layer after a successful
  * /session switch|new. */

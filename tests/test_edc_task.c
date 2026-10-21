@@ -1,3 +1,4 @@
+#include "edc_payload.h"
 #include "edc_task.h"
 #include "edc_turn.h"
 #include "edc_config.h"
@@ -104,11 +105,6 @@ static void test_state_machine(void)
     CHECK(edc_task_mark_cancelled(t), "READY → CANCELLED");
     edc_task_free(t);
 
-    t = park_at("sm3", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
-    CHECK(edc_task_mark_suspended(t), "READY → suspended (as a task restored from disk lands)");
-    CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_SUSPENDED, "… keeps the step it was on");
-    edc_task_free(t);
-
     t = park_at("sm3b", EDC_TASKSTEP_READY, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_failed(t), "READY → ERROR (驱动时就绪任务发起不了 I/O: 没端口/相位不允许)");
     CHECK(edc_task_has_failed(t), "… lands on ERROR");
@@ -148,10 +144,6 @@ static void test_state_machine(void)
     t = park_at("sm11", EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_failed(t), "AWAIT_EXEC → ERROR");
     edc_task_free(t);
-    t = park_at("sm12", EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
-    CHECK(!edc_task_mark_suspended(t), "AWAIT_EXEC → suspended rejected (nothing to park mid-LLM)");
-    edc_task_free(t);
-
     TEST("transitions from AWAIT_TOOLS");
     t = park_at("sm13", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
     CHECK(edc_task_await_exec(t), "AWAIT_TOOLS → AWAIT_EXEC (chain continues)");
@@ -165,30 +157,6 @@ static void test_state_machine(void)
     t = park_at("sm16", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_cancelled(t), "AWAIT_TOOLS → CANCELLED");
     edc_task_free(t);
-    t = park_at("sm17", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
-    CHECK(edc_task_mark_suspended(t), "AWAIT_TOOLS → suspended (Ctrl+Z mid-flight)");
-    CHECK(t->step == EDC_TASKSTEP_AWAIT_TOOLS && t->life == EDC_LIFE_SUSPENDED, "… step kept, life suspended");
-    CHECK(!edc_task_mark_suspended(t), "suspending twice rejected (self)");
-    edc_task_free(t);
-
-    TEST("resume targets from SUSPENDED");
-    t = park_at("sm18", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_mark_ready(t), "SUSPENDED → READY");
-    edc_task_free(t);
-    t = park_at("sm19", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_mark_waiting_deps(t), "SUSPENDED → AWAIT_DEPS (re-decide: deps first)");
-    edc_task_free(t);
-    t = park_at("sm20", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_await_exec(t), "SUSPENDED → AWAIT_EXEC (re-request LLM)");
-    edc_task_free(t);
-    t = park_at("sm21", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_await_tools(t), "SUSPENDED → AWAIT_TOOLS (re-dispatch the tools)");
-    edc_task_free(t);
-    t = park_at("sm22", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED);
-    CHECK(edc_task_mark_cancelled(t), "SUSPENDED → CANCELLED");
-    CHECK(!edc_task_mark_completed(t), "a suspended task cannot complete");
-    edc_task_free(t);
-
     TEST("resume targets from ERROR");
     const edc_task_life error_life = EDC_LIFE_ERROR;
     t = park_at("sm23", EDC_TASKSTEP_DONE, error_life);
@@ -206,10 +174,9 @@ static void test_state_machine(void)
     t = park_at("sm27", EDC_TASKSTEP_DONE, error_life);
     CHECK(edc_task_mark_cancelled(t), "ERROR → CANCELLED");
     CHECK(!edc_task_mark_completed(t), "an errored task cannot complete");
-    CHECK(!edc_task_mark_suspended(t), "ERROR → suspended rejected");
     edc_task_free(t);
 
-    TEST("CANCELLED can be resumed (by the state machine, same targets as SUSPENDED/ERROR)");
+    TEST("CANCELLED can be resumed (by the state machine, same targets as ERROR)");
     t = park_at("sm28", EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED);
     CHECK(edc_task_mark_ready(t), "CANCELLED → READY");
     edc_task_free(t);
@@ -230,8 +197,7 @@ static void test_state_machine(void)
     TEST("COMPLETED is terminal");
     t = park_at("sm30", EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
     CHECK(!edc_task_mark_ready(t) && !edc_task_await_exec(t) && !edc_task_await_tools(t), "no way out of COMPLETED");
-    CHECK(!edc_task_mark_failed(t) && !edc_task_mark_cancelled(t) && !edc_task_mark_suspended(t),
-          "… not even to another terminal");
+    CHECK(!edc_task_mark_failed(t) && !edc_task_mark_cancelled(t), "… not even to another terminal");
     edc_task_free(t);
 }
 
@@ -250,32 +216,26 @@ static void test_display_names(void)
     TEST("display names: the frozen vocabulary, (step, life) → word");
     static const struct name_row rows[] = {
         {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, "IDLE"},
-        {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_READY, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_READY, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_READY, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE, "WAITING_DEPS"},
-        {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE, "LLM_PROCESSING"},
-        {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, "TOOL_CALLING"},
-        {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_ALIVE, "WAITING_DEPS"},
-        {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_ERROR, "ERROR"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ALIVE, "IDLE"},
-        {EDC_TASKSTEP_DONE, EDC_LIFE_SUSPENDED, "SUSPENDED"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED, "COMPLETED"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, "CANCELLED"},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, "ERROR"},
@@ -321,14 +281,14 @@ struct read_side_row
 static void test_step_life_read_side(void)
 {
     TEST("read predicates: one row per reachable (step, life)");
-    /* 行序即断言序 —— 失败信息只报谓词名, 靠行序定位。 */
+    /* 行序即断言序 —— 失败信息只报谓词名, 靠行序定位。
+     * NB `is_resumable` 还读 `end`: 被 `||` 跳过的任务 (life=CANCELLED, end=SKIPPED) 是
+     * 不可恢复的例外, 不在这张 (step, life) 表里 —— 见 test_end_reason()。 */
     static const struct read_side_row rows[] = {
         {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, true, true, false, false, false, false, false, true, false},
         {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE, true, false, true, false, false, false, false, true, false},
         {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE, true, false, false, false, false, false, false, false, true},
         {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, true, false, false, false, false, false, false, false, true},
-        {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, false, false, false, false, false, false, true, false, false},
-        {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, false, false, false, false, false, false, true, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED, false, false, false, true, false, false, false, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED, false, false, false, false, true, false, true, false, false},
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, false, false, false, false, false, true, true, false, false},
@@ -375,7 +335,7 @@ static void test_step_life_read_side(void)
  * (6x5 sources x 6x5 targets = 900). Self-transitions are omitted; the edge count is
  * pinned so the spec cannot be silently emptied. */
 
-#define EDC_TABLE_EDGES 115
+#define EDC_TABLE_EDGES 82
 
 struct table_target
 {
@@ -393,19 +353,11 @@ struct table_row
 
 static const struct table_row g_table[] = {
     /* READY + ALIVE */
-    {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, 5,
+    {EDC_TASKSTEP_READY, EDC_LIFE_ALIVE, 4,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR},
-      {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED}}},
-    /* READY + SUSPENDED */
-    {EDC_TASKSTEP_READY, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
     /* READY + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_READY, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -428,13 +380,6 @@ static const struct table_row g_table[] = {
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
-    /* AWAIT_DEPS + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_DEPS + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -459,13 +404,6 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
-    /* AWAIT_EXEC + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_EXEC + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -484,20 +422,12 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_TOOLS + ALIVE */
-    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, 6,
+    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE, 5,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED}}},
-    /* AWAIT_TOOLS + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
+      {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
     /* AWAIT_TOOLS + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -520,13 +450,6 @@ static const struct table_row g_table[] = {
      {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
       {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR}}},
-    /* AWAIT_RESOURCE + SUSPENDED */
-    {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* AWAIT_RESOURCE + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
     {EDC_TASKSTEP_AWAIT_RESOURCE, EDC_LIFE_COMPLETED, 0, {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE}}},
@@ -545,17 +468,9 @@ static const struct table_row g_table[] = {
       {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* DONE + ALIVE */
-    {EDC_TASKSTEP_DONE, EDC_LIFE_ALIVE, 4,
+    {EDC_TASKSTEP_DONE, EDC_LIFE_ALIVE, 3,
      {{EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED},
-      {EDC_TASKSTEP_DONE, EDC_LIFE_SUSPENDED}}},
-    /* DONE + SUSPENDED */
-    {EDC_TASKSTEP_DONE, EDC_LIFE_SUSPENDED, 5,
-     {{EDC_TASKSTEP_READY, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_DEPS, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE},
-      {EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE},
       {EDC_TASKSTEP_DONE, EDC_LIFE_CANCELLED}}},
     /* DONE + COMPLETED */
     /* 没有出口 (n=0; 那个占位元素不参与匹配) */
@@ -590,11 +505,11 @@ static void test_transition_table_spec(void)
     static const edc_task_step steps[] = {EDC_TASKSTEP_READY,          EDC_TASKSTEP_AWAIT_DEPS,
                                           EDC_TASKSTEP_AWAIT_EXEC,     EDC_TASKSTEP_AWAIT_TOOLS,
                                           EDC_TASKSTEP_AWAIT_RESOURCE, EDC_TASKSTEP_DONE};
-    static const edc_task_life lifes[] = {EDC_LIFE_ALIVE, EDC_LIFE_SUSPENDED, EDC_LIFE_COMPLETED, EDC_LIFE_CANCELLED,
+    static const edc_task_life lifes[] = {EDC_LIFE_ALIVE, EDC_LIFE_COMPLETED, EDC_LIFE_CANCELLED,
                                           EDC_LIFE_ERROR};
 
-    /* 规格必须**盖满** 30 个源: 一个不漏, 一个不重。 */
-    CHECK(sizeof(g_table) / sizeof(g_table[0]) == 30, "the spec has 30 source rows");
+    /* 6 步 × 4 个 life = 24 个源: 规格必须**盖满**它们, 一个不漏, 一个不重。 */
+    CHECK(sizeof(g_table) / sizeof(g_table[0]) == 24, "the spec has 24 source rows");
 
     struct edc_task *t = edc_task_new("t-spec", "s", "g", "x", edc_channel_adapter);
     int combos = 0, drift = 0, edges = 0, missing = 0, dup = 0;
@@ -610,7 +525,7 @@ static void test_transition_table_spec(void)
                     continue;
                 hits++;
                 edges += (int)row->n;
-                /* 逐格对照: 这个源 × 全部 30 个目标。 */
+                /* 逐格对照: 这个源 × 全部 24 个目标。 */
                 for (size_t a = 0; a < sizeof(steps) / sizeof(steps[0]); a++)
                 {
                     for (size_t b = 0; b < sizeof(lifes) / sizeof(lifes[0]); b++)
@@ -637,7 +552,7 @@ static void test_transition_table_spec(void)
     }
     CHECK(dup == 0, "every source appears exactly once in the spec");
     CHECK(missing == 0, "no source is missing from the spec");
-    CHECK(combos == 900, "900 combinations walked (30 sources x 30 targets)");
+    CHECK(combos == 576, "576 combinations walked (24 sources x 24 targets)");
     CHECK(edges == EDC_TABLE_EDGES, "the spec lists EDC_TABLE_EDGES allowed edges (it cannot be emptied)");
     CHECK(drift == 0, "no drift between the written-out spec and the code");
     edc_task_free(t);
@@ -652,15 +567,8 @@ static void test_intent_writes(void)
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE, "a new task starts READY+ALIVE");
     CHECK(edc_task_await_exec(t), "READY → await_exec");
     CHECK(t->step == EDC_TASKSTEP_AWAIT_EXEC && t->life == EDC_LIFE_ALIVE, "… lands on AWAIT_EXEC+ALIVE");
-    CHECK(!edc_task_mark_suspended(t), "AWAIT_EXEC → suspend refused (nothing parks mid-LLM)");
     CHECK(edc_task_await_tools(t), "AWAIT_EXEC → await_tools");
     CHECK(t->step == EDC_TASKSTEP_AWAIT_TOOLS, "… lands on AWAIT_TOOLS");
-    CHECK(edc_task_mark_suspended(t), "AWAIT_TOOLS → suspend (the one mid-flight park)");
-    CHECK(t->life == EDC_LIFE_SUSPENDED && t->step == EDC_TASKSTEP_AWAIT_TOOLS,
-          "suspend only moves life: the step it stopped on is kept");
-    CHECK(!edc_task_mark_suspended(t), "suspending twice is a self-transition");
-    CHECK(edc_task_await_tools(t), "resume back onto the tool chain");
-    CHECK(t->life == EDC_LIFE_ALIVE, "… which also brings life back to ALIVE");
     CHECK(edc_task_mark_completed(t), "tool chain done → completed");
     CHECK(t->step == EDC_TASKSTEP_DONE && t->life == EDC_LIFE_COMPLETED, "… lands on DONE+COMPLETED");
     CHECK(!edc_task_mark_ready(t) && !edc_task_await_exec(t) && !edc_task_mark_failed(t), "COMPLETED is terminal");
@@ -688,8 +596,7 @@ static void test_intent_writes(void)
     edc_task_free(t);
 
     CHECK(!edc_task_move(NULL, EDC_TASKSTEP_READY, EDC_LIFE_ALIVE), "move(NULL) is refused");
-    CHECK(!edc_task_await_exec(NULL) && !edc_task_mark_ready(NULL) && !edc_task_mark_suspended(NULL),
-          "intents are NULL-safe");
+    CHECK(!edc_task_await_exec(NULL) && !edc_task_mark_ready(NULL), "intents are NULL-safe");
 }
 
 /* ── 5. Turn 管理 ──────────────────────────────────────────── */
@@ -1168,9 +1075,11 @@ static void test_scenario_multi_deps(void)
 /* Failure also propagates: an upstream failure means its output never arrives, so
  * the dependent cascades to ERROR (resumable).
  * Mutation: removing the failed-dependents notify must fail this. */
-static void count_move(void *ctx, struct edc_task *moved)
+static void count_move(void *ctx, struct edc_task *moved, edc_task_move_kind kind, const char *notice)
 {
     (void)moved;
+    (void)kind;
+    (void)notice;
     (*(int *)ctx)++;
 }
 
@@ -1287,7 +1196,10 @@ static void test_dep_completion_releases(void)
     edc_task_mark_completed(s2);
     edc_task_notify_dependents(s2);
     CHECK(!edc_task_has_unresolved_deps(d2), "源后来产出 ⇒ d2 的边也满足");
-    CHECK(edc_task_is_ready(d2) || edc_task_is_cancelled(d2), "(相位随实现; 关键是边不再是未决)");
+    /* 2026-10-19 定稿：由于依赖而结束(BLOCKED)的任务不再需要人工 resume —— 源一旦真的
+     * 产出，它就被这次完成通知自己放行。以前这里是一句 "is_ready || is_cancelled" 的宽断言。 */
+    CHECK(edc_task_is_ready(d2), "d2 被自动放行 (BLOCKED → AWAIT_DEPS → READY)");
+    CHECK(d2->end == EDC_END_NONE, "而且原因被清掉");
 
     edc_task_free(src);
     edc_task_free(dst);
@@ -1319,7 +1231,6 @@ static void test_interrupted_state(void)
 
     t = park_at("int-tools", EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE);
     CHECK(edc_task_mark_interrupted(t), "AWAIT_TOOLS -> INTERRUPTED");
-    CHECK(!edc_task_mark_suspended(t), "and it is not the user-pause row");
     CHECK(edc_task_mark_cancelled(t), "INTERRUPTED -> CANCELLED");
     edc_task_free(t);
 
@@ -1328,7 +1239,237 @@ static void test_interrupted_state(void)
     edc_task_free(t);
 }
 
+/* The reason axis: `life` says which bucket a task ended in, `end` says WHY it got there.
+ * Without it, CANCELLED covers a user stop, a `||` skip and a dependency cascade, and
+ * ERROR covers its own failure and a dependency that never produced. */
+static void test_end_reason(void)
+{
+    TEST("end: every write point records its own reason");
+
+    struct edc_task *a = edc_task_new("end-a", "sess-end", "end-a", "A", edc_channel_adapter);
+    CHECK(a->end == EDC_END_NONE, "a fresh task has no reason");
+
+    edc_task_await_exec(a);
+    CHECK(edc_task_mark_failed(a), "A fails by itself");
+    CHECK(a->end == EDC_END_FAILED, "reason FAILED");
+
+    /* The failure class rides with the reason and is cleared with it. */
+    edc_task_set_fail(a, EDC_FAIL_AUTH);
+    CHECK(a->fail == EDC_FAIL_AUTH, "the failure class is recorded (a doomed retry is knowable)");
+
+    /* Resume wipes it: a task that can move again has no end (and /task status must stop
+     * claiming one). */
+    CHECK(edc_task_mark_ready(a), "A is resumed back to READY");
+    CHECK(a->end == EDC_END_NONE, "a resumed task has no reason again");
+    CHECK(a->fail == EDC_FAIL_NONE, "and no failure class either");
+
+    edc_task_await_exec(a);
+    edc_task_send_signal(a, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(a), "A stops (CANCELLED)");
+    CHECK(a->end == EDC_END_STOPPED, "reason STOPPED, not skipped/blocked");
+    CHECK(edc_task_is_resumable(a), "a stopped task IS resumable (only the reason says otherwise)");
+
+    CHECK(edc_task_mark_ready(a), "resumed again");
+    edc_task_await_exec(a);
+    CHECK(edc_task_mark_interrupted(a), "A is interrupted");
+    CHECK(a->end == EDC_END_INTERRUPTED, "reason INTERRUPTED");
+    edc_task_free(a);
+
+    TEST("end: a cascade says BLOCKED and names the source");
+    struct edc_task *s = edc_task_new("end-s", "sess-end", "end-s", "S", edc_channel_adapter);
+    struct edc_task *d = edc_task_new("end-d", "sess-end", "end-d", "D runs after S", edc_channel_adapter);
+    edc_task_add_dependency(d, s, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(s);
+    CHECK(edc_task_mark_interrupted(s), "S is interrupted");
+    CHECK(edc_task_has_failed(d), "D cascades into ERROR");
+    CHECK(d->end == EDC_END_BLOCKED, "but the reason is BLOCKED, not FAILED");
+    CHECK(d->blocked_by && strcmp(d->blocked_by, "end-s") == 0, "the source is named");
+    CHECK(d->blocked_end == EDC_END_INTERRUPTED, "and what became of it is kept");
+
+    /* A cascade that came from a cancelled source lands in CANCELLED, still BLOCKED. */
+    struct edc_task *c = edc_task_new("end-c", "sess-end", "end-c", "C waits", edc_channel_adapter);
+    struct edc_task *src2 = edc_task_new("end-s2", "sess-end", "end-s2", "S2", edc_channel_adapter);
+    edc_task_add_dependency(c, src2, TASK_DEP_JOIN);
+    edc_task_await_exec(src2);
+    edc_task_send_signal(src2, TASK_SIGTERM);
+    CHECK(edc_task_is_cancelled(c), "C is cancelled by the cascade");
+    CHECK(c->end == EDC_END_BLOCKED, "reason BLOCKED, not STOPPED");
+    CHECK(c->blocked_end == EDC_END_STOPPED, "the source's own reason is STOPPED");
+
+    /* The source recovers and produces: the dependent comes back BY ITSELF -- nobody has
+     * to resume it, because it never made a decision (a dependency did). */
+    edc_task_force_move(s, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE); /* resume the source */
+    edc_task_await_exec(s);
+    CHECK(edc_task_mark_completed(s), "S produces after being resumed");
+    edc_task_notify_dependents(s);
+    CHECK(edc_task_is_ready(d), "D is released by the completion itself (no /task resume)");
+    CHECK(d->end == EDC_END_NONE, "and its reason is gone");
+    CHECK(d->blocked_by == NULL, "and so is the blocker");
+    CHECK(d->output == NULL, "and the machine note it carried (its dependency failed) is cleared");
+
+    edc_task_free(s);
+    edc_task_free(d);
+    edc_task_free(c);
+    edc_task_free(src2);
+
+    TEST("end: a `||` skip says SKIPPED, not STOPPED");
+    struct edc_task *l = edc_task_new("end-l", "sess-end2", "end-l", "L", edc_channel_adapter);
+    struct edc_task *r = edc_task_new("end-r", "sess-end2", "end-r", "R", edc_channel_adapter);
+    edc_task_add_dependency(r, l, TASK_DEP_UNLESS);
+    edc_task_await_exec(l);
+    edc_task_mark_completed(l);
+    edc_task_notify_dependents(l);
+    CHECK(edc_task_is_cancelled(r), "R is skipped (CANCELLED)");
+    CHECK(r->end == EDC_END_SKIPPED, "reason SKIPPED");
+    /* The predicate and the command must agree: `||` said this branch is not taken, so it
+     * is NOT resumable -- CANCELLED alone would have said it was. */
+    CHECK(!edc_task_is_resumable(r), "and it is NOT resumable (the reason, not the life, decides)");
+    CHECK(edc_task_classify_end(edc_task_end_name(r->end)) == r->end, "the name round-trips");
+    edc_task_free(l);
+    edc_task_free(r);
+}
+
+/* 删边是唯一一条"没有任何任务产出、下游却失去最后一个未满足依赖"的路。以前
+ * edc_task_free_deps 只减计数、不重判，下游就永久停在 dep-wait —— 而它还占着组前台
+ * （有 active turn），会把整组静默堵死。 */
+static void test_free_deps_releases_dependents(void)
+{
+    TEST("freeing a source re-decides its dependents");
+    struct edc_task *src = edc_task_new("fd-src", "sess-fd", "fd-src", "src", edc_channel_adapter);
+    struct edc_task *dep = edc_task_new("fd-dep", "sess-fd", "fd-src", "dep", edc_channel_adapter);
+    edc_task_add_dependency(dep, src, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_awaits_deps(dep), "dep waits for src");
+    edc_task_free(src);
+    CHECK(dep->deps_total == 0, "the freed edge no longer counts");
+    CHECK(edc_task_is_ready(dep), "dep is READY again (not stranded in dep-wait)");
+    edc_task_free(dep);
+
+    TEST("... but only when the LAST unsatisfied dependency is the one that went away");
+    struct edc_task *a = edc_task_new("fd-a", "sess-fd2", "fd-a", "a", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("fd-b", "sess-fd2", "fd-a", "b", edc_channel_adapter);
+    struct edc_task *z = edc_task_new("fd-z", "sess-fd2", "fd-a", "z", edc_channel_adapter);
+    edc_task_add_dependency(z, a, TASK_DEP_SEQUENCE);
+    edc_task_add_dependency(z, b, TASK_DEP_SEQUENCE);
+    edc_task_free(a);
+    CHECK(edc_task_awaits_deps(z), "z still waits for b");
+    edc_task_free(b);
+    CHECK(edc_task_is_ready(z), "the last one going releases it");
+    edc_task_free(z);
+
+    TEST("a task that already ENDED is not resurrected by its source disappearing");
+    struct edc_task *s2 = edc_task_new("fd-s2", "sess-fd3", "fd-s2", "s2", edc_channel_adapter);
+    struct edc_task *d2 = edc_task_new("fd-d2", "sess-fd3", "fd-s2", "d2", edc_channel_adapter);
+    edc_task_add_dependency(d2, s2, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(s2);
+    edc_task_mark_interrupted(s2); /* 级联: d2 变 BLOCKED */
+    CHECK(d2->end == EDC_END_BLOCKED, "d2 was taken down by its dependency");
+    edc_task_free(s2);
+    CHECK(d2->end == EDC_END_BLOCKED && !edc_task_is_ready(d2),
+          "it stays BLOCKED: 'the source is gone' is not 'the source produced' -- resume is the door");
+    edc_task_free(d2);
+}
+
+/* 「显式断边」：一条永远满足不了的依赖（源会话没了 / 源停了且没人会再 resume）过去只能
+ * 永远 hold 住目标。丢掉边之后目标要立刻重新判定。 */
+static void test_drop_dep(void)
+{
+    TEST("dropping a dependency voids the edge and re-decides");
+    struct edc_task *src = edc_task_new("dd-src", "sess-dd", "dd-src", "src", edc_channel_adapter);
+    struct edc_task *tgt = edc_task_new("dd-tgt", "sess-dd", "dd-src", "tgt", edc_channel_adapter);
+    edc_task_add_dependency(tgt, src, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_awaits_deps(tgt), "tgt waits for src");
+    CHECK(edc_task_drop_dep(tgt, src), "the drop lands");
+    CHECK(!edc_task_depends_on(tgt, src), "no live edge left");
+    CHECK(edc_task_is_ready(tgt), "and tgt is READY again");
+    CHECK(!edc_task_drop_dep(tgt, src), "dropping it twice is a no-op (nothing live)");
+
+    TEST("a satisfied edge cannot be dropped");
+    struct edc_task *c_src = edc_task_new("dd-csrc", "sess-dd2", "dd-csrc", "src", edc_channel_adapter);
+    struct edc_task *c_tgt = edc_task_new("dd-ctgt", "sess-dd2", "dd-csrc", "tgt", edc_channel_adapter);
+    edc_task_add_dependency(c_tgt, c_src, TASK_DEP_JOIN);
+    edc_task_await_exec(c_src);
+    edc_task_mark_completed(c_src);
+    edc_task_notify_dependents(c_src);
+    CHECK(edc_task_is_ready(c_tgt), "fixture: the JOIN edge completed and released the target");
+    CHECK(!edc_task_drop_dep(c_tgt, c_src), "a completed edge is not droppable (the source produced)");
+
+    TEST("dropping one of two outstanding dependencies does not release the task");
+    struct edc_task *a = edc_task_new("dd-a", "sess-dd3", "dd-a", "a", edc_channel_adapter);
+    struct edc_task *b = edc_task_new("dd-b", "sess-dd3", "dd-a", "b", edc_channel_adapter);
+    struct edc_task *z = edc_task_new("dd-z", "sess-dd3", "dd-a", "z", edc_channel_adapter);
+    edc_task_add_dependency(z, a, TASK_DEP_SEQUENCE);
+    edc_task_add_dependency(z, b, TASK_DEP_SEQUENCE);
+    CHECK(edc_task_drop_dep(z, a), "drop a");
+    CHECK(edc_task_awaits_deps(z), "z still waits for b");
+
+    /* 一条已完成 + 一条被丢掉 ⇒ 没有任何未满足了: 必须放行（task_void_dep 的放行条件
+     * 从 "计数归零" 改成了 "完成了的就是全部"）。 */
+    edc_task_await_exec(b);
+    edc_task_mark_completed(b);
+    edc_task_notify_dependents(b);
+    CHECK(edc_task_is_ready(z), "released: one completed edge plus one dropped edge is nothing outstanding");
+
+    edc_task_free(src);
+    edc_task_free(tgt);
+    edc_task_free(c_src);
+    edc_task_free(c_tgt);
+    edc_task_free(a);
+    edc_task_free(b);
+    edc_task_free(z);
+}
+
+
+/* The folded-paste identity: the frontend's mid and its payload ride on the user message, and
+ * the store answers "payload by mid" from there (the TUI's history recall path). */
+static void test_user_origin_payload(void)
+{
+    TEST("edc_task_set_user_origin / edc_task_find_user_payload");
+    struct edc_task *t = edc_task_new("task-origin", "sess-1", "g", "origin test", edc_channel_adapter);
+
+    /* No user message yet: nothing to park on, nothing to find. */
+    edc_task_set_user_origin(t, "s1#1#1000", NULL);
+    CHECK(edc_task_find_user_payload(t, "s1#1#1000") == NULL, "no turn -> no payload");
+
+    struct edc_turn *turn = edc_turn_new();
+    edc_turn_add_user_message(turn, "[Pasted #1 \xc2\xb7 2 lines] explain this");
+    t->active_turn = turn;
+
+    struct edc_payload *payload = edc_payload_new();
+    edc_payload_set(payload, "[Pasted #1 \xc2\xb7 2 lines]", "line1\nline2");
+    edc_task_set_user_origin(t, "s1#1#1000", payload);
+    edc_payload_free(payload);
+
+    cJSON *found = edc_task_find_user_payload(t, "s1#1#1000");
+    CHECK(found != NULL, "the payload is found by its mid");
+    if (found)
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(found, "[Pasted #1 \xc2\xb7 2 lines]")), "line1\nline2") ==
+                  0,
+              "with its bytes intact");
+    CHECK(edc_task_find_user_payload(t, "s1#2#2000") == NULL, "an unknown mid finds nothing");
+    CHECK(edc_task_find_user_payload(t, NULL) == NULL, "a NULL mid finds nothing");
+
+    /* It rides on the MESSAGE, so committing the turn keeps it reachable. */
+    edc_task_commit_active_turn(t);
+    CHECK(edc_task_find_user_payload(t, "s1#1#1000") != NULL, "still found after the turn is committed");
+
+    /* And the fork path copies messages wholesale: the snapshot turn (what a fork replays)
+     * carries the field too, because it is inside the message object. */
+    struct edc_turn *snap = edc_task_snapshot_turns(t, NULL, "task-origin-fork");
+    CHECK(snap != NULL, "the fork snapshot copied the turn");
+    if (snap)
+    {
+        struct edc_task *tmp = edc_task_new("task-origin-tmp", "sess-1", "g", "tmp", edc_channel_adapter);
+        tmp->active_turn = snap; /* borrowed: the find only reads it */
+        CHECK(edc_task_find_user_payload(tmp, "s1#1#1000") != NULL, "a forked snapshot carries the payload");
+        tmp->active_turn = NULL;
+        edc_task_free(tmp);
+        edc_turn_free(snap);
+    }
+    edc_task_free(t);
+}
+
 int main(void)
+
 {
     log_info("=== Phase 1: edc_task 模块测试 ===");
     log_info("");
@@ -1342,6 +1483,7 @@ int main(void)
     test_transition_table_spec();
     test_intent_writes();
     test_turns();
+    test_user_origin_payload();
     test_dependencies();
     test_dep_cancelled();
     test_dep_cancel_cascade();
@@ -1353,6 +1495,9 @@ int main(void)
     test_scenario_multi_deps();
     test_dep_failure_propagates();
     test_dep_completion_releases();
+    test_free_deps_releases_dependents();
+    test_drop_dep();
+    test_end_reason();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);

@@ -41,6 +41,9 @@ class TaskWidget : public ::ftxui::ComponentBase
     // requesting animation frames even when the foreground process is idle.
     bool HasProcessingTask() const;
 
+    // Tasks that finished in the last SetSnapshot() (see TaskTreeModel::TakeFinished).
+    std::vector<std::string> TakeFinished();
+
     // The section in two halves: RenderHeader() is everything above the list (the
     // "Tasks" row, the session meta and the rule), RenderBody() the group rows.
     // The sidebar pins the header above a ScrollView owning the body, so the

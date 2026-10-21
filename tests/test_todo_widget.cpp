@@ -208,7 +208,7 @@ void TestInProgressRowHoldsItsAccent()
 
     // A task that is not running -- finished, or unknown -- draws the same row:
     // there is no such thing as a "stale" pulse left to distinguish.
-    for (const char *owner : {"COMPLETED", "SUSPENDED", "WAITING_INPUT", ""})
+    for (const char *owner : {"COMPLETED", "INTERRUPTED", "WAITING_INPUT", ""})
     {
         ::ftxui::Color other;
         Check(InProgressMarkerColor(widget, owner, &other), std::string("row is on screen (owner=") + owner + ")");

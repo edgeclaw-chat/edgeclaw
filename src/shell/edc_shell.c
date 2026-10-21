@@ -1,5 +1,6 @@
 #include "edc_shell.h"
-#include "edc_cli_history.h"
+#include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_session_store.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -9,8 +10,11 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_shell_ast.h"
-#include "edc_shell_token.h"
+#include "edc_interp.h"
+#include "edc_lex.h"
+#include "edc_parse.h"
+#include "edc_passes.h"
+#include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "utlist_fix.h"
@@ -81,8 +85,14 @@ static sds edc_shell_append_provider_models(sds out, const char *pid, const char
             continue;
         struct edc_model_info f;
         edc_models_model_info(mid, &f);
-        out = sdscatprintf(out, "- `%s`%s — %lld ctx\n", mid, (current && strcmp(mid, current) == 0) ? " **(current)**" : "",
-                           f.context);
+        /* Show the catalog name next to the id: a provider may serve a new model under an
+         * older wire id (DeepSeek answers `deepseek-flash` with V4.1-Flash), and the id
+         * alone makes such a model impossible to recognize in the list. */
+        const char *mark = (current && strcmp(mid, current) == 0) ? " **(current)**" : "";
+        if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
+            out = sdscatprintf(out, "- `%s` — %s%s · %lld ctx\n", mid, f.name, mark, f.context);
+        else
+            out = sdscatprintf(out, "- `%s`%s · %lld ctx\n", mid, mark, f.context);
     }
     return out;
 }
@@ -167,7 +177,11 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                         continue;
                     struct edc_model_info f;
                     edc_models_model_info(mid, &f);
-                    out = sdscatprintf(out, "- `%s` (%s) — %lld ctx\n", mid, pid, f.context);
+                    /* Name first, then the id in parentheses -- see append_provider_models. */
+                    if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
+                        out = sdscatprintf(out, "- `%s` — %s (%s) · %lld ctx\n", mid, f.name, pid, f.context);
+                    else
+                        out = sdscatprintf(out, "- `%s` (%s) · %lld ctx\n", mid, pid, f.context);
                     hits++;
                 }
             }
@@ -212,7 +226,12 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 
         if (sdslen(verb) == 0)
         {
-            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", conf->enable_sandbox ? "on" : "off");
+            /* A platform without a backend is not "off": the switch cannot be turned on
+             * at all, and the user should see that instead of hunting for the reason. */
+            const char *state = conf->enable_sandbox ? "on"
+                                : edc_platform_has_sandbox() ? "off"
+                                                             : "off (not supported on this platform)";
+            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", state);
             reply = edc_shell_sandbox_paths_md(reply, conf);
             reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
                                   "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
@@ -222,9 +241,16 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         else if (strcmp(verb, "on") == 0 || strcmp(verb, "off") == 0)
         {
             bool enable = strcmp(verb, "on") == 0;
+            /* The refusal itself lives in edc_config_set_sandbox_enabled (one place); the
+             * reply only has to say WHICH refusal it was, so "on" on a platform with no
+             * backend does not read as a failed write to config.json. */
+            const bool supported = edc_platform_has_sandbox();
             bool saved = edc_config_set_sandbox_enabled(cfg, enable);
-            sds reply = sdscatprintf(sdsempty(), "**Sandbox** — %s%s", enable ? "on" : "off",
-                                     saved ? "" : " (not persisted: config.json write failed)");
+            const char *why = "";
+            if (!saved)
+                why = (enable && !supported) ? " (not supported on this platform)"
+                                             : " (not persisted: config.json write failed)";
+            sds reply = sdscatprintf(sdsempty(), "**Sandbox** `%s`%s", enable ? "on" : "off", why);
             edc_commands_reply(to, reply);
             sdsfree(reply);
             log_info("/sandbox: filesystem sandbox %s (persisted=%d)", enable ? "enabled" : "disabled", saved);
@@ -277,6 +303,45 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         sdsfree(content);
         return true;
     }
+    if (strcmp(content, "/shell") == 0 || strncmp(content, "/shell ", 7) == 0)
+    {
+        /* The ONLY way to flip the shell-like syntax switch (there is deliberately no CLI
+         * flag): one statement, and it persists. ON by default -- the operators below are
+         * the product's own idiom; `/shell off` is the escape hatch for a workflow that
+         * wants every line to be one verbatim task description. */
+        sds arg = sdstrim(sdsnew(content + 6), " \t");
+        sds reply;
+        if (sdslen(arg) == 0)
+        {
+            reply = sdscatprintf(sdsempty(),
+                                 "## Shell-like syntax `%s`\n\n"
+                                 "The sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell "
+                                 "command), and the operators `|` `;` `&` `>` `>>` `2>` — no `<`\n"
+                                 "(it is `@file`'s job now).\n\n"
+                                 "On (the default), a line that begins with a quote or the `+` sigil is "
+                                 "parsed; every other line is one task description, verbatim. Off, that "
+                                 "is true of every line, the quoted and `+` forms included.\n\n"
+                                 "Toggle: `/shell on|off` (persisted to config.json).\n",
+                                 cfg->shell_syntax ? "on" : "off");
+        }
+        else if (strcmp(arg, "on") == 0 || strcmp(arg, "off") == 0)
+        {
+            bool enable = strcmp(arg, "on") == 0;
+            bool saved = edc_config_set_shell_syntax(cfg, enable);
+            reply = sdscatprintf(sdsempty(), "**Shell-like syntax** — `%s`%s", enable ? "on" : "off",
+                                 saved ? "" : " (not persisted: config.json write failed)");
+            log_info("/shell: shell-like syntax %s (persisted=%d)", enable ? "enabled" : "disabled", saved);
+        }
+        else
+        {
+            reply = sdsnew("Usage: `/shell [on|off]`");
+        }
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(arg);
+        sdsfree(content);
+        return true;
+    }
     sdsfree(content);
     return false;
 }
@@ -284,10 +349,10 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,
-                                      struct edc_task *prev_task, struct edc_task_group *target_group,
+                                      const struct edc_prev_dep *prev, struct edc_task_group *target_group,
                                       const char *reply_prefix, struct edc_task_group **out_group,
                                       sds redirect_stdout, bool redirect_append, sds redirect_stderr,
-                                      edc_task_dep_type prev_dep_type, sds *out_error)
+                                      sds *out_error)
 {
     if (out_error)
         *out_error = NULL;
@@ -331,10 +396,15 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     spec.desc = (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task";
     spec.channel_type = channel_type;
     spec.input = opts->input;
+    spec.parts = opts->parts;
+    spec.nparts = opts->nparts;
     spec.deps = deps;
     spec.dep_count = (size_t)opts->dep_count;
-    spec.prev = prev_task;
-    spec.prev_type = prev_dep_type;
+    if (prev)
+    {
+        spec.prev = prev->task;
+        spec.prev_type = prev->type;
+    }
     spec.take_foreground = !opts->bg;
     spec.background = opts->bg;
     if (target_group)
@@ -363,11 +433,12 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
 
     struct edc_task_group *group = task->group;
 
-    /* Task creation is silent: state transitions are observable via /task list,
-     * /task status, /whoami and the TUI snapshot. */
+    /* The receipt is emitted by the caller (edc_shell_ast.c announces the task it just
+     * spawned). It cannot live here: `!cmd` and `/task new` create tasks too and must say
+     * the same line. What is logged here stays for the trace. */
     log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id,
              group ? group->group_id : "-", opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
-             prev_task ? (prev_dep_type == TASK_DEP_SEQUENCE ? " [seq]" : " [pipe]") : "",
+             prev ? (prev->type == TASK_DEP_JOIN ? " [pipe]" : " [ordered]") : "",
              redirect_stdout ? (redirect_append ? " (>> redirect)" : " (> redirect)") : "");
 
     /* The turn is already attached (input is mandatory in this path); running it is
@@ -381,121 +452,15 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     return task;
 }
 
-sds edc_shell_read_file(const char *path, sds *err_out)
+/* Same recognition as the expand phase (edc_shell_vars.c): only our exact forms count. */
+static bool edc_shell_all_digits(const char *s, size_t n)
 {
-    struct stat st;
-    if (stat(path, &st) != 0)
-    {
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': %s", path, strerror(errno));
-        return NULL;
-    }
-    if (S_ISDIR(st.st_mode))
-    {
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': Is a directory", path);
-        return NULL;
-    }
-    FILE *f = fopen(path, "r");
-    if (!f)
-    {
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': %s", path, strerror(errno));
-        return NULL;
-    }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz < 0)
-    {
-        fclose(f);
-        if (err_out)
-            *err_out = sdscatprintf(sdsempty(), "cannot read '%s': %s", path, strerror(errno));
-        return NULL;
-    }
-    fseek(f, 0, SEEK_SET);
-    sds content = sdsnewlen(NULL, (size_t)sz);
-    if (sz > 0)
-        fread(content, 1, (size_t)sz, f);
-    fclose(f);
-    return content;
-}
-
-sds edc_shell_expand_history(const char *input)
-{
-    if (edc_cli_history_count() == 0)
-        return sdsnew(input);
-
-    sds result = sdsempty();
-    bool in_dq = false, in_sq = false;
-    const char *p = input;
-
-    while (*p)
-    {
-        if (in_dq)
-        {
-            if (*p == '"')
-                in_dq = false;
-            else if (*p == '\\' && *(p + 1))
-            {
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (in_sq)
-        {
-            if (*p == '\'')
-                in_sq = false;
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (*p == '"')
-        {
-            in_dq = true;
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (*p == '\'')
-        {
-            in_sq = true;
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-        else if (*p == '!' && *(p + 1))
-        {
-            p++; /* skip ! */
-            if (*p == '!')
-            {
-                p++;
-                result = sdscat(result, edc_cli_history_at(edc_cli_history_count() - 1));
-            }
-            else if (*p >= '0' && *p <= '9')
-            {
-                int idx = 0;
-                while (*p >= '0' && *p <= '9')
-                {
-                    idx = idx * 10 + (*p - '0');
-                    p++;
-                }
-                if (idx > 0 && idx <= edc_cli_history_count())
-                    result = sdscat(result, edc_cli_history_at(idx - 1));
-            }
-            else
-            {
-                result = sdscatlen(result, "!", 1);
-                result = sdscatlen(result, p, 1);
-                p++;
-            }
-        }
-        else
-        {
-            result = sdscatlen(result, p, 1);
-            p++;
-        }
-    }
-
-    return result;
+    if (n == 0)
+        return false;
+    for (size_t i = 0; i < n; i++)
+        if (s[i] < '0' || s[i] > '9')
+            return false;
+    return true;
 }
 
 sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_scheduler *sched, const char *input,
@@ -510,9 +475,6 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
     bool in_dq = false, in_sq = false;
     const char *p = input;
 
-#define VAR_DELIM(c)                                                                                                   \
-    ((c) == ' ' || (c) == '\t' || (c) == '\0' || (c) == '|' || (c) == ';' || (c) == '&' || (c) == '>' || (c) == '<')
-
     while (*p)
     {
         if (in_dq)
@@ -530,9 +492,9 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
                 result = sdscatlen(result, p, 1);
                 p++;
             }
-            else if (*p == '$' && *(p + 1))
+            else if (p[0] == '{' && p[1] == '{')
             {
-                p++;
+                p += 2;
                 goto expand_var;
             }
             else
@@ -560,70 +522,58 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
             result = sdscatlen(result, p, 1);
             p++;
         }
-        else if (*p == '$' && *(p + 1))
+        else if (p[0] == '{' && p[1] == '{')
         {
-            p++; /* skip $ */
+            p += 2;
         expand_var:
-            if (*p == '$')
             {
-                p++;
-                /* `$$` is the task in front (not the screen focus: that one may sit on a
-                 * task that already finished). */
-                struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
-                if (front)
-                    result = sdscat(result, front->task_id);
-            }
-            else if (strncmp(p, "LAST", 4) == 0 && VAR_DELIM(p[4]))
-            {
-                result = sdscatlen(result, "$LAST", 5);
-                p += 4;
-            }
-            else if (*p >= '0' && *p <= '9')
-            {
-                const char *ns = p;
-                while (*p >= '0' && *p <= '9')
-                    p++;
-                char buf[32];
-                size_t nl = (size_t)(p - ns);
-                if (nl < sizeof(buf))
+                const char *close = strstr(p, "}}");
+                if (!close)
                 {
-                    memcpy(buf, ns, nl);
-                    buf[nl] = '\0';
-                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, buf, NULL);
+                    result = sdscatlen(result, "{{", 2); /* unterminated: literal bytes */
+                    continue;
+                }
+                const char *after = close + 2;
+                sds body = sdsnewlen(p, (size_t)(close - p));
+
+                if (strcmp(body, "SELF") == 0)
+                {
+                    /* `{{SELF}}` is the task in front (not the screen focus: that one may
+                     * sit on a task that already finished). Resolved NOW, as `$$` was. */
+                    struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
+                    if (front)
+                        result = sdscat(result, front->task_id);
+                }
+                else if (strcmp(body, "LAST") == 0)
+                {
+                    /* No dependency, and no value yet: the marker stays for the expand
+                     * phase (edc_shell_vars.c), which runs once this task's deps are done. */
+                    result = sdscat(result, "{{LAST}}");
+                }
+                else if (edc_shell_all_digits(body, sdslen(body)))
+                {
+                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, body, NULL);
                     if (!t)
                     {
-                        *out_error = sdscatprintf(sdsempty(), "$%s: task not found", buf);
+                        *out_error = sdscatprintf(sdsempty(), "{{%s}}: task not found", body);
+                        sdsfree(body);
                         sdsfree(result);
                         return NULL;
                     }
                     (*out_dep_count)++;
                     *out_deps = realloc(*out_deps, (size_t)*out_dep_count * sizeof(sds));
-                    (*out_deps)[*out_dep_count - 1] = sdsnew(buf);
-                    result = sdscatprintf(result, "$%s", buf);
+                    (*out_deps)[*out_dep_count - 1] = sdsdup(body);
+                    result = sdscatprintf(result, "{{%s}}", body);
                 }
-            }
-            else
-            {
-                const char *is = p;
-                while (*p && !VAR_DELIM(*p) && *p != '$')
-                    p++;
-                size_t il = (size_t)(p - is);
-                if (il > 0)
+                else
                 {
-                    sds id = sdsnewlen(is, il);
-                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, NULL);
-                    if (!t)
-                    {
-                        *out_error = sdscatprintf(sdsempty(), "$%s: task not found", id);
-                        sdsfree(id);
-                        sdsfree(result);
-                        return NULL;
-                    }
-                    (*out_dep_count)++;
-                    *out_deps = realloc(*out_deps, (size_t)*out_dep_count * sizeof(sds));
-                    (*out_deps)[*out_dep_count - 1] = id;
-                    result = sdscatprintf(result, "$%s", id);
+                    /* Not one of our forms: verbatim, no dep, no error (see the header of
+                     * edc_shell_vars.c -- nothing is a reference unless spelled exactly). */
+                    result = sdscatprintf(result, "{{%s}}", body);
                 }
+                sdsfree(body);
+                p = after;
+                continue;
             }
         }
         else
@@ -633,8 +583,110 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
         }
     }
 
-#undef VAR_DELIM
     return result;
+}
+
+/* Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ ! @` sigil. `/shell off`
+ * selects this path (the DEFAULT is ON); the switch exists because those operators spell
+ * out a Unix shell vocabulary, and a user who does not expect them would otherwise get a
+ * silently half-parsed task instead of their text.
+ *
+ * It goes through edc_shell_spawn_task (the single creation entry point) rather than
+ * building a spec here, so "how an input line becomes a task" keeps one owner. The
+ * placement is the scheduler's plain-input one: the group in front, when it is still a
+ * place to put new work. */
+/**
+ * Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ !` sigil. `/shell off` selects
+ * this path (the DEFAULT is ON); the switch exists because those operators spell out a
+ * Unix shell vocabulary, and a user who does not expect them would otherwise get a
+ * silently half-parsed task instead of their text.
+ *
+ * It goes through edc_shell_spawn_task (the single creation entry point) rather than
+ * building a spec here, so "how an input line becomes a task" keeps one owner. The
+ * placement is the scheduler's plain-input one: the group in front, when it is still a
+ * place to put new work.
+ *
+ * |text| is the line as it should become the task's input -- the caller passes the
+ * de-escaped form (see edc_shell_execute), so `\@`/`\+` mean a literal character here too.
+ */
+bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                struct edc_reply_to to, struct edc_channel_message *message,
+                                const struct edc_msg_payload *payload)
+{
+    struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
+
+    struct edc_task_group *group = session ? session->foreground_group : NULL;
+    if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
+        group = NULL;
+
+    /* The payload is what the passes produced: |text| is the final user text, |synthetic|
+     * is the extra content the model also sees (an @file's contents). They stay two
+     * separate messages -- see struct edc_msg_payload. */
+    const char *text = (payload && payload->text) ? payload->text : "";
+
+    struct edc_cmd_task_opts opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.input = sdsnew(text);
+    if (payload)
+    {
+        opts.parts = payload->parts; /* borrowed: the AST outlives interpolation */
+        opts.nparts = payload->nparts;
+    }
+    /* The sender may have declared a better label (a `/prompt` expansion names the line
+     * the user typed, not the body it became); otherwise the text is the label. */
+    opts.desc = edc_str_utf8_truncate(message->task_desc ? message->task_desc : text, EDC_TASK_DESC_MAX, true);
+
+    struct edc_task_group *out_group = NULL;
+    sds spawn_err = NULL;
+    struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task",
+                                                 &out_group, NULL, false, NULL, &spawn_err);
+    if (spawn_err)
+    {
+        edc_commands_reply(to, spawn_err);
+        sdsfree(spawn_err);
+    }
+    if (task)
+    {
+        if (message)
+            edc_task_set_user_origin(task, message->mid, message->payload);
+        edc_commands_announce_task(to, task);
+    }
+
+    edc_cmd_task_opts_free(&opts); /* frees input + desc */
+    return true;
+}
+
+/* ── 流水线的最后两步：passes → 解释执行 ────────────────────────
+ *
+ * 这两步永远成对出现（每个入口都一样），所以收在一个函数里：跑 pass 链，再让解释器消费
+ * pass 定稿后的 IR。|ast| 的所有权在这里结束。 */
+static bool edc_run_passes_and_interp(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                     struct edc_reply_to to, struct edc_channel_message *message, edc_ast *ast)
+{
+    struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
+    struct edc_pass_ctx ctx = {
+        .conf = sched ? sched->config : NULL,
+        .sm = sm,
+        .sched = sched,
+        .workdir = session ? edc_session_get_workdir(session) : NULL,
+    };
+
+    sds perr = NULL;
+    const bool ok = edc_passes_run(&ctx, ast, &perr);
+    if (!ok)
+    {
+        edc_commands_reply(to, perr ? perr : "input rejected");
+        if (perr)
+            sdsfree(perr);
+        edc_ast_free(ast);
+        return true; /* 已回话：这条输入处理完毕 */
+    }
+
+    const bool handled = edc_interp(sm, sched, to, message, ast);
+    edc_ast_free(ast);
+    return handled;
 }
 
 bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
@@ -643,42 +695,52 @@ bool edc_shell_execute(struct edc_session_manager *sm, struct edc_scheduler *sch
     if (!message || !message->content || sdslen(message->content) == 0)
         return false;
 
-    bool is_at = (message->content[0] == '@');
-    const char *body = is_at ? message->content + 1 : message->content;
+    const bool shell_on = sched && sched->config && sched->config->shell_syntax;
 
-    sds trimmed = sdstrim(sdsnew(body), " \t");
-    if (sdslen(trimmed) == 0)
-    {
-        sdsfree(trimmed);
-        return true;
-    }
-    sdsfree(trimmed);
+    /* 先词法，再分类（分类是**纯 token 函数**），然后才 parse。开关是词法器模式：关闭时它
+     * 不产出 sigil/算符，也不给任何 word 打 fully_quoted —— 所以分类不需要再看开关。 */
+    edc_lex_out toks;
+    if (!edc_lex(message->content, shell_on ? EDC_LEX_SHELL_ON : EDC_LEX_SHELL_OFF, &toks))
+        return false;
 
-    /* Options are only recognised after a quoted description, so an unquoted `@`
-     * command carrying one would silently swallow it into the description text.
-     * Reject it instead of creating a task nobody meant. */
-    if (is_at && edc_cmd_desc_needs_quotes(body))
+    sds cerr = NULL;
+    const edc_in_kind kind = edc_classify(&toks, &cerr);
+    if (cerr)
     {
-        edc_commands_reply(to, "Syntax error — an `@` command with options needs its description quoted: "
-                               "write `@\"<description>\" --bg`, or drop the options.");
+        edc_commands_reply(to, cerr);
+        sdsfree(cerr);
+        edc_lex_out_free(&toks);
         return true;
     }
 
-    /* expand !n / !! history references */
-    sds hist_expanded = edc_shell_expand_history(body);
+    /* shell 行：从这里起任何问题（含词法）都是语法错误，绝不降级成消息。 */
+    if (kind == EDC_IN_SHELL)
+    {
+        edc_ast ast;
+        sds perr = NULL;
+        const bool ok = edc_parse(&toks, &ast, &perr);
+        edc_lex_out_free(&toks);
+        if (!ok)
+        {
+            edc_commands_reply(to, perr ? perr : "syntax error");
+            if (perr)
+                sdsfree(perr);
+            return true;
+        }
+        return edc_run_passes_and_interp(sm, sched, to, message, &ast);
+    }
 
-    /* tokenize → parse → execute via AST */
-    int tok_count = 0;
-    edc_shell_token_t *tokens = edc_shell_tokenize(hist_expanded, &tok_count);
-    sdsfree(hist_expanded);
+    /* 消息：开关关着却用了 shell 语法，说一声（Ⓔ）。 */
+    if (toks.saw_disabled)
+        edc_commands_reply(to, "Shell-like syntax is off (`/shell on`) — this line went to the model "
+                               "as a message, not to the shell layer.");
+    edc_lex_out_free(&toks);
 
-    ast_node_t *root = ast_parse(tokens, tok_count, is_at);
-    ast_execute(sm, sched, to, root,
-                edc_session_store_resolve_session(sm, message->session_id));
-    ast_free(root);
-
-    for (int i = 0; i < tok_count; i++)
-        edc_shell_token_free(&tokens[i]);
-    free(tokens);
-    return true;
+    /* 消息也有节点：展开是 AST 上的 pass，解释器只消费结果（edc_ast.h 说明为什么
+     * MESSAGE 不进文法，但必须进 IR）。 */
+    edc_ast ast;
+    memset(&ast, 0, sizeof(ast));
+    ast.kind = EDC_AST_MESSAGE;
+    ast.message.text = sdsdup(message->content);
+    return edc_run_passes_and_interp(sm, sched, to, message, &ast);
 }

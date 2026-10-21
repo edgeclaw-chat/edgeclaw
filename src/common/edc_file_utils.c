@@ -1,5 +1,7 @@
 ﻿#include "edc_file_utils.h"
+#include "edc_path_guard.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -107,6 +109,46 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
     return true;
 }
 
+bool edc_file_rename_replace(const char *src, const char *dst, EdcError **error)
+{
+    if (!src || !dst)
+    {
+        edc_error_set(error, EDC_ERR_INVAL, "rename: NULL path");
+        return false;
+    }
+#ifdef _WIN32
+    /* The CRT's rename() refuses to overwrite (errno EEXIST), which breaks every
+     * ".tmp -> real" state save after the first one. MoveFileExW replaces the
+     * destination and takes UTF-8 paths through the wide API. */
+    wchar_t *wsrc = edc_utf8_to_wide(src);
+    wchar_t *wdst = edc_utf8_to_wide(dst);
+    BOOL ok = FALSE;
+    DWORD err = ERROR_INVALID_PARAMETER;
+    if (wsrc && wdst)
+    {
+        ok = MoveFileExW(wsrc, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (!ok)
+            err = GetLastError();
+    }
+    free(wsrc);
+    free(wdst);
+    if (!ok)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "rename '%s' -> '%s' failed: Windows error %lu", src, dst,
+                      (unsigned long)err);
+        return false;
+    }
+    return true;
+#else
+    if (rename(src, dst) != 0)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "rename '%s' -> '%s' failed: %s", src, dst, strerror(errno));
+        return false;
+    }
+    return true;
+#endif
+}
+
 /* True when the resolved parent directory of |path| lives inside |root|.
  * |root| == NULL/"" disables the check. A parent that cannot be resolved (e.g.
  * does not exist yet) fails closed. */
@@ -123,8 +165,7 @@ static bool edc_path_parent_within(const char *path, const char *root)
     bool ok = false;
     if (pr && rr)
     {
-        size_t rl = strlen(rr);
-        ok = strncmp(pr, rr, rl) == 0 && (pr[rl] == '\0' || pr[rl] == '/');
+        ok = edc_path_is_within(pr, rr);
     }
     free(pr);
     free(rr);
@@ -149,19 +190,19 @@ FILE *edc_file_fopen_safe(const char *path, const char *mode, const char *root)
     if (!path || !mode)
         return NULL;
 
-    struct stat lst;
-    if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode))
-    {
-        errno = ELOOP;
-        return NULL;
-    }
-    if (!edc_path_parent_within(path, root))
+    /* The rules live in edc_path_guard: symlink refused, target contained in |root|, a
+     * file that does not exist yet resolved through its parent. |conf| NULL = no denylist
+     * here; the guarded READERS are the ones that consult it. */
+    struct edc_path_rules rules = {.root = root, .writable = true, .refuse_symlink = true};
+    sds resolved = edc_path_guard_resolve(&rules, path, NULL);
+    if (!resolved)
     {
         errno = EACCES;
         return NULL;
     }
 
-    int fd = open(path, edc_fopen_flags_from_mode(mode) | O_NOFOLLOW, 0644);
+    int fd = open(resolved, edc_fopen_flags_from_mode(mode) | O_NOFOLLOW, 0644);
+    sdsfree(resolved);
     if (fd < 0)
         return NULL;
 
@@ -215,29 +256,67 @@ bool edc_file_is_regular(const char *path)
 
 bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
 {
+    if (!path || !path[0])
+    {
+        edc_error_set(error, EDC_ERR_INVAL, "mkdir: empty path");
+        return false;
+    }
+
     sds partial = sdsempty();
     const char *p = path;
-    bool is_absolute = (*p == '/');
 
-    if (is_absolute)
+    /* Carry the root into the first segment instead of creating it: "/" on POSIX, a
+     * drive ("C:") or a UNC share ("\\server\share") on Windows. Everything below is
+     * created one level at a time -- splitting on '/' only handed a whole Windows path
+     * to mkdir() as a single segment, which fails as soon as more than the last level
+     * is missing (it only ever worked because EEXIST was tolerated). */
+    if (edc_path_is_absolute(path))
     {
-        partial = sdscat(partial, "/");
-        while (*p == '/')
-            p++;
+        if (edc_path_is_sep(p[0]) && edc_path_is_sep(p[1]))
+        {
+            const char *q = p + 2;
+            for (int part = 0; part < 2 && *q; part++) /* \\server\share */
+            {
+                while (*q && !edc_path_is_sep(*q))
+                    q++;
+                while (edc_path_is_sep(*q))
+                    q++;
+            }
+            partial = sdscatlen(partial, p, (size_t)(q - p));
+            p = q;
+        }
+        else if (edc_path_is_sep(*p))
+        {
+            partial = sdscatlen(partial, p, 1); /* the rooted separator, kept as written */
+            while (edc_path_is_sep(*p))
+                p++;
+        }
+        else
+        {
+            p += 2; /* "C:" */
+            if (edc_path_is_sep(*p))
+                p++;
+            partial = sdscatlen(partial, path, (size_t)(p - path));
+        }
     }
 
     while (*p)
     {
-        while (*p == '/')
+        while (edc_path_is_sep(*p))
             p++;
-        const char *next = strchr(p, '/');
-        size_t seg_len = next ? (size_t)(next - p) : strlen(p);
-        if (seg_len == 0)
+        if (!*p)
             break;
 
-        if (sdslen(partial) > 0 && partial[sdslen(partial) - 1] != '/')
-            partial = sdscat(partial, "/");
-        partial = sdscatlen(partial, p, seg_len);
+        const char *next = p;
+        while (*next && !edc_path_is_sep(*next))
+            next++;
+
+        if (sdslen(partial) > 0 && !edc_path_is_sep(partial[sdslen(partial) - 1]))
+        {
+            const char sep = PATH_SEP;
+            partial = sdscatlen(partial, &sep, 1);
+        }
+        partial = sdscatlen(partial, p, (size_t)(next - p));
 
         uv_fs_t req;
         int r = (int)uv_fs_mkdir(g_file_loop, &req, partial, mode, NULL);
@@ -248,12 +327,19 @@ bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
             sdsfree(partial);
             return false;
         }
-
-        p = next ? next + 1 : p + seg_len;
+        p = next;
     }
 
     sdsfree(partial);
     return true;
+}
+
+/* "." and ".." are on every directory listing and no caller means them: three callers
+ * used to filter them out with their own copy of this test, and a fourth (the list_dir
+ * tool) showed them to the model as if they were entries. */
+static bool edc_dir_entry_is_dot(const char *name)
+{
+    return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
 bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcError **error)
@@ -272,6 +358,9 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcE
 
     do
     {
+        if (edc_dir_entry_is_dot(fd.cFileName))
+            continue;
+
         int type = UV_DIRENT_UNKNOWN;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             type = UV_DIRENT_DIR;
@@ -293,6 +382,9 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcE
     struct dirent *entry;
     while ((entry = readdir(dir)))
     {
+        if (edc_dir_entry_is_dot(entry->d_name))
+            continue;
+
         int type = UV_DIRENT_UNKNOWN;
         if (entry->d_type == DT_DIR)
             type = UV_DIRENT_DIR;

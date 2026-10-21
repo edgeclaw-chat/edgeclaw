@@ -9,6 +9,7 @@ cc_library(
             "edc_landlock_sandbox.c",
             "edc_ns_sandbox.c",
             "edc_sandbox.c",
+            "edc_seatbelt_sandbox.c",
             "edc_sandbox_helper.c",
             "edc_shell_env.c",
             "sandbox_helper.c",
@@ -19,6 +20,7 @@ cc_library(
             "edc_landlock_sandbox.h",
             "edc_ns_sandbox.h",
             "edc_sandbox.h",
+            "edc_seatbelt_sandbox.h",
             "edc_sandbox_helper.h",
             "edc_sandbox_helper_blob.h",
             "edc_shell_env.h",
@@ -38,8 +40,18 @@ cc_library(
 # ── Kernel sandbox: backends + helper（原 //src/agent 的三个 target 原样搬来）──
 cc_library(
     name = "sandbox_backends",
-    srcs = ["edc_bpf_sandbox.c", "edc_landlock_sandbox.c", "edc_ns_sandbox.c"],
-    hdrs = ["edc_bpf_sandbox.h", "edc_landlock_sandbox.h", "edc_ns_sandbox.h"],
+    srcs = [
+        "edc_bpf_sandbox.c",
+        "edc_landlock_sandbox.c",
+        "edc_ns_sandbox.c",
+        "edc_seatbelt_sandbox.c",
+    ],
+    hdrs = [
+        "edc_bpf_sandbox.h",
+        "edc_landlock_sandbox.h",
+        "edc_ns_sandbox.h",
+        "edc_seatbelt_sandbox.h",
+    ],
     includes = ["."],
     deps = [
         "//src/common:edc_compat",

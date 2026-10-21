@@ -13,6 +13,15 @@ void edc_file_utils_init(uv_loop_t *loop);
 sds edc_file_read(const char *path, EdcError **error);
 bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError **error);
 
+/* Replace |dst| with |src| (both paths), atomically where the platform allows it.
+ *
+ * POSIX rename() replaces an existing destination; the Windows CRT rename() does
+ * NOT -- it fails with EEXIST -- so the "write .tmp, then rename" pattern silently
+ * kept the FIRST version of every state file on Windows (session.json, sessions
+ * index, sequence watermarks). This wrapper uses MoveFileExW with REPLACE_EXISTING
+ * on Windows and rename() elsewhere. Returns false with *error set on failure. */
+bool edc_file_rename_replace(const char *src, const char *dst, EdcError **error);
+
 /* Symlink-safe variants for writers whose target path is derived from a
  * directory the sandboxed model can write to (workspace, session dirs, ...).
  * They refuse to operate when:
@@ -24,12 +33,20 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
 FILE *edc_file_fopen_safe(const char *path, const char *mode, const char *root);
 bool edc_file_write_safe(const char *path, const char *content, ssize_t len, const char *root, EdcError **error);
 
+/* Reading a path the model can influence lives in edc_path_guard.h (edc_path_guard_read):
+ * it is the one place that owns the symlink / hardlink / containment / deny rules. */
+
+
 bool edc_file_exists(const char *path);
 bool edc_file_is_dir(const char *path);
 bool edc_file_is_regular(const char *path);
 
 bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error);
 
+/* Visit every entry of |path| except "." and ".." -- they name the directory itself and
+ * its parent, no caller ever wanted them, and three of them filtered them out with their
+ * own copy of the test. |name| is an entry name, not a path: join it with edc_path_join().
+ * |type| is one of the UV_DIRENT_* values (UNKNOWN when the platform does not say). */
 typedef void (*edc_dir_entry_cb)(const char *name, int type, void *userdata);
 bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcError **error);
 

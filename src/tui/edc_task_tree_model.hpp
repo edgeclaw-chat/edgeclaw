@@ -16,6 +16,7 @@
 #include "edc_task_snapshot.hpp"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,14 @@ class TaskTreeModel
     {
         std::string task_id;
         std::string state;
+        /* WHY it ended (see snapshot TaskInfo::end): drives the marker's shape. */
+        std::string end;
+        /* How this task read in the PREVIOUS snapshot ("" = never seen). The pair
+         * (prev_state, state) is what says "it has just finished". */
+        std::string prev_state;
+        /* Finished while the user was not looking at it, and nothing has shown it
+         * since: drawn as an unread marker in the sidebar. */
+        bool unread = false;
         bool is_leader = false;
         bool is_active = false;
         std::string description;
@@ -102,11 +111,26 @@ class TaskTreeModel
     // whether to keep requesting animation frames).
     bool HasProcessingTask() const;
 
+    // Tasks that finished in the LAST Apply() and were worth saying out loud
+    // (COMPLETED / CANCELLED / ERROR, outside a system group, not the active task).
+    // Taking the list clears it, so one finish is reported exactly once.
+    std::vector<std::string> TakeFinished();
+    bool IsUnread(const std::string &task_id) const;
+    // The user has seen this task: drop its unread marker.
+    void MarkRead(const std::string &task_id);
+    // The same, for "its output was on screen" rather than "it is the active one":
+    // those tasks are read, and a finish already recorded for them is dropped too
+    // (no marker, nothing announced).
+    void DropSeen(const std::set<std::string> &seen);
+
   private:
     std::string session_id_;
     std::string session_name_;
     std::string created_at_;
     std::vector<GroupInfo> groups_;
+
+    // Filled by Apply(), drained by TakeFinished().
+    std::vector<std::string> finished_;
 
     // Fold state, preserved across snapshot refreshes.
     bool section_collapsed_ = false;

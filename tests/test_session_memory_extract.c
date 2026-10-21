@@ -452,7 +452,7 @@ static void test_serialization_tristate_and_v7(void)
     turn->folded_prefix = 1;
     turn->memo_prefix = 2;
     edc_task_mark_ready(leader);
-    edc_task_mark_suspended(leader);
+    edc_task_mark_interrupted(leader);
     leader->memo_kind = EDC_MEMO_KIND_COMPACT;
 
     cJSON *json = edc_state_serialize(session, sched);

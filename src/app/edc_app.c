@@ -3,6 +3,7 @@
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_endpoint_probe.h"
@@ -108,6 +109,15 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
      * written back -- only the in-TUI /sandbox command persists the state. */
     if (sandbox_override >= 0)
         app->config->enable_sandbox = (sandbox_override != 0);
+
+    /* "Forced on" cannot be honoured where there is no backend. Say it out loud instead of
+     * starting with a switch that reads on while nothing is enforced -- the persisted value
+     * was already clamped by edc_config_load, this covers the CLI flag only. */
+    if (app->config->enable_sandbox && !edc_platform_has_sandbox())
+    {
+        log_warn("sandbox: forced on, but this platform has no sandbox backend; running with it OFF");
+        app->config->enable_sandbox = false;
+    }
     if (app->config->enable_sandbox)
     {
         edc_sandbox_init(app->config);
@@ -164,8 +174,6 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     return app;
 }
 
-/* CLI `!n` / `!!` history lives in src/shell/edc_cli_history.{c,h} (the shell's own
- * per-process command history, not runtime assembly). */
 bool edc_app_set_llm_config(struct edc_app *app, const char *api_url, const char *model, const char *api_key)
 {
     if (!app || !app->config)

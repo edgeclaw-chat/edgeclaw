@@ -18,10 +18,20 @@
  * archives are read with defaults for the fields they lack, so a bump does not
  * strand them:
  *   - v7: no `turn->memo_prefix`, and `task->memo_compact` (bool) instead of `memo_kind`;
- *   - v8: no wall-clock on entries / events / group memory (reads back 0 = unknown).
+ *   - v8: no wall-clock on entries / events / group memory (reads back 0 = unknown);
+ *   - v9: no `task->end` / `blocked_by` / `blocked_end` -- the reason a task ended is then
+ *     inferred conservatively from `life` (CANCELLED -> STOPPED, ERROR -> FAILED), i.e.
+ *     "not a cascade", so nothing is auto-released and nothing extra is counted as needing
+ *     attention on the first load of an old session.
+ *   - v10: no `task->fail` -- a failed task's reason is simply unknown, so a resume cannot
+ *     warn "this will fail again".
+ *   - v12: no `group->kind` -- the loader re-derived it from the leader sink, which
+ *     lost "System" for a group led by an L2 curation task (the sidebar fell back to
+ *     "Group <id>", and the next memory task then spawned yet another system group
+ *     because no system group could be found).
  * Anything older must run its one-shot migration first
  * (tools/migrate_session_v*.py, see docs/session-model-v3.md §10). */
-#define EDC_STATE_SCHEMA_VERSION 9
+#define EDC_STATE_SCHEMA_VERSION 12
 #define EDC_STATE_SCHEMA_MIN_SUPPORTED 7
 
 /* ══════════════════════════════════════════════════════════════
@@ -38,6 +48,8 @@ static const char *dep_type_name(edc_task_dep_type t)
         return "SEQUENCE";
     case TASK_DEP_BARRIER:
         return "BARRIER";
+    case TASK_DEP_UNLESS:
+        return "UNLESS";
     default:
         return "UNKNOWN";
     }
@@ -53,6 +65,8 @@ static edc_task_dep_type dep_type_from_name(const char *name)
         return TASK_DEP_SEQUENCE;
     if (strcmp(name, "BARRIER") == 0)
         return TASK_DEP_BARRIER;
+    if (strcmp(name, "UNLESS") == 0)
+        return TASK_DEP_UNLESS;
     return TASK_DEP_JOIN;
 }
 
@@ -126,12 +140,33 @@ static cJSON *task_to_json(struct edc_task *task)
      * constant. step = where (stored and read back verbatim), life = alive or not. */
     cJSON_AddStringToObject(tj, "step", edc_task_step_name(task->step));
     cJSON_AddStringToObject(tj, "life", edc_task_life_name(task->life));
+    /* v10: WHY it ended, which `life` alone cannot say (CANCELLED covers user stop,
+     * `||` skip and dependency cascade; ERROR covers its own failure and a dependency
+     * that never produced). Written even for NONE so an old binary reading a new file
+     * still finds a consistent (step, life) pair. */
+    cJSON_AddStringToObject(tj, "end", edc_task_end_name(task->end));
+    if (task->end == EDC_END_BLOCKED)
+    {
+        if (task->blocked_by)
+            cJSON_AddStringToObject(tj, "blocked_by", task->blocked_by);
+        cJSON_AddStringToObject(tj, "blocked_end", edc_task_end_name(task->blocked_end));
+    }
+    /* v11: WHY it failed, when that is knowable. Written only for a classified failure --
+     * an absent key means "not a failure or unknown", which is also what v10 archives say. */
+    if (task->fail != EDC_FAIL_NONE)
+        cJSON_AddStringToObject(tj, "fail", edc_task_fail_name(task->fail));
     cJSON_AddBoolToObject(tj, "is_group_leader", task->is_group_leader);
     cJSON_AddBoolToObject(tj, "bg", task->is_background);
     /* `!cmd`: the task exists only to issue its seeded tool call. Optional key (absent =
      * false), so old files read back a normal task -- no schema bump. */
     if (task->tool_only)
         cJSON_AddBoolToObject(tj, "tool_only", true);
+    /* `{{…}}` references collected at input time but not expanded yet. Without this the
+     * task comes back from disk with a LITERAL `{{LAST}}` in its message -- the expand
+     * phase is gated on this flag (edc_llm_request), so a restart silently turned a task
+     * reference into text. Optional key: absent = false, so no schema bump. */
+    if (task->has_deferred_vars)
+        cJSON_AddBoolToObject(tj, "deferred_vars", true);
     /* Which SESSION_MEMORY round this is: curation (default) / compaction / extraction.
      * Omitted for the default; a v7 archive carries the old `memo_compact` bool instead,
      * read back in the loader. */
@@ -210,6 +245,7 @@ static cJSON *task_to_json(struct edc_task *task)
     if (task->redirect_stderr)
         cJSON_AddStringToObject(tj, "redirect_stderr", task->redirect_stderr);
     cJSON_AddBoolToObject(tj, "redirect_append", task->redirect_append);
+    cJSON_AddBoolToObject(tj, "redirect_stderr_append", task->redirect_stderr_append);
 
     /* ── todos ── */
     if (task->todos)
@@ -278,6 +314,12 @@ static cJSON *group_to_json(struct edc_task_group *group)
     else if (group->group_id)
         cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
+    /* v12: the kind is a property of the group, decided when it is created (a task
+     * adopted with EDC_TASK_PLACE_SYSTEM makes the system group), so it is written
+     * out. Re-deriving it on load from the leader sink lost "System" for a group led
+     * by an L2 curation task, and the next memory task then spawned yet another system
+     * group because none could be found. */
+    cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(group->kind));
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
     cJSON_AddNumberToObject(gj, "fold_epoch", (int)group->fold_epoch);
@@ -659,9 +701,9 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         /* v5: step and life are read back separately -- the phase is NOT coarsened.
          *
          * Only life converges: after a restart nothing is running, so ALIVE lands as
-         * SUSPENDED. But step is kept verbatim -- that is exactly what this change
-         * preserves: normalize_interrupted_state used to collapse five phases into
-         * SUSPENDED, losing "where the task was", and resume could only guess it back
+         * INTERRUPTED. But step is kept verbatim -- that is exactly what this change
+         * preserves: normalize_interrupted_state used to collapse five phases into one
+         * parked state, losing "where the task was", and resume could only guess it back
          * from the tool ledger / active_turn.
          *
          * Exception: a fold task (sink = GROUP_MEMORY). It persists too now, so a
@@ -688,6 +730,38 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
                 task->life = EDC_LIFE_INTERRUPTED;
         }
 
+        /* v10: the reason it ended. A row saved while it was still ALIVE carries "NONE",
+         * so an absent OR "NONE" reason falls back to life -- conservatively: a CANCELLED
+         * one is treated as the user's stop and an ERROR one as its own failure, never as
+         * a cascade (auto-releasing on a guess is exactly what this axis exists to avoid).
+         * An ALIVE row that just became INTERRUPTED above gets INTERRUPTED too, so the
+         * restart hint can count it. */
+        {
+            const char *end_name = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "end"));
+            task->end = edc_task_classify_end(end_name);
+            if (task->end == EDC_END_NONE)
+            {
+                if (task->life == EDC_LIFE_INTERRUPTED)
+                    task->end = EDC_END_INTERRUPTED;
+                else if (task->life == EDC_LIFE_CANCELLED)
+                    task->end = EDC_END_STOPPED;
+                else if (task->life == EDC_LIFE_ERROR)
+                    task->end = EDC_END_FAILED;
+            }
+
+            if (task->end == EDC_END_BLOCKED)
+            {
+                const char *by = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "blocked_by"));
+                if (by && *by)
+                    task->blocked_by = strdup(by);
+                const char *be = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "blocked_end"));
+                task->blocked_end = be ? edc_task_classify_end(be) : EDC_END_NONE;
+            }
+
+            /* v11: the failure class, if the archive recorded one (absent -> unknown). */
+            task->fail = edc_task_classify_fail(cJSON_GetStringValue(cJSON_GetObjectItem(tj, "fail")));
+        }
+
         cJSON *v;
         if ((v = cJSON_GetObjectItem(tj, "is_group_leader")))
             task->is_group_leader = cJSON_IsTrue(v);
@@ -695,6 +769,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->is_background = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "tool_only")))
             task->tool_only = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "deferred_vars")))
+            task->has_deferred_vars = cJSON_IsTrue(v) ? 1 : 0;
         /* v8: the tri-state tag. A v7 archive has no `memo_kind`; its old
          * `memo_compact` bool says COMPACT when true, and the default (CURATE) when
          * absent -- which is what memo_kind already holds. */
@@ -746,6 +822,8 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->redirect_stderr = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "redirect_append")))
             task->redirect_append = cJSON_IsTrue(v);
+        if ((v = cJSON_GetObjectItem(tj, "redirect_stderr_append")))
+            task->redirect_stderr_append = cJSON_IsTrue(v);
         if ((v = cJSON_GetObjectItem(tj, "todos")) && cJSON_IsArray(v))
             task->todos = cJSON_Duplicate(v, 1);
         if ((v = cJSON_GetObjectItem(tj, "todo_sync_gap")) && cJSON_IsNumber(v))
@@ -874,12 +952,16 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             continue;
         if (is_orph)
             group->is_orphaned = true;
-        /* The system group is the one led by a fold task (sink = GROUP_MEMORY).
-         * `kind` is derived from the leader's sink, not stored: the persistence
-         * layer still knows nothing of "system group" as a concept, only of task
-         * properties. */
-        if (leader->sink == EDC_SINK_GROUP_MEMORY)
-            group->kind = EDC_GROUP_KIND_SYSTEM;
+        /* The kind travels with the group (v12): only its creator knows it, and an L2
+         * curation task leads a system group exactly like an L1 fold task does. There is
+         * deliberately no fallback inferring it from the leader sink: an archive written
+         * before v12 simply has no system group until one is created again. */
+        const char *kind_name = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "kind"));
+        if (kind_name)
+            group->kind = edc_task_group_classify_kind(kind_name);
+        else
+            log_debug("deserialize: group %s carries no kind (pre-v12 archive) -- user group",
+                      group_id ? group_id : "?");
 
         {
             cJSON *mem = cJSON_GetObjectItem(gj, "memory");
@@ -1042,8 +1124,10 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
                  * without producing (ERROR / CANCELLED / INTERRUPTED) takes its dependent
                  * with it -- JOIN and SEQUENCE alike, exactly as
                  * edc_task_on_dep_failed/cancelled do at runtime, which the file may not
-                 * have recorded (the source's end can be newer than the last save). An
-                 * internal BARRIER is the exception: it is released instead. */
+                 * have recorded (the source's end can be newer than the last save). The two
+                 * RELEASING kinds are the exception: BARRIER (the order is satisfied) and
+                 * UNLESS (`||` -- a source that did not succeed is why the dependent exists)
+                 * both release instead. */
                 struct edc_task_dep *dep;
                 LL_FOREACH(task->deps, dep)
                 {
@@ -1059,6 +1143,14 @@ static void deser_reconcile_deps(struct task_map_entry **id_map)
                              * an interrupt is a manufactured error -- both cascade as a
                              * failure. */
                             edc_task_on_dep_failed(task, dep->source);
+                    }
+                    else if (dep->source && edc_task_is_completed(dep->source) &&
+                             dep->type == TASK_DEP_UNLESS)
+                    {
+                        /* The inverse rule needs the same mirror: the source DID produce, so
+                         * a `||` dependent must be skipped even though the file still says
+                         * the edge is outstanding. */
+                        edc_task_on_dep_completed(task, dep->source);
                     }
                 }
 

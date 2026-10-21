@@ -315,7 +315,7 @@ executor + 限流反例 + 窗口未知不触发 + 投递顺序 + 折叠护栏 + 
 
 | 面 | 改动 |
 |---|---|
-| 默认值 | `EDC_CONFIG_DEFAULT_CONTEXT_WINDOW = 1024 * 1024`（= 默认模型 `deepseek-v4-flash` 的实测窗口，§2.5.1） |
+| 默认值 | `EDC_CONFIG_DEFAULT_CONTEXT_WINDOW = 1024 * 1024`（= 默认模型 `deepseek-flash` 的实测窗口；该 id 现由 `DeepSeek-V4.1-Flash-1017` 提供，与旧名 `deepseek-v4-flash` 同一 1M 家族，§2.5.1） |
 | 修复 | `edc_init_env` 的 top-up 新增 `ensure_positive_int_key`：`context_window` **缺失 / 非数字 / `<= 0`** 一律写成默认值（并重写文件，所以盘上不会留一个撒谎的 0）；读侧 `edc_config.c` 同样只接受正数 —— 双保险，因为启动顺序里 top-up 先跑 |
 | 退休 | `group_fold_msg_threshold`：字段、默认值、ensure、读侧全删；键进 `drop_obsolete_keys`（老 config.json 里的那条会在下次启动被清掉） |
 | 判据 | `edc_group_fold_due` = `foldable > 0 && failures < 3 && ctx > 窗口 - reserve`。窗口仍读不到（脏 config）时**返回 false**：不知道窗口不是"随便折"的理由；手动 `/group fold` 不受影响 |

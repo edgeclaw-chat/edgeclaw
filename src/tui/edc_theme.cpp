@@ -2,7 +2,10 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <initializer_list>
 #include <string>
+
+#include <ftxui/screen/terminal.hpp>
 
 #if !defined(_WIN32)
 #include <chrono>
@@ -64,7 +67,143 @@ bool ParseComponent(std::string_view s, unsigned char &out)
     return true;
 }
 
+std::string_view Safe(const char *value)
+{
+    return value ? std::string_view(value) : std::string_view();
+}
+
+bool ContainsNoCase(std::string_view hay, std::string_view needle)
+{
+    if (needle.empty() || hay.size() < needle.size())
+        return false;
+    const auto lower = [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+    for (size_t i = 0; i + needle.size() <= hay.size(); i++)
+    {
+        size_t j = 0;
+        while (j < needle.size() && lower(hay[i + j]) == lower(needle[j]))
+            j++;
+        if (j == needle.size())
+            return true;
+    }
+    return false;
+}
+
+bool ContainsAnyNoCase(std::string_view hay, std::initializer_list<std::string_view> needles)
+{
+    for (std::string_view needle : needles)
+        if (ContainsNoCase(hay, needle))
+            return true;
+    return false;
+}
+
 } // namespace
+
+bool ParseColorDepth(std::string_view name, ColorDepth &out)
+{
+    size_t begin = 0;
+    size_t end = name.size();
+    while (begin < end && IsSpace(name[begin]))
+        begin++;
+    while (end > begin && IsSpace(name[end - 1]))
+        end--;
+
+    std::string lower;
+    lower.reserve(end - begin);
+    for (size_t i = begin; i < end; i++)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(name[i])));
+
+    if (lower == "truecolor" || lower == "24bit" || lower == "16m")
+    {
+        out = ColorDepth::kTrueColor;
+        return true;
+    }
+    if (lower == "256" || lower == "palette256")
+    {
+        out = ColorDepth::kPalette256;
+        return true;
+    }
+    if (lower == "16" || lower == "palette16")
+    {
+        out = ColorDepth::kPalette16;
+        return true;
+    }
+    return false;
+}
+
+ColorDepth DetectColorDepth(std::string_view colorterm,
+                            std::string_view term,
+                            std::string_view term_program,
+                            std::string_view wt_session,
+                            std::string_view conemu_ansi,
+                            bool windows_console)
+{
+    // 1. The terminal says so itself.
+    if (ContainsAnyNoCase(colorterm, {"24bit", "truecolor"}))
+        return ColorDepth::kTrueColor;
+    if (ContainsAnyNoCase(term, {"direct", "truecolor", "kitty", "alacritty", "foot"}))
+        return ColorDepth::kTrueColor;
+    if (ContainsAnyNoCase(term_program,
+                          {"vscode", "wezterm", "iterm", "ghostty", "warp", "apple_terminal"}))
+        return ColorDepth::kTrueColor;
+
+    // 2. Terminals that do 24-bit but do not fill in $COLORTERM.
+    if (!wt_session.empty())
+        return ColorDepth::kTrueColor;
+    if (ContainsNoCase(conemu_ansi, "on"))
+        return ColorDepth::kTrueColor;
+
+    // 3. An explicit "256 colours only" hint beats the platform default below.
+    if (ContainsNoCase(colorterm, "256") || ContainsAnyNoCase(term, {"256", "xterm", "screen", "tmux"}))
+        return ColorDepth::kPalette256;
+
+    // 4. A Windows console with VT processing on renders 24-bit SGR; $TERM is
+    //    simply never set there, so this is the only signal left.
+    if (windows_console && !ContainsNoCase(term, "dumb"))
+        return ColorDepth::kTrueColor;
+
+    return ColorDepth::kUnset;
+}
+
+void InitColorSupport()
+{
+    ColorDepth depth = ColorDepth::kUnset;
+    if (const char *env = std::getenv("EDGECLAW_COLOR"))
+    {
+        ColorDepth parsed;
+        if (ParseColorDepth(env, parsed))
+            depth = parsed;
+    }
+
+#if defined(_WIN32)
+    constexpr bool kWindowsConsole = true;
+#else
+    constexpr bool kWindowsConsole = false;
+#endif
+
+    if (depth == ColorDepth::kUnset)
+        depth = DetectColorDepth(Safe(std::getenv("COLORTERM")),
+                                 Safe(std::getenv("TERM")),
+                                 Safe(std::getenv("TERM_PROGRAM")),
+                                 Safe(std::getenv("WT_SESSION")),
+                                 Safe(std::getenv("ConEmuANSI")),
+                                 kWindowsConsole);
+
+    // kUnset deliberately calls nothing: ftxui's own detection then stands.
+    switch (depth)
+    {
+    case ColorDepth::kTrueColor:
+        ::ftxui::Terminal::SetColorSupport(::ftxui::Terminal::Color::TrueColor);
+        break;
+    case ColorDepth::kPalette256:
+        ::ftxui::Terminal::SetColorSupport(::ftxui::Terminal::Color::Palette256);
+        break;
+    case ColorDepth::kPalette16:
+        ::ftxui::Terminal::SetColorSupport(::ftxui::Terminal::Color::Palette16);
+        break;
+    case ColorDepth::kUnset:
+        break;
+    }
+}
 
 bool ParseMode(std::string_view name, Mode &out)
 {

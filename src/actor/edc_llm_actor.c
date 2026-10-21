@@ -145,6 +145,27 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     }
 }
 
+/* A turn message may carry fields that exist for the store and the UI only -- today the
+ * folded-paste `payload` (the pasted bytes, already expanded into the content). They must
+ * not travel to the API: a copy without them is what goes on the wire, and the original
+ * stays untouched in the turn (it is what fork/serialize copy). Every other message keeps
+ * the zero-copy reference path. */
+static void llm_add_wire_message(cJSON *messages, cJSON *item)
+{
+    if (!item)
+        return;
+    if (!cJSON_HasObjectItem(item, "payload"))
+    {
+        cJSON_AddItemReferenceToArray(messages, item);
+        return;
+    }
+    cJSON *copy = cJSON_Duplicate(item, 1);
+    if (!copy)
+        return;
+    cJSON_DeleteItemFromObject(copy, "payload");
+    cJSON_AddItemToArray(messages, copy); /* owned: freed with the body */
+}
+
 static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req,
                                    void *request_id)
 {
@@ -163,7 +184,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     for (int i = 0; i < cJSON_GetArraySize(req->history); ++i)
     {
         cJSON *item = cJSON_GetArrayItem(req->history, i);
-        cJSON_AddItemReferenceToArray(messages, item);
+        llm_add_wire_message(messages, item);
     }
 
     if (req->turn)
@@ -171,7 +192,7 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         for (size_t qi = req->turn->head + req->turn_begin; qi < req->turn->tail; qi++)
         {
             cJSON *item = req->turn->data[qi];
-            cJSON_AddItemReferenceToArray(messages, item);
+            llm_add_wire_message(messages, item);
         }
     }
 

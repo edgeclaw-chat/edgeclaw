@@ -281,11 +281,19 @@ struct State
     Element StyledWord(std::string s)
     {
         const auto &pal = style::palette();
+        // A code span whose whole text IS a scheduler state name ("`COMPLETED`") is a state,
+        // not code: colour it by the state and drop the chip background. That is how
+        // `/task list` stays scannable by colour without a single new piece of markup -- the
+        // span is ordinary inline code, the renderer just reads what it says. Computed before
+        // the string is moved into the text element.
+        const bool state_span = style.code && style::IsTaskStateName(s);
+        const ::ftxui::Color state_color = state_span ? style::TaskStateColor(pal, s) : pal.md_code_inline;
         Element e = text(std::move(s));
         if (h1)
             e = e | bgcolor(pal.md_h1_bg);
         else if (style.code)
-            e = e | color(pal.md_code_inline) | bgcolor(pal.md_code_bg);
+            e = state_span ? (e | color(state_color) | bold)
+                           : (e | color(pal.md_code_inline) | bgcolor(pal.md_code_bg));
         if (style.bold)
             e = e | bold;
         if (style.italic)

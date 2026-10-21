@@ -20,38 +20,127 @@ GETTING STARTED
            $ edgeclaw
            EdgeClaw TUI ready.
 
-     Type a message in the input box and press Enter.  All non-/ input
-     creates a task in the current foreground group and sends it to the LLM.
-     Conversations are saved per session under workspace/<session_id>/.
+     On first run config.json is created with defaults and the guided setup
+     wizard opens once (provider, API key, model); reopen it any time with
+     /connect.  Type a message in the input box and press Enter: non-/ input
+     goes through the shell parser (see SHELL SYNTAX) and becomes a task in
+     the current foreground group.  Conversations are saved per session under
+     workspace/<session_id>/.
 
-     Tab completion is available for commands (type / then Tab) and will
-     cycle through matching completions on subsequent Tab presses.
+     Type /help for the command list.
 
-SHELL SYNTAX
-     All non-/ input is processed through the edgeclaw shell parser:
+     A line that starts with / is ALWAYS a command, never a message.  If no
+     command answers to that word, the line is refused with "Unknown command"
+     and is not sent to the model -- there is no spelling that turns it into
+     one.  Only the FIRST character matters, so text about a path can start
+     with a word: "check /usr/bin for the old binary".
+
+     While the input starts with /, a completion list hangs just below it:
+     Up/Down move the selection, Tab completes it, Esc dismisses it.  Enter
+     is untouched -- it still sends what you typed.
+
+     Two keys interrupt things.  Esc stops the foreground group's running
+     task (what /task stop does); while the completion list is open, Esc
+     dismisses the list instead.  Ctrl+C clears the input box and shows
+     "Ctrl+C again to quit" in the footer, in place of the working
+     directory -- press it a second time (within ~1.5s) to quit EdgeClaw.
+
+     The footer's right end reads "model · ctx used/window · sandbox:on|off"
+     (the context gauge is the foreground group's current context; a ~ marks
+     an estimate), and while a task runs the bottom row becomes a progress bar
+     carrying its elapsed time and an "Esc to stop" hint.  That is all it
+     carries: a switch that changes once in a blue moon does not earn a
+     permanent cell, so the shell-like syntax is reported by /shell (and, where
+     it matters, by the input line itself).  The empty input box's placeholder
+     points at /help.
+
+SHELL SYNTAX (on by default)
+     The shell-like syntax -- the sigil + and the operators
+     | ; & > >> 2> -- is ON by default: the operators are EdgeClaw's own
+     idiom, and ordinary text costs nothing, because a line is only parsed
+     when it begins with a quote or with +.  Turn it off with
+     "/shell off"; the state is persisted and "/shell" alone reports it.  It is
+     not a footer cell: its effect shows up where it matters -- the rule above the
+     input box writes the draft's name into itself as a filled badge ("--- message
+     ---", "--- command ---", "--- local shell ---", "--- shell ---", "--- syntax
+     error ---") for any non-empty draft, and the prompt below never moves.
+
+     With it off, every line that is not a / command is ONE task
+     description, verbatim -- that is the escape hatch for a workflow where
+     even the quoted forms are unwanted.  / commands are never gated -- /shell
+     itself has to stay reachable.
+
+     What it does NOT govern: a /prompt or /skill body is a document, not
+     input to this layer -- it becomes one task's input verbatim, so the
+     operators do nothing inside it and {{...}} references in it are not
+     collected (a template is authored content; its meaning must not depend
+     on the reader's setting).  @ is outside it too: @file is a file
+     reference, the opencode/Claude convention rather than a Unix shell
+     one, so it works with the switch off.  ! is outside it as well: !cmd
+     never enters the parser (one token dispatches it to a task that issues
+     one exec_shell call), so it means the same thing on or off.
+
+     With it on, all non-/ input is processed through the edgeclaw shell
+     parser:
+
+     Shell syntax is recognised by the FIRST character
+           > analyze src/ for bugs
+           > "scan src/" | "create a fix plan"
+           > "alpha|beta"
+       A line that does not begin with " / ' / + is a normal MESSAGE: one
+       task, verbatim, nothing parsed out of it.  That is ordinary
+       conversation, and it needs no quoting.  A line that begins with a quote
+       -- or with the sigil + -- is SHELL syntax, and inside it EVERY
+       string is quoted: the rule is Python's ("..." interpolates {{...}},
+       '...' is raw, """...""" / '''...''' span lines, the shape pasted text
+       wants; escapes as in Python).  An unquoted operand in a shell line is
+       refused, never guessed -- so the second line above is two tasks (the
+       second fed the first's output) and the third is one task whose text
+       contains the |.  Quoting is also how you write a description that
+       starts with a sigil ("+1 issue"), and there is no escape character.
+       The redirect target is a string too ("say hi" > "out.md"), which is
+       what makes a filename with a space in it expressible; "if x > 5" is a
+       message, not a redirect to a file called 5.
+       What follows the closing quote is the OPTION area (-d <id>,
+       -g <group>, 2>, ...).  Anything else there is refused rather than
+       dropped, so "hello" and more is an error -- not a task quietly
+       called hello.
 
      Implicit task creation
            > analyze src/ for bugs
        Creates a task in the current foreground group with the text as input.
 
-     @ syntax (new group)
-           > @review the latest commits
-       Same as above but creates a new group for the task.
+     + syntax (new group)
+           > +"review the latest commits"
+       Same as above but creates a new group for the task.  The description is
+       a quoted string, like every string in shell syntax.  @ used to be this
+       sigil; it no longer opens a group (quote a description to write a
+       literal @ or +).
+
+     + is shell syntax, / and ! are command syntax
+           > +security audit
+           > /task new "security audit" --new-group
+       A line is one or the other -- they do NOT compose: +/task new …,
+       +/skill …, +/prompt … and +!cmd are refused, rather than quietly
+       becoming a task whose description is the command.  To put a task in a
+       group of its own, say it in the syntax you are already in.  A prompt
+       or a skill has no --new-group of its own (its arguments belong to the
+       template), so open the group first and run the command in it.
 
      Pipe (|)
-           > scan for issues | fix them | write a report
+           > "scan for issues" | "fix them" | "write a report"
        Each segment is a separate task, labeled [pipe].  Each task depends
        on the previous one.  When a task completes, its output is injected
        into the next task's LLM context.
 
      Sequential (;)
-           > review src/ ; run tests ; summarize > report.md
+           > "review src/" ; "run tests" ; "summarize" > report.md
        Splits on ; (outside quotes) and executes each sub-command in order.
        Each segment is labeled [seq].  Tasks wait for the previous one to
        complete, but output is NOT injected between segments (unlike |).
 
      Background (&)
-           > run the full test suite &
+           > "run the full test suite" &
        Runs the task in the background.  The prompt returns immediately.
 
      Output redirect (>  >>  2>)
@@ -61,26 +150,29 @@ SHELL SYNTAX
        After the task completes, its output is written to the specified file.
        >> appends.  2> writes stderr.  Quoted > is not interpreted.
 
-     Input redirect (<)
-           > fix bugs < context.txt
-       Reads context.txt and appends its content to the task's user input
-       (if there is preceding text, it is joined with a newline separator).
-       If the file does not exist or is a directory, the task is NOT created
-       and an error message is shown instead.
-
-     Variable expansion ($)
-           > $LAST
-           > $1
-           > $$
-       $LAST  — output of the most recently completed task (by completion
-                order, not creation order).
-       $N     — output of task with id N (e.g. $1, $2).
-       $$     — task id of the current foreground active task.
+     Task references ({{...}})
+           > {{LAST}}
+           > {{1}}
+           > {{SELF}}
+       These belong to the SHELL syntax: only a line the shell parses
+       recognizes one.  A task created by a COMMAND takes its input as
+       text -- a {{LAST}} in a /task new description or in a /prompt or
+       /skill body is plain text, and neither is such an input split into
+       a | chain or redirected by >.
+       {{LAST}}  — output of the most recently completed task (by
+                   completion order, not creation order).
+       {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
+       {{SELF}}  — task id of the current foreground active task.
+       The sigil is {{...}} and NOT $: $ belongs to the prompt template
+       layer ($1 .. $N, $ARGUMENTS -- opencode's two forms).
+       Only those three forms count; any other {{...}} (a pasted
+       {{ var }}, a stray brace) is copied verbatim, and so is every $.
        Expansion happens after pipe splitting and redirect stripping, so
        any | or > in the expanded output is treated as literal text.
 
      Local shell (!)
            > !git status
+       Not gated by the switch above: ! works with the shell-like syntax on or off.
        A line starting with ! runs a local shell command on THIS machine. The command
        becomes a task of its own -- its own line in the sidebar, its own entry in the
        group's history -- whose only job is to issue one exec_shell call. No model is
@@ -92,26 +184,26 @@ SHELL SYNTAX
        !timeout 60 make -j8. Stop it with /task stop <id> (or /session stop), which kills
        the command's whole process group.
        !!  — run this session's previous ! command again.
-       \!  — escape: send !cmd as ordinary input (a task description) instead.
+       The text after ! is a command line for sh, so it is NOT quoted here --
+       quoting is for the strings of our own syntax.  To send the text !cmd as
+       a normal task description instead, quote it: "!cmd".
        !   alone — usage.
        A command that needs a terminal (sudo, vim, ssh, an editor) fails immediately:
        the child gets no tty. A non-zero exit is NOT a task failure -- the output
        (including stderr) is still the result.
-     History expansion (!, inside a task description)
-           > !!
-           > !3
-       !!  — repeat the last command.
-       !n  — repeat the nth command from history.
-       That history is written only from outside the TUI, so inside the TUI these
-       expand to nothing and the text is taken literally.
+     History expansion
+       There is none: ! is only special at the start of a line (the local
+       shell above); a !n or !! inside a task description is literal text.
 
-     Options on any shell command
-           > "input text" --bg -d task1 --group dev --prompt reviewer
-       Options must appear after the input or be the only content:
-       --bg              Run in background.
-       -d <id>           Wait for this task before executing.
+     Options on + and /task new
+           > +"input text" -d task1 --group dev
+       Options are recognised only after a quoted description (or when the
+       description is the only content); otherwise a token starting with "-"
+       is a syntax error, not a silently-ignored flag.
+       --bg              Run in background (command layer only: a shell line uses `&`).
+       --new-group       Open a group of its own (a fresh conversation).
+       -d <id>           Wait for this task before executing (repeatable).
        --group <id>      Create in this group (-g is a shortcut).
-       --prompt <name>   Use this subagent prompt template.
 
 SHELL ARCHITECTURE
      Input processing follows a Unix-style pipeline:
@@ -122,7 +214,6 @@ SHELL ARCHITECTURE
        A quote-aware tokenizer respecting " and ' quoting.  Token types:
        TOK_TEXT (regular text), TOK_PIPE (|), TOK_SEQ (;), TOK_BG (&),
        TOK_REDIR_OUT (>), TOK_REDIR_APPEND (>>), TOK_REDIR_ERR (2>),
-       TOK_REDIR_IN (<).
 
      Parser & AST
        Recursive-descent parser building an AST (Abstract Syntax Tree):
@@ -138,10 +229,16 @@ SHELL ARCHITECTURE
        target_group (preserved across pipe segments), bg flag, and dep_type.
 
      Variable expansion (two-phase)
-       Phase 1 (collect) — at task creation: validates $VAR references,
-       converts them to implicit dependencies, preserves $ text as-is.
-       Phase 2 (expand)  — when dependencies resolve: replaces $VAR with
-       the referenced task's actual output text, then sends to the LLM.
+       Belongs to the SHELL syntax: only a line the shell parses recognizes
+       a {{...}} reference.  A task created by a command (/task new,
+       /prompt, /skill, /task fork) takes its input as text -- nothing in
+       it is collected, and nothing in it is split into a pipe chain.
+       Phase 1 (collect) — at task creation: validates {{...}} references,
+       converts them to implicit dependencies, preserves the text as-is.
+       Phase 2 (expand)  — when dependencies resolve: replaces the
+       reference with the referenced task's actual output text, then
+       sends to the LLM.  The sigil is {{...}}, not `$` (which belongs
+       to prompt templates).
        Expansion happens after pipe splitting and redirect stripping,
        so any | or > in expanded output is treated as literal text.
 
@@ -152,12 +249,42 @@ SHELL ARCHITECTURE
 
        Dependency types:
          JOIN      (|)       Source output injected into destination's LLM
-                             context.  If the source is CANCELLED the
-                             dependency can never be satisfied, so the
-                             destination is CANCELLED too (cascades).
-         SEQUENCE  (;)       Destination waits, no output injection.  If the
-                             source is CANCELLED only this edge is dropped;
-                             the destination stays runnable.
+                             context.  A source that fails / is cancelled /
+                             interrupted cascades: the destination is
+                             cancelled too, and the edge stays.
+         SEQUENCE  (;)       Same waiting and cascade, but NO output
+                             injection.
+
+FILE REFERENCES (@)
+     A token starting with @ attaches a file's content to the task.  It is
+     NOT shell syntax: it works with the switch off, inside a message and
+     inside a shell line's text alike, because it is a file reference (the
+     opencode / Claude Code convention), not a shell operator.
+
+           > explain @src/main.c
+           > @src/main.c#40-80 what does this loop do
+           > @src/  what is in here
+
+     The @ must open a token -- line start, or right after whitespace -- and
+     the path runs to the next whitespace.  Trailing ASCII punctuation is
+     ignored when resolving, and the text is left exactly as typed.  A
+     backslash directly before the @ makes it a literal @ and attaches
+     nothing.  @path#12 and @path#12-20 attach only those lines (the first
+     line is 1, #12- runs to the end).
+
+     A relative path resolves against the session's working directory, and
+     the read goes through the sandbox and the same reader the read_file
+     tool uses.  A directory attaches its listing; a binary file is skipped
+     with a note.  Caps: 2000 lines / 64 KB per file, 128 KB per message,
+     and truncation says so.  A missing file does not drop the message --
+     the task is created and the failure appears in the attached content.
+
+     Your text keeps @path verbatim, and the content arrives as its own
+     message shaped like a read_file result, so raw_input, the transcript
+     and /task history keep showing what you typed, and {{...}} is never
+     expanded inside a file's body.
+
+     There is no input redirect: < is refused, with a pointer at @file.
 
 TASK MODEL
      Three-layer Unix-like process model:
@@ -173,60 +300,121 @@ TASK MODEL
      Session  — Per-session history storage.  Like a Unix login session.
                 Contains multiple groups in a linked list.
 
-     Fork     — /task fork <parent> <desc> creates a child in the parent's
-                group, inheriting a slice of the parent's conversation.
+     Fork     — /task fork <parent> <desc> creates a child that leads a
+                group of its own (taking the foreground) and inherits the
+                parent group's memory plus a snapshot of its conversation.
 
 TASK STATES
-       IDLE → WAITING_DEPS → WAITING_INPUT → LLM_PROCESSING
-         ⇄ TOOL_CALLING → SUSPENDED → COMPLETED / CANCELLED / ERROR
+       IDLE → WAITING_DEPS → LLM_PROCESSING ⇄ TOOL_CALLING
+                                            → COMPLETED / CANCELLED / ERROR
+       INTERRUPTED (the loop stopped mid-flight)
+       (WAITING_INPUT is retired: IDLE is the ready state, and there is no
+       separate waiting-for-input phase.)
 
      LLM_PROCESSING and TOOL_CALLING alternate as tools are invoked.
      Tasks reach COMPLETED on final LLM response; CANCELLED when stopped;
      ERROR on failure.
 
-     Restart behavior: unfinished tasks are persisted as-is on exit; on load
-     every unfinished task is parked as SUSPENDED.  /task resume [tid]
-     re-derives the state to return to:
+     Restart behavior: on exit every unfinished task is rewritten as
+     INTERRUPTED (queued ones included), and the interrupt propagates to
+     dependents like a failure.  /task resume <tid> re-derives the state to
+     return to:
        - unsatisfied deps            -> WAITING_DEPS
        - unfinished tool call        -> TOOL_CALLING (re-run not-yet-started
                                         tools; a mid-flight tool gets a
                                         synthesized "interrupted" result)
        - pending turn (no LLM reply) -> LLM_PROCESSING
-       - otherwise                   -> WAITING_INPUT
+       - otherwise                   -> IDLE
 
      Failed tasks: a task that failed mid-run is ERROR but keeps its
      half-finished turn (and any interrupted tool ledger).  /task resume
      [tid] continues that turn instead of starting over.
 
+     Cancelled tasks: a task stopped with /task stop is CANCELLED but not
+     destroyed -- its turn and messages are kept; /task resume revives it.
+
      - COMPLETED tasks are terminal; read output with /task output <id>.
      - WAITING_DEPS tasks accept input and queue it until deps resolve.
-     - SUSPENDED tasks are parked (e.g. after a restart); /task resume revives.
+     - INTERRUPTED tasks are revived by /task resume.
      - ERROR tasks failed mid-run; /task resume continues their unfinished turn.
+     - CANCELLED tasks were stopped; /task resume continues them too.
 
 SHELL-LIKE JOB CONTROL
      Shell            EdgeClaw
      ─────────────────────────────────────────
-     cmd &            task "input" &  or  task "input" --bg
-     cmd | cmd        a | b | c  (pipe chain, output injected)
-     cmd ; cmd        a ; b      (sequential, no injection)
-     cmd > file       task > out.md  (redirect output)
-     cmd >> file      task >> log    (append output)
-     cmd 2> file      task 2> err    (stderr redirect)
-     cmd < file       task < in.txt  (input from file)
+     cmd &            "input" &
+     cmd | cmd        "a" | "b"  (pipe chain, output injected)
+     cmd ; cmd        "a" ; "b"  (sequential, no injection)
+     cmd > file       "task" > out.md  (redirect output)
+     cmd >> file      "task" >> log    (append output)
+     cmd 2> file      "task" 2> err    (stderr redirect)
      jobs             /task list
      fg %n            /task fg <id>
      bg %n            /task bg [id]
      kill %n          /task stop <id>
-     !!   !n          !!  !3  (history expansion, inside a task description)
      !cmd             !git status  (local shell: a task of its own)
-     $LAST  $1  $$    variable expansion
+     {{LAST}} {{1}} {{SELF}}   task references
 
 COMMAND REFERENCE
+     General
+     /help                         Show the command list.
+     /whoami                       Show the current session, model,
+                                   foreground group, and active task.
+     /model                        List the current provider's chat models
+                                   (the current one marked).
+     /model <id>                   Switch model (persisted).
+     /model search <q>             Search chat models across all providers.
+     /prompt                       List the templates in workspace/prompts/.
+     /prompt [--new-group|--group <id>] <name> [args...]
+                                   Run a template: substitute its $1 .. $N /
+                                   $ARGUMENTS placeholders (exactly opencode's;
+                                   {{...}} and ${...} are NOT placeholders) and
+                                   make the body ONE task, as written.  The last
+                                   placeholder takes the remaining args; a body
+                                   with no placeholder gets the args appended.
+                                   A body is a DOCUMENT, not a command line:
+                                   | ; & > in it do nothing, and a {{LAST}}
+                                   reference in it stays text.  So a template
+                                   means the same thing whatever the reader's
+                                   /shell setting is.
+     /skill                        List the skills (ours, plus any found in a
+                                   .claude / .agents / .pi / .opencode
+                                   skills directory).
+     /skill [--new-group|--group <id>] <name> [args...]
+                                   Run a skill directly: its SKILL.md body goes
+                                   into this task wrapped in a <skill name=...
+                                   location=...> block (pi's shape, so the model
+                                   knows where the skill's relative paths hang
+                                   off); the args are substituted, or appended
+                                   after the closing tag when the body has
+                                   none.  Same rule as a prompt body: the text
+                                   is a document, one task, verbatim.
+     /reload                       Re-read the resource files and rebuild the
+                                   cached system prompt (a skill or AGENTS.md
+                                   edited on disk takes effect; config.json
+                                   still needs a restart).
+     /connect                      Guided setup (provider, API key, model).
+     /sandbox [on|off]             Enable/disable the filesystem sandbox.
+     /sandbox list                 Show the allow/deny path lists.
+     /sandbox add-ro <dir>         Make a path read-only (it leaves the rw/deny
+                                   lists).
+     /sandbox rm-ro <dir>          Drop a read-only path.
+     /sandbox add-rw <dir>         Make a path read-write (it leaves the ro/deny
+                                   lists).
+     /sandbox rm-rw <dir>          Drop a read-write path.
+     /sandbox add-deny <dir>       Mask a dir (wins over ro/rw; e.g. ~/.ssh).
+     /sandbox rm-deny <dir>        Unmask a dir.
+     /shell [on|off]               Turn the shell-like input syntax on or
+                                   off (on by default; persisted; /shell
+                                   alone reports the state).
+
      Session
-     /session new [name]           Start a new session (optionally named).
+     /session new [name] [dir]     Start a new session (optionally named,
+                                   optionally with a working directory).
      /session switch <name_or_id>  Switch to another session.
      /session list                 List all sessions.
      /session info                 Show current session details.
+     /session status [id]          Show a session's state (default: active).
      /session save                 Persist the current session's history
                                    and state.
      /session stop                 Cancel all active tasks in the current
@@ -234,42 +422,84 @@ COMMAND REFERENCE
      /session remove <name_or_id>  Remove a session (the last one cannot
                                    be removed).
      /session rename <old> <new>   Rename a session.
-     /help                         Show help message.
-     /whoami                       Show current session, model, and group info.
-     /model [name]                 Show or set the current LLM model name.
-     /connect                      Configure the LLM provider (API URL, model,
-                                   API key) in the TUI.
+     /session memo [show [id]]     Show the session memory (all entries, or
+                                   one entry's detail).
+     /session memo search <q>      Search the session memory.
+     /session memo curate [focus]  Curate durable entries out of the group
+                                   memories now.
+     /session memo compact         Compact the session memory now.
+
+     Both take --new-group (a group of its own) and --group <id> (an existing
+     one; --group=<id> is the same option), before or after the name, plus
+     --bg.  A group runs one task at a time even when it is not the group in
+     front, so the task waits for whatever is still running there -- unless
+     --bg is given, which runs it alongside (no queueing, and it does not take
+     the front).  A `--...` word anywhere on the line is an
+     option, so a template argument may not start with `--` -- quote it
+     ("--strict") when it must.  Single dashes are ordinary arguments.
 
      Task creation
-     /task new <desc>                  Create new group + task (foreground).
-     /task new <desc> --bg             Create new group + task (background).
+     /task new <desc>                  Create a task in the group in front.
+     /task new <desc> --bg             Same group, background (no foreground).
+     /task new <desc> --new-group      Open a group of its own (foreground).
      /task new <desc> -g <gid>         Create in existing group.
-     /task new <desc> -d <tid>         Create + wait for dependency.
-     /task fork <pid> <desc>           Fork child in parent's group.
-     /task fork <pid> <desc> --prompt <name>
-                                       Fork with subagent prompt.
+     /task new <desc> -d <tid>         Create + wait for dependency,
+                                       injecting its output (--with is the
+                                       explicit form).
+     /task fork <pid> <desc>           Fork: child leads its own group and
+                                       inherits the parent's context.
 
      Task inspection
      /task list               List all groups and tasks. Active task
                                marked with * (e.g. [L*] or [M*]).
      /task status [tid]       Show task details (state, output, deps).
      /task output <tid>       Show only the task's output text.
-     /task groups             List all process groups.
+     /task history <tid>      Show the task's messages (--json = raw payload).
 
      Foreground / active
      /task fg <tid>           Foreground + set as active task.
-     /task bg                 Move current foreground to background.
+     /task bg [tid]           Move the foreground group (or that task) to
+                               the background.
 
      Task control
+     /task dep <tid> [--drop  Show a task's dependency edges, or void
+     [<sid>]]                 one (or all) of them so a task waiting
+                              on a source that can never produce
+                              again can run.  The drop persists.
      /task stop [tid]         Cancel a task (SIGTERM — notifies deps).
                               Without an id, stops the active task of the
                               foreground group; errors if the id is not
                               found.
-     /task resume [tid]       Resume a SUSPENDED, ERROR or CANCELLED task:
-                              re-derives state (deps / tool chain / turn) and
-                              drives it; an ERROR or CANCELLED task continues
-                              its unfinished turn. Without an id, resumes the
-                              active task of the foreground group.
+     /task resume <tid>       Resume an INTERRUPTED, ERROR or CANCELLED
+                              task: re-derives state (deps / tool
+                              chain / turn) and drives it; an ERROR or
+                              CANCELLED task continues its unfinished turn.
+                              The id is required: there is no batch mode and
+                              no default task. A task skipped by `||` is
+                              refused (the branch was not taken; send the
+                              command again to run it). A task blocked by a
+                              dependency needs no resume: it runs by itself
+                              once that dependency produces.
+
+     Group
+     /group list              List all process groups.
+     /group info [id]         A group's context / fold numbers (default:
+                              the foreground group).
+     /group history <id>      The whole group's history, one block per member.
+     /group fold [id] [focus] Fold the group now, ignoring the trigger
+                              (default: the foreground group).
+
+     Scheduling
+     /jobs                     List the scheduled jobs (workspace/jobs.json):
+                               id, name, schedule and the next run in local
+                               time, how far away and in which zone.
+     /jobs run <id>            Fire a job now.  Its instruction goes through
+                               the input pipeline exactly as a timer firing
+                               does; the schedule itself is left alone.
+     /jobs rm <id>             Remove a job.
+                               <id> is any unique prefix (uuids, so eight
+                               characters is plenty); an unknown or ambiguous
+                               prefix changes nothing.
 
 OUTPUT
      Only the session's active task outputs to the terminal.  Other tasks
@@ -293,26 +523,25 @@ WORKFLOW EXAMPLES
            > help me understand this code
            Welcome! How can I help?
 
-     @ syntax (new group + task)
-           > @code "write a Python HTTP server"
+     + syntax (new group + task)
+           > +"write a Python HTTP server"
 
      Pipe chain (output injected at each step)
-           > scan for vulns | create fix plan | apply patches
+           > "scan for vulns" | "create fix plan" | "apply patches"
 
      Sequential (no output injection)
-           > review src/ ; run tests ; commit changes
+           > "review src/" ; "run tests" ; "commit changes"
 
      Sequential with redirect
-           > review src/ ; run tests ; summarize findings > report.md
+           > "review src/" ; "run tests" ; "summarize findings" > report.md
 
      Combined pipes + redirects
-           > analyze codebase | find critical bugs | generate report > bugs.md
-           > build project 2> build-errors.log
-           > fix all issues < context.txt
+           > "analyze codebase" | "find critical bugs" | "generate report" > bugs.md
+           > "build project" 2> build-errors.log
 
      Background + pipeline
-           > analyze the error logs &
-           > audit API endpoints &
+           > "analyze the error logs" &
+           > "audit API endpoints" &
            > /task list
              - [fg] 1 (2)
                  - [L]* 1   LLM_PROCESSING  analyze the error logs
@@ -322,16 +551,11 @@ WORKFLOW EXAMPLES
      Variable expansion (two-phase)
            > find performance bottlenecks in src/
            ... task 1 completes ...
-           > based on $LAST, create an optimization plan
+           > based on {{LAST}}, create an optimization plan
            ... task 2 waits for task 1, then sees its output ...
 
-     History expansion
-           > review the latest PR
-           > !!                    # repeats "review the latest PR"
-           > !3                    # repeats command #3 from history
-
-     Fork with subagent
-           > /task fork task-0 "audit the database schema" --prompt dba
+     Fork (child leads its own group)
+           > /task fork task-0 "audit the database schema"
 
 FILES
      ~/.edgeclaw/                        EdgeClaw home directory.
@@ -340,10 +564,17 @@ FILES
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
      ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.
      ~/.edgeclaw/workspace/skills/       Custom skill SKILL.md files.
+     Prompts and skills are also read from the directories the other tools
+     already use, the first hit winning: the project's (walking up from the
+     session's directory -- .edgeclaw .claude .agents .opencode .pi), then
+     ~/.edgeclaw/workspace (ours, the only writable one), then the user's
+     (~/.claude, ~/.agents, ~/.config/opencode, ~/.pi/agent).  A name found in
+     two roots is REPORTED -- a log warning, and a "_(shadowed: ...)_" line in
+     /prompt and /skill -- rather than dropped silently.
 
 SEE ALSO
      Architecture: docs/task-session-architecture.md
      EdgeClaw source: https://github.com/edgeclaw-chat/edgeclaw
 
 VERSION
-     edgeclaw 1.2.0
+     edgeclaw 1.3.0

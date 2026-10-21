@@ -2,6 +2,7 @@
 #include "edc_style.hpp"
 #include "edc_text_util.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace edc::model
@@ -20,10 +21,35 @@ bool StateIsProcessing(const std::string &state)
     return style::TaskStateProcessing(state);
 }
 
+/* No further transition will happen on its own (the same set edc_task_state_str
+ * can produce for a finished task). */
+bool IsTerminalState(const std::string &state)
+{
+    return state == "COMPLETED" || state == "CANCELLED" || state == "ERROR" || state == "INTERRUPTED";
+}
+
+/* The endings worth telling the user about. INTERRUPTED is left out on purpose: it
+ * lands on every unfinished task when the app exits, so reporting it would fill the
+ * screen at shutdown (that story belongs to the startup notice). */
+bool AnnouncesFinish(const std::string &state)
+{
+    return state == "COMPLETED" || state == "CANCELLED" || state == "ERROR";
+}
+
 } // namespace
 
 void TaskTreeModel::Apply(const TaskSnapshot *snap)
 {
+    /* How every task read BEFORE this snapshot -- the old tree is about to be
+     * replaced, and "just finished" is a comparison. Copy the rows we need; a task
+     * that disappears from the snapshot simply has no entry. */
+    std::map<std::string, TaskInfo> before;
+    for (const auto &g : groups_)
+        for (const auto &t : g.tasks)
+            before[t.task_id] = t;
+
+    finished_.clear();
+
     session_id_.clear();
     session_name_.clear();
     created_at_.clear();
@@ -60,6 +86,7 @@ void TaskTreeModel::Apply(const TaskSnapshot *snap)
             TaskInfo task;
             task.task_id = t.task_id;
             task.state = t.state;
+            task.end = t.end;
             task.is_leader = t.is_leader;
             task.is_active = t.is_active;
             task.description = TruncateUtf8(t.description, kMaxDescCodepoints);
@@ -67,6 +94,23 @@ void TaskTreeModel::Apply(const TaskSnapshot *snap)
             task.tokens_completion = t.tokens_completion;
             task.tokens_total = t.tokens_total;
             task.tokens_cached = t.tokens_cached;
+            /* Did it end between the two snapshots? A task seen for the first time
+             * never counts -- otherwise opening a session would report its whole
+             * history at once. */
+            const auto prev = before.find(task.task_id);
+            if (prev != before.end())
+            {
+                task.prev_state = prev->second.state;
+                task.unread = prev->second.unread;
+                if (!IsTerminalState(prev->second.state) && AnnouncesFinish(task.state) &&
+                    group.kind != GroupKind::System && !task.is_active)
+                {
+                    task.unread = true;
+                    finished_.push_back(task.task_id);
+                }
+            }
+            if (task.is_active)
+                task.unread = false; /* the chat pane is showing it right now: read */
             if (task.is_active)
                 active_group_id = group.group_id;
             group.tasks.push_back(std::move(task));
@@ -87,6 +131,41 @@ void TaskTreeModel::Apply(const TaskSnapshot *snap)
         next[g.group_id] = (it != group_expanded_.end()) ? it->second : (g.group_id == active_group_id);
     }
     group_expanded_ = std::move(next);
+}
+
+std::vector<std::string> TaskTreeModel::TakeFinished()
+{
+    std::vector<std::string> out;
+    out.swap(finished_);
+    return out;
+}
+
+bool TaskTreeModel::IsUnread(const std::string &task_id) const
+{
+    for (const auto &g : groups_)
+        for (const auto &t : g.tasks)
+            if (t.task_id == task_id)
+                return t.unread;
+    return false;
+}
+
+void TaskTreeModel::DropSeen(const std::set<std::string> &seen)
+{
+    if (seen.empty())
+        return;
+    finished_.erase(std::remove_if(finished_.begin(), finished_.end(),
+                                   [&seen](const std::string &id) { return seen.count(id) > 0; }),
+                    finished_.end());
+    for (const std::string &id : seen)
+        MarkRead(id);
+}
+
+void TaskTreeModel::MarkRead(const std::string &task_id)
+{
+    for (auto &g : groups_)
+        for (auto &t : g.tasks)
+            if (t.task_id == task_id)
+                t.unread = false;
 }
 
 bool TaskTreeModel::HasProcessingTask() const

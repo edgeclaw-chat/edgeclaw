@@ -17,14 +17,18 @@
  * edc_config.c only falls back to these values when a key has been removed
  * from the file by hand; after init that should never happen. */
 #define EDC_CONFIG_DEFAULT_API_URL "https://api.deepseek.com"
-#define EDC_CONFIG_DEFAULT_MODEL "deepseek-v4-flash"
+/* `deepseek-flash` is the id DeepSeek's own docs tell you to use; it is served by
+ * DeepSeek-V4.1-Flash-1017. The older `deepseek-v4-flash` alias is still accepted but
+ * its model is retired and requests are re-routed to the same checkpoint, so this is
+ * the durable name (deepseek.com/quick_start/pricing, checked 2026-10-17). */
+#define EDC_CONFIG_DEFAULT_MODEL "deepseek-flash"
 #define EDC_CONFIG_DEFAULT_MAX_ITER (-1) /* -1 = unlimited */
 /* The model's context window, in tokens. The fold trigger compares the group's
  * context against `window - EDC_FOLD_RESERVE_TOKENS` (see edc_group_fold_due) --
  * there is no other trigger, so this key is always meaningful and is never 0.
  *
- * 1M is the window of the default model (`deepseek-v4-flash` reports 1048576 via
- * GET /models; measured in docs/pi-alignment.md 2.5.1). A different model needs
+ * 1M is the window of the default model family (`deepseek-flash`, i.e. V4.1-Flash-1017,
+ * reports 1048576 via GET /models; measured in docs/pi-alignment.md 2.5.1). A different model needs
  * this edited to match, or a window bigger than the real one postpones folding
  * past the provider's own limit -- and a window much smaller than the group's
  * baseline context (system prompt + memory) makes it fold every round.

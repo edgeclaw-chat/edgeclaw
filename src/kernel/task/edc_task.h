@@ -37,10 +37,6 @@ typedef enum
      * it propagates to its dependents (see edc_task_mark_interrupted). It never holds the
      * front: it will not advance on its own. */
     EDC_LIFE_INTERRUPTED,
-    /* The user parked it (Ctrl+Z). Distinct from INTERRUPTED on purpose; nothing produces
-     * it today -- the old "everything lands here after a restart" collapse is what
-     * INTERRUPTED replaced. Kept so the two meanings cannot be conflated again. */
-    EDC_LIFE_SUSPENDED,
     EDC_LIFE_COMPLETED,
     EDC_LIFE_CANCELLED,
     EDC_LIFE_ERROR,
@@ -50,6 +46,27 @@ extern const char *edc_task_step_name(edc_task_step step);
 extern const char *edc_task_life_name(edc_task_life life);
 extern edc_task_step edc_task_classify_step(const char *name);
 extern edc_task_life edc_task_classify_life(const char *name);
+
+/* WHY a task is over. |life| says which terminal bucket it landed in; |end| says what put
+ * it there -- the fact the coarse buckets cannot carry, because they are not one thing:
+ * CANCELLED is "the user stopped it" OR "a `||` branch was skipped" OR "a dependency was
+ * cancelled", and ERROR is "it failed by itself" OR "a dependency never produced". Without
+ * this axis every consumer (sidebar, /task status, the restart hint, any future
+ * auto-release of cascaded work) has to guess, and the guess differs per caller.
+ *
+ * Invariant: EDC_END_NONE exactly while the task can still move on its own (ALIVE), and
+ * for a COMPLETED one (it ended by succeeding, which the life already says). Every move
+ * back to ALIVE clears the reason -- resume therefore wipes the slate without each writer
+ * having to remember it.
+ *
+ * The enum itself lives in edc_task_types.h (the shell<->app seam); see edc_task_end. */
+
+extern const char *edc_task_end_name(edc_task_end end);
+extern edc_task_end edc_task_classify_end(const char *name);
+
+/** Record WHY a failure happened (EDC_FAIL_NONE ignores). Only call it on a task that is
+ *  in EDC_END_FAILED; any move back to ALIVE clears it with the rest of the reason. */
+extern void edc_task_set_fail(struct edc_task *task, edc_task_fail fail);
 
 /* Two more orthogonal axes: where the output goes, and whether the task must
  * survive a restart. Defaults (CHANNEL, PERSISTENT) describe a user task; only a
@@ -253,13 +270,29 @@ struct edc_task
     sds output; /* final output, injected into a JOIN dependent */
 
     uint32_t completion_seq; /* completion order (0 = not finished) */
-    int has_deferred_vars;   /* $VAR references to expand */
+    int has_deferred_vars;   /* {{…}} task references to expand */
+
+    /* Why it ended (see edc_task_end). EDC_END_NONE while it can still move, and for a
+     * task that ended by succeeding. Cleared by any move back to ALIVE. */
+    edc_task_end end;
+    /* EDC_END_BLOCKED only: the dependency that never produced, and what THAT one's end
+     * was (so "blocked by 7 (interrupted)" survives 7 being deleted later). Informational:
+     * nothing branches on them yet. */
+    char *blocked_by;
+    edc_task_end blocked_end;
+
+    /* WHY it failed, when that is knowable (only with end == EDC_END_FAILED): a doomed
+     * retry must be distinguishable from a transient one. Cleared with `end`. */
+    edc_task_fail fail;
 
     struct edc_tool_call_record *tool_calls;
 
     sds redirect_stdout;
     sds redirect_stderr;
     bool redirect_append; /* true = >>, false = > */
+    /* The same for stderr (`2>>`). `redirect_append` above is shared by whichever stream is
+     * redirected; a line that appends to BOTH streams needs to say it per stream. */
+    bool redirect_stderr_append;
 
     /* Output target for a sink=GROUP_MEMORY task: which group's memory to write,
      * and where this round's cut went (P2a-4). The cut is one point in the group's
@@ -295,6 +328,33 @@ struct edc_task
 
 extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
                                      const char *desc, edc_channel_type channel_type);
+/* Park the frontend's folded-paste map on this task's own user message, as a `payload`
+ * object inside the message JSON. It rides with the message, so fork (cJSON_Duplicate in
+ * edc_task_snapshot_turns) and the state serializer carry it without knowing about it.
+ *
+ * The bytes are for the store and the UI, NOT for the model: the LLM request builder
+ * strips the field when it puts a message on the wire (edc_llm_actor.c). |payload| empty
+ * or no own user message = nothing happens. */
+struct edc_payload;
+/* Park the frontend's user-message identity (`mid`) and its folded-paste map (`payload`) on
+ * this task's own user message, as `mid` / `payload` fields of the message JSON. Both ride
+ * with the message, so fork (cJSON_Duplicate in edc_task_snapshot_turns) and the state
+ * serializer carry them without knowing about them.
+ *
+ * They are for the store and the UI, NOT for the model: the LLM request builder strips
+ * them when a message goes on the wire (edc_llm_actor.c). |payload| empty and |mid| NULL =
+ * nothing happens. */
+extern void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload);
+
+/** The folded-paste map parked on this task's user message with |mid| (borrowed), or NULL.
+ *  Read-only scan of the committed turns plus the in-flight one -- what the "payload by
+ *  mid" pull answers from. */
+extern cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid);
+
+/** The folded-paste map of this task's own user message (borrowed), or NULL. Used by the
+ *  frontend to show the line the way it was typed: the message text is the expanded one. */
+extern cJSON *edc_task_user_payload(struct edc_task *task);
+
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
@@ -318,8 +378,17 @@ extern bool edc_task_mark_completed(struct edc_task *task);
  *  ERROR gets the propagation for free. Returns false and does not broadcast when
  *  the self-transition is rejected. */
 extern bool edc_task_mark_failed(struct edc_task *task);
+/** A stop signal landed on it (user `/task stop`, an inbound signal event): life becomes
+ *  CANCELLED and the reason is EDC_END_STOPPED -- NOT skipped, NOT blocked. */
 extern bool edc_task_mark_cancelled(struct edc_task *task);
-extern bool edc_task_mark_suspended(struct edc_task *task); /* moves life only */
+/** `||`: the source succeeded, so this branch is not taken. Life becomes CANCELLED with
+ *  the reason EDC_END_SKIPPED, so a UI can tell it apart from a user stop. */
+extern bool edc_task_mark_skipped(struct edc_task *task);
+/** A dependency ended without producing and took this task with it. |life| is the bucket
+ *  the cascade lands in (ERROR for a failed/interrupted source, CANCELLED for a cancelled
+ *  one); the reason is EDC_END_BLOCKED plus which source (and that source's own end), so
+ *  "cascaded" is never confused with "failed by itself". Broadcasts nothing. */
+extern bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const struct edc_task *source);
 
 /** The process went down while this task was in flight: keeps the step it was on and
  *  broadcasts to its dependents exactly like a failure (a JOIN dependent is cancelled,
@@ -333,8 +402,8 @@ extern bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_li
 extern void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_life life);
 
 /* Read-side predicates. Each carries a life condition because a stop does not move
- * step: a task stopped while awaiting tools is (AWAIT_TOOLS, INTERRUPTED) or
- * (AWAIT_TOOLS, SUSPENDED) and must not be mistaken for running or awaiting tools. */
+ * step: a task stopped while awaiting tools is (AWAIT_TOOLS, INTERRUPTED) and must not be
+ * mistaken for running or awaiting tools. */
 static inline bool edc_task_is_alive(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ALIVE;
@@ -358,10 +427,6 @@ static inline bool edc_task_is_cancelled(const struct edc_task *task)
 static inline bool edc_task_has_failed(const struct edc_task *task)
 {
     return task && task->life == EDC_LIFE_ERROR;
-}
-static inline bool edc_task_is_suspended(const struct edc_task *task)
-{
-    return task && task->life == EDC_LIFE_SUSPENDED;
 }
 static inline bool edc_task_is_interrupted(const struct edc_task *task)
 {
@@ -389,14 +454,18 @@ static inline bool edc_task_is_parked(const struct edc_task *task)
 {
     return edc_task_is_ready(task) || edc_task_awaits_deps(task);
 }
-/* `/task resume` gate: interrupted, suspended, failed, or cancelled. All of them only
- * stopped the task, so the resume re-derives the step from the messages and ledger. */
+/* `/task resume` gate: interrupted, failed, or cancelled -- by a stop, by its own failure,
+ * or by a dependency (all of them only stopped the task, so the resume re-derives the step
+ * from the messages and the ledger). One exclusion: a task that `||` SKIPPED never ran
+ * because the shell decided it should not, so it is NOT resumable -- the reason says so,
+ * the life (CANCELLED) cannot. */
 static inline bool edc_task_is_resumable(const struct edc_task *task)
 {
     /* INTERRUPTED is in here for the same reason ERROR is: the loop did not finish it and
      * nothing was decided about it, so /task resume picks it up where it stopped. */
-    return task && (task->life == EDC_LIFE_SUSPENDED || task->life == EDC_LIFE_INTERRUPTED ||
-                    task->life == EDC_LIFE_ERROR || task->life == EDC_LIFE_CANCELLED);
+    return task && task->end != EDC_END_SKIPPED &&
+           (task->life == EDC_LIFE_INTERRUPTED || task->life == EDC_LIFE_ERROR ||
+            task->life == EDC_LIFE_CANCELLED);
 }
 
 /* Outward vocabulary for the snapshot's "state" field, logs and command text.
@@ -436,6 +505,19 @@ extern void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *
  * cancelled). Used by the executor at a request boundary: a task that owes someone
  * parks instead of sending the next LLM request (the fold barrier). */
 extern bool edc_task_has_unresolved_deps(const struct edc_task *task);
+/** True when |target| already holds a LIVE edge to |source| (a row exists and has not
+ *  been voided). The predicate the queue needs: "is this task already queued behind that
+ *  one?" must not depend on who created the row -- a `;` chain puts it there before the
+ *  queue asks, and `edc_task_add_dependency` dedups by source. */
+extern bool edc_task_depends_on(const struct edc_task *target, const struct edc_task *source);
+
+/** Drop ONE still-live edge on purpose -- the user's explicit "stop waiting for this" --
+ *  and re-decide: the edge is voided (persisted, like a BARRIER release) and, if that was
+ *  the last unsatisfied dependency, the task becomes READY. Returns false when there is no
+ *  live edge to |source| (already completed, already dropped, or never existed).
+ *  The door out of a dependency whose source can never produce again -- its owner session
+ *  is gone, so nothing will ever release it. Exposed for `/task dep <id> --drop <source>`. */
+extern bool edc_task_drop_dep(struct edc_task *target, struct edc_task *source);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
 /** Handle a source that failed, symmetric with cancellation (the source will not
  *  produce anything either way): a JOIN edge cascades the failure to the dependent
@@ -454,16 +536,35 @@ extern void edc_task_send_signal(struct edc_task *task, edc_task_signal sig);
  * but the task layer does not know the host, so it only records them; they are
  * cleared through the host's unified entry. The list is carried by the task that
  * initiated the operation. */
+/* Why a task moved as a side effect. The host settles every moved task through one entry,
+ * but only ONE kind deserves a line in the chat: a task the user was told had ended, which
+ * is now running again because its blocker produced. Queue advances (a group's next task)
+ * and cascades (already announced by the failure notice) stay quiet. */
+typedef enum
+{
+    EDC_MOVE_CASCADED,  /* a cancel / failure cascade took it down */
+    EDC_MOVE_RELEASED,  /* a dependency satisfied it and it is READY again */
+    EDC_MOVE_UNBLOCKED, /* it was BLOCKED and its blocker produced: worth saying */
+} edc_task_move_kind;
+
 struct edc_task_move_report
 {
     struct edc_task *task; /* a task moved as a side effect (not owned) */
+    edc_task_move_kind kind;
+    /* Optional user-facing line the move deserves. Filled only for UNBLOCKED, because only
+     * the task layer still knows which dependency did it (the move clears `blocked_by`).
+     * Owned by the report. */
+    sds notice;
     struct edc_task_move_report *next;
 };
 
 /** Take and hand each side-effect-moved task to |cb|, then clear the list. The
  *  callback may recurse (clearing can move more tasks), so the list is drained
- *  until empty. */
-extern void edc_task_drain_moves(struct edc_task *task, void (*cb)(void *ctx, struct edc_task *moved), void *ctx);
+ *  until empty. |cb| = NULL just clears the list (used when freeing the task). */
+extern void edc_task_drain_moves(struct edc_task *task,
+                                 void (*cb)(void *ctx, struct edc_task *moved, edc_task_move_kind kind,
+                                            const char *notice),
+                                 void *ctx);
 
 /* Resume ledger of unfinished tool calls. Lifecycle: add (PENDING) when the LLM
  * returns tool_calls; mark_executing when the toolbox reports start; remove when

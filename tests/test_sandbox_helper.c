@@ -102,7 +102,6 @@ int main(void)
     sds deny_dir = sdscatprintf(sdsempty(), "%s/deny", rw);
     mkdir(deny_dir, 0700);
     sds deny_secret = sdscatprintf(sdsempty(), "%s/secret", deny_dir);
-    (void)deny_secret; /* only read on Linux, in the exec block below */
     FILE *secret_f = fopen(deny_secret, "w");
     if (secret_f)
     {
@@ -179,10 +178,9 @@ int main(void)
     free(args);
 
     /* 4. Functional: with the kernel sandbox active, writes inside rw succeed
-     * and writes outside are denied. Skip if this host has no Landlock. */
-#ifndef __linux__
-    printf("test_sandbox_helper: skipped exec checks (non-Linux)\n");
-#else
+     * and writes outside are denied. Runs on every platform that has a backend
+     * (Linux: ns/landlock/seccomp, macOS: Seatbelt); the guard below skips the
+     * assertions only when this host could not enforce anything at all. */
     sds probe_file = NULL;
     char **probe_args = NULL;
     sds probe_cmd = sdscatprintf(sdsempty(), "touch %s/../probe_escape", rw);
@@ -225,9 +223,13 @@ int main(void)
         free(dargs);
         sdsfree(dcmd);
 
-        /* Deny masking comes from the namespace layer only, so first learn from
-         * the helper's debug output whether that layer was enforced. */
-        bool ns_enforced = false;
+        /* Which layer enforced the deny list is platform-specific. On Linux it
+         * is the mount-namespace layer alone -- Landlock is an additive
+         * allow-list and cannot deny a path inside an allowed parent -- so the
+         * assertions are gated on "ns=on(enforced)". On macOS a single Seatbelt
+         * profile covers allow-lists, deny masks and the metadata mutators
+         * together, so "seatbelt=on" is the signal. */
+        bool kernel_enforced = false;
         char dbg_tmpl[] = "/tmp/edc_helper_dbg_XXXXXX";
         int dbg_fd = mkstemp(dbg_tmpl);
         if (dbg_fd >= 0)
@@ -237,7 +239,10 @@ int main(void)
         if (edc_sandbox_helper_prepare(conf, "true", &pfile, &pargs))
         {
             run_helper_capture(pfile, pargs, dbg_tmpl);
-            char buf[512] = {0};
+            /* 4 KiB: the debug line we look for comes AFTER several log lines, and
+             * a 512-byte window silently truncated it (which made the deny
+             * assertions below skip themselves). */
+            char buf[4096] = {0};
             FILE *df = fopen(dbg_tmpl, "r");
             if (df)
             {
@@ -245,15 +250,36 @@ int main(void)
                 buf[n] = '\0';
                 fclose(df);
             }
-            ns_enforced = strstr(buf, "ns=on(enforced)") != NULL;
+#if defined(__APPLE__)
+            kernel_enforced = strstr(buf, "seatbelt=on") != NULL;
+#else
+            kernel_enforced = strstr(buf, "ns=on(enforced)") != NULL;
+#endif
+            /* Say WHICH layers ran, so a log from a platform the reader cannot
+             * reproduce still answers the question. Expected shapes:
+             *   Linux:  "kernel layers: ns=on(enforced) landlock=on seccomp=on"
+             *   macOS:  "kernel layers: seatbelt=on"
+             * The Linux ladder degrades (ns -> seccomp) when unprivileged user
+             * namespaces are unavailable, and the line above is the only place
+             * that degradation is visible. */
+            const char *marker = "sandbox_helper: ";
+            const char *layers = strstr(buf, marker);
+            if (layers)
+            {
+                layers += strlen(marker);
+                const char *eol = strchr(layers, '\n');
+                printf("test_sandbox_helper: kernel layers: %.*s\n",
+                       eol ? (int)(eol - layers) : (int)strlen(layers), layers);
+            }
         }
         sdsfree(pfile);
         free(pargs);
         unlink(dbg_tmpl);
 
-        if (!ns_enforced)
+        if (!kernel_enforced)
         {
-            printf("test_sandbox_helper: ns not enforced, skipping deny masking assertions\n");
+            printf("test_sandbox_helper: no kernel layer enforces the deny list, "
+                   "skipping deny masking assertions\n");
         }
         else
         {
@@ -267,9 +293,63 @@ int main(void)
             sdsfree(dcfile);
             free(dcargs);
             sdsfree(dccmd);
+
+            /* A denied FILE must be UNOPENABLE, not a 0-byte file: "masked" and
+             * "empty" must not look the same to whoever reads it (an empty file
+             * reads as success with nothing in it -- a wrong answer, not an
+             * error). */
+            sds deny_file = sdscatprintf(sdsempty(), "%s/deny_file", rw);
+            FILE *secretf = fopen(deny_file, "w");
+            if (secretf)
+            {
+                fputs("TOPSECRET", secretf);
+                fclose(secretf);
+            }
+            /* Control: a normal file in the same directory still opens, so the
+             * assertion below cannot pass just because the whole path is dead. */
+            sds plain_file = sdscatprintf(sdsempty(), "%s/plain_file", rw);
+            FILE *plainf = fopen(plain_file, "w");
+            if (plainf)
+            {
+                fputs("hello", plainf);
+                fclose(plainf);
+            }
+
+            sds *saved_deny = conf->sandbox_deny_paths;
+            sds two_deny[3] = {sdsdup(saved_deny[0]), sdsdup(deny_file), NULL};
+            conf->sandbox_deny_paths = two_deny;
+
+            sds dfile2 = NULL;
+            char **dargs2 = NULL;
+            sds dcmd2 = sdscatprintf(sdsempty(), "cat %s", deny_file);
+            if (edc_sandbox_helper_prepare(conf, dcmd2, &dfile2, &dargs2))
+            {
+                T_CHECK(run_helper(dfile2, dargs2) != 0, "a denied FILE cannot be opened (not merely emptied)");
+            }
+            sdsfree(dfile2);
+            free(dargs2);
+            sdsfree(dcmd2);
+
+            /* Control: the file next to it still opens, so the assertion above
+             * cannot pass just because the whole directory went dead. */
+            sds cfile2 = NULL;
+            char **cargs2 = NULL;
+            sds ccmd2 = sdscatprintf(sdsempty(), "cat %s", plain_file);
+            if (edc_sandbox_helper_prepare(conf, ccmd2, &cfile2, &cargs2))
+            {
+                T_CHECK(run_helper(cfile2, cargs2) == 0, "control: a normal file next to it still opens");
+            }
+            sdsfree(cfile2);
+            free(cargs2);
+            sdsfree(ccmd2);
+
+            conf->sandbox_deny_paths = saved_deny;
+            sdsfree(two_deny[0]);
+            sdsfree(two_deny[1]);
+            sdsfree(deny_file);
+            sdsfree(plain_file);
         }
     }
-#endif
 
     printf("test_sandbox_helper: %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

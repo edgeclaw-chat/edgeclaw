@@ -7,6 +7,9 @@
 // frame later).
 
 #include "edc_input.hpp"
+#include "edc_style.hpp"
+#include "edc_text_util.hpp"
+#include "edc_token_style.hpp"
 
 #include <cstdio>
 #include <ftxui/component/event.hpp>
@@ -223,6 +226,43 @@ static void test_internal_scroll_follows_caret(void)
     }
 }
 
+static void test_cursor_and_range_replace(void)
+{
+    std::printf("  SetCursor / ReplaceRange: clamped, snapped, caret after the insert\n");
+    std::string text = "abc def";
+    edc::EdcInput input(&text, "");
+
+    input.SetCursor(-5);
+    CHECK(input.CursorPosition() == 0, "a negative caret clamps to 0, got %d", input.CursorPosition());
+    input.SetCursor(9999);
+    CHECK(input.CursorPosition() == static_cast<int>(text.size()), "past the end clamps to the end, got %d",
+          input.CursorPosition());
+
+    text = "abc def";
+    input.ReplaceRange(0, 3, "XYZ");
+    CHECK(text == "XYZ def", "a prefix is replaced in place: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 3, "the caret sits right after the insert, got %d", input.CursorPosition());
+
+    /* What `@` completion does: replace the half-typed mention, keep the rest. */
+    text = "@src x";
+    input.ReplaceRange(0, 4, "@src/main.c ");
+    CHECK(text == "@src/main.c  x", "the mention is completed in place: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 12, "caret after the inserted text, got %d", input.CursorPosition());
+
+    /* Reversed offsets are accepted (one caller passes trigger/cursor in order; another
+       may not). */
+    text = "abcdef";
+    input.ReplaceRange(4, 1, "-");
+    CHECK(text == "a-ef", "begin > end is swapped: '%s'", text.c_str());
+
+    /* An offset inside a multi-byte character snaps back to its start, so the
+       replacement can never split it. */
+    text = "\xe4\xb8\xad\xe6\x96\x87x"; /* 中文x */
+    input.ReplaceRange(1, 3, "-");
+    CHECK(text == "-\xe6\x96\x87x", "a caret inside a character snaps to its boundary: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 1, "and the caret follows the insert, got %d", input.CursorPosition());
+}
+
 static void test_history_recall_up_down(void)
 {
     std::printf("  history: up recalls older, down returns to the draft\n");
@@ -258,22 +298,23 @@ static void test_history_recall_up_down(void)
 static void test_history_preserves_draft(void)
 {
     std::printf("  history: a typed draft is stashed and restored on the way back\n");
-    std::string text = "my draft";
+    // The draft is a prefix filter, so the recallable entries have to start with it.
+    std::string text = "al";
     edc::EdcInput input(&text, "");
     input.AddHistory("alpha");
-    input.AddHistory("beta");
+    input.AddHistory("alpine");
     render_twice(input, 20, 8);
     input.OnEvent(::ftxui::Event::End); // caret at the end (single visual row)
 
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "beta", "up recalls beta, got '%s'", text.c_str());
+    CHECK(text == "alpine", "up recalls the newest match, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowUp);
     CHECK(text == "alpha", "up recalls alpha, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "beta", "down -> beta, got '%s'", text.c_str());
+    CHECK(text == "alpine", "down -> alpine, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "my draft", "down restores the draft, got '%s'", text.c_str());
-    CHECK(input.CursorPosition() == 8, "draft caret restored, got %d", input.CursorPosition());
+    CHECK(text == "al", "down restores the draft, got '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 2, "draft caret restored, got %d", input.CursorPosition());
 }
 
 static void test_history_dedupes_consecutive(void)
@@ -299,45 +340,70 @@ static void test_history_edit_leaves_browsing(void)
     std::printf("  history: editing a recalled entry leaves history mode\n");
     std::string text;
     edc::EdcInput input(&text, "");
-    input.AddHistory("old1");
-    input.AddHistory("old2");
+    input.AddHistory("/task list");
+    input.AddHistory("/task new");
     render_twice(input, 20, 8);
 
-    input.OnEvent(::ftxui::Event::ArrowUp); // recall old2, caret at its end
-    CHECK(text == "old2", "recalled old2, got '%s'", text.c_str());
-    input.OnEvent(::ftxui::Event::Character("!"));
-    CHECK(text == "old2!", "edited recalled entry, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp); // recall /task new, caret at its end
+    CHECK(text == "/task new", "recalled /task new, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::Backspace);
+    CHECK(text == "/task ne", "edited recalled entry, got '%s'", text.c_str());
+    CHECK(!input.IsBrowsingHistory(), "the edit ends the browse");
 
-    // The edit leaves history mode; the edited text becomes the current draft
-    // (so the next Up browses afresh from the newest entry) and Down brings the
-    // edited draft back instead of losing it.
+    // The edited text becomes the current draft and the prefix filter is taken from
+    // it afresh: the next Up browses the entries starting with "/task ne" from the
+    // newest one, and Down brings the edited draft back instead of losing it.
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "old2", "up after edit browses from newest, got '%s'", text.c_str());
+    CHECK(text == "/task new", "up after edit browses from the newest match, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "old2!", "down restores the edited draft, got '%s'", text.c_str());
+    CHECK(text == "/task ne", "down restores the edited draft, got '%s'", text.c_str());
 }
 
 static void test_history_up_from_lower_row_moves_caret(void)
 {
     std::printf("  history: up on a lower visual row moves the caret, not history\n");
-    std::string text = "abcdefghijklmnopqrstuvwxyz"; // soft-wraps at width 10
+    const std::string draft = "abcdefghijklmnopqrstuvwxyz"; // soft-wraps at width 10
+    std::string text = draft;
     edc::EdcInput input(&text, "");
-    input.AddHistory("hist");
+    // The draft is a prefix filter, so a recallable entry has to extend it.
+    input.AddHistory(draft + " tail");
     render_twice(input, 10, 8);
 
     input.OnEvent(::ftxui::Event::End); // caret on the last visual row
     const int before = input.CursorPosition();
     CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
-    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "content untouched by caret up");
+    CHECK(text == draft, "content untouched by caret up");
     CHECK(input.CursorPosition() != before, "caret moved up within the draft");
 
     // Once the caret reaches the first visual row, Up recalls history and the
     // draft is stashed for ArrowDown to bring back.
     input.OnEvent(::ftxui::Event::Home);
     input.OnEvent(::ftxui::Event::ArrowUp);
-    CHECK(text == "hist", "up from the first row recalls history, got '%s'", text.c_str());
+    CHECK(text == draft + " tail", "up from the first row recalls history, got '%s'", text.c_str());
     input.OnEvent(::ftxui::Event::ArrowDown);
-    CHECK(text == "abcdefghijklmnopqrstuvwxyz", "down restores the stashed draft, got '%s'", text.c_str());
+    CHECK(text == draft, "down restores the stashed draft, got '%s'", text.c_str());
+}
+
+/* The owner asks "am I browsing?" to keep the completion popup from opening on a
+   recalled `/command` (it would then steal Up/Down from the history). The flag has
+   to be up exactly between the recalling Up and the edit that ends the browse. */
+static void test_history_browsing_flag(void)
+{
+    std::printf("  history: IsBrowsingHistory marks a recall from the first Up to the edit\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("/task");
+    render_twice(input, 20, 8);
+
+    CHECK(!input.IsBrowsingHistory(), "a fresh input is not browsing");
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(input.IsBrowsingHistory(), "after a recall the flag is up");
+    input.OnEvent(::ftxui::Event::ArrowDown); // past the newest: back to the draft
+    CHECK(!input.IsBrowsingHistory(), "down past the newest ends the browse");
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    input.OnEvent(::ftxui::Event::Character("x")); // an edit ends it too
+    CHECK(!input.IsBrowsingHistory(), "an edit ends the browse");
 }
 
 static void test_history_clear(void)
@@ -353,6 +419,444 @@ static void test_history_clear(void)
     CHECK(!input.OnEvent(::ftxui::Event::ArrowUp), "up with no history not handled");
 }
 
+/* Recalling only what the user is in the middle of typing: the draft at the moment
+   the browse starts is a prefix filter, so `task ` + Up walks the `task ...` lines
+   instead of every unrelated message. */
+static void test_history_prefix_filters_entries(void)
+{
+    std::printf("  history: only entries starting with the typed draft are recalled\n");
+    std::string text = "task ";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("hello world");
+    input.AddHistory("task list");
+    input.AddHistory("task new --foo");
+    render_twice(input, 40, 8);
+    input.OnEvent(::ftxui::Event::End); // caret at the end of the draft
+
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up handled");
+    CHECK(text == "task new --foo", "newest match recalled, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "task list", "the non-matching entry is skipped, got '%s'", text.c_str());
+    CHECK(input.OnEvent(::ftxui::Event::ArrowUp), "up at the oldest match consumed");
+    CHECK(text == "task list", "stays at the oldest match, got '%s'", text.c_str());
+
+    input.OnEvent(::ftxui::Event::ArrowDown);
+    CHECK(text == "task new --foo", "down -> the next match, got '%s'", text.c_str());
+    input.OnEvent(::ftxui::Event::ArrowDown); // past the newest match
+    CHECK(text == "task ", "down past the newest match restores the draft, got '%s'", text.c_str());
+    CHECK(input.CursorPosition() == 5, "draft caret restored, got %d", input.CursorPosition());
+    CHECK(!input.IsBrowsingHistory(), "the browse is over");
+}
+
+/* A draft nothing matches is not a recall: ArrowUp keeps its caret meaning and the
+   draft is not stashed as if a browse had started. */
+static void test_history_prefix_no_match_keeps_caret(void)
+{
+    std::printf("  history: a draft nothing matches leaves ArrowUp on the caret\n");
+    std::string text = "zzz";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("task list");
+    render_twice(input, 40, 8);
+    input.OnEvent(::ftxui::Event::End);
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "zzz", "content untouched by a non-matching up, got '%s'", text.c_str());
+    CHECK(!input.IsBrowsingHistory(), "no recall -> not browsing");
+    CHECK(input.CursorPosition() == 0, "up still moves the caret to the start, got %d", input.CursorPosition());
+}
+
+/* The filter is a real prefix: a shorter entry and a case difference both miss. */
+static void test_history_prefix_exact_and_shorter(void)
+{
+    std::printf("  history: a shorter or differently-cased entry does not match the prefix\n");
+    std::string text = "task ";
+    edc::EdcInput input(&text, "");
+    input.AddHistory("task");      // strictly shorter than the draft
+    input.AddHistory("Task list"); // same text, different case
+    render_twice(input, 40, 8);
+    input.OnEvent(::ftxui::Event::End);
+
+    input.OnEvent(::ftxui::Event::ArrowUp);
+    CHECK(text == "task ", "draft untouched, got '%s'", text.c_str());
+    CHECK(!input.IsBrowsingHistory(), "nothing matched, so no browse");
+}
+
+// The mode label is what gets written into the input box's top rule. A plain message has
+// none (the rule stays plain, and the prompt below stays flush left); everything else names
+// itself, and the two separators centre it.
+static void test_paste_block_folds_and_expands(void)
+{
+    std::printf("  paste block: one placeholder in the box, the bytes behind it for the message\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 3 lines]", "line1\nline2\nline3");
+
+    /* The buffer holds ONE line: that is the whole point of folding. */
+    CHECK(text == "[Pasted #1 \xc2\xb7 3 lines] ", "'%s'", text.c_str());
+    CHECK(text.find('\n') == std::string::npos, "no newline in the buffer");
+    CHECK(input.CursorPosition() == static_cast<int>(text.size()), "the caret sits after the chip");
+
+    /* Rendering it stays on one row. */
+    const auto screen = render_twice(input, 40, 6);
+    CHECK(row_text(screen, 0, 40) == "[Pasted #1 \xc2\xb7 3 lines]", "row 0 shows the chip: '%s'",
+          row_text(screen, 0, 40).c_str());
+    CHECK(row_text(screen, 1, 40).empty(), "and nothing wraps below it: '%s'", row_text(screen, 1, 40).c_str());
+
+    /* But the line SAYS the pasted bytes: that is what the app receives. */
+    CHECK(input.ExpandedDraft() == "line1\nline2\nline3 ", "expanded: '%s'", input.ExpandedDraft().c_str());
+    CHECK(edc_payload_count(input.Blocks()) == 1, "one block in the payload");
+}
+
+static void test_paste_block_is_one_atom(void)
+{
+    std::printf("  paste block: Backspace deletes the whole chip, payload and all\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    /* First Backspace eats the trailing space the insert added... */
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "[Pasted #1 \xc2\xb7 2 lines]", "the trailing space goes first: '%s'", text.c_str());
+    CHECK(edc_payload_count(input.Blocks()) == 1, "the chip is still there");
+
+    /* ...the second one eats the chip as one atom, and the payload entry with it. */
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text.empty(), "the whole placeholder is gone: '%s'", text.c_str());
+    CHECK(edc_payload_count(input.Blocks()) == 0, "and its parked bytes are gone too");
+    CHECK(input.ExpandedDraft().empty(), "nothing left to expand");
+}
+
+static void test_paste_block_moves_and_caret(void)
+{
+    std::printf("  paste block: Left/Right step over the chip, they do not walk into it\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    const int end = static_cast<int>(text.size());
+    input.OnEvent(ftxui::Event::ArrowLeft); /* over the trailing space */
+    CHECK(input.CursorPosition() == end - 1, "one column into the trailing space, got %d", input.CursorPosition());
+    input.OnEvent(ftxui::Event::ArrowLeft);
+    CHECK(input.CursorPosition() == 0, "and then straight to the chip's start, got %d", input.CursorPosition());
+    input.OnEvent(ftxui::Event::ArrowRight);
+    CHECK(input.CursorPosition() == end - 1, "Right jumps over the whole chip again, got %d", input.CursorPosition());
+
+    /* Typing at the chip's edge does not eat it: the placeholder stays intact. */
+    input.SetCursor(0);
+    input.OnEvent(ftxui::Event::ArrowRight);
+    /* The caret is right after the chip (ArrowRight put it there), so the text lands
+     * between the chip and its trailing space. */
+    input.ReplaceRange(input.CursorPosition(), input.CursorPosition(), "- ");
+    CHECK(edc_payload_count(input.Blocks()) == 1, "still one block after typing next to it");
+    CHECK(input.ExpandedDraft() == "a\nb-  ", "expanded: '%s'", input.ExpandedDraft().c_str());
+}
+
+static void test_paste_block_expansion_tracks_edits(void)
+{
+    std::printf("  paste block: the expanded draft is cached but never stale\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    CHECK(input.ExpandedDraft() == "a\nb ", "first expansion");
+    input.ReplaceRange(0, 0, "看下 ");
+    CHECK(input.ExpandedDraft() == "看下 a\nb ", "the cache follows the edit: '%s'", input.ExpandedDraft().c_str());
+}
+
+static void test_paste_block_broken_placeholder(void)
+{
+    std::printf("  paste block: a placeholder the user edited through stops expanding\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+
+    /* Delete the closing bracket: the key no longer matches, so the text is plain. */
+    const int close = static_cast<int>(text.find(']'));
+    input.ReplaceRange(close, close + 1, "");
+    CHECK(input.ExpandedDraft() == text, "no expansion without the key: '%s'", input.ExpandedDraft().c_str());
+
+    /* The bytes stay in the library (another history entry may still point at them), but
+     * the draft references nothing -- so a submit carries nothing. */
+    CHECK(edc_payload_count(input.Blocks()) == 1, "the block is still known");
+    CHECK(edc_payload_empty(input.DraftPayload()), "but nothing is referenced by this draft");
+}
+
+static void test_paste_block_library(void)
+{
+    std::printf("  paste block: a recalled entry's bytes can arrive later (library model)\n");
+    std::string text = "[Pasted #7 \xc2\xb7 2 lines] answer this";
+    edc::EdcInput input(&text, "");
+
+    /* A line recalled from history: its placeholder is text, its bytes are not here yet. */
+    CHECK(input.HasUnresolvedBlocks(), "a placeholder with no bytes behind it is unresolved");
+    CHECK(edc_payload_empty(input.DraftPayload()), "nothing to send yet");
+    CHECK(input.ExpandedDraft() == text, "and nothing to expand: '%s'", input.ExpandedDraft().c_str());
+
+    /* The store's answer lands: the library learns the block, the line starts expanding. */
+    struct edc_payload *restored = edc_payload_new();
+    edc_payload_set(restored, "[Pasted #7 \xc2\xb7 2 lines]", "a\nb");
+    input.RestoreBlocks(restored);
+    edc_payload_free(restored);
+
+    CHECK(!input.HasUnresolvedBlocks(), "the placeholder is resolved now");
+    CHECK(input.ExpandedDraft() == "a\nb answer this", "expanded: '%s'", input.ExpandedDraft().c_str());
+    CHECK(edc_payload_count(input.DraftPayload()) == 1, "and the block travels with the message");
+
+    /* Typing your own placeholder is text, not a block: there is nothing to fetch. */
+    std::string typed = "[Pasted #9 \xc2\xb7 1 line]";
+    edc::EdcInput plain(&typed, "");
+    CHECK(plain.HasUnresolvedBlocks(), "a hand-typed placeholder looks the same...");
+    CHECK(edc_payload_empty(plain.DraftPayload()), "...and carries nothing (it is just text)");
+}
+
+static void test_history_entry_removal(void)
+{
+    std::printf("  history: an entry whose payload is gone can be dropped\n");
+    std::string text;
+    edc::EdcInput input(&text, "");
+    input.AddHistory("first");
+    input.AddHistory("[Pasted #1 \xc2\xb7 2 lines]");
+    CHECK(input.History().size() == 2, "two entries");
+
+    input.RemoveHistoryEntry("[Pasted #1 \xc2\xb7 2 lines]");
+    CHECK(input.History().size() == 1 && input.History()[0] == "first", "the dead one is gone");
+}
+
+static void test_mention_atom(void)
+{
+    std::printf("  mention token: an `@file` is one unit while editing, typed or recalled\n");
+    std::string text = "看下 @src/main.c 这段";
+    edc::EdcInput input(&text, "");
+
+    /* Nothing was registered: the token comes from the text alone, so a mention typed by
+     * hand, completed from the popup and recalled from history are the same thing. */
+    CHECK(input.Tokens().size() == 1, "the text alone yields one token");
+    CHECK(input.Tokens()[0].paste == false, "and it is a mention");
+
+    /* The buffer is unchanged: `@` keeps its meaning, nothing is expanded. */
+    CHECK(text == "看下 @src/main.c 这段", "'%s'", text.c_str());
+    CHECK(input.ExpandedDraft() == text, "no payload, no expansion");
+
+    /* Caret just after the mention: Backspace deletes the WHOLE mention, not one glyph. */
+    input.SetCursor(static_cast<int>(text.find(" 这段")));
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下  这段", "the whole @mention is gone: '%s'", text.c_str());
+    CHECK(input.CursorPosition() == static_cast<int>(std::string("看下 ").size()), "caret where it was: %d",
+          input.CursorPosition());
+
+    /* Delete at the mention's first glyph removes it too. */
+    text = "a @src/main.c b";
+    input.SetCursor(2);
+    input.OnEvent(ftxui::Event::Delete);
+    CHECK(text == "a  b", "Delete takes the whole mention: '%s'", text.c_str());
+
+    /* Left/Right step over it instead of walking inside. (The mention needs a terminator to
+     * be a token at all -- see test_mention_mark_rules: a reference still being typed is
+     * plain text, and edits one character at a time.) */
+    text = "see @src/main.c 好";
+    input.SetCursor(static_cast<int>(text.find(" 好")));
+    input.OnEvent(ftxui::Event::ArrowLeft);
+    CHECK(input.CursorPosition() == static_cast<int>(text.find("@src")), "Left lands on the mention's start: %d",
+          input.CursorPosition());
+    input.OnEvent(ftxui::Event::ArrowRight);
+    CHECK(input.CursorPosition() == static_cast<int>(text.find(" 好")), "Right jumps past it: %d",
+          input.CursorPosition());
+
+    /* Rendering keeps the text (the colour is a style, not a different string). */
+    const auto screen = render_twice(input, 40, 4);
+    CHECK(row_text(screen, 0, 40) == "see @src/main.c 好", "row 0: '%s'", row_text(screen, 0, 40).c_str());
+}
+
+/* The two token kinds must be *visible*: a paste chip is purple on the code surface, an
+ * `@mention` wears the link colour. Colours come from the palette the renderer uses, so the
+ * test installs a fixed one and checks the screen cells (not the code path). */
+namespace
+{
+struct FixedPalette : edc::style::IPalette
+{
+    edc::style::Palette pal;
+    const edc::style::Palette &colors() const override
+    {
+        return pal;
+    }
+};
+} // namespace
+
+static void test_token_colours(void)
+{
+    std::printf("  tokens: both kinds are colour-highlighted on screen\n");
+
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette(); /* start from the real theme, then pin the link role */
+    provider->pal.md_link = ftxui::Color::RGB(7, 8, 9);
+    edc::style::SetPaletteProvider(provider);
+
+    /* The chip's colours are the input box's own knobs (edc_style.hpp), not palette slots:
+     * whatever the theme resolves them to, the screen must use exactly those. */
+    const ftxui::Color paste_fg = edc::style::input_paste_text();
+    const ftxui::Color paste_bg = edc::style::input_paste_surface();
+
+    /* A pasted chip: purple glyphs on its own surface, so it reads as a block. */
+    {
+        std::string text;
+        edc::EdcInput input(&text, "");
+        input.InsertPasteBlock("[Pasted #1 \xc2\xb7 2 lines]", "a\nb");
+        const auto screen = render_twice(input, 40, 4);
+        const auto cell = screen.CellAt(0, 0);
+        CHECK(cell.foreground_color == paste_fg, "the chip's glyphs wear the paste colour");
+        CHECK(cell.background_color == paste_bg, "and sit on the chip's own surface");
+        CHECK(paste_fg != provider->pal.md_link, "a chip is not the reference colour");
+        CHECK(paste_fg != provider->pal.md_code_inline, "nor the inline-code purple of the replies");
+        /* The chip's surface stops at the label: the space after it is a word separator, not
+         * part of the block (painting it looked like a stray selected cell on the right).
+         * Columns are terminal cells, not bytes: the label's middle dot is two bytes. */
+        const int after = edc::StringWidth("[Pasted #1 \xc2\xb7 2 lines]");
+        CHECK(screen.CellAt(after, 0).background_color != paste_bg, "the trailing space is NOT painted");
+    }
+
+    /* An `@mention`: the keyword colour, no surface, no underline -- once it is finished and
+     * the path is real (see test_mention_mark_rules for the negative cases). */
+    {
+        edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
+        const ftxui::Color mention_fg = edc::style::input_mention_text();
+        std::string text = "see @src/main.c 好";
+        edc::EdcInput input(&text, "");
+        const auto screen = render_twice(input, 40, 4);
+        const auto cell = screen.CellAt(4, 0); /* the '@' */
+        CHECK(cell.foreground_color == mention_fg, "the mention wears the keyword colour");
+        CHECK(cell.background_color == ::ftxui::Color::Default, "a mention has no surface of its own");
+        CHECK(!cell.underlined, "and no underline: the colour is the whole mark");
+        CHECK(mention_fg != provider->pal.md_link, "the mention is not the link blue any more");
+        CHECK(mention_fg != paste_fg, "and not the paste colour either");
+        edc::SetMentionPathCheck(nullptr);
+    }
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+/* A line recalled from history after a restart is just text: nothing was registered and the
+ * paste's bytes arrive over an async pull. It must look and behave exactly like the line
+ * that was typed -- one path, decided by the text (edc_token_style.hpp). */
+static void test_recalled_line_matches_typed(void)
+{
+    std::printf("  tokens: a recalled line looks and edits like a typed one\n");
+
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette();
+    edc::style::SetPaletteProvider(provider);
+
+    edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
+    const ftxui::Color mention = edc::style::input_mention_text();
+    const ftxui::Color paste_fg = edc::style::input_paste_text();
+    const ftxui::Color paste_bg = edc::style::input_paste_surface();
+
+    /* Just text, put there the way a recall puts it: no registration of any kind. */
+    std::string text = "看下 @src/main.c 和 [Pasted #1 \xc2\xb7 2 lines]";
+    edc::EdcInput input(&text, "");
+    CHECK(input.Tokens().size() == 2, "both tokens come from the text");
+    CHECK(edc_payload_empty(input.Blocks()), "no bytes yet");
+    CHECK(input.HasUnresolvedBlocks(), "the paste label is still waiting for its bytes");
+
+    const auto screen = render_twice(input, 60, 4);
+    bool saw_at = false, saw_paste = false;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 60; ++x)
+        {
+            const auto cell = screen.CellAt(x, y);
+            if (cell.character == "@")
+            {
+                saw_at = true;
+                CHECK(cell.foreground_color == mention, "an unknown @mention is still pink");
+            }
+            if (cell.character == "[" && x + 1 < 60 && screen.CellAt(x + 1, y).character == "P")
+            {
+                saw_paste = true;
+                CHECK(cell.foreground_color == paste_fg, "an unresolved paste label keeps its colour");
+                CHECK(cell.background_color == paste_bg, "and its surface");
+            }
+        }
+    CHECK(saw_at && saw_paste, "both kinds were drawn");
+
+    /* And it edits like a typed line: Backspace right after the label removes the WHOLE
+     * block on the first press, even though its bytes have not arrived (the label is a token
+     * by its text; only the bytes are pending). */
+    input.SetCursor(static_cast<int>(text.size()));
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下 @src/main.c 和 ", "the whole label goes at once: '%s'", text.c_str());
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下 @src/main.c 和", "then the space the insert left: '%s'", text.c_str());
+
+    /* The mention behaves the same way, with no bytes involved at all. */
+    input.SetCursor(static_cast<int>(text.find(" 和")));
+    input.OnEvent(ftxui::Event::Backspace);
+    CHECK(text == "看下  和", "the whole @mention goes: '%s'", text.c_str());
+
+    edc::SetMentionPathCheck(nullptr);
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+/* The mark means "this reference is real", so it only appears once BOTH are true: the
+ * mention is finished (nothing that could still extend it) and the path exists. A half-typed
+ * or imaginary path is plain text -- while still being one token to edit. */
+static void test_mention_mark_rules(void)
+{
+    std::printf("  mention mark: finished + real, otherwise plain text\n");
+
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette();
+    edc::style::SetPaletteProvider(provider);
+    edc::SetMentionPathCheck([](const std::string &path) { return path == "src/main.c"; });
+    const ftxui::Color mention = edc::style::input_mention_text();
+
+    auto mention_is_painted = [&](const std::string &content) {
+        std::string text = content;
+        edc::EdcInput input(&text, "");
+        /* The caret paints over the glyph it sits on, so park it at the end: this asks what
+         * the '@' looks like when nobody is editing it. */
+        input.SetCursor(static_cast<int>(text.size()));
+        const auto screen = render_twice(input, 60, 3);
+        for (int y = 0; y < 3; ++y)
+            for (int x = 0; x < 60; ++x)
+                if (screen.CellAt(x, y).character == "@")
+                    return screen.CellAt(x, y).foreground_color == mention;
+        return false;
+    };
+
+    /* Still being typed: the caret sits right after it, so it is not a reference yet. */
+    CHECK(!mention_is_painted("@src/main.c"), "an unfinished mention is NOT painted");
+    /* Finished by a space: a real reference. */
+    CHECK(mention_is_painted("@src/main.c 好"), "a finished, existing path IS painted");
+    /* Finished, but the path does not exist: no mark (the mark would be a lie). */
+    CHECK(!mention_is_painted("@ghost.c 好"), "a finished path that does not exist is NOT painted");
+    /* Finished by punctuation: the pass ends the reference there, so it is finished too. */
+    CHECK(mention_is_painted("看下 @src/main.c. 谢谢"), "a full stop also finishes it");
+    /* A line range is not part of the path. */
+    CHECK(mention_is_painted("@src/main.c#12-20 好"), "the range is stripped before the check");
+
+    /* Not painted is not the same as not a token: once finished it still deletes as a whole. */
+    {
+        std::string text = "@ghost.c 好";
+        edc::EdcInput input(&text, "");
+        CHECK(input.Tokens().size() == 1, "an unknown path is still one token to edit");
+        input.SetCursor(static_cast<int>(text.find(' ')));
+        input.OnEvent(ftxui::Event::Backspace);
+        CHECK(text == " 好", "and it is deleted as one: '%s'", text.c_str());
+    }
+
+    edc::SetMentionPathCheck(nullptr);
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+static void test_input_mode_label()
+{
+    CHECK(edc::InputModeLabel(EDC_INPUT_TEXT) == "message", "a plain message says message");
+    CHECK(edc::InputModeLabel(EDC_INPUT_COMMAND) == "command", "a / command says command");
+    CHECK(edc::InputModeLabel(EDC_INPUT_LOCALSHELL) == "local shell", "a ! line says local shell");
+    CHECK(edc::InputModeLabel(EDC_INPUT_SHELL) == "shell", "a shell line says shell");
+    CHECK(edc::InputModeLabel(EDC_INPUT_REJECTED) == "syntax error", "a rejected line says syntax error");
+}
+
 int main(void)
 {
     test_long_word_wraps();
@@ -362,12 +866,29 @@ int main(void)
     test_arrow_navigation_across_rows();
     test_typing_and_deletion();
     test_internal_scroll_follows_caret();
+    test_cursor_and_range_replace();
     test_history_recall_up_down();
     test_history_preserves_draft();
     test_history_dedupes_consecutive();
     test_history_edit_leaves_browsing();
     test_history_up_from_lower_row_moves_caret();
+    test_history_browsing_flag();
     test_history_clear();
+    test_history_prefix_filters_entries();
+    test_history_prefix_no_match_keeps_caret();
+    test_history_prefix_exact_and_shorter();
+    test_paste_block_folds_and_expands();
+    test_paste_block_is_one_atom();
+    test_paste_block_moves_and_caret();
+    test_paste_block_expansion_tracks_edits();
+    test_paste_block_broken_placeholder();
+    test_paste_block_library();
+    test_history_entry_removal();
+    test_mention_atom();
+    test_token_colours();
+    test_recalled_line_matches_typed();
+    test_mention_mark_rules();
+    test_input_mode_label();
 
     if (g_failures)
     {

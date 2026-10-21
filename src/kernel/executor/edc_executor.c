@@ -172,6 +172,26 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
     return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 }
 
+/* The task layer's failure class, from the executor's LLM error kind. Deliberately a
+ * mapping rather than a shared enum: the task layer must not depend on the LLM package. */
+static edc_task_fail exec_llm_fail_class(edc_llm_error_kind kind)
+{
+    switch (kind)
+    {
+    case EDC_LLM_ERR_AUTH:
+        return EDC_FAIL_AUTH;
+    case EDC_LLM_ERR_CONTEXT_OVERFLOW:
+        return EDC_FAIL_CONTEXT_OVERFLOW;
+    case EDC_LLM_ERR_RATE_LIMIT:
+        return EDC_FAIL_RATE_LIMIT;
+    case EDC_LLM_ERR_TRANSPORT:
+        return EDC_FAIL_TRANSPORT;
+    case EDC_LLM_ERR_OTHER:
+        break;
+    }
+    return EDC_FAIL_OTHER;
+}
+
 static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_task *task, struct edc_event *ev)
 {
     const struct edc_executor_ops *ops = ex->ops;
@@ -205,8 +225,12 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         }
 
         task->current_request_id = NULL;
+        /* WHY it failed, when that is knowable: a doomed retry (bad key, overflowing
+         * context) should say so instead of looking like a fresh start. */
+        const edc_task_fail fail = exec_llm_fail_class(edc_llm_error_classify(e->http_status, notice));
         /* Fails and broadcasts to dependents through the task layer's entry. */
-        edc_task_mark_failed(task);
+        if (edc_task_mark_failed(task))
+            edc_task_set_fail(task, fail);
         if (e->content)
             edc_task_set_output(task, sdsnew(e->content));
         edc_task_flush_redirects(task);

@@ -17,17 +17,30 @@
  *
  * C++-safe (`edc_api.h` and `edc_app.h` share the rule: include no sds header). */
 #include "edc_api.h"
+#include "edc_compat.h"
+#include "edc_path.h"
+#include "edc_sandbox.h"
+#include "edc_file_index.h"
+#include "edc_path_guard.h"
 
 #include "edc_actor.h"
 #include "edc_app.h"
 #include "edc_channel_actor.h"
+#include "edc_cmd_parse.h"
+#include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_models.h"
+#include "edc_payload.h"
+#include "edc_prompts.h"
+#include "edc_resources.h"
+#include "edc_skills.h"
+#include "edc_text_passes.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 /* ── The frontend's read-only window (sds -> plain C types) ────
  * This file is C++-safe (it includes no sds header), so every sds field or
@@ -91,6 +104,20 @@ int edc_app_message_is_sys(const struct edc_channel_message *message)
 int edc_app_message_is_task_history(const struct edc_channel_message *message)
 {
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE : 0;
+}
+
+/* The mid carried by a MESSAGE_PAYLOAD reply (the message it answers for), or NULL. */
+const char *edc_app_message_mid(const struct edc_channel_message *message)
+{
+    /* A reply names the request it answers in its header; a USER message carries its own
+     * id in `mid`. Both spellings exist because they answer different questions. */
+    return message ? message->header : NULL;
+}
+
+/* A pull REPLY: the folded-paste payload of the user message named by the reply's header. */
+int edc_app_message_is_message_payload(const struct edc_channel_message *message)
+{
+    return message ? message->message_type == EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE : 0;
 }
 
 /* A pull REPLY: the content is task-tree snapshot JSON to parse, never rendered as
@@ -157,6 +184,36 @@ bool edc_app_sandbox_enabled(const struct edc_app *app)
 {
     struct edc_config *cfg = edc_app_config(app);
     return cfg && cfg->enable_sandbox;
+}
+
+bool edc_app_shell_syntax(const struct edc_app *app)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg && cfg->shell_syntax;
+}
+
+edc_input_mode edc_app_input_mode(const struct edc_app *app, const char *text)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    sds err = NULL;
+    const edc_in_kind kind = edc_commands_input_kind(cfg, text, &err);
+    if (err)
+    {
+        sdsfree(err);
+        return EDC_INPUT_REJECTED;
+    }
+    switch (kind)
+    {
+    case EDC_IN_COMMAND:
+        return EDC_INPUT_COMMAND;
+    case EDC_IN_LOCALSHELL:
+        return EDC_INPUT_LOCALSHELL;
+    case EDC_IN_SHELL:
+        return EDC_INPUT_SHELL;
+    case EDC_IN_MESSAGE:
+    default:
+        return EDC_INPUT_TEXT;
+    }
 }
 
 int edc_app_onboarded(const struct edc_app *app)
@@ -229,6 +286,208 @@ int edc_app_models_model_matches(const char *model_id, const char *query)
     return edc_models_model_matches(model_id, query);
 }
 
+/* The command surface, straight from the shell's table (static data, no app). */
+size_t edc_app_cmd_count(void)
+{
+    return edc_commands_doc_count();
+}
+const char *edc_app_cmd_text(size_t index)
+{
+    return edc_commands_doc_cmd(index);
+}
+const char *edc_app_cmd_brief(size_t index)
+{
+    return edc_commands_doc_brief(index);
+}
+size_t edc_app_cmd_family_count(void)
+{
+    return edc_commands_family_count();
+}
+const char *edc_app_cmd_family_name(size_t index)
+{
+    return edc_commands_family_name(index);
+}
+const char *edc_app_cmd_family_brief(size_t index)
+{
+    return edc_commands_family_brief(index);
+}
+
+const char *edc_app_shell_option_text(size_t index)
+{
+    return edc_cmd_shell_option_text(index);
+}
+size_t edc_app_shell_option_count(void)
+{
+    return edc_cmd_shell_option_count();
+}
+const char *edc_app_shell_option_brief(size_t index)
+{
+    return edc_cmd_shell_option_brief(index);
+}
+
+/* The prompt templates under <workspace>/prompts/, as "<name>\t<description>" lines.
+ * The frontend's completion popup offers `/prompt <name>`, so it needs the names. */
+size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf, size_t cap)
+{
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    const struct edc_config *cfg = edc_app_config(app);
+    if (!cfg || !cfg->workspace)
+        return 0;
+
+    /* Every resource root, ours first -- so a template migrated from pi / Claude Code /
+     * opencode is offered by the completion popup without being moved. The project roots
+     * come from the displayed session's directory. */
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    UT_array *prompts = edc_prompts_list_roots(roots, cfg);
+    edc_resource_dirs_free(roots);
+    const size_t count = utarray_len(prompts);
+
+    size_t used = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        struct edc_prompt **slot = (struct edc_prompt **)utarray_eltptr(prompts, (unsigned)i);
+        struct edc_prompt *p = slot ? *slot : NULL;
+        if (p && p->name)
+        {
+            sds line = sdscatprintf(sdsempty(), "%s\t%s\n", p->name,
+                                    (p->description && sdslen(p->description)) ? p->description : "");
+            if (buf && used + sdslen(line) + 1 <= cap)
+            {
+                memcpy(buf + used, line, sdslen(line));
+                used += sdslen(line);
+                buf[used] = '\0';
+            }
+            sdsfree(line);
+        }
+        edc_prompt_free(p);
+    }
+    utarray_free(prompts);
+    return count;
+}
+
+int edc_app_mention_exists(struct edc_app *app, const char *workdir, const char *path)
+{
+    if (!app || !path || !*path)
+        return 0;
+    struct edc_config *cfg = edc_app_config(app);
+    if (!cfg)
+        return 0;
+
+    /* The mention pass's OWN resolution: relative to the session's directory, through the
+     * sandbox. That is what makes the colour honest -- a path the pass would refuse must not
+     * wear the mark that says "this reference is real". */
+    EdcError *error = NULL;
+    sds safe = edc_sandbox_verify_path_at(cfg, (workdir && workdir[0]) ? workdir : NULL, path, false, &error);
+    if (!safe)
+    {
+        if (error)
+            edc_error_free(error);
+        return 0;
+    }
+    struct stat st;
+    const int exists = stat(safe, &st) == 0 ? 1 : 0;
+    sdsfree(safe);
+    return exists;
+}
+
+size_t edc_app_file_candidates(struct edc_app *app, const char *workdir, const char *query, char *buf, size_t cap)
+{
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    const struct edc_config *cfg = edc_app_config(app);
+    if (!cfg)
+        return 0;
+
+    /* Which directory to list: the SESSION's bound directory, and nothing else. The list is
+     * what the user is working in -- it is not a permission check, so the rw/ro lists are
+     * not applied (they say what the model may touch, and a session is allowed to be bound
+     * to a repository outside them; the tools refuse individual reads at their own layer).
+     * Applying them here made the picker come up empty for exactly those sessions. The deny
+     * list still applies, the same rule the prompt/skill readers use.
+     *
+     * An unbound session falls back to the LAUNCH directory (edc_cwd()), which is what
+     * every other "where am I" answer in the app uses (edc_resource_dirs walks up from
+     * there). Falling back to cfg->workspace was wrong: that is the agent's own data
+     * directory, not the project the person is looking at. */
+    sds fallback = NULL;
+    const char *root = (workdir && workdir[0]) ? workdir : NULL;
+    if (!root)
+    {
+        fallback = edc_cwd();
+        root = fallback;
+    }
+
+    struct edc_path_rules rules = {
+        .root = NULL, /* a listing root: no containment boundary above it */
+        .refuse_symlink = false,
+        .deny_paths = cfg->enable_sandbox ? cfg->sandbox_deny_paths : NULL,
+    };
+    EdcError *error = NULL;
+    sds safe = edc_path_guard_resolve(&rules, root, &error);
+    if (!safe)
+    {
+        /* A directory that cannot be resolved is worth one line in the log: otherwise the
+         * popup simply never opens and nothing says why. */
+        log_warn("file candidates: cannot list '%s': %s", root, error && error->message ? error->message : "?");
+        if (error)
+            edc_error_free(error);
+        if (fallback)
+            sdsfree(fallback);
+        return 0;
+    }
+    const size_t rows = edc_file_index_query(safe, query, buf, cap);
+    if (rows == 0)
+        log_info("file candidates: none for root='%s' query='%s'", safe, query ? query : "");
+    sdsfree(safe);
+    if (fallback)
+        sdsfree(fallback);
+    return rows;
+}
+
+void edc_app_file_candidates_reset(void)
+{
+    edc_file_index_reset();
+}
+
+size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap)
+{
+    if (buf && cap > 0)
+        buf[0] = '\0';
+    const struct edc_config *cfg = edc_app_config(app);
+    if (!cfg || !cfg->workspace)
+        return 0;
+
+    UT_array *roots = edc_resource_dirs(cfg, workdir);
+    UT_array *skills = edc_skills_load_roots(roots, cfg);
+    edc_resource_dirs_free(roots);
+    const size_t count = utarray_len(skills);
+
+    size_t used = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        struct edc_skill **slot = (struct edc_skill **)utarray_eltptr(skills, (unsigned)i);
+        struct edc_skill *sk = slot ? *slot : NULL;
+        if (sk && sk->name)
+        {
+            struct edc_skill_meta_entry *e = NULL;
+            HASH_FIND_STR(sk->meta, "description", e);
+            sds line =
+                sdscatprintf(sdsempty(), "%s\t%s\n", sk->name, (e && e->value && sdslen(e->value)) ? e->value : "");
+            if (buf && used + sdslen(line) + 1 <= cap)
+            {
+                memcpy(buf + used, line, sdslen(line));
+                used += sdslen(line);
+                buf[used] = '\0';
+            }
+            sdsfree(line);
+        }
+        edc_skill_free(sk);
+    }
+    utarray_free(skills);
+    return count;
+}
+
 /* Where a transcript lives -- path resolution only; encode/append/replay are the
  * frontend's own concern (see edc_chat_transcript.hpp).
  *
@@ -292,14 +551,23 @@ void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
 
 /* Send a user input. |session_id| names the session it belongs to (the task it
  * spawns lands there). NULL/"" = unspecified, the store picks the default. */
-void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content)
+void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
+                               const char *payload_json, const char *mid)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
         return;
 
+    /* Text-layer passes: the one place every user input is finalized, so a folded paste
+     * and a typed line cannot diverge -- the queue below only ever carries final text. */
+    struct edc_payload *payload = edc_payload_from_json(payload_json);
+    sds final_text = edc_text_passes_run(content, payload); /* sds == char* */
+
     struct edc_channel_message *message =
-        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
+        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, final_text);
+    message->payload = payload; /* NULL when nothing was folded */
+    if (mid && *mid)
+        message->mid = sdsnew(mid);
     if (session_id && *session_id)
         message->session_id = sdsnew(session_id);
 
@@ -313,6 +581,21 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
 
 /* Request a task tree (the frontend pulls only the one it displays); built on the
  * scheduler thread and answered as TASK_SNAPSHOT through the channel adapter. */
+void edc_app_request_message_payload(struct edc_app *app, const char *mid)
+{
+    edc_actor_t *channel = edc_app_channel_actor(app);
+    if (!channel || !mid || !*mid)
+        return;
+
+    edc_channel_actor_state_t *state = channel->state;
+    if (!state || !state->observer)
+        return;
+
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_MESSAGE_PAYLOAD, channel, NULL, sdsnew(mid),
+                                             (edc_actor_data_free_fn)sdsfree);
+    edc_actor_send(state->observer, msg);
+}
+
 void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
@@ -342,10 +625,23 @@ bool edc_app_ensure_parent_dir(struct edc_app *app, const char *path)
         return false;
     }
 
-    /* Must stay under the workspace: everything written here is the frontend's own. */
+    /* Must stay under the workspace: everything written here is the frontend's own.
+     * Whole-segment and separator/case aware (edc_path_is_within): a raw
+     * strncmp(parent, root, strlen(root)) also accepted "<workspace>-evil" as inside, and
+     * compared a backslash path against a slash root as different on Windows. Both sides
+     * are resolved first when they exist; a parent that does not exist yet is the usual
+     * case here (this call is what creates it), so it is compared as given. */
     const struct edc_config *cfg = edc_app_config(app);
     const char *root = cfg ? cfg->workspace : NULL;
-    bool ok = root && root[0] && strncmp(parent, root, strlen(root)) == 0;
+    bool ok = false;
+    if (root && root[0])
+    {
+        char *parent_real = realpath(parent, NULL);
+        char *root_real = realpath(root, NULL);
+        ok = edc_path_is_within(parent_real ? parent_real : parent, root_real ? root_real : root);
+        free(parent_real);
+        free(root_real);
+    }
     if (ok)
     {
         EdcError *err = NULL;

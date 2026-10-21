@@ -1,6 +1,7 @@
 #include "edc_message.hpp"
 #include "edc_style.hpp"
 #include "edc_text_util.hpp"
+#include "edc_token_style.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -33,6 +34,50 @@ constexpr int kUserRuleChrome = 3;
     rows.reserve(lines.size());
     for (const std::string &line : lines)
         rows.push_back(::ftxui::text(line));
+
+    if (rows.size() == 1)
+        return std::move(rows.front());
+    return ::ftxui::vbox(std::move(rows));
+}
+// Like WrappedText, but a token keeps its look across the wrap. Each display row is
+// scanned on its own, so a token split by wrapping (a very long path) degrades to plain
+// text on both halves instead of bleeding colour into the rest of the line.
+::ftxui::Element WrappedTokenText(const std::string &text, int cols)
+{
+    if (cols <= 0)
+        return ::ftxui::paragraph(text);
+
+    ::ftxui::Elements rows;
+    const std::vector<std::string> lines = VisualWrapLines(text, cols);
+    rows.reserve(lines.size());
+    for (const std::string &line : lines)
+    {
+        /* A sent line has no caret, so a mention reaching its end is finished. */
+        const std::vector<TokenSpan> spans = ScanTokens(line, /*end_closes=*/true);
+        if (spans.empty())
+        {
+            rows.push_back(::ftxui::text(line));
+            continue;
+        }
+        ::ftxui::Elements parts;
+        size_t at = 0;
+        for (const TokenSpan &span : spans)
+        {
+            if (span.begin > at)
+                parts.push_back(::ftxui::text(line.substr(at, span.begin - at)));
+            const std::string token_text = line.substr(span.begin, span.len);
+            /* Plain when the reference is not real: the mark means "this is a reference",
+             * so it must not appear on a path that does not exist. */
+            if (MentionIsMarked(span, token_text))
+                parts.push_back(StyleToken(::ftxui::text(token_text), span.paste));
+            else
+                parts.push_back(::ftxui::text(token_text));
+            at = span.begin + span.len;
+        }
+        if (at < line.size())
+            parts.push_back(::ftxui::text(line.substr(at)));
+        rows.push_back(::ftxui::hbox(std::move(parts)));
+    }
 
     if (rows.size() == 1)
         return std::move(rows.front());
@@ -150,7 +195,10 @@ UserMessage::UserMessage(const std::string_view content, time_t ts, const std::s
         return body_;
 
     const auto &pal = style::palette();
-    auto body = WrappedText(content_, BodyWidth(kUserRuleChrome));
+    /* The same marks the input line painted: `@path` keeps its keyword colour and a folded
+     * paste stays a chip. Seeing plain text here is what makes a user doubt the reference
+     * was taken at all (edc_token_style.hpp). */
+    auto body = WrappedTokenText(content_, BodyWidth(kUserRuleChrome));
     auto header = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
 
     body_ = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |

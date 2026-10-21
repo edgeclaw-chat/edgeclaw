@@ -35,6 +35,7 @@ static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg
 static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
+static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
 static void sched_trace_notify(const char *reason, const char *session_id);
 static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
@@ -50,18 +51,33 @@ static bool sched_task_holds_front(const struct edc_task *task)
     return task && !edc_task_is_finished(task) && (task->active_turn || edc_task_is_running(task));
 }
 
-/* Put |task| at the back of the queue of the group it is in, when that group is the one
- * in front: one edge to the member that currently holds the front. Two doors lead to "a
- * task is about to run in the foreground group" -- creation (sched_settle_task) and
- * resume -- and both must respect the queue, or the group runs two at a time.
+/* Put |task| at the back of its group's queue: one edge to the member that is still
+ * unfinished there. Two doors lead to "a task is about to run" -- creation
+ * (sched_settle_task) and resume -- and both must respect the queue, or the group runs
+ * two at a time.
+ *
+ * The edge is a TASK_DEP_BARRIER, not a SEQUENCE: group order is an ORDER constraint and
+ * nothing else. The two tasks it joins are unrelated work, so the one in front dying says
+ * nothing about whether the one behind may run -- stopping the running task must advance
+ * the queue, not cancel everything queued behind it. That is exactly BARRIER's rule (the
+ * source ending EITHER way releases the target); the queue is only the second producer of
+ * that kind, alongside the maintenance rounds. Nothing is injected either way.
+ *
+ * A group runs ONE task at a time whether or not it is the group in front: an explicit
+ * `--group <id>` on a group in the background queues there too (decided 2026-10-18). A
+ * task that was asked to be background (`&` / `--bg`) never gets here -- the callers skip
+ * it -- so running alongside is still spelled `&`, not `--group`.
+ *
+ * The system group is the exception: fold and curation rounds have their own barrier
+ * (sched_attach_maintenance_barrier) and are not serialized here.
+ *
  * Returns true when an edge was added (false when there is nothing to wait for). */
-static bool sched_chain_behind_front(struct edc_task *task)
+static bool sched_chain_behind_unfinished(struct edc_task *task)
 {
-    struct edc_session *own = edc_task_session(task);
     struct edc_task *prev = NULL;
     struct edc_task *m;
 
-    if (!own || !task->group || own->foreground_group != task->group)
+    if (!task || !task->group || edc_task_group_is_system(task->group))
         return false;
 
     LL_FOREACH2(task->group->members, m, group_next)
@@ -73,7 +89,15 @@ static bool sched_chain_behind_front(struct edc_task *task)
     if (!prev)
         return false;
 
-    return edc_task_add_dependency(task, prev, TASK_DEP_SEQUENCE);
+    /* The question is "is this task queued behind the one in front?", NOT "did I just add
+     * a row". A shell chain puts the row there first (`a ; b` / `a && b` pass `prev`), and
+     * edc_task_add_dependency dedups by source, so asking again would answer false -- and
+     * the caller would then take the screen focus onto a task that is queued and will not
+     * run, blacking out the one that is. */
+    if (edc_task_depends_on(task, prev))
+        return true;
+
+    return edc_task_add_dependency(task, prev, TASK_DEP_BARRIER);
 }
 
 /* The task's owner session -- now edc_task_session() in edc_task.c. */
@@ -168,8 +192,13 @@ static void sched_persist_task_seq(struct edc_scheduler *sched)
         if (fprintf(f, "%lld\n", (long long)sched->next_task_id) < 0)
             log_debug("task_seq: write %s failed: %s", tmp, strerror(errno));
         fclose(f);
-        if (rename(tmp, path) != 0)
-            log_warn("task_seq: rename %s -> %s failed: %s", tmp, path, strerror(errno));
+        EdcError *rerr = NULL;
+        if (!edc_file_rename_replace(tmp, path, &rerr))
+        {
+            log_warn("task_seq: %s", rerr ? rerr->message : "rename failed");
+            if (rerr)
+                edc_error_free(rerr);
+        }
     }
 
     sdsfree(tmp);
@@ -414,6 +443,50 @@ const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, stru
     return NULL;
 }
 
+/* Iterate the pending (unresolvable) edges of one task: NULL starts, the returned node is
+ * the next "previous". Read-only, for /task dep's listing. */
+const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched, const char *task_id,
+                                                             const struct edc_pending_dep *prev)
+{
+    if (!sched || !task_id)
+        return NULL;
+    const struct edc_pending_dep *pd = prev ? prev->next : sched->pending_deps;
+    for (; pd; pd = pd->next)
+    {
+        if (pd->target_task_id && strcmp(pd->target_task_id, task_id) == 0)
+            return pd;
+    }
+    return NULL;
+}
+
+int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *target_task_id, const char *source_task_id)
+{
+    if (!sched || !target_task_id)
+        return 0;
+    int dropped = 0;
+    struct edc_pending_dep **link = &sched->pending_deps;
+    while (*link)
+    {
+        struct edc_pending_dep *pd = *link;
+        const bool match =
+            pd->target_task_id && strcmp(pd->target_task_id, target_task_id) == 0 &&
+            (!source_task_id || (pd->source_task_id && strcmp(pd->source_task_id, source_task_id) == 0));
+        if (!match)
+        {
+            link = &pd->next;
+            continue;
+        }
+        *link = pd->next;
+        if (pd->target_task_id)
+            sdsfree(pd->target_task_id);
+        if (pd->source_task_id)
+            sdsfree(pd->source_task_id);
+        free(pd);
+        dropped++;
+    }
+    return dropped;
+}
+
 edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched)
 {
     return sched ? sched->self : NULL;
@@ -529,15 +602,14 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
     }
 
     /* One in front at a time: a task joining the group that is currently in front waits
-     * for whatever is still unfinished there. The edge is an order constraint (no output
-     * is injected), but its failure semantics are a dependency's: a predecessor that dies
-     * takes this task with it and keeps the edge, so resuming this one puts it back behind
-     * the predecessor instead of jumping the queue. A predecessor that finished satisfies
-     * it at once. A background task (`&` / `--bg`) is not queued -- it asked to run
-     * alongside. */
+     * for whatever is still unfinished there. The edge is an order constraint and nothing
+     * more (no output is injected, and a predecessor that dies releases this task instead
+     * of taking it with it -- see sched_chain_behind_unfinished). A predecessor that
+     * finished satisfies it at once. A background task (`&` / `--bg`) is not queued -- it
+     * asked to run alongside. */
     if (!spec->background)
     {
-        bool chained = sched_chain_behind_front(task);
+        bool chained = sched_chain_behind_unfinished(task);
         if (chained_out)
             *chained_out = chained;
     }
@@ -593,6 +665,11 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
         struct edc_turn *turn = edc_turn_new();
         turn->task_id = strdup(task->task_id);
         edc_turn_add_user_message(turn, spec->input);
+        /* Whatever the passes asked for (an @file's body today, anything tomorrow):
+         * one message each, in order. Nothing here knows WHICH pass produced them. */
+        for (int i = 0; i < spec->nparts; i++)
+            edc_turn_add_extra_message(turn, spec->parts[i].role, spec->parts[i].synthetic,
+                                       spec->parts[i].content);
         task->active_turn = turn;
     }
 
@@ -923,7 +1000,7 @@ struct edc_task_group *edc_scheduler_get_foreground(struct edc_session *session)
  * Deliberately not `active_task` -- that one is the screen focus and may sit on a task
  * that already finished (the final reply is delivered *after* the task reaches
  * COMPLETED, see edc_executor.c), which makes it a poor default for /task stop, /task
- * resume and `$$`. */
+ * resume and `{{SELF}}`. */
 struct edc_task *edc_scheduler_current_task(struct edc_session *session)
 {
     struct edc_task_group *fg = sched_foreground(session);
@@ -936,23 +1013,6 @@ struct edc_task *edc_scheduler_current_task(struct edc_session *session)
     LL_FOREACH2(fg->members, t, group_next)
     {
         if (!edc_task_is_finished(t))
-            last = t;
-    }
-    return last;
-}
-
-struct edc_task *edc_scheduler_resumable_task(struct edc_session *session)
-{
-    struct edc_task_group *fg = sched_foreground(session);
-    struct edc_task *last = NULL;
-    struct edc_task *t;
-
-    if (!fg)
-        return NULL;
-
-    LL_FOREACH2(fg->members, t, group_next)
-    {
-        if (!edc_task_is_completed(t))
             last = t;
     }
     return last;
@@ -1109,6 +1169,13 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (!sched || !task)
         return;
 
+    /* A task that ended because a dependency never produced carries the cascade's note
+     * ("[failed: its dependency … ]") as its output. Resume undoes that state, so the note
+     * goes with it -- otherwise /task output reports a failure that is being retried. A
+     * real output (a stop's, an interrupt's, a failure's own message) is untouched. */
+    if (task->end == EDC_END_BLOCKED)
+        edc_task_set_output(task, NULL);
+
     /* Door 2 of 2: a maintenance round in flight holds it. Park at READY/ALIVE -- the intent to
      * resume is NOT dropped: the message-end scan drives it as soon as the round ends and
      * releases the barrier (same effect as the fold's own member sweep, for the doors that sweep
@@ -1153,7 +1220,7 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
 
     /* Resume is the other door into "this task is about to run in the foreground group":
      * it must not jump the queue (creation goes through sched_settle_task for this). */
-    if (sched_chain_behind_front(task))
+    if (sched_chain_behind_unfinished(task))
     {
         edc_task_mark_waiting_deps(task);
         edc_scheduler_task_moved(sched, task);
@@ -1204,8 +1271,10 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     /* Record the raw text being handled (cleared on every exit of this function). */
     sched->input_raw = input->content;
 
-    /* Slash commands and @group go to the command handler; anything else creates a task. */
-    const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '@';
+    /* Slash commands and the `+` new-group form go to the command handler; anything else
+     * creates a task. (`@` is no longer a sigil -- it is the file-reference one, and the
+     * handler answers it before this fallback could ever see it.) */
+    const bool is_plain = input->content && input->content[0] != '/' && input->content[0] != '+';
 
     /* The command handler takes core's inbound input (origin for the raw message). */
     if (sched->handle_command && sched->handle_command(sched, msg->from, input))
@@ -1309,10 +1378,21 @@ static sds sched_error_copy(struct edc_scheduler *sched, const char *notice)
 
 /* Settle callback for side-effect-moved tasks: their facts come from the task's
  * current state. Recursion is intentional (settling can move more tasks). */
-static void sched_settle_cascaded(void *ctx, struct edc_task *task)
+static void sched_settle_cascaded(void *ctx, struct edc_task *task, edc_task_move_kind kind, const char *notice)
 {
     struct edc_scheduler *sched = ctx;
     bool finished = edc_task_is_finished(task);
+
+    /* A task the user was told had ended, now running again because the dependency it was
+     * blocked on produced: say so, or its output simply appears with no explanation. Only
+     * this kind speaks -- a queue advance is routine, and a cascade announced itself when
+     * the failure notice went out. */
+    if (kind == EDC_MOVE_UNBLOCKED && notice && !finished && sched->send_reply)
+    {
+        sds copy = sdsnew(notice);
+        sched->send_reply(sched, task, copy, EDC_CHANNEL_MESSAGE_SYS_TYPE, task->current_request_id);
+        sdsfree(copy);
+    }
 
     struct edc_advance_result res;
     memset(&res, 0, sizeof(res));
@@ -1628,6 +1708,48 @@ static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *
     sched_handle_task_snapshot(sched, session, "pull");
 }
 
+/* Answer "the folded-paste payload of the user message with this mid". The payload lives on
+ * the message JSON, so this is a read-only full-table scan -- the only thread allowed to
+ * touch the store is this one, which is why the frontend asks instead of reading. */
+struct sched_payload_lookup
+{
+    const char *mid;
+    cJSON *payload;
+};
+
+static void sched_payload_lookup_visit(void *ctx, struct edc_task *task)
+{
+    struct sched_payload_lookup *lookup = ctx;
+    if (lookup->payload)
+        return;
+    lookup->payload = edc_task_find_user_payload(task, lookup->mid);
+}
+
+static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid)
+{
+    if (!sched || !mid || !*mid)
+        return;
+
+    struct sched_payload_lookup lookup = {.mid = mid, .payload = NULL};
+    edc_session_manager_foreach_task(sched->sessions, sched_payload_lookup_visit, &lookup);
+
+    sds json = sdsempty();
+    if (lookup.payload)
+    {
+        char *printed = cJSON_PrintUnformatted(lookup.payload);
+        if (printed)
+        {
+            sdsfree(json);
+            json = sdsnew(printed);
+            cJSON_free(printed);
+        }
+    }
+    /* "" is the honest answer for "that message is gone": the frontend drops the history
+     * entry instead of sending a placeholder that expands to nothing. */
+    if (sched->message_payload_reply)
+        sched->message_payload_reply(sched, mid, json);
+}
+
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason)
 {
     if (!sched || !session)
@@ -1711,11 +1833,21 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
             cJSON *tj = cJSON_CreateObject();
             cJSON_AddStringToObject(tj, "id", t->task_id ? t->task_id : "");
             cJSON_AddStringToObject(tj, "state", edc_task_state_str(t));
+            /* WHY it ended ("" = NONE): the sidebar draws a different marker for a task
+             * the user stopped, one a `||` branch skipped and one a dependency blocked --
+             * all three are CANCELLED/ERROR in `state`, and the shape is what tells them
+             * apart. */
+            cJSON_AddStringToObject(tj, "end", edc_task_end_name(t->end));
             cJSON_AddBoolToObject(tj, "leader", t->is_group_leader);
             cJSON_AddBoolToObject(tj, "active", sess->active_task == t);
             cJSON_AddStringToObject(tj, "desc", t->description ? t->description : "");
             /* The raw input that created the task ("" when none). */
             cJSON_AddStringToObject(tj, "input", t->raw_input ? t->raw_input : "");
+            /* Its folded-paste map, so the frontend can show the line as it was typed
+             * (the text above is the expanded one -- what the model saw). */
+            cJSON *task_payload = edc_task_user_payload(t);
+            if (task_payload)
+                cJSON_AddItemToObject(tj, "payload", cJSON_Duplicate(task_payload, 1));
             /* Token usage for the sidebar (double, exact below 2^53). */
             cJSON_AddNumberToObject(tj, "tokens_prompt", (double)t->tokens_prompt);
             cJSON_AddNumberToObject(tj, "tokens_completion", (double)t->tokens_completion);
@@ -1778,6 +1910,10 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     case BC_ACTOR_MSG_TASK_SNAPSHOT:
         /* A pull names which tree it wants; nothing pushes a tree unasked. */
         sched_handle_pull_snapshot(sched, (const char *)msg->data);
+        break;
+    case BC_ACTOR_MSG_MESSAGE_PAYLOAD:
+        /* A pull names a mid; the answer is that user message's folded-paste map. */
+        sched_handle_pull_message_payload(sched, (const char *)msg->data);
         break;
     default:
         break;

@@ -63,13 +63,20 @@ SidebarView::SidebarView(std::shared_ptr<TaskWidget> task, std::shared_ptr<TodoW
             todo_element = std::move(todo_element) | ::ftxui::size(::ftxui::HEIGHT, ::ftxui::LESS_THAN, cap);
         }
 
-        // The sections stack with no divider; one EMPTY border around each keeps
-        // every section's pinned header and rows on the same inset.
+        /* One EMPTY border around each section keeps every pinned header and row on
+         * the same inset: the two sections share the column's surface, so that inset
+         * (not a frame) is what aligns them. Between them sits a single dim rule --
+         * the same hairline the pane gutter, the input box and the todo header use.
+         * Without it the tree and the todo list ran together into one column of text:
+         * the only thing marking the switch was the todo header's own wording, and
+         * when that section is short the surface gave no hint where it began. */
+        const auto &pal = style::palette();
         ::ftxui::Elements col = {tasks->Render() | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY),
+                                 ::ftxui::separator() | ::ftxui::color(pal.line_dim),
                                  std::move(todo_element)};
         // The column flexes so the sidebar background covers the whole pane, but its
         // children stay at natural height and are laid out from the top.
-        return ::ftxui::vbox(std::move(col)) | ::ftxui::bgcolor(style::palette().pane_bg) | ::ftxui::flex |
+        return ::ftxui::vbox(std::move(col)) | ::ftxui::bgcolor(pal.pane_bg) | ::ftxui::flex |
                ::ftxui::reflect(*pane_box);
     });
 }

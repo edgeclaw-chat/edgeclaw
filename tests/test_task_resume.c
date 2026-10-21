@@ -12,8 +12,8 @@
  *      - 账本 PENDING → TOOL_CALLING 并重新派发 (走 redispatch 回调);
  *      - 无依赖/工具/turn → WAITING_INPUT。
  *
- * 注: SUSPENDED 是 deserialize 直接赋值产生的状态 (转换表里只允许
- * TOOL_CALLING → SUSPENDED), 故测试用 force_suspended() 直接置位模拟加载结果。
+ * 注: 加载后停在 INTERRUPTED 的任务与用户 stop 的任务在状态机里是同一组出口，故测试用
+ * force_interrupted() 直接置位模拟"从盘上读回一个停下来的任务"。
  */
 
 #include "edc_channel_actor.h"
@@ -101,11 +101,11 @@ static struct edc_task *find_task(struct edc_session *session, const char *task_
     return NULL;
 }
 
-/* 模拟"加载后 SUSPENDED": 绕过状态机直接把 life 落下 (落盘读回也不自己写第二套)。
- * 注意只动 life —— 挂起不改"在哪一步"。 */
-static void force_suspended(struct edc_task *t)
+/* 模拟"加载后 INTERRUPTED": 绕过状态机直接把 life 落下 (落盘读回也不自己写第二套)。
+ * 注意只动 life —— 中断不改"在哪一步"。 */
+static void force_interrupted(struct edc_task *t)
 {
-    edc_task_force_move(t, t->step, EDC_LIFE_SUSPENDED);
+    edc_task_force_move(t, t->step, EDC_LIFE_INTERRUPTED);
 }
 
 static bool turn_has_tool_msg(struct edc_turn *turn, const char *call_id)
@@ -282,7 +282,7 @@ static void test_resume_waiting_input(void)
     install_resolver(sched, s);
 
     struct edc_task *t = edc_task_new("r1", "sess-r1", "r1", "task", edc_channel_adapter);
-    force_suspended(t);
+    force_interrupted(t);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
 
@@ -314,7 +314,7 @@ static void test_resume_waiting_deps(void)
     struct edc_task *src = edc_task_new("r2src", "sess-r2", "r2", "source", edc_channel_adapter);
     edc_task_add_dependency(t, src, TASK_DEP_JOIN);
     CHECK(edc_task_awaits_deps(t), "waits on dep");
-    force_suspended(t);
+    force_interrupted(t);
 
     struct edc_task_group *g = edc_task_group_new(t);
     edc_task_group_add_task(g, src);
@@ -348,7 +348,7 @@ static void test_resume_executing_synthesizes(void)
     seed_tool_turn(t, "c1", "shell");
     edc_task_tool_call_add(t, "c1", "shell", NULL);
     edc_task_tool_call_mark_executing(t, "c1"); /* c1 EXECUTING */
-    force_suspended(t);
+    force_interrupted(t);
 
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
@@ -387,7 +387,7 @@ static void test_resume_pending_redispatches(void)
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
     edc_task_tool_call_add(t, "c1", "shell", NULL); /* stays PENDING */
-    force_suspended(t);
+    force_interrupted(t);
 
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
@@ -434,10 +434,10 @@ static void test_resume_migrated_task_with_pending_tool(void)
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
     edc_task_tool_call_add(t, "c1", "shell", NULL); /* stays PENDING */
-    force_suspended(t);
+    force_interrupted(t);
     /* 迁移的产物: 相位丢了, 只有中性值 */
     t->step = EDC_TASKSTEP_READY;
-    t->life = EDC_LIFE_SUSPENDED;
+    t->life = EDC_LIFE_INTERRUPTED;
 
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
@@ -467,9 +467,9 @@ static void test_resume_migrated_task_with_turn(void)
     struct edc_task *t = edc_task_new("m2", "sess-m2", "m2", "task", edc_channel_adapter);
     edc_task_await_exec(t);
     seed_tool_turn(t, "c9", "shell"); /* 有 turn, 但账本里没有待办 */
-    force_suspended(t);
+    force_interrupted(t);
     t->step = EDC_TASKSTEP_READY; /* 迁移的产物 */
-    t->life = EDC_LIFE_SUSPENDED;
+    t->life = EDC_LIFE_INTERRUPTED;
 
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
@@ -504,7 +504,7 @@ static void test_resume_nothing_left_is_ready(void)
 
     struct edc_task *t = edc_task_new("n1", "sess-n1", "n1", "task", edc_channel_adapter);
     edc_task_await_exec(t);
-    force_suspended(t);
+    force_interrupted(t);
     /* 没有依赖、没有工具账本、没有 active_turn —— 没有任何东西可以续 */
 
     struct edc_task_group *g = edc_task_group_new(t);
@@ -689,6 +689,38 @@ static void test_resume_cancelled_nothing_left(void)
     edc_config_free(cfg);
 }
 
+/* 一个因为依赖没产出而结束的任务，output 里留着级联写的那句
+ * "[failed: its dependency … ]"。resume 撤销的正是那个状态，所以那句机器文案必须跟着走，
+ * 否则 /task output 会报一个正在重试的"失败"。 */
+static void test_resume_blocked_clears_the_note(void)
+{
+    TEST("resume: a BLOCKED task drops the cascade's note from its output");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, "sess-blocked", "Blocked");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task *src = edc_task_new("bl-src", "sess-blocked", "bl-src", "src", edc_channel_adapter);
+    struct edc_task *dep = edc_task_new("bl-dep", "sess-blocked", "bl-src", "dep", edc_channel_adapter);
+    struct edc_task_group *g = edc_task_group_new(src);
+    edc_session_add_group(s, g);
+    edc_task_group_add_task(g, dep);
+    edc_task_add_dependency(dep, src, TASK_DEP_SEQUENCE);
+    edc_task_await_exec(src);
+    edc_task_mark_interrupted(src); /* 级联: dep 变 BLOCKED，并写下那句 note */
+
+    CHECK(dep->end == EDC_END_BLOCKED && dep->output != NULL, "夹具: 被阻塞且带着 note");
+    edc_scheduler_resume_task(sched, dep);
+    CHECK(dep->output == NULL, "note 被清掉 (它描述的状态已经撤销)");
+    CHECK(edc_task_awaits_deps(dep), "并且停在 dep-wait: 源还没产出");
+    CHECK(dep->end == EDC_END_NONE, "原因也清了");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     log_info("=== task resume / tool ledger tests ===");
@@ -707,6 +739,7 @@ int main(void)
     test_resume_error_pending_tool_redispatches();
     test_resume_cancelled_dangling_tool();
     test_resume_cancelled_nothing_left();
+    test_resume_blocked_clears_the_note();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

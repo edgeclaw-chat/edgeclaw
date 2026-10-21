@@ -1,10 +1,16 @@
 // StatusBarView 的右段丢弃策略单测 (纯函数, 无需终端/屏幕)。
 //
-// 页脚右端是 "model · sandbox:on|off · /help"; 窄屏时从中间往外丢字段: 先丢 model,
-// 再丢 sandbox, 永远保留 "/help"。这条策略原来藏在 TUIWindow::RenderFooter() 里,
-// 只能靠渲染整个窗口验证; 现在它是 StatusBarView::RightText() 纯函数, 直接钉住。
+// 页脚右端只留三样: "model · ctx 45k/128k · sandbox:on|off"; 窄屏时从最前面往外丢
+// 字段: 先丢 model, 再丢 ctx, 永远保留 sandbox。这里**不出现** shell:on|off 与 /help:
+// 开关状态不是常驻信息（它的效果在输入行上体现），/help 挪进了输入框的 placeholder。
+// 这条策略原来藏在 TUIWindow::RenderFooter() 里, 只能靠渲染整个窗口验证; 现在它是
+// StatusBarView::RightText() 纯函数, 直接钉住。
+//
+// 另外钉住 ContextText(): 上下文容量那一格的格式 ("ctx 45k/128k" / 估算加 "~" /
+// 无窗口时只给已用值)。
 
 #include "edc_status_bar_view.hpp"
+#include "ftxui/screen/string.hpp"
 
 #include <iostream>
 #include <string>
@@ -27,42 +33,86 @@ void Check(bool ok, const std::string &what)
 
 const char *kLeft = " /home/user/project";
 const char *kModel = "gpt-x";
+const char *kCtx = "ctx 45k/128k";
 const int kLeftW = static_cast<int>(std::string(kLeft).size());
 
 void TestWideShowsEverything()
 {
-    std::cout << "wide pane: model + sandbox + /help\n";
-    // Plenty of room: all three fields fit on one line.
-    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, kModel, /*sandbox_on=*/true);
-    Check(r == std::string(kModel) + " · sandbox:on · /help", "all fields present (got: " + r + ")");
-    Check(edc::ui::StatusBarView::RightText(80, kLeft, kModel, false) ==
-              std::string(kModel) + " · sandbox:off · /help",
-          "sandbox state reflects the flag");
+    std::cout << "wide pane: model + the sandbox state, nothing else\n";
+    // No context yet: the field is simply absent. Both sandbox states have to render.
+    const std::string r =
+        edc::ui::StatusBarView::RightText(80, kLeft, kModel, /*ctx=*/"", /*sandbox_on=*/true);
+    Check(r == std::string(kModel) + " · sandbox:on", "all fields present (got: " + r + ")");
+    Check(edc::ui::StatusBarView::RightText(80, kLeft, kModel, "", /*sandbox_on=*/false) ==
+              std::string(kModel) + " · sandbox:off",
+          "the sandbox field reflects its flag");
+    Check(r.find("shell:") == std::string::npos, "no shell switch cell (it is not a footer field)");
+    Check(r.find("/help") == std::string::npos, "/help is not a footer field (it moved to the input)");
+}
+
+void TestWideWithContext()
+{
+    std::cout << "wide pane: the context field sits between model and the sandbox state\n";
+    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, kModel, kCtx, true);
+    Check(r == std::string(kModel) + " · " + kCtx + " · sandbox:on", "ctx shown (got: " + r + ")");
 }
 
 void TestNarrowDropsModelFirst()
 {
-    std::cout << "narrow pane: drop model, keep sandbox + /help\n";
-    // Room for "sandbox:on · /help" but not for the model: the model goes first.
-    const int pane = kLeftW + 1 + static_cast<int>(std::string("sandbox:on · /help").size());
-    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, true);
-    Check(r == "sandbox:on · /help", "model dropped, sandbox kept (got: " + r + ")");
+    std::cout << "narrow pane: drop model, keep the sandbox state\n";
+    const int pane = kLeftW + 1 + ::ftxui::string_width(std::string("sandbox:on"));
+    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, "", true);
+    Check(r == "sandbox:on", "model dropped, the sandbox state kept (got: " + r + ")");
 }
 
-void TestNarrowerDropsSandboxToo()
+void TestContextDroppedBeforeSandbox()
 {
-    std::cout << "narrower pane: only /help survives\n";
-    // Room for "/help" alone.
-    const int pane = kLeftW + 1 + static_cast<int>(std::string("/help").size());
-    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, true);
-    Check(r == "/help", "both model and sandbox dropped, /help survives (got: " + r + ")");
+    std::cout << "narrower pane: drop model then ctx, keep the sandbox state\n";
+    // One column short of "ctx 45k/128k · sandbox:on": the model goes first, then ctx.
+    // (string_width, not size(): the "·" is two bytes but one cell.)
+    const std::string cand = std::string(kCtx) + " · sandbox:on";
+    const int pane = kLeftW + 1 + ::ftxui::string_width(cand) - 1;
+    const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true);
+    Check(r == "sandbox:on", "model + ctx dropped (got: " + r + ")");
+}
+
+void TestNarrowestKeepsTheSandboxState()
+{
+    std::cout << "narrowest pane: the sandbox state is the last thing to go (it never does)\n";
+    // Room for "sandbox:on" alone; one column less and the field is still returned
+    // (the loop floors at the last field rather than dropping everything).
+    for (int extra = 0; extra >= -4; extra--)
+    {
+        const int pane = kLeftW + 1 + ::ftxui::string_width(std::string("sandbox:on")) + extra;
+        const std::string r = edc::ui::StatusBarView::RightText(pane, kLeft, kModel, kCtx, true);
+        Check(r == "sandbox:on", "still just the sandbox state (pane " + std::to_string(pane) + ", got: " + r + ")");
+    }
 }
 
 void TestEmptyModelNeverShowsAModelField()
 {
-    std::cout << "no model name: sandbox + /help only\n";
-    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, /*model=*/"", true);
-    Check(r == "sandbox:on · /help", "empty model -> no leading field (got: " + r + ")");
+    std::cout << "no model name: the sandbox state only\n";
+    const std::string r = edc::ui::StatusBarView::RightText(80, kLeft, /*model=*/"", "", true);
+    Check(r == "sandbox:on", "empty model -> no leading field (got: " + r + ")");
+}
+
+void TestContextText()
+{
+    std::cout << "the context field reads as used/window\n";
+    Check(edc::ui::StatusBarView::ContextText(45000, false, 128000) == "ctx 45k/128k", "used + window");
+    Check(edc::ui::StatusBarView::ContextText(45000, true, 128000) == "ctx ~45k/128k",
+          "an estimate wears a tilde");
+    Check(edc::ui::StatusBarView::ContextText(45000, false, 0) == "ctx 45k", "no window -> used only");
+    Check(edc::ui::StatusBarView::ContextText(0, false, 128000) == "", "nothing used -> hidden");
+}
+
+void TestLeftText()
+{
+    std::cout << "the left end is the dir, or the hint in its place\n";
+    Check(edc::ui::StatusBarView::LeftText("/home/x", "") == " /home/x", "no hint -> just the dir");
+    Check(edc::ui::StatusBarView::LeftText("/home/x", "Ctrl+C again to quit") ==
+              " Ctrl+C again to quit",
+          "the hint replaces the dir (same corner)");
 }
 
 } // namespace
@@ -70,9 +120,13 @@ void TestEmptyModelNeverShowsAModelField()
 int main()
 {
     TestWideShowsEverything();
+    TestWideWithContext();
     TestNarrowDropsModelFirst();
-    TestNarrowerDropsSandboxToo();
+    TestContextDroppedBeforeSandbox();
+    TestNarrowestKeepsTheSandboxState();
     TestEmptyModelNeverShowsAModelField();
+    TestContextText();
+    TestLeftText();
 
     if (g_failures == 0)
     {

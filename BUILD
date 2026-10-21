@@ -196,14 +196,67 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# The generated AI-model catalog (tools/gen_models.py) is NOT committed (a fresh build
-# input; see .gitignore). This embeds it as a byte array so the wizard / model picker work
-# offline. When it is absent -- a plain `bazel build` on a clean checkout -- an EMPTY
-# catalog is embedded (see tools/embed_models.py). Regenerate before packaging:
-# tools/package.sh runs gen_models.py first.
+# The user manual, embedded into the binary at build time and released to
+# $EDC_HOME/docs on startup (see //src/common:common + edc_init_env_docs). The system
+# prompt points the model at <edc_home>/docs/edgeclaw.md, so "how do I use EdgeClaw" is
+# answerable from the binary alone -- no source tree, no docs/ copy to locate.
+#
+# An explicit list, NOT glob(["docs/**"]): docs/ holds two kinds of text. These six are
+# the product manual -- what a user, or the model acting for one, needs to OPERATE
+# EdgeClaw. The rest are notes for people working ON it: they answer no user question,
+# is 245 KB, pi-alignment.md 60 KB): they answer no user question, while every binary
+# that carries them pays for them. A chapter added here ships; the pinned set and its
+# complement are asserted in //tests:test_bundled_docs.
+DOCS_FILES = [
+    "docs/edgeclaw.1",                # the man page
+    "docs/edgeclaw.md",               # the manual: commands, sessions, tasks, tools
+    "docs/input-syntax.zh.md",        # quoting, the shell-like syntax, @file, !cmd
+    "docs/local-shell-command.zh.md", # the !cmd local shell
+    "docs/prompt-library.md",         # /prompt templates
+    "docs/tool-output-limits.zh.md",  # truncation / output caps
+]
+
+filegroup(
+    name = "docs_files",
+    srcs = DOCS_FILES,
+    visibility = ["//visibility:public"],
+)
+
+# Reuses the workspace embedder: same struct edc_bundled_file, same path-sorted output;
+# only the symbol base name and the stripped prefix differ.
+genrule(
+    name = "docs_embedded_c",
+    srcs = [":docs_files"],
+    outs = ["docs_embedded.c"],
+    cmd = "$(execpath //tools:embed_workspace) --out $@ --prefix docs --name edc_bundled_docs --header edc_bundled_docs.h $(SRCS)",
+    tools = ["//tools:embed_workspace"],
+    visibility = ["//visibility:public"],
+)
+
+# The AI-model catalog (models.dev, via tools/gen_models.py). It is NOT committed (a
+# generated build input; see .gitignore), so this rule produces it as part of the build:
+# when a local models_catalog.json exists it is used as-is (offline / pinned builds),
+# otherwise the tool fetches it. `--no-test` keeps the fetch fast -- it skips per-provider
+# endpoint probes (run tools/gen_models.py directly for the full validation).
+# --no-sandbox/local: the fetch needs network, which sandboxed Bazel actions do not have.
+genrule(
+    name = "models_catalog_json",
+    srcs = glob(["models_catalog.json"], allow_empty = True),
+    outs = ["models_catalog.generated.json"],
+    cmd = "if [ -n '$(SRCS)' ]; then cp $(SRCS) $@; " +
+          "else $(execpath //tools:gen_models) --no-test --out $@; fi",
+    tools = ["//tools:gen_models"],
+    tags = ["no-sandbox", "requires-network"],
+    local = 1,
+    visibility = ["//visibility:public"],
+)
+
+# Embed the catalog as a byte array so the wizard / model picker work offline, with no
+# file next to the executable. The input always comes from //:models_catalog_json, so
+# the empty-catalog fallback in tools/embed_models.py is no longer reachable from here.
 genrule(
     name = "models_catalog_embedded_c",
-    srcs = glob(["models_catalog.json"], allow_empty = True),
+    srcs = [":models_catalog_json"],
     outs = ["models_catalog_embedded.c"],
     cmd = "$(execpath //tools:embed_models) --out $@ --name edc_bundled_models_catalog --header edc_bundled_models_catalog.h $(SRCS)",
     tools = ["//tools:embed_models"],

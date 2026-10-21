@@ -40,6 +40,12 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
 
     void AddMessage(std::shared_ptr<Message> message);
 
+    // Insert |messages| (file order: oldest first) above the current head. Used by
+    // the startup backfill to fill the older history in without blocking: the
+    // already-measured rows only shift down, and the scroll anchor moves the offset
+    // by the same amount, so a reader parked at the tail (or scrolled up) stays put.
+    void PrependMessages(std::vector<std::shared_ptr<Message>> messages);
+
     // Remove every message (the log was re-pointed at another session), and their
     // cached heights.
     void Clear();
@@ -56,6 +62,14 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
     {
         return stale_count_ > 0 || geometry_settle_;
     }
+
+    // True when the item drawn at the top of the viewport arrived through the
+    // backfill, i.e. the reader has scrolled up past the bubbles that were painted
+    // when the log was opened, into the older history whose neighbours are still
+    // being decoded and prepended. Scrolling up *within* that first screenful stays
+    // false: nothing above it is missing. The index arithmetic survives prepending
+    // -- items keep their place on screen, so the boundary moves with them.
+    bool TopIsBackfilled() const;
 
     // ui::IScrollAnchor: a row re-measured above the viewport moves every row
     // below it, so the offset has to move with it or the rows on screen slide
@@ -97,6 +111,11 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
     size_t visible_first_ = 0;
     size_t visible_last_ = 0;
     bool visible_known_ = false;
+
+    // How many items the head of the list holds that were prepended after it was
+    // opened (the startup backfill, and any later one): item indices below this one
+    // are the older history, the ones above it the bubbles painted at startup.
+    size_t prepended_count_ = 0;
 
     // A height was measured while drawing, i.e. after layout: the row map is
     // rebuilt at the end of the frame and one more frame is owed to draw the

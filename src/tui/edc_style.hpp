@@ -3,6 +3,7 @@
 #include "edc_theme.hpp"
 
 #include <cmath>
+#include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 #include <memory>
 #include <string>
@@ -18,6 +19,14 @@ namespace style
 // Semantic colour roles, not raw values.
 struct Palette
 {
+    // The backdrop: whatever the panes do not cover. A borderless layout spends this
+    // colour on one job only -- the gutter between two panes -- so it is the only thing
+    // that says "two panes meet here". It therefore has to be a visible step away from
+    // pane_bg, which the old #1E1F1C was not: it sat 1.11:1 from #272822, under the
+    // threshold of a perceptible edge, and a terminal themed after Monokai has #272822
+    // as its own background -- so panes, gutter and terminal collapsed into one flat
+    // field with no component boundaries left. Every surface pair is now kept at or
+    // above kMinSurfaceSeparation (see the note on the palettes).
     ::ftxui::Color window_bg;
     ::ftxui::Color pane_bg;
     ::ftxui::Color text_dim;
@@ -25,14 +34,22 @@ struct Palette
     // foreground would pair a light terminal's black with the dark palette's
     // near-black pane.
     ::ftxui::Color text;
+    // Rules and hairlines: the section rules, the todo header rule, the markdown
+    // rule, and the split's one-cell divider. It has to stay readable on BOTH the
+    // pane and the gutter, since the divider is drawn in the gutter and the section
+    // rules on the pane.
     ::ftxui::Color line_dim;
+    // The raised surface: modals and popups float over a pane, so this is the tone
+    // that tells them apart from what is underneath (1.36:1 dark, 1.30:1 light). It
+    // was white on the light palette, i.e. identical to the pane, which left every
+    // popup with no surface of its own.
     ::ftxui::Color dialog_bg;
 
     ::ftxui::Color accent;         // cyan: headers, in_progress, spinner
     ::ftxui::Color ok;             // green: success/COMPLETED, nothing else
     ::ftxui::Color warn;           // yellow: foreground group, IDLE/WAITING
-    ::ftxui::Color error;          // ERROR
-    ::ftxui::Color suspended;      // INTERRUPTED / SUSPENDED (both are parked)
+    ::ftxui::Color error;          // ERROR, i.e. it failed by itself
+    ::ftxui::Color interrupted;    // INTERRUPTED: the loop stopped under it, not a failure
     ::ftxui::Color thought_open;   // expanded "Thought" toggle
     ::ftxui::Color thought_closed; // collapsed "Thought" toggle
 
@@ -59,11 +76,19 @@ struct Palette
 // static initialization -- a file-scope object would run before main() and can
 // crash.
 
+// Smallest contrast ratio allowed between a surface and the surface drawn on top of
+// it (pane on backdrop, hairline on either). Below this a boundary stops being an
+// edge and becomes a rumour: 1.11:1 was invisible, 1.25:1 reads as a step on an
+// ordinary panel. Asserted in tests/test_theme.cpp.
+constexpr double kMinSurfaceSeparation = 1.25;
+
 // The original Monokai, for dark terminals.
 inline const Palette &dark_palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(30, 31, 28),    // window_bg
+        // Not Monokai's #272822: the backdrop has to be its own, darker tone so the
+        // panes and the split gutter stay distinguishable (1.29:1 against the pane).
+        ::ftxui::Color::RGB(14, 15, 13),    // window_bg
         ::ftxui::Color::RGB(39, 40, 34),    // pane_bg
         ::ftxui::Color::RGB(117, 113, 94),  // text_dim
         ::ftxui::Color::RGB(248, 248, 242), // text
@@ -73,7 +98,7 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(166, 226, 46),  // ok
         ::ftxui::Color::RGB(230, 219, 116), // warn
         ::ftxui::Color::RGB(249, 38, 114),  // error
-        ::ftxui::Color::RGB(174, 129, 255), // suspended
+        ::ftxui::Color::RGB(253, 151, 31),  // interrupted (Monokai orange)
         ::ftxui::Color::RGB(230, 219, 116), // thought_open
         ::ftxui::Color::RGB(138, 131, 69),  // thought_closed
         ::ftxui::Color::RGB(102, 217, 239), // prompt
@@ -101,17 +126,23 @@ inline const Palette &dark_palette()
 inline const Palette &light_palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(237, 237, 237), // window_bg
+        // Darkened from Monokai Light's inactiveSelection #EDEDED, which sat only
+        // 1.17:1 from the white pane -- the same "one flat field" failure the dark
+        // palette had. 1.32:1 against the pane, and line_dim is a step below both.
+        ::ftxui::Color::RGB(223, 223, 223), // window_bg
         ::ftxui::Color::RGB(255, 255, 255), // pane_bg
         ::ftxui::Color::RGB(159, 159, 143), // text_dim
         ::ftxui::Color::RGB(0, 0, 0),       // text
-        ::ftxui::Color::RGB(224, 224, 224), // line_dim
-        ::ftxui::Color::RGB(255, 255, 255), // dialog_bg
+        // Monokai Light's invisibles is #E0E0E0, i.e. exactly the backdrop: a rule in
+        // that colour vanishes into the gutter and is barely there on white. One step
+        // down (1.61:1 on the pane, 1.21:1 on the gutter) makes rules read as lines.
+        ::ftxui::Color::RGB(204, 204, 204), // line_dim
+        ::ftxui::Color::RGB(226, 226, 226), // dialog_bg (raised surface, not the pane)
         ::ftxui::Color::RGB(40, 198, 228),  // accent
         ::ftxui::Color::RGB(106, 175, 25),  // ok
         ::ftxui::Color::RGB(253, 151, 31),  // warn
         ::ftxui::Color::RGB(249, 38, 114),  // error
-        ::ftxui::Color::RGB(174, 129, 255), // suspended
+        ::ftxui::Color::RGB(253, 151, 31),  // interrupted (Monokai orange)
         ::ftxui::Color::RGB(138, 131, 69),  // thought_open
         ::ftxui::Color::RGB(168, 154, 94),  // thought_closed
         ::ftxui::Color::RGB(40, 198, 228),  // prompt
@@ -162,10 +193,108 @@ inline const Palette &palette()
     return theme::IsLight() ? light_palette() : dark_palette();
 }
 
-// One vocabulary for the scheduler's task-state names. The task tree paints its
-// markers with this table and the todo list takes the failure colour of its
-// current step from it, so the two panes cannot drift apart.
+// ── The borderless split's seam ──────────────────────────────
+// One cell of backdrop plus one hairline: the only boundary the borderless layout
+// draws. Neither pane carries a frame, so this is what has to survive -- and pure
+// tonal contrast did not: the old two-blank-cell separator was painted in window_bg,
+// 1.11:1 from pane_bg, which reads as nothing (and as exactly nothing on a terminal
+// themed after Monokai, where pane_bg IS the terminal's own background). Hence the
+// hairline, in the same dim rule colour the section headers, the todo header and the
+// input box already wear. It is also ResizableSplit's drag handle, so a visible mark
+// is honest: that column is grabbable.
+inline ::ftxui::Element split_gutter()
+{
+    return ::ftxui::hbox({
+        ::ftxui::text(" "),
+        ::ftxui::text("│") | ::ftxui::color(palette().line_dim),
+    });
+}
 
+// ── The input box's accents ──────────────────────────────────
+// ── The input box's colours ─────────────────────────────────
+// One hue, two steps of brightness, both derived from the theme accent rather than hard-coded,
+// so the box follows the colour scheme.
+//
+// The plain accent is Monokai's #66D9EF (an INK colour, meant for small text): as a full-width
+// rule and a filled badge it reads as neon. So the frame -- both rules and the badge's fill --
+// wears it mixed 0.55 of the way to black in linear light, which is roughly half its
+// luminance: still clearly the scheme's blue, no longer a lamp, and black glyphs still clear
+// ~6:1 on it.
+constexpr float kInputFrameFade = 0.55f;
+
+inline ::ftxui::Color input_frame_color(const Palette &pal)
+{
+    return ::ftxui::Color::Interpolate(kInputFrameFade, pal.accent, ::ftxui::Color::RGB(0, 0, 0));
+}
+
+// The prompt glyph sits one step darker again: a single cell at the badge's brightness reads as
+// a lamp next to dim body text, and the glyph only has to mark where typing starts.
+constexpr float kInputPromptFade = 0.72f;
+
+inline ::ftxui::Color input_prompt_color(const Palette &pal)
+{
+    // Note: Color::Interpolate blends in LINEAR light, so these fractions are considerably
+    // larger than the sRGB result suggests (0.4 yields RGB(82,172,189) -- barely darker).
+    // Interpolating towards Color::RGB(0,0,0), NOT towards Color::Black(): a Palette1 colour
+    // makes Interpolate return one of its arguments instead of mixing, and NOT towards
+    // window_bg either -- on the light palette that is white, i.e. it would brighten the glyph.
+    return ::ftxui::Color::Interpolate(kInputPromptFade, pal.accent, ::ftxui::Color::RGB(0, 0, 0));
+}
+
+// The badge's glyphs: pure black on the accent fill (~12:1 on the dark palette's cyan, ~9:1 on
+// the light one's deeper blue). Fixed black rather than a palette slot on purpose -- the fill
+// is light in both themes, so black is the ink that always works.
+inline ::ftxui::Color input_frame_ink()
+{
+    return ::ftxui::Color::RGB(0, 0, 0);
+}
+
+// ── The input box's token colours ───────────────────────────
+// Two kinds of atomic token live in the draft: a folded paste block (a chip: bytes behind it)
+// and an `@file` mention (a reference). They are two different things and must not look alike.
+//
+// Why a WARM hue for the paste chip, in a UI whose chrome is cyan/green/yellow/orange/pink/
+// olive (see the notes on Palette): a folded block exists ONLY in the input line -- a bubble
+// shows the expanded text, never the chip -- and no status colour is ever painted there. So
+// the local context is free, and amber gives the one thing the palette's own hues cannot: a
+// colour that is neither the chrome accent (cyan, which marks references and headers) nor the
+// markdown inline-code purple (which the replies are full of). Two tokens side by side --
+// `@a.c` in keyword pink, `[Pasted #1]` amber on its own surface -- read as two kinds at a
+// glance instead of as one long highlight.
+//
+// Deliberately NOT a Palette slot: this is a piece of CONTENT (like the markdown syntax
+// colours), not a semantic role of the chrome, and it follows the theme on its own below.
+inline ::ftxui::Color input_paste_text()
+{
+    // Monokai's own "line/prompt" family is too close to warn/interrupted; this amber sits
+    // between them without borrowing either (#FFC66D dark, #8A5A00 light).
+    return theme::IsLight() ? ::ftxui::Color::RGB(138, 90, 0) : ::ftxui::Color::RGB(255, 198, 109);
+}
+
+// An `@file` mention wears the KEYWORD colour (Monokai's pink). Same reasoning as the paste
+// chip above: a mention only ever appears in the input line, where no status colour is
+// painted, so reusing the error/pink hue carries no risk here -- and it is exactly the hue a
+// reader already associates with "keyword". No underline: the colour says it, and an
+// underlined token next to a solid chip reads as two decorations instead of two kinds.
+inline ::ftxui::Color input_mention_text()
+{
+    // One value for both themes: this is the palette's own keyword pink (error and md_list
+    // carry the same hue in both), so a light terminal gets the same mark as a dark one.
+    return ::ftxui::Color::RGB(249, 38, 114);
+}
+
+inline ::ftxui::Color input_paste_surface()
+{
+    // The chip's own surface, one step off the window beneath it: warm-tinted in both themes
+    // so the block looks like a pasted excerpt rather than a selected run of text.
+    return theme::IsLight() ? ::ftxui::Color::RGB(255, 240, 209) : ::ftxui::Color::RGB(59, 50, 38);
+}
+
+// One vocabulary for the scheduler's task-state names. The task tree paints its markers with
+// this table, the todo list takes the failure colour of its current step from it, and a reply
+// that carries a state as a `code span` is coloured by it (see markdown.cpp), so the three
+// cannot drift apart.
+//
 // Processing = working right now (the states edc_task_is_running marks).
 inline bool TaskStateProcessing(const std::string &state)
 {
@@ -187,13 +316,20 @@ inline ::ftxui::Color TaskStateColor(const Palette &pal, const std::string &stat
     if (TaskStateProcessing(state))
         return pal.accent;
     if (state == "INTERRUPTED")
-        return pal.error; // red, like ERROR: the loop stopped underneath it
-    if (state == "SUSPENDED")
-        return pal.suspended;
+        return pal.interrupted; // orange: the loop stopped underneath it -- not a failure
     if (state == "CANCELLED")
         return pal.text_dim;
     // IDLE / WAITING_DEPS / WAITING_INPUT
     return pal.warn;
+}
+
+// Is |s| one of the scheduler's task-state names? Used where a reply carries a state as an
+// inline code span: markdown colours such a span by its state instead of by the code-chip
+// colour, so `/task list` is scannable without inventing any new markup.
+inline bool IsTaskStateName(const std::string &s)
+{
+    return s == "COMPLETED" || s == "ERROR" || s == "INTERRUPTED" || s == "CANCELLED" ||
+           s == "IDLE" || s == "WAITING_DEPS" || s == "WAITING_INPUT" || TaskStateProcessing(s);
 }
 
 // The working bar's lit cell and a processing task's sidebar marker are the

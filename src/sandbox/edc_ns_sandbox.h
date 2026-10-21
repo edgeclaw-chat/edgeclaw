@@ -20,11 +20,13 @@
  * must be read-only AND every rw_path must be writable. Never trust the mounts
  * merely because the syscalls returned success.
  *
- * deny_paths (may be NULL) are masked out afterwards: an empty mode-000 tmpfs
- * is mounted over each directory (or /dev/null bound over each file) so their
- * contents are unreachable. This is the only layer that can deny a path that
- * lives inside an allowed parent (e.g. ~/.ssh inside the read-only home) --
- * Landlock is an additive allow-list and cannot.
+ * deny_paths (may be NULL) are masked out afterwards, last, so a deny wins over
+ * any ro/rw mount: a directory gets an empty mode-000 tmpfs (its contents are
+ * unreachable), a regular file gets an unopenable 0:0 character device bound
+ * over it (so open() fails instead of handing back an empty file). This is the
+ * only layer that can deny a path that lives inside an allowed parent (e.g.
+ * ~/.ssh inside the read-only home) -- Landlock is an additive allow-list and
+ * cannot.
  */
 bool edc_ns_sandbox_apply(const char **ro_paths, const char **rw_paths, const char **deny_paths, bool *enforced);
 

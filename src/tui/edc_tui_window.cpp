@@ -2,7 +2,10 @@
 #include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
+#include "edc_command_palette.hpp"
 #include "edc_domain.hpp"
+#include "edc_history_line.hpp"
+#include "edc_token_style.hpp"
 #include "edc_input.hpp"
 #include "edc_scroll_view.hpp"
 #include "edc_sidebar.hpp"
@@ -17,6 +20,7 @@
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/string.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cJSON.h>
 #include <chrono>
 #include <cmath>
@@ -28,6 +32,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -45,6 +50,20 @@ static void DisableBracketedPaste()
     std::fputs("\x1b[?2004l", stdout);
     std::fflush(stdout);
 }
+
+// Ctrl+C pressed twice within this window quits; a lone press only clears the input box.
+constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
+// The "press Ctrl+C again to quit" hint stays up exactly as long as a second press
+// would still quit, so the hint is never shown when the second press would do nothing.
+constexpr auto kHintHold = kQuitWindow;
+constexpr char kInterruptHint[] = "Ctrl+C again to quit";
+
+/* 粘贴折叠的门槛（opencode 用的是同一对数：3 行 / 150 字节）。
+ *
+ * 折叠只在屏幕上有意义：一段两行的东西塞进输入框还不至于失控，一段四十行的会。所以
+ * 低于门槛就原样插入 —— 行为与手打完全一致，用户看不出区别。 */
+constexpr int kPasteFoldLines = 3;
+constexpr int kPasteFoldChars = 150;
 
 // The state of the foreground group's active task -- the task whose todo list
 // the sidebar shows -- or "" when there is none. Only the foreground group's
@@ -93,6 +112,18 @@ constexpr long long kSpinnerFrameMs = 33;
 // only has to keep them coming until the log's scroll geometry has settled.
 constexpr long long kRemeasureFrameMs = 33;
 
+// Startup transcript backfill. The newest kTranscriptInitialEntries bubbles are
+// painted at once (a replay of the whole log is what made startup jank once a
+// session's transcript grew); the older history is decoded on a worker thread and
+// prepended kTranscriptBackfillBatch at a time from TickAnimations. Both bound one
+// step's work (a bubble's measure costs ~0.15ms), so neither the first paint nor a
+// backfill frame stalls; the rest converges over the next frames. A batch also stops
+// at kTranscriptBackfillBytes so a run of huge tool outputs (a measure is linear in
+// the rendered rows) cannot land in a single frame.
+constexpr size_t kTranscriptInitialEntries = 200;
+constexpr size_t kTranscriptBackfillBatch = 100;
+constexpr size_t kTranscriptBackfillBytes = 64 * 1024;
+
 // Todo sidebar content: the foreground group's active task -- its id and its own
 // todo list, which is part of the task state (todowrite attaches it to the task
 // that called it). The snapshot already says which task is active, so it is the
@@ -137,68 +168,8 @@ ActiveTaskTodos ActiveTaskTodosOf(const TaskSnapshot *snap)
     return todos; // no foreground group at all
 }
 
-// $EDC_HOME/.tui_history stores one recalled entry per line. Backslash and the
-// control characters that would break the one-line format are escaped so a
-// multi-line message (Alt+Enter newlines) round-trips as a single line.
-std::string EscapeHistoryEntry(const std::string &entry)
-{
-    std::string out;
-    out.reserve(entry.size());
-    for (char c : entry)
-    {
-        switch (c)
-        {
-        case '\\':
-            out += "\\\\";
-            break;
-        case '\n':
-            out += "\\n";
-            break;
-        case '\r':
-            out += "\\r";
-            break;
-        default:
-            out += c;
-            break;
-        }
-    }
-    return out;
-}
-
-std::string UnescapeHistoryLine(const std::string &line)
-{
-    std::string out;
-    out.reserve(line.size());
-    for (size_t i = 0; i < line.size(); ++i)
-    {
-        if (line[i] != '\\')
-        {
-            out += line[i];
-            continue;
-        }
-        if (i + 1 >= line.size())
-            break; // dangling escape at EOF: drop it
-        const char n = line[++i];
-        switch (n)
-        {
-        case 'n':
-            out += '\n';
-            break;
-        case 'r':
-            out += '\r';
-            break;
-        case '\\':
-            out += '\\';
-            break;
-        default:
-            // Unknown escape: keep both bytes verbatim.
-            out += '\\';
-            out += n;
-            break;
-        }
-    }
-    return out;
-}
+// $EDC_HOME/.tui_history stores one recalled entry per line: see edc_history_line.hpp for
+// the shape (`<mid>\t<text>`, with the text escaped so newlines and tabs survive).
 
 } // namespace
 
@@ -213,20 +184,34 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     task_widget_ = std::make_shared<TaskWidget>();
     todo_widget_ = std::make_shared<TodoWidget>();
     working_indicator_ = std::make_shared<ui::WorkingIndicatorView>();
-    // The status row reads the session model + terminal width; the sandbox state
-    // and the sidebar width are pulled per frame (both change at runtime).
+    // The status row reads the session model + terminal width; the sandbox state and the
+    // sidebar width are pulled per frame (both change at runtime). The shell-like syntax
+    // switch is NOT a footer field (it changes once in a blue moon and its effect is
+    // shown where it matters -- see the input line).
     status_bar_ = std::make_shared<ui::StatusBarView>(
         session_model_, terminal_, [this] { return app_ && app_->SandboxEnabled(); },
-        [this] { return sidebar_width_; });
+        [this] { return sidebar_width_; }, [this] { return app_ ? app_->ContextWindow() : 0; });
 
     const auto &pal = style::palette();
-    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(pal.prompt) | ::ftxui::bold;
+    // The prompt glyph is a step darker than the input box's frame (style::input_prompt_color):
+    // a one-cell glyph at the badge's brightness reads as a lamp, not as punctuation.
+    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(style::input_prompt_color(pal)) | ::ftxui::bold;
 
     // Multiline chat draft with soft (visual) wrapping. Long unbroken lines
     // wrap onto following rows instead of overflowing the input width;
     // Alt+Enter / pasted newlines still create real '\n' in the content. The
     // placeholder is dimmed by the widget itself (no InputOption transform).
-    input_ = std::make_shared<edc::EdcInput>(&input_text_, "Type a message, Enter to send, Alt+Enter for a newline...");
+    input_ = std::make_shared<edc::EdcInput>(
+        &input_text_, "Type a message, or /help for commands, Alt+Enter for a newline...");
+    /* An `@path` wears its mark only when the reference is REAL. The check goes through the
+     * app (session directory + sandbox + existence), which is also where the mention pass
+     * resolves it at submit time -- so the colour cannot promise something the pass refuses. */
+    edc::SetMentionPathCheck([this](const std::string &path) {
+        return app_ && app_->MentionExists(session_model_->workdir(), path);
+    });
+    // A recalled line may carry folded blocks whose bytes only the store still has: ask
+    // for them as soon as the entry lands in the box (they arrive in a few milliseconds).
+    input_->SetRecallHook([this](const std::string &entry) { OnRecalledHistory(entry); });
 
     container_ = ::ftxui::Container::Vertical({chat_widget_, input_}, &focused_);
 
@@ -234,9 +219,21 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // (TaskWidget) with the todo list (TodoWidget) stacked under it. Both sections
     // are always present (an empty list still shows its "▾/▸ Todos 0/0" header, so
     // the sidebar is stable from startup) and take only their natural height.
-    // ResizableSplit keeps "main" on the right at a drag-adjustable width; the
-    // separator is a blank column, so the sidebar stays borderless but grabbable.
-    auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
+    // ResizableSplit keeps "main" on the right at a drag-adjustable width; its
+    // separator is style::split_gutter, so the sidebar stays borderless while the
+    // seam between the two panes is still findable (and grabbable).
+    /* The left column keeps the backdrop, and the message bubbles keep pane_bg --
+     * exactly the layout the widgets themselves draw, unchanged. It is deliberately
+     * NOT painted pane_bg as a whole: a pane-coloured bubble on a pane-coloured panel
+     * is 1:1, so two messages and the space between them became one flat field and no
+     * block edge could be found at all. Against the backdrop a bubble is 1.29:1 -- a
+     * real step -- and the backdrop is the palette's own colour (theme::palette's
+     * window_bg, the same one the split gutter and the frame use) rather than whatever
+     * the terminal happens to be themed with, which is what makes the edge measurable.
+     * The pane's outer edge is still the gutter's hairline (style::split_gutter). */
+    auto main_area = ::ftxui::Renderer(container_, [this] {
+        return RenderMain();
+    });
     // The sidebar column is a real component (ui::SidebarView, built in
     // edc_sidebar.cpp) so a test can compose the very same layout: both sections
     // fit-content with their headers pinned, the tree anchored to its bottom --
@@ -249,7 +246,7 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         main_area,                          // back (left pane)
         ::ftxui::Direction::Right,          // direction
         &sidebar_width_,                    // main_size
-        [] { return ::ftxui::text("  "); }, // subtle separator, drag grab area
+        style::split_gutter,                // gutter + hairline, and the drag grab area
     });
     Add(split_);
 
@@ -326,14 +323,39 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
 void TUIWindow::Submit()
 {
-    const auto first = input_text_.find_first_not_of(" \t\r\n");
+    // A recalled block whose bytes have not arrived yet would go out as the literal
+    // `[Pasted #1 · 42 lines]`. Ask again and hold the send: folding must never change what
+    // is sent. (When there is nothing to ask for, those placeholders were typed by hand --
+    // they are text, and sending them is right.)
+    if (input_->HasUnresolvedBlocks() && RequestPayloadForDraft())
+    {
+        RaisePasteHint(" Fetching the pasted block… ");
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return;
+    }
+
+    // What the line SAYS, not what the box shows: a folded block expands here, so the
+    // bubble, the transcript, the history check and the message the app receives all see
+    // the same bytes the user would have typed. Folding never changes meaning.
+    const std::string expanded = input_->ExpandedDraft();
+    const auto first = expanded.find_first_not_of(" \t\r\n");
     if (first == std::string::npos)
     {
         input_text_.clear();
+        input_->Reset(); // the library keeps its blocks: a history entry still needs them
         return;
     }
-    const auto last = input_text_.find_last_not_of(" \t\r\n");
-    std::string message = input_text_.substr(first, last - first + 1);
+    const auto last = expanded.find_last_not_of(" \t\r\n");
+    std::string message = expanded.substr(first, last - first + 1);
+
+    /* What the user SAW, and what the bubble/transcript record: a folded block stays the
+     * placeholder it was in the box (the bytes go to the app, not to the screen). Without
+     * a folded block the two strings are the same one. */
+    std::string draft_entry = input_text_;
+    const auto d_first = draft_entry.find_first_not_of(" \t\r\n");
+    const auto d_last = draft_entry.find_last_not_of(" \t\r\n");
+    draft_entry = d_first == std::string::npos ? std::string() : draft_entry.substr(d_first, d_last - d_first + 1);
 
     // "/connect" is handled locally: open the setup wizard and do not send anything to
     // the app or record it as a chat message. It is the same page the first run shows.
@@ -341,6 +363,7 @@ void TUIWindow::Submit()
     {
         input_text_.clear();
         input_->Reset();
+        RecomputeCommandPalette();
         OpenConnect();
         return;
     }
@@ -350,16 +373,42 @@ void TUIWindow::Submit()
     // active that is all the log needs; under a selection the input is drawn from
     // the task's own raw_input, as the first user message of its history
     // (ChatWidget::SetTaskInputs), so it is hidden here and shown there.
-    chat_widget_->AddMessage(std::make_shared<UserMessage>(message, ::time(nullptr)));
-    AppendChatTranscript("user", "", message, "", EDC_APP_RENDER_PLAIN);
+    const std::string &shown = draft_entry.empty() ? message : draft_entry;
+    chat_widget_->AddMessage(std::make_shared<UserMessage>(shown, ::time(nullptr)));
+    AppendChatTranscript("user", "", shown, "", EDC_APP_RENDER_PLAIN);
+    // Only what this draft actually references travels with the message.
+    const struct edc_payload *draft_payload = input_->DraftPayload();
+    std::string payload_json;
+    if (!edc_payload_empty(draft_payload))
+    {
+        char *json = edc_payload_to_json(draft_payload);
+        if (json)
+        {
+            payload_json.assign(json);
+            edc_payload_string_free(json);
+        }
+    }
+    // The mid is what lets a recalled line fetch its bytes back from the store.
+    const std::string mid = NewMessageMid();
     input_text_.clear();
     input_->Reset(); // caret/scroll back to the start after the external clear
-    // Record the submitted text for ArrowUp recall and persist it so history
-    // survives a restart.
-    input_->AddHistory(message);
-    SaveInputHistory();
+    RecomputeCommandPalette();
+    // Record the submitted line for ArrowUp recall and persist it so history survives a
+    // restart. A folded entry is recorded like any other: its bytes live on the message,
+    // and the mid (stored next to the entry) is how a recall gets them back.
+    if (!draft_entry.empty())
+    {
+        input_->AddHistory(draft_entry);
+        history_mid_[draft_entry] = mid;
+        SaveInputHistory();
+    }
 
-    app_->SendUserMessage(session_model_->displayed_id(), message);
+    /* Naming a task in a command counts as looking at it: drop its unread marker now,
+     * without waiting for the next snapshot (the task's own state does not change). */
+    MarkReadFromInput(message);
+
+    app_->ResetFileCandidates(); /* a submission may have created files */
+    app_->SendUserMessage(session_model_->displayed_id(), message, payload_json, mid);
     chat_widget_->ScrollToBottom();
 
     // A new message may spawn/attach a task, so refresh the sidebar tree. The
@@ -370,6 +419,81 @@ void TUIWindow::Submit()
     // The animated status is not started here and not tied to message types: the
     // snapshot (this one or the next periodic one) flips the spinner through
     // SyncWorkingFromSnapshot(). Ask for a frame so the submitted message paints now.
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::StopForegroundTask()
+{
+    // The same thing a typed "/task stop" does, minus the chat bubble: nothing here was
+    // typed, and the command layer's own reply is the feedback. With no id the command
+    // stops the foreground group's active task.
+    app_->SendUserMessage(session_model_->displayed_id(), "/task stop", "", "");
+    RequestTaskSnapshot();
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+bool TUIWindow::OnInterrupt()
+{
+    const auto now = std::chrono::steady_clock::now();
+    // A second Ctrl+C within the window quits; a lone press just clears the input box
+    // and arms the next one. (Ctrl+C never reaches OnEvent: main()'s top-level
+    // CatchEvent routes it here.)
+    if (now - last_interrupt_ <= kQuitWindow)
+    {
+        ClearInterruptHint();
+        return true;
+    }
+    last_interrupt_ = now;
+
+    if (!input_text_.empty())
+    {
+        input_text_.clear();
+        input_->Reset();
+        RecomputeCommandPalette();
+    }
+
+    // Say what the second press would do, in the bottom-left corner (the footer, or the
+    // working row while a task runs).
+    interrupt_hint_ = kInterruptHint;
+    interrupt_hint_until_ = now + kHintHold;
+    PushInterruptHint();
+
+    if (screen_)
+        screen_->RequestAnimationFrame();
+    return false;
+}
+
+void TUIWindow::PushInterruptHint()
+{
+    if (status_bar_)
+        status_bar_->SetHint(interrupt_hint_);
+    if (working_indicator_)
+        working_indicator_->SetHint(interrupt_hint_);
+}
+
+void TUIWindow::ClearInterruptHint()
+{
+    if (interrupt_hint_.empty())
+        return;
+    interrupt_hint_.clear();
+    PushInterruptHint();
+}
+
+void TUIWindow::TickInterruptHint(std::chrono::steady_clock::time_point now)
+{
+    if (interrupt_hint_.empty())
+        return;
+    if (now < interrupt_hint_until_)
+    {
+        // Keep frames coming, so the hint goes away on time even while nothing else is
+        // repainting.
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return;
+    }
+    ClearInterruptHint();
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -391,6 +515,100 @@ void TUIWindow::OpenConnect()
         screen_->RequestAnimationFrame();
 }
 
+std::string TUIWindow::NewMessageMid()
+{
+    /* <session>#<n>#<ms>: unique per run (the counter) and across runs (the millisecond
+     * clock), readable in a log, and narrow enough that LooksLikeMid() can tell it from a
+     * pasted line that happens to contain a tab. Opaque to the kernel -- it only stores it. */
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s#%lld#%lld", session_model_->displayed_id().c_str(),
+             static_cast<long long>(++mid_seq_), static_cast<long long>(ms));
+    return buf;
+}
+
+void TUIWindow::RaisePasteHint(const std::string &label)
+{
+    paste_hint_label_ = label;
+    paste_hint_.Raise(std::chrono::steady_clock::now());
+}
+
+void TUIWindow::OnRecalledHistory(const std::string &entry)
+{
+    /* A recalled line whose placeholders this widget does not know: the bytes are in the
+     * store, under the mid recorded with that entry. Nothing is asked twice. */
+    if (!input_->HasUnresolvedBlocks())
+        return;
+    const auto mid = history_mid_.find(entry);
+    if (mid == history_mid_.end() || dead_mids_.count(mid->second))
+        return;
+    app_->RequestMessagePayload(mid->second);
+}
+
+bool TUIWindow::RequestPayloadForDraft()
+{
+    if (!input_->HasUnresolvedBlocks())
+        return false;
+
+    /* The draft was recalled from the history: name the entry and ask for its payload.
+     * A draft that matches no entry has placeholders the user typed by hand -- there is
+     * nothing to fetch, and they are text. */
+    const std::string draft = input_text_;
+    bool asked = false;
+    for (const auto &entry : history_mid_)
+    {
+        if (dead_mids_.count(entry.second))
+            continue;
+        if (draft.find(entry.first) == std::string::npos)
+            continue;
+        app_->RequestMessagePayload(entry.second);
+        asked = true;
+    }
+    return asked;
+}
+
+void TUIWindow::PresentMessagePayload(const std::string &mid, const std::string &payload_json)
+{
+    struct edc_payload *payload = edc_payload_from_json(payload_json.c_str());
+    if (edc_payload_empty(payload))
+    {
+        /* The message is gone (its session was removed, or the store never had it). Offering
+         * that history line again would put a placeholder in the box that can never be
+         * expanded, so it is dropped -- "查不到就跳过该条", never a literal placeholder. */
+        edc_payload_free(payload);
+        dead_mids_.insert(mid);
+        for (auto it = history_mid_.begin(); it != history_mid_.end(); ++it)
+        {
+            if (it->second != mid)
+                continue;
+            const std::string entry = it->first;
+            history_mid_.erase(it);
+            input_->RemoveHistoryEntry(entry);
+            SaveInputHistory();
+            if (input_text_.find(entry) != std::string::npos)
+            {
+                input_text_.clear();
+                input_->Reset();
+                RecomputeCommandPalette();
+            }
+            break;
+        }
+        RaisePasteHint(" Pasted block is gone ");
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return;
+    }
+
+    /* Its bytes are back in the library: ExpandedDraft() starts working, the badge and the
+     * next submit see the real line. */
+    input_->RestoreBlocks(payload);
+    edc_payload_free(payload);
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
 void TUIWindow::LoadInputHistory()
 {
     std::string path;
@@ -402,6 +620,7 @@ void TUIWindow::LoadInputHistory()
         return; // first run (or unreadable): start with an empty history
 
     input_->ClearHistory();
+    history_mid_.clear();
     std::string line;
     while (std::getline(file, line))
     {
@@ -409,7 +628,10 @@ void TUIWindow::LoadInputHistory()
             line.pop_back();
         if (line.empty())
             continue;
-        input_->AddHistory(UnescapeHistoryLine(line));
+        const HistoryLine decoded = DecodeHistoryLine(line);
+        input_->AddHistory(decoded.text);
+        if (!decoded.mid.empty())
+            history_mid_[decoded.text] = decoded.mid;
     }
 }
 
@@ -421,7 +643,10 @@ void TUIWindow::SaveInputHistory()
 
     std::string out;
     for (const std::string &entry : input_->History())
-        out += EscapeHistoryEntry(entry) + "\n";
+    {
+        const auto mid = history_mid_.find(entry);
+        out += EncodeHistoryLine(mid == history_mid_.end() ? std::string() : mid->second, entry) + "\n";
+    }
     // Symlink-safe (the file sits in $EDC_HOME; still never follow a link).
     app_->WriteFile(path, out.data(), out.size(), /*append=*/false, /*under_workspace=*/false);
 }
@@ -522,14 +747,141 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
 
 void TUIWindow::LoadChatTranscriptFile(const std::string &path)
 {
-    const size_t entries = transcript_->Replay(path, [this](const ChatTranscriptEntry &entry) {
-        const std::shared_ptr<Message> widget =
-            MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id, entry.render_pref, ::time(nullptr));
+    // A new session (or a return from the history view): abandon any backfill still
+    // filling the previous log.
+    CancelTranscriptBackfill();
+
+    // Paint only the newest bubbles now. Replaying the whole log at startup is what
+    // made it jank once a session's transcript grew (decode + measure, both linear
+    // in the entry count); the older history is backfilled below.
+    size_t prefix_end = 0;
+    std::vector<ChatTranscriptEntry> tail;
+    transcript_->ReplayTail(path, kTranscriptInitialEntries, &prefix_end,
+                            [&tail](const ChatTranscriptEntry &entry) { tail.push_back(entry); });
+
+    for (const ChatTranscriptEntry &entry : tail)
+    {
+        const std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
+                                                               entry.render_pref, ::time(nullptr));
         if (widget)
             chat_widget_->AddMessage(widget);
-    });
-    if (entries > 0)
+    }
+    if (!tail.empty())
         chat_widget_->ScrollToBottom();
+
+    // Anything older: decode it off the UI thread and prepend it progressively.
+    if (prefix_end > 0)
+        StartTranscriptBackfill(path, prefix_end);
+}
+
+void TUIWindow::StartTranscriptBackfill(const std::string &path, size_t prefix_end)
+{
+    // Make sure no previous worker is alive before reusing the state (the caller
+    // normally reached here through CancelTranscriptBackfill already).
+    CancelTranscriptBackfill();
+
+    std::lock_guard<std::mutex> lock(backfill_mutex_);
+    backfill_cancel_.store(false, std::memory_order_relaxed);
+    backfill_ready_.store(false, std::memory_order_relaxed);
+    // The worker captures |this|, but it is always joined before destruction (see
+    // CancelTranscriptBackfill) and is the only writer of |backfill_result_|; it
+    // publishes that vector with the release store below. The decode polls
+    // |backfill_cancel_| so an abandoned run returns within a batch of lines.
+    backfill_thread_ = std::thread([this, path, prefix_end]() {
+        std::vector<ChatTranscriptEntry> decoded;
+        decoded.reserve(1024);
+        LoadTranscriptPrefix(path, prefix_end, &decoded,
+                             [this]() { return backfill_cancel_.load(std::memory_order_relaxed); });
+        if (backfill_cancel_.load(std::memory_order_relaxed))
+            return; // abandoned: publish nothing (avoids a stale/partial history)
+        backfill_result_ = std::move(decoded);
+        backfill_ready_.store(true, std::memory_order_release); // publishes |backfill_result_|
+    });
+}
+
+void TUIWindow::PumpTranscriptBackfill()
+{
+    std::vector<ChatTranscriptEntry> batch;
+    {
+        std::lock_guard<std::mutex> lock(backfill_mutex_);
+        // Take the worker's result once. The acquire load pairs with the worker's
+        // release store, so reading |backfill_result_| here is safe.
+        if (backfill_remaining_ == 0 && backfill_queue_.empty() && backfill_ready_.load(std::memory_order_acquire))
+        {
+            backfill_queue_ = std::move(backfill_result_);
+            backfill_remaining_ = backfill_queue_.size();
+            backfill_result_.clear();
+            backfill_ready_.store(false, std::memory_order_relaxed);
+        }
+        if (backfill_remaining_ == 0)
+            return;
+
+        const size_t batch_max = std::min(backfill_remaining_, kTranscriptBackfillBatch);
+        // Take entries from the newest end of what is left, stopping early on a byte
+        // budget so a run of huge tool outputs is spread over several frames (one
+        // entry still goes no matter how large -- it has to land somewhere).
+        size_t count = 0;
+        size_t bytes = 0;
+        while (count < batch_max && bytes < kTranscriptBackfillBytes)
+        {
+            bytes += backfill_queue_[backfill_remaining_ - 1 - count].content.size();
+            count++;
+        }
+        const size_t start = backfill_remaining_ - count;
+        batch.reserve(count);
+        for (size_t i = start; i < backfill_remaining_; i++)
+            batch.push_back(std::move(backfill_queue_[i]));
+        backfill_queue_.resize(start);
+        backfill_remaining_ = start;
+        if (backfill_remaining_ == 0)
+            ReleaseBackfillWorkerLocked(); // fully drained: join the worker, release its state
+    }
+
+    // Build the widgets and prepend them outside the lock: ftxui/model work that is
+    // UI-thread-only anyway.
+    std::vector<std::shared_ptr<Message>> messages;
+    messages.reserve(batch.size());
+    for (const ChatTranscriptEntry &entry : batch)
+    {
+        std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
+                                                         entry.render_pref, ::time(nullptr));
+        if (widget)
+            messages.push_back(std::move(widget));
+    }
+    chat_widget_->PrependMessages(std::move(messages));
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
+void TUIWindow::CancelTranscriptBackfill()
+{
+    std::lock_guard<std::mutex> lock(backfill_mutex_);
+    backfill_cancel_.store(true, std::memory_order_relaxed);
+    ReleaseBackfillWorkerLocked();
+    backfill_cancel_.store(false, std::memory_order_relaxed);
+}
+
+bool TUIWindow::TranscriptBackfillActive() const
+{
+    std::lock_guard<std::mutex> lock(backfill_mutex_);
+    // The worker is joinable from Start until it is released (on drain or cancel);
+    // |backfill_remaining_| covers the window after it published but before the last
+    // batch was prepended.
+    return backfill_thread_.joinable() || backfill_remaining_ > 0;
+}
+
+void TUIWindow::ReleaseBackfillWorkerLocked()
+{    // The worker polls |backfill_cancel_| while decoding, so it bails out within a
+    // batch of lines; the join is bounded and prompt, and it is what makes reusing
+    // (or destroying) the members below safe.
+    if (backfill_thread_.joinable())
+        backfill_thread_.join();
+    backfill_result_.clear();
+    backfill_result_.shrink_to_fit();
+    backfill_queue_.clear();
+    backfill_queue_.shrink_to_fit();
+    backfill_remaining_ = 0;
+    backfill_ready_.store(false, std::memory_order_relaxed);
 }
 
 void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
@@ -583,6 +935,22 @@ void TUIWindow::TickAnimations()
         return;
 
     const auto now = std::chrono::steady_clock::now();
+    // Expire the "press Ctrl+C again to quit" hint (and keep repainting while it is up).
+    TickInterruptHint(now);
+
+    // Fill in the older transcript a bounded batch at a time (startup backfill).
+    // Runs every iteration, so it advances whether or not anything else is animating.
+    PumpTranscriptBackfill();
+
+    // "Loading earlier history…" reports a load that lands *above what the reader
+    // is looking at*, so it belongs to the reader who has scrolled up past the
+    // bubbles painted at startup, into the older history the backfill is still
+    // filling in. Merely scrolling up a notch (the first screenful is already
+    // there) says nothing is missing, and neither does sitting at the tail; the
+    // hint stays down and fades out on its own once the reader comes back.
+    if (TranscriptBackfillActive() && chat_widget_ && !chat_widget_->StickingToBottom() &&
+        chat_widget_->ReadingBackfilledHistory())
+        backfill_hint_.Raise(now);
 
     // The sidebar's breathing (a processing task's marker) runs on the working
     // bar's tempo. Feed it the clock here, off the render path; a run that starts
@@ -630,6 +998,48 @@ void TUIWindow::TickAnimations()
     screen_->RequestAnimationFrame();
 }
 
+::ftxui::Element TUIWindow::InputSeparatorElement()
+{
+    // The badge answers "how will this line be read", so it reads the EXPANDED draft: a
+    // folded block whose text starts with `/` is a command, and the badge must say so
+    // before the user presses Enter (m175: 逐行判定可见).
+    const edc_input_mode mode = app_ ? app_->InputMode(input_->ExpandedDraft()) : EDC_INPUT_TEXT;
+    const std::string label = InputModeLabel(mode);
+
+    // One colour for the whole frame: the rules and the badge's fill are the SAME colour, so
+    // the line runs straight into the badge -- the badge is not a chip laid on top of the rule,
+    // it is a word written into it. That colour is the accent toned down (style::
+    // input_frame_color): at full strength it reads as neon across a hundred columns.
+    const auto &pal = style::palette();
+    const ::ftxui::Color rule = style::input_frame_color(pal);
+    const ::ftxui::Color badge = rule;
+
+    // The empty box is the one state with no label: nothing is being read yet, and an
+    // untouched input should not look decorated.
+    if (input_text_.empty())
+        return ::ftxui::separator() | ::ftxui::color(rule);
+
+    // The exception writes its name INTO the rule, near its left end: a short run of the
+    // line, then the label, then the line running to the right edge. (Centred between two
+    // equal runs looked decorative and cost the eye a jump; the label belongs to the line
+    // the input box starts on, so it sits where reading starts.)
+    //
+    // `| flex` is load-bearing on the trailing run: a bare separator in an hbox gets one
+    // column and draws the VERTICAL glyph (│), while a stretched one sees a line box and
+    // draws "─". The leading run is a fixed 3 columns, which is what keeps the label at the
+    // left instead of floating to the middle of the row.
+    //
+    // A FILLED badge, not coloured text: the label sits IN the line as a block, its glyphs
+    // punched out in the frame ink, so the line runs into it and the badge is what the eye
+    // lands on. Which mode it is, the word says -- every mode wears the same fill; the kind
+    // is not a colour signal.
+    return ::ftxui::hbox({::ftxui::separator() | ::ftxui::size(::ftxui::WIDTH, ::ftxui::EQUAL, 3) |
+                              ::ftxui::color(rule),
+                          ::ftxui::text(" " + label + " ") | ::ftxui::bgcolor(badge) |
+                              ::ftxui::color(style::input_frame_ink()) | ::ftxui::bold,
+                          ::ftxui::separator() | ::ftxui::flex | ::ftxui::color(rule)});
+}
+
 ::ftxui::Element TUIWindow::RenderMain()
 {
     auto input_row = ::ftxui::hbox({prompt_, input_->Render() | ::ftxui::flex});
@@ -648,15 +1058,41 @@ void TUIWindow::TickAnimations()
             screen_->RequestAnimationFrame();
     }
 
+    // The "Loading earlier history…" hint reuses the clipboard chip's look and corner
+    // while the startup backfill is still filling the older history in.
+    if (backfill_hint_.Visible(toast_now))
+    {
+        chat = ::ftxui::dbox(
+            {std::move(chat), ToastChipElement(" Loading earlier history… ", backfill_hint_.Fade(toast_now))});
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+
+    // "Fetching the pasted block…" / "Pasted block is gone": same chip, same corner.
+    if (paste_hint_.Visible(toast_now))
+    {
+        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(paste_hint_label_, paste_hint_.Fade(toast_now))});
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+
     // History view: the input is not rendered at all (nor its two separators) --
     // the pane is just history + status row. The return hint is a badge in the
     // history pane's top-right corner (same dbox trick as the "Copied" chip).
 
-    ::ftxui::Elements children = {chat | ::ftxui::flex, ::ftxui::separator()};
+    // The chat is the flex child, and the completion popup is pushed right after it -- i.e.
+    // ABOVE the input's top rule. The popup therefore grows into the chat's bottom, and the
+    // input block (rule / input / rule) keeps its exact place and height: the list never
+    // looks like part of the input box.
+    ::ftxui::Elements children = {chat | ::ftxui::flex};
+    if (!history_view_ && command_palette_.open() && !setup_dialog_->IsOpen())
+        children.push_back(ui::CommandPaletteElement(command_palette_));
+    children.push_back(InputSeparatorElement());
     if (!history_view_)
     {
         children.push_back(input_row);
-        children.push_back(::ftxui::separator());
+        // The box's bottom rule wears the same colour, so the input reads as one framed block.
+        children.push_back(::ftxui::separator() | ::ftxui::color(style::input_frame_color(style::palette())));
     }
 
     // History view: the input is off screen, so the return hint takes the bottom
@@ -745,6 +1181,16 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     if (setup_dialog_ && setup_dialog_->IsOpen())
         return setup_dialog_->OnEvent(event);
 
+    // Any other key means the user moved on, so the "press Ctrl+C again" hint goes away.
+    if (!interrupt_hint_.empty() &&
+        (event.is_character() || event == ::ftxui::Event::Return || event == ::ftxui::Event::Backspace ||
+         event == ::ftxui::Event::Delete || event == ::ftxui::Event::Escape))
+    {
+        ClearInterruptHint();
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    }
+
     // Bracketed paste markers (ESC[200~ / ESC[201~) toggle the paste mode and are
     // consumed whatever the mode was. FTXUI delivers each marker as a single
     // Event::Special.
@@ -753,11 +1199,16 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
     if (event == kPasteStart)
     {
         in_paste_ = true;
+        paste_buffer_.clear();
         return true;
     }
     if (event == kPasteEnd)
     {
         in_paste_ = false;
+        CommitPasteBuffer();
+        // The paste just changed the text without going through the key path, so refresh
+        // the completion popup once here (during the paste it stays as it was).
+        RecomputeCommandPalette();
         return true;
     }
 
@@ -781,15 +1232,89 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
 
 bool TUIWindow::HandlePasteEvent(::ftxui::Event event)
 {
-    // Everything inside a paste is text. Return/newline becomes a line break;
-    // other characters flow straight through to the Input (cursor movement and
-    // UTF-8). Nothing here submits.
+    // Everything inside a paste is text, and it is collected rather than typed: the
+    // whole paste is inserted once, at ESC[201~ (see CommitPasteBuffer). Nothing here
+    // submits.
     if (event == ::ftxui::Event::Return)
     {
-        input_->OnEvent(::ftxui::Event::Character("\n"));
+        paste_buffer_ += '\n';
         return true;
     }
-    return input_->OnEvent(event);
+    if (event.is_character())
+    {
+        paste_buffer_ += event.character();
+        return true;
+    }
+    /* A control byte is text inside a paste. The parser reports TAB -- and the rest of the
+     * C0 range -- as Event::Special, and ignoring those welded the words on both sides of
+     * every tab together: a pasted `git ls-files --eol patches/x.patch` line came out as
+     * `--eolpatches/x.patch`, unrecoverable once sent. Escape sequences (arrows, mouse
+     * reports, the paste terminator) are not text and stay ignored. */
+    const std::string &paste_input = event.input();
+    if (paste_input.size() == 1 && paste_input[0] != '\x1b' &&
+        static_cast<unsigned char>(paste_input[0]) < 0x20)
+    {
+        paste_buffer_ += paste_input[0];
+        return true;
+    }
+    return false; // mouse / wheel keep their normal meaning
+}
+
+/* The paste just ended: insert it as one thing.
+ *
+ * Small pastes are typed in as-is, so a paste that would be one line stays one line. A
+ * large one (>= kPasteFoldLines lines, or > kPasteFoldChars bytes) becomes ONE block:
+ * the draft holds a placeholder (`[Pasted #1 · 42 lines]`) and the bytes go to the
+ * payload. Folding is a display decision only -- ExpandedDraft() is what the badge, the
+ * bubble and the message use, so the line still says exactly what it would have said if
+ * it had been typed (edc_text_passes.h has the why). */
+void TUIWindow::CommitPasteBuffer()
+{
+    std::string text = std::move(paste_buffer_);
+    paste_buffer_.clear();
+    if (text.empty())
+        return;
+
+    // Terminals disagree on line endings inside a bracketed paste (Windows ConPTY sends
+    // bare CR); normalise once, here, so nothing downstream has to care.
+    std::string normalised;
+    normalised.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i)
+    {
+        if (text[i] == '\r')
+        {
+            if (i + 1 < text.size() && text[i + 1] == '\n')
+                continue; // CRLF -> the LF is kept by the next iteration
+            normalised += '\n';
+            continue;
+        }
+        normalised += text[i];
+    }
+
+    // Trim, the way the submit path trims: a pasted file usually carries a trailing
+    // newline that the user did not mean to send.
+    const auto first = normalised.find_first_not_of(" \t\n");
+    if (first == std::string::npos)
+        return; // whitespace only: nothing to insert
+    const auto last = normalised.find_last_not_of(" \t\n");
+    const std::string body = normalised.substr(first, last - first + 1);
+
+    int lines = 1;
+    for (char c : body)
+        if (c == '\n')
+            ++lines;
+
+    if (!input_)
+        return;
+    if (lines < kPasteFoldLines && static_cast<int>(body.size()) <= kPasteFoldChars)
+    {
+        input_->ReplaceRange(input_->CursorPosition(), input_->CursorPosition(), body);
+        return;
+    }
+
+    char label[64];
+    snprintf(label, sizeof(label), "[Pasted #%d \xc2\xb7 %d line%s]", ++paste_seq_, lines, lines == 1 ? "" : "s");
+    input_->InsertPasteBlock(label, body);
 }
 
 bool TUIWindow::HandleHistoryEvent(::ftxui::Event event)
@@ -819,6 +1344,63 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         return true;
     }
 
+    // The completion popup owns Up/Down/Tab/Esc while it is open, so ↑/↓ walk the rows
+    // instead of the caret and history. Enter stays a submit -- with ONE exception: once
+    // the user has walked the list (Up/Down pressed on it), the bar is what they are
+    // pointing at, so Enter picks that row instead of sending. Typing again clears the
+    // walk, so plain `/help⏎` still submits exactly as before.
+    if (command_palette_.open())
+    {
+        if (event == ::ftxui::Event::ArrowUp)
+        {
+            command_palette_.MoveUp();
+            return true;
+        }
+        if (event == ::ftxui::Event::ArrowDown)
+        {
+            command_palette_.MoveDown();
+            return true;
+        }
+        if (event == ::ftxui::Event::Tab)
+        {
+            AcceptCompletion();
+            return true;
+        }
+        /* Enter picks instead of sending -- and "picks" means the highlighted ROW, whole.
+         *
+         * In the `@` popup there is no "send the half-typed path" reading at all: the line
+         * under the caret is a reference that is not finished yet, so Enter always takes the
+         * highlighted row (Esc closes the popup first if what you want is to send the text
+         * as typed). For `/` commands Enter stays "send" until Up/Down says otherwise -- a
+         * whole command line can be typed without ever looking at the list. */
+        const bool mention = command_palette_.mode() == model::CommandPalette::Mode::Mention;
+        if (event == ::ftxui::Event::Return && (mention || command_palette_.navigated()))
+        {
+            if (!AcceptCompletion(/*take_selected=*/true))
+                Submit();
+            return true;
+        }
+        if (event == ::ftxui::Event::Escape)
+        {
+            command_palette_.Close();
+            return true;
+        }
+    }
+
+    // Esc stops the foreground group's running task. The completion popup owns Esc while
+    // it is open (above), and the history view's Esc is handled before this handler is
+    // reached; so here it means "stop what is running". When nothing is running there is
+    // no task to stop, so it falls through.
+    if (event == ::ftxui::Event::Escape)
+    {
+        if (working_)
+        {
+            StopForegroundTask();
+            return true;
+        }
+        return false;
+    }
+
     // Plain Enter submits. Intercepting it here means it never reaches the Input,
     // so multiline stays purely for Alt+Enter and typed text.
     if (event == ::ftxui::Event::Return)
@@ -826,12 +1408,113 @@ bool TUIWindow::HandleNormalEvent(::ftxui::Event event)
         Submit();
         return true;
     }
+    const bool handled = split_->OnEvent(event);
+    // Any text edit -- or a caret move, which decides which `@` is being typed -- changes
+    // the popup's query.
+    if (event.is_character() || event == ::ftxui::Event::Backspace || event == ::ftxui::Event::Delete ||
+        event == ::ftxui::Event::ArrowLeft || event == ::ftxui::Event::ArrowRight ||
+        event == ::ftxui::Event::ArrowUp || event == ::ftxui::Event::ArrowDown ||
+        event == ::ftxui::Event::Home || event == ::ftxui::Event::End)
+        RecomputeCommandPalette();
+    return handled;
+}
 
-    return split_->OnEvent(event);
+bool TUIWindow::AcceptCompletion(bool take_selected)
+{
+    if (command_palette_.mode() == model::CommandPalette::Mode::Mention)
+    {
+        // Replace "@src" with the selected "@src/main.c " -- or, for a directory,
+        // with "@src/" and stay open so the next level can be picked.
+        const std::string insert = command_palette_.MentionInsert();
+        if (insert.empty())
+            return false;
+        input_->ReplaceRange(command_palette_.trigger_begin(), input_->CursorPosition(), insert);
+        if (insert.back() == '/')
+        {
+            RecomputeCommandPalette();
+            return true;
+        }
+        // The inserted `@path` is already one unit: a token's identity comes from the text
+        // (edc_token_style.hpp), so nothing has to be registered -- and the same holds for a
+        // mention typed by hand or recalled from history.
+        command_palette_.Close();
+        return true;
+    }
+
+    // Complete the selected row. When that leaves nothing more to complete, this same
+    // press is the "that's it": fold the list now instead of demanding one more press to
+    // say so (the extra press carried no new information).
+    const std::string completed =
+        take_selected ? command_palette_.AcceptSelected() : command_palette_.Accept();
+    const bool changed = completed != input_text_;
+    if (changed)
+    {
+        input_->ReplaceAll(completed);
+        RecomputeCommandPalette();
+    }
+    if (!command_palette_.HasMore())
+        command_palette_.Close();
+    return changed;
+}
+
+void TUIWindow::RecomputeCommandPalette()
+{
+    // A recall is a browse, not typing. If the popup opened on a recalled `/command` it
+    // would grab the very Up/Down keys that walk the history -- after landing on e.g.
+    // `/task new` the next ArrowUp would move the list instead of recalling the entry
+    // above, so the history dead-ends there. Keep it folded for as long as the browse
+    // lasts: the first edit (or ArrowDown past the newest entry) ends it inside EdcInput,
+    // and every such event lands here again, so the popup returns with the typing.
+    if (input_->IsBrowsingHistory())
+    {
+        command_palette_.Close();
+        return;
+    }
+
+    // Load the command table once (static data; the facade projects it from the shell).
+    if (!palette_loaded_ && app_)
+    {
+        command_palette_.SetSource(app_->CommandFamilies(), app_->Commands());
+        palette_loaded_ = true;
+    }
+    // The shell line's option vocabulary follows the switch (the facade returns none while
+    // it is off), so a stale one can never offer syntax that is not in force.
+    if (app_)
+        command_palette_.SetShellOptionSource(app_->ShellOptions());
+    // `@`: the caret is inside a file reference. The kernel owns the tree, so ask it for
+    // the candidates that match what has been typed -- the popup only shows them.
+    const int cursor = input_->CursorPosition();
+    const model::CommandPalette::MentionHit mention = model::CommandPalette::ParseMention(input_text_, cursor);
+    if (app_ && mention.active)
+    {
+        command_palette_.SetFileSource(app_->FileCandidates(session_model_->workdir(), mention.query));
+        command_palette_.Update(input_text_, cursor);
+        return;
+    }
+
+    // A command whose first argument names a resource (`/prompt <name>`, `/skill <name>`)
+    // gets that vocabulary while it is in play, so a file added on disk is offered without a
+    // restart. The DISPLAYED session's bound directory goes with it -- the project roots are
+    // found by walking up from there (and the frontend already holds it, so no store read on
+    // this thread). Any other input clears the vocabulary so a stale one cannot linger.
+    if (app_)
+    {
+        const std::string &wd = session_model_->workdir();
+        if (input_text_.compare(0, 7, "/prompt") == 0)
+            command_palette_.SetArgSource("/prompt", app_->PromptNames(wd));
+        else if (input_text_.compare(0, 6, "/skill") == 0)
+            command_palette_.SetArgSource("/skill", app_->SkillNames(wd));
+        else
+            command_palette_.SetArgSource("", {});
+    }
+    command_palette_.Update(input_text_, cursor);
 }
 
 TUIWindow::~TUIWindow()
 {
+    // Abandon a backfill still decoding: the worker touches no window state, so this
+    // only drops the shared objects (see StartTranscriptBackfill).
+    CancelTranscriptBackfill();
     // app_ (a member) frees the edc_app: "destroy = persist" lives inside
     // AppFacade's destructor, which runs right after this body.
     if (bracketed_paste_on_)
@@ -897,6 +1580,21 @@ static void AppendHistoryBubbles(const cJSON *messages, const std::string &task_
         }
 
         std::string text = body ? body : "";
+        if (kind == "user")
+        {
+            /* The message holds the expanded text; the history view shows the line the
+             * user typed, so the bytes go back to their placeholders. */
+            const cJSON *payload = cJSON_GetObjectItem(m, "payload");
+            if (cJSON_IsObject(payload))
+            {
+                char *printed = cJSON_PrintUnformatted(payload);
+                if (printed)
+                {
+                    text = FoldPastedText(std::move(text), printed);
+                    cJSON_free(printed);
+                }
+            }
+        }
         const cJSON *calls = cJSON_GetObjectItem(m, "tool_calls");
         if (text.empty() && calls && cJSON_GetArraySize(calls) > 0)
         {
@@ -971,6 +1669,7 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
     cJSON_Delete(root);
 
     /* History view: this replaces the chat pane; live output stops until Esc. */
+    CancelTranscriptBackfill(); // a running backfill would pollute the filtered view
     chat_widget_->Clear();
     for (const auto &bubble : bubbles)
         chat_widget_->AddMessage(bubble);
@@ -995,6 +1694,27 @@ void TUIWindow::Post(std::function<void()> task)
         task(); // no screen (construction / harness): run synchronously
 }
 
+/* `/task output|status|fg <id>`: the user asked about that task, so it has been read.
+ * Parsed from what was typed -- the frontend owns the input box, and the reply text is
+ * not something to re-parse. */
+void TUIWindow::MarkReadFromInput(const std::string &line)
+{
+    static const char *const kCommands[] = {"/task output ", "/task status ", "/task fg "};
+    for (const char *cmd : kCommands)
+    {
+        const size_t len = std::strlen(cmd);
+        if (line.compare(0, len, cmd) != 0)
+            continue;
+        std::string id = line.substr(len);
+        const size_t end = id.find_first_of(" \t\r\n");
+        if (end != std::string::npos)
+            id.resize(end);
+        if (!id.empty())
+            task_widget_->model()->MarkRead(id);
+        return;
+    }
+}
+
 void TUIWindow::RequestFrame()
 {
     if (screen_)
@@ -1010,11 +1730,81 @@ void TUIWindow::PresentHistory(const std::string &payload)
 void TUIWindow::LoadSessionTranscript(const std::string &session_id)
 {
     LoadChatTranscript(session_id.c_str());
+    /* A new session deserves the startup hint again: whether this one has interrupted
+     * tasks is only knowable from its first snapshot. */
+    interrupted_hint_done_ = false;
 }
 
 void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
 {
     task_widget_->SetSnapshot(&snap);
+
+    /* A task that ended between the last two snapshots, while the user was not looking
+     * at it: say so once, in the chat pane. The transcript is deliberately NOT written --
+     * this is interface feedback, not something the conversation said. */
+    /* "Seen" wins over "finished": a task whose output was on screen since the last
+     * snapshot is read -- no marker, and nothing announced. */
+    task_widget_->model()->DropSeen(presented_tasks_);
+    presented_tasks_.clear();
+
+    const std::vector<std::string> just_finished = task_widget_->TakeFinished();
+    if (!just_finished.empty())
+    {
+        std::string line;
+        for (size_t i = 0; i < just_finished.size(); i++)
+        {
+            std::string state;
+            for (const TaskGroup &g : snap.groups)
+                for (const TaskInfo &t : g.tasks)
+                    if (t.task_id == just_finished[i])
+                        state = t.state;
+            if (i > 0)
+                line += ", ";
+            line += "task " + just_finished[i];
+            if (!state.empty())
+                line += " (" + state + ")";
+        }
+        line += just_finished.size() == 1 ? " finished · /task output " + just_finished.front()
+                                          : " finished";
+        chat_widget_->AddMessage(std::make_shared<Message>(line, ::time(nullptr)));
+    }
+
+    /* Startup hint: tasks the exit interrupted (nothing decided about them). Once per
+     * session, and only from a snapshot that actually carries tasks -- the first pull can
+     * arrive before the session is loaded, and that one says nothing about the archive.
+     * No transcript write, like the finish notice: this is interface feedback. */
+    if (!interrupted_hint_done_ && !snap.groups.empty())
+    {
+        interrupted_hint_done_ = true;
+        std::vector<std::string> interrupted;
+        for (const TaskGroup &g : snap.groups)
+            for (const TaskInfo &t : g.tasks)
+                if (t.end == "INTERRUPTED")
+                    interrupted.push_back(t.task_id);
+        if (interrupted.size() == 1)
+            chat_widget_->AddMessage(std::make_shared<Message>(
+                "task " + interrupted.front() + " was interrupted — `/task resume " + interrupted.front() +
+                    "` to continue it",
+                ::time(nullptr)));
+        else if (!interrupted.empty())
+            chat_widget_->AddMessage(std::make_shared<Message>(
+                std::to_string(interrupted.size()) +
+                    " tasks were interrupted — `/task resume <id>` brings one back, one at a time",
+                ::time(nullptr)));
+    }
+    // The footer's context gauge: the foreground group's current context, the same
+    // number the sidebar shows for that group.
+    long long ctx = 0;
+    bool estimated = false;
+    for (const TaskGroup &g : snap.groups)
+    {
+        if (!g.fg)
+            continue;
+        ctx = g.ctx_tokens;
+        estimated = g.ctx_estimated;
+        break;
+    }
+    status_bar_->SetContextUsage(ctx, estimated);
 }
 
 void TUIWindow::SyncWorking(const TaskSnapshot &snap)
@@ -1054,6 +1844,15 @@ bool TUIWindow::PresentChat(const port::ChatMessageEvent &event, const std::stri
     if (std::shared_ptr<Message> widget =
             MakeChatWidget(kind_str, event.header, event.content, event.task_id, event.render_pref, event.ts))
         chat_widget_->AddMessage(widget);
+
+    /* Its output is on screen, so this task has been read -- whatever the scheduler's
+     * active pointer says by the time the next snapshot arrives (that pointer moves on
+     * to the next task in the same batch, which used to make a `!cmd` look unread). */
+    if (!event.task_id.empty())
+    {
+        presented_tasks_.insert(event.task_id);
+        task_widget_->model()->MarkRead(event.task_id);
+    }
 
     // No explicit ScrollToBottom() here: if the reader is already at the tail the
     // view follows it automatically; if they scrolled up to read history, arriving

@@ -1,7 +1,9 @@
 #include "edc_input.hpp"
 
+#include "edc_token_style.hpp"
 #include "edc_text_util.hpp"
 #include <algorithm>
+#include <cstring>
 #include <ftxui/component/component_base.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/mouse.hpp>
@@ -30,6 +32,20 @@ int GlyphLenAt(const std::string &s, int at, int limit)
     return len > 0 ? static_cast<int>(len) : 1;
 }
 
+// |at| clamped to [0, size], then moved left off any UTF-8 continuation byte, so the
+// result is always a code point boundary. A caret between two bytes of one character
+// would make the next edit corrupt it.
+int SnapToBoundary(const std::string &s, int at)
+{
+    if (at <= 0)
+        return 0;
+    if (at > static_cast<int>(s.size()))
+        at = static_cast<int>(s.size());
+    while (at > 0 && at < static_cast<int>(s.size()) && (static_cast<unsigned char>(s[at]) & 0xC0) == 0x80)
+        at--;
+    return at;
+}
+
 // Byte offset of the code point preceding |pos| (or 0 when already at the
 // start). '\n' counts as a single-byte code point.
 int PrevGlyph(const std::string &s, int pos)
@@ -52,6 +68,193 @@ EdcInput::EdcInput(std::string *content, std::string placeholder, int max_visibl
     box_.y_max = -1;
 }
 
+EdcInput::~EdcInput()
+{
+    edc_payload_free(blocks_);
+    edc_payload_free(draft_payload_);
+}
+
+// ── Folded paste blocks ──────────────────────────────────────────────
+
+void EdcInput::InvalidateExpansion()
+{
+    ++expanded_epoch_;
+}
+
+const std::string &EdcInput::ExpandedDraft() const
+{
+    if (expanded_at_ == expanded_epoch_)
+        return expanded_cache_;
+    if (edc_payload_empty(blocks_))
+    {
+        expanded_cache_ = *content_;
+    }
+    else
+    {
+        char *expanded = edc_payload_expand(content_->c_str(), blocks_);
+        expanded_cache_.assign(expanded ? expanded : "", expanded ? strlen(expanded) : 0);
+        edc_payload_string_free(expanded);
+    }
+    expanded_at_ = expanded_epoch_;
+    return expanded_cache_;
+}
+
+void EdcInput::InsertPasteBlock(const std::string &label, const std::string &text)
+{
+    if (label.empty())
+        return;
+    StopBrowsing();
+    if (!blocks_)
+        blocks_ = edc_payload_new();
+    edc_payload_set(blocks_, label.c_str(), text.c_str());
+
+    // One trailing space: the caret then lands right AFTER the chip instead of inside
+    // it, which is where the next character belongs. The space survives expansion
+    // (only the key is replaced), so the block never welds onto the following word.
+    const std::string inserted = label + " ";
+    content_->insert(static_cast<size_t>(cursor_), inserted);
+    cursor_ += static_cast<int>(inserted.size());
+    desired_col_ = -1;
+    InvalidateExpansion();
+}
+
+void EdcInput::ClearPasteBlocks()
+{
+    edc_payload_free(blocks_);
+    blocks_ = nullptr;
+    InvalidateExpansion();
+}
+
+bool EdcInput::HasBlock(const std::string &label) const
+{
+    return edc_payload_get(blocks_, label.c_str()) != NULL;
+}
+
+void EdcInput::RestoreBlocks(const struct edc_payload *blocks)
+{
+    if (edc_payload_empty(blocks))
+        return;
+    if (!blocks_)
+        blocks_ = edc_payload_new();
+    for (int i = 0; i < blocks->n; ++i)
+        edc_payload_set(blocks_, blocks->items[i].key, blocks->items[i].text);
+    InvalidateExpansion();
+}
+
+const struct edc_payload *EdcInput::DraftPayload() const
+{
+    if (draft_at_ == expanded_epoch_)
+        return draft_payload_;
+
+    edc_payload_free(draft_payload_);
+    draft_payload_ = nullptr;
+    if (!edc_payload_empty(blocks_))
+    {
+        for (int i = 0; i < blocks_->n; ++i)
+        {
+            /* Only the blocks the draft still points at travel with the message. */
+            if (content_->find(blocks_->items[i].key) == std::string::npos)
+                continue;
+            if (!draft_payload_)
+                draft_payload_ = edc_payload_new();
+            edc_payload_set(draft_payload_, blocks_->items[i].key, blocks_->items[i].text);
+        }
+    }
+    draft_at_ = expanded_epoch_;
+    return draft_payload_;
+}
+
+bool EdcInput::HasUnresolvedBlocks() const
+{
+    /* A paste token the draft points at but the library has no bytes for: the line cannot
+     * be sent yet (the bytes come from the store). Tokens are syntactic, so this is the
+     * only thing left that can be "unknown". */
+    for (const Token &token : Tokens())
+    {
+        if (!token.paste)
+            continue;
+        const std::string key =
+            content_->substr(static_cast<size_t>(token.begin), static_cast<size_t>(token.end - token.begin));
+        if (!edc_payload_get(blocks_, key.c_str()))
+            return true;
+    }
+    return false;
+}
+
+void EdcInput::RemoveHistoryEntry(const std::string &entry)
+{
+    for (size_t i = 0; i < history_.size(); ++i)
+    {
+        if (history_[i] != entry)
+            continue;
+        history_.erase(history_.begin() + static_cast<long>(i));
+        if (browsing_)
+        {
+            if (history_pos_ > i)
+                --history_pos_;
+            else if (history_pos_ == i)
+                history_pos_ = std::min(history_.size(), i);
+        }
+        return;
+    }
+}
+
+
+const std::vector<EdcInput::Token> &EdcInput::Tokens() const
+{
+    if (tokens_at_ == expanded_epoch_)
+        return tokens_cache_;
+
+    tokens_cache_.clear();
+    /* The input box is the one place with a caret, so a mention that reaches the end of the
+     * text is still being typed: it is not a token yet (typing "@sr" must not turn the three
+     * characters into one unit, nor colour them). A paste label is a block either way. */
+    for (const TokenSpan &span : ScanTokens(*content_, /*end_closes=*/false))
+    {
+        if (!span.paste && !span.closed)
+            continue;
+        const std::string text = content_->substr(span.begin, span.len);
+        tokens_cache_.push_back({static_cast<int>(span.begin), static_cast<int>(span.begin + span.len), span.paste,
+                                 MentionIsMarked(span, text)});
+    }
+    tokens_at_ = expanded_epoch_;
+    return tokens_cache_;
+}
+
+const EdcInput::Token *EdcInput::TokenStartingAt(int at) const
+{
+    for (const Token &token : Tokens())
+        if (token.begin == at)
+            return &token;
+    return nullptr;
+}
+
+const EdcInput::Token *EdcInput::TokenEndingAt(int at) const
+{
+    for (const Token &token : Tokens())
+        if (token.end == at)
+            return &token;
+    return nullptr;
+}
+
+std::string InputModeLabel(edc_input_mode mode)
+{
+    switch (mode)
+    {
+    case EDC_INPUT_COMMAND:
+        return "command";
+    case EDC_INPUT_LOCALSHELL:
+        return "local shell";
+    case EDC_INPUT_SHELL:
+        return "shell";
+    case EDC_INPUT_REJECTED:
+        return "syntax error";
+    case EDC_INPUT_TEXT:
+    default:
+        return "message"; /* the common case gets a name too -- silence reads as "unclassified" */
+    }
+}
+
 void EdcInput::Reset()
 {
     cursor_ = 0;
@@ -59,6 +262,47 @@ void EdcInput::Reset()
     desired_col_ = -1;
     hovered_ = false;
     StopBrowsing();
+    // The caller cleared the draft behind our back. The library keeps its bytes: a recalled
+    // history entry still needs them, and DraftPayload() only sends what the draft
+    // references.
+    InvalidateExpansion();
+}
+
+void EdcInput::ReplaceAll(const std::string &text)
+{
+    // Completion popup: swap the whole draft for the completed command and put the
+    // caret after it. Browsing is left behind (the popup and history recall are
+    // mutually exclusive: the popup only shows on a line starting with '/').
+    *content_ = text;
+    cursor_ = static_cast<int>(content_->size());
+    scroll_ = 0;
+    desired_col_ = -1;
+    StopBrowsing();
+    InvalidateExpansion();
+}
+
+void EdcInput::SetCursor(int offset)
+{
+    cursor_ = SnapToBoundary(*content_, offset);
+    desired_col_ = -1; /* the column is derived from the caret again */
+}
+
+void EdcInput::ReplaceRange(int begin, int end, const std::string &text)
+{
+    if (begin > end)
+    {
+        const int t = begin;
+        begin = end;
+        end = t;
+    }
+    begin = SnapToBoundary(*content_, begin);
+    end = SnapToBoundary(*content_, end);
+
+    content_->replace(static_cast<size_t>(begin), static_cast<size_t>(end - begin), text);
+    cursor_ = begin + static_cast<int>(text.size());
+    desired_col_ = -1;
+    StopBrowsing(); /* an edit ends any history browse, like typing does */
+    InvalidateExpansion();
 }
 
 void EdcInput::AddHistory(const std::string &entry)
@@ -87,7 +331,16 @@ void EdcInput::StopBrowsing()
     browsing_ = false;
     history_pos_ = history_.size();
     draft_.clear();
+    prefix_.clear();
     draft_cursor_ = 0;
+}
+
+bool EdcInput::MatchesPrefix(size_t index) const
+{
+    // Byte prefix, case-sensitive (what a shell does): the draft is what the user
+    // typed, so it has to match the entry from its first byte. An empty prefix
+    // matches every entry, which leaves plain Up/Down browsing unchanged.
+    return history_[index].compare(0, prefix_.size(), prefix_) == 0;
 }
 
 int EdcInput::WrapColumns() const
@@ -218,6 +471,95 @@ int EdcInput::CaretColumn()
     return ColumnAt(*content_, layout, row, lo);
 }
 
+::ftxui::Element EdcInput::RowElement(const Row &row, int caret_at, bool is_focused,
+                                      const ::ftxui::Decorator &caret) const
+{
+    // Runs: plain text and chips, in row order. A chip is recognised by its placeholder
+    // text, so a placeholder the user edited through simply renders as plain text (the
+    // block is gone; its library entry is dropped by the atomic delete above).
+    struct Run
+    {
+        bool token; /* one of the two atomic kinds */
+        bool paste; /* ...and it is a folded paste (bytes behind it), not an `@mention` */
+        int begin;
+        int end;
+    };
+    std::vector<Run> runs;
+    int p = row.begin;
+    while (p < row.end)
+    {
+        int block_end = 0;
+        bool is_paste = false;
+        const Token *token = TokenStartingAt(p);
+        if (token)
+        {
+            block_end = token->end;
+            is_paste = token->paste;
+        }
+        if (block_end > p && block_end <= row.end)
+        {
+            /* The surface covers the placeholder exactly, nothing else: the space the insert
+             * leaves after it is a word separator, and painting it made the chip look like it
+             * had a stray selected cell on the right (the bubble, which paints the same
+             * token, never painted it either). A mention whose path is not real is drawn as
+             * plain text -- it is still one token to edit, it just is not a reference. */
+            const bool marked = !token || token->paste || token->marked;
+            runs.push_back({marked, is_paste, p, block_end});
+            p = block_end;
+            continue;
+        }
+        const int len = GlyphLenAt(*content_, p, row.end);
+        if (len <= 0)
+            break;
+        if (!runs.empty() && !runs.back().token)
+            runs.back().end = p + len; // merge into the plain run (no hbox churn per glyph)
+        else
+            runs.push_back({false, false, p, p + len});
+        p += len;
+    }
+    if (runs.empty())
+        runs.push_back({false, false, row.begin, row.end}); // empty line: the caret still needs a cell
+
+    ::ftxui::Elements parts;
+    const int caret_pos = (caret_at < 0) ? -1 : std::max(row.begin, std::min(caret_at, row.end));
+
+    auto push_text = [&](int a, int b, bool token, bool paste) {
+        if (b <= a)
+            return;
+        ::ftxui::Element e =
+            ::ftxui::text(content_->substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
+        /* One styling function, shared with the chat bubble (edc_token_style.hpp): the
+         * line must look the same before and after it is sent. */
+        if (token)
+            e = StyleToken(e, paste);
+        parts.push_back(e);
+    };
+
+    for (const Run &run : runs)
+    {
+        if (caret_pos < 0 || caret_pos < run.begin || caret_pos > run.end)
+        {
+            push_text(run.begin, run.end, run.token, run.paste);
+            continue;
+        }
+        if (caret_pos == run.end)
+        {
+            // After this run's last glyph: one caret cell (between two runs, or at the row
+            // end), exactly like ftxui::Input at a line end.
+            push_text(run.begin, run.end, run.token, run.paste);
+            parts.push_back(::ftxui::text(is_focused ? " " : "") | caret);
+            continue;
+        }
+        // On a glyph: block/bar over it.
+        const int len = GlyphLenAt(*content_, caret_pos, run.end);
+        push_text(run.begin, caret_pos, run.token, run.paste);
+        parts.push_back(
+            ::ftxui::text(content_->substr(static_cast<size_t>(caret_pos), static_cast<size_t>(len))) | caret);
+        push_text(caret_pos + len, run.end, run.token, run.paste);
+    }
+    return ::ftxui::hbox(std::move(parts));
+}
+
 ::ftxui::Element EdcInput::OnRender()
 {
     const bool is_focused = Focused();
@@ -265,35 +607,8 @@ int EdcInput::CaretColumn()
     {
         const int row_index = scroll_ + i;
         const Row &r = layout.rows[row_index];
-        if (row_index != caret_row)
-        {
-            elements.push_back(::ftxui::text(content_->substr(r.begin, r.end - r.begin)));
-            continue;
-        }
-
-        const std::string before = content_->substr(r.begin, caret_lo - r.begin);
-        if (caret_lo >= r.end)
-        {
-            // Caret sits after the last glyph of this visual row: append a
-            // one-cell caret, like ftxui::Input does at a line end.
-            const std::string caret_cell = is_focused ? " " : "";
-            elements.push_back(::ftxui::hbox({
-                ::ftxui::text(before),
-                ::ftxui::text(caret_cell) | caret,
-            }));
-        }
-        else
-        {
-            // Caret sits on a glyph of this row: block/bar over that glyph.
-            const int len = GlyphLenAt(*content_, caret_lo, r.end);
-            const std::string at = content_->substr(caret_lo, len);
-            const std::string after = content_->substr(caret_lo + len, r.end - (caret_lo + len));
-            elements.push_back(::ftxui::hbox({
-                ::ftxui::text(before),
-                ::ftxui::text(at) | caret,
-                ::ftxui::text(after),
-            }));
-        }
+        const int caret_at = (row_index == caret_row) ? caret_lo : -1;
+        elements.push_back(RowElement(r, caret_at, is_focused, caret));
     }
 
     return ::ftxui::vbox(std::move(elements)) | ::ftxui::xflex | ::ftxui::reflect(box_);
@@ -345,13 +660,21 @@ bool EdcInput::HandleCharacter(const std::string &character)
     StopBrowsing();
     if (!insert_mode_ && cursor_ < static_cast<int>(content_->size()) && (*content_)[cursor_] != '\n')
     {
-        // Overwrite mode: replace the glyph under the caret.
+        // Overwrite mode: replace the glyph under the caret. This is the one way to type
+        // INTO a placeholder -- the key stops matching, so the block simply stops being
+        // referenced (its bytes stay in the library: another history entry may want them).
         const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
         content_->erase(cursor_, static_cast<size_t>(len));
+        content_->insert(cursor_, character);
+        cursor_ += static_cast<int>(character.size());
+        desired_col_ = -1;
+        InvalidateExpansion();
+        return true;
     }
     content_->insert(cursor_, character);
     cursor_ += static_cast<int>(character.size());
     desired_col_ = -1;
+    InvalidateExpansion();
     return true;
 }
 
@@ -360,10 +683,28 @@ bool EdcInput::HandleBackspace()
     if (cursor_ == 0)
         return false;
     StopBrowsing();
+    if (const Token *token = TokenEndingAt(cursor_))
+    {
+        // One token on screen, one token to Backspace: the whole placeholder -- or the whole
+        // `@mention` -- goes, whether it was typed, completed or recalled. A paste block
+        // also drops its bytes (deleting it is how you discard that); an `@path` has none.
+        const std::string key =
+            content_->substr(static_cast<size_t>(token->begin), static_cast<size_t>(token->end - token->begin));
+        const int begin = token->begin;
+        const bool paste = token->paste;
+        content_->erase(static_cast<size_t>(begin), static_cast<size_t>(cursor_ - begin));
+        cursor_ = begin;
+        desired_col_ = -1;
+        if (paste)
+            edc_payload_remove(blocks_, key.c_str());
+        InvalidateExpansion();
+        return true;
+    }
     const int p = PrevGlyph(*content_, cursor_);
-    content_->erase(p, static_cast<size_t>(cursor_ - p));
+    content_->erase(static_cast<size_t>(p), static_cast<size_t>(cursor_ - p));
     cursor_ = p;
     desired_col_ = -1;
+    InvalidateExpansion();
     return true;
 }
 
@@ -371,12 +712,27 @@ bool EdcInput::HandleDelete()
 {
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
+    StopBrowsing();
+    if (const Token *token = TokenStartingAt(cursor_))
+    {
+        // Mirror of Backspace: Delete on the first glyph of a token removes all of it.
+        const std::string key =
+            content_->substr(static_cast<size_t>(token->begin), static_cast<size_t>(token->end - token->begin));
+        const int end = token->end;
+        const bool paste = token->paste;
+        content_->erase(static_cast<size_t>(cursor_), static_cast<size_t>(end - cursor_));
+        desired_col_ = -1;
+        if (paste)
+            edc_payload_remove(blocks_, key.c_str());
+        InvalidateExpansion();
+        return true;
+    }
     const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
     if (len == 0)
         return false;
-    StopBrowsing();
     content_->erase(cursor_, static_cast<size_t>(len));
     desired_col_ = -1;
+    InvalidateExpansion();
     return true;
 }
 
@@ -390,6 +746,12 @@ bool EdcInput::MoveLeft()
 {
     if (cursor_ == 0)
         return false;
+    if (const Token *token = TokenEndingAt(cursor_))
+    {
+        cursor_ = token->begin; // one move over the whole token
+        desired_col_ = -1;
+        return true;
+    }
     cursor_ = PrevGlyph(*content_, cursor_);
     desired_col_ = -1;
     return true;
@@ -399,6 +761,12 @@ bool EdcInput::MoveRight()
 {
     if (cursor_ >= static_cast<int>(content_->size()))
         return false;
+    if (const Token *token = TokenStartingAt(cursor_))
+    {
+        cursor_ = token->end; // right before the token -> right after it
+        desired_col_ = -1;
+        return true;
+    }
     const int len = GlyphLenAt(*content_, cursor_, static_cast<int>(content_->size()));
     cursor_ += len;
     desired_col_ = -1;
@@ -470,7 +838,9 @@ bool EdcInput::HandleUp()
     const int row = FindCaretRow(layout, cursor_, &lo);
     if (row > 0)
         return MoveUp();
-    return HistoryPrev();
+    // Nothing in the history starts with what is typed: keep ArrowUp on the caret
+    // (at the first row that is a no-op, exactly as with an empty history).
+    return HistoryPrev() || MoveUp();
 }
 
 bool EdcInput::HandleDown()
@@ -488,6 +858,17 @@ bool EdcInput::HistoryPrev()
         return false;
     if (!browsing_)
     {
+        // The text already typed filters the recall: only entries that START with it
+        // are candidates, so typing `task ` and pressing Up walks the `task ...` lines
+        // instead of every unrelated message. A draft nothing matches is not a recall
+        // at all -- return false without stashing anything, so ArrowUp stays "move the
+        // caret" (and an empty draft matches everything: plain Up is unchanged).
+        prefix_ = *content_;
+        bool any_match = false;
+        for (size_t i = 0; i < history_.size() && !any_match; ++i)
+            any_match = MatchesPrefix(i);
+        if (!any_match)
+            return false;
         // Entering history mode: stash whatever the user was typing so it can
         // be brought back with ArrowDown past the newest entry.
         draft_ = *content_;
@@ -495,24 +876,35 @@ bool EdcInput::HistoryPrev()
         browsing_ = true;
         history_pos_ = history_.size();
     }
-    if (history_pos_ == 0)
-        return true; // already at the oldest entry: consume, no change
-    RecallHistory(history_pos_ - 1);
-    return true;
+    // Walk back to the previous entry that still fits the prefix.
+    for (size_t i = history_pos_; i > 0; --i)
+    {
+        if (!MatchesPrefix(i - 1))
+            continue;
+        RecallHistory(i - 1);
+        return true;
+    }
+    return true; // already at the oldest match: consume, no change
 }
 
 bool EdcInput::HistoryNext()
 {
     if (!browsing_)
         return false;
-    if (history_pos_ + 1 < history_.size())
+    // Walk forward to the next entry that still fits the prefix.
+    for (size_t i = history_pos_ + 1; i < history_.size(); ++i)
     {
-        RecallHistory(history_pos_ + 1);
+        if (!MatchesPrefix(i))
+            continue;
+        RecallHistory(i);
         return true;
     }
-    // Stepped past the newest entry: restore the draft and leave history mode.
+    // Stepped past the newest match: restore the draft and leave history mode.
     *content_ = draft_;
     cursor_ = std::min(draft_cursor_, static_cast<int>(content_->size()));
+    InvalidateExpansion();
+    if (recall_hook_)
+        recall_hook_(*content_);
     StopBrowsing();
     scroll_ = 0;
     desired_col_ = -1;
@@ -523,6 +915,11 @@ void EdcInput::RecallHistory(size_t index)
 {
     history_pos_ = index;
     *content_ = history_[index];
+    InvalidateExpansion();
+    // The owner can now pull the payload this entry's placeholders need (they are not in
+    // the library after a restart).
+    if (recall_hook_)
+        recall_hook_(*content_);
     // Like a shell, the caret lands at the end of the recalled entry so it can
     // be edited or re-sent; OnRender() then scrolls the caret row into view.
     cursor_ = static_cast<int>(content_->size());

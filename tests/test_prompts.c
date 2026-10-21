@@ -2,10 +2,15 @@
  *
  * Unit tests for parsing (src/kernel/context/edc_prompts.c), argument splitting and
  * substitution. Two properties matter most:
- *   ① the placeholder set is exactly the one the header promises -- `{{…}}`, NEVER `$`;
- *   ② the template layer does not read `$` at all, because the input layer it feeds
- *      already gives `$` a meaning (task references -- see
- *      tests/test_cmd_parse.c::test_expand_vars_dollar_syntax). */
+ *   ① the placeholders are THIS layer's, spelled the ecosystem's way -- `$1` / `$@` /
+ *      `${1:-x}` (pi / Claude Code / opencode, so their files run unedited) -- with the
+ *      legacy `{{…}}` alias read by the SAME expander. There is no translation step: a body
+ *      keeps exactly what its author wrote;
+ *   ② `$` is inert in the *input* layer: task references are `{{LAST}}` / `{{<id>}}` /
+ *      `{{SELF}}` (see tests/test_cmd_parse.c::test_expand_task_refs), so the `$` forms
+ *      belong to templates and the braces to the layer below. */
+#include "edc_lex.h"
+#include "edc_config.h"
 #include "edc_prompts.h"
 #include "sds.h"
 #include "utarray.h"
@@ -13,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h> /* symlink/unlink */
 
 static int passed = 0, failed = 0;
 
@@ -65,7 +71,7 @@ static sds expand(const char *body, const char *argline)
     memset(&prompt, 0, sizeof(prompt));
     prompt.body = sdsnew(body);
     int argc = 0;
-    sds *args = edc_prompt_split_args(argline, &argc);
+    sds *args = edc_argv_from_tail(argline, &argc);
     sds out = edc_prompt_expand(&prompt, args, argc);
     edc_prompt_args_free(args, argc);
     sdsfree(prompt.body);
@@ -84,77 +90,48 @@ static void check_expand(const char *name, const char *body, const char *argline
 
 static void test_expand(void)
 {
-    check_expand("{{1}} is the first argument", "A:{{1}}", "one two", "A:one");
-    check_expand("{{2}} is the second argument", "A:{{2}}", "one two", "A:two");
-    check_expand("{{10}} is multi-digit (the tenth argument)", "A:{{10}}", "1 2 3 4 5 6 7 8 9 ten", "A:ten");
-    check_expand("a missing positional is EMPTY, not literal", "A[{{3}}]", "one two", "A[]");
-    check_expand("{{@}} joins every argument with a space", "A:{{@}}", "one two three", "A:one two three");
-    check_expand("{{@}} with no arguments is empty", "A:{{@}}", "", "A:");
-    check_expand("{{1:-default}} uses the argument", "A:{{1:-D}}", "one", "A:one");
-    check_expand("{{1:-default}} falls back when missing", "A:{{1:-D}}", "", "A:D");
-    check_expand("{{1:-default}} falls back when empty", "A:{{1:-D}}", "\"\"", "A:D");
-    check_expand("{{@:-default}} uses the arguments", "A:{{@:-D}}", "one two", "A:one two");
-    check_expand("{{@:-default}} falls back when there are none", "A:{{@:-D}}", "", "A:D");
-    check_expand("{{@:2}} slices from the second argument", "A:{{@:2}}", "one two three", "A:two three");
-    check_expand("{{@:2:1}} takes one from the second", "A:{{@:2:1}}", "one two three", "A:two");
-    check_expand("{{@:9}} past the end is empty", "A:{{@:9}}", "one", "A:");
-    check_expand("{{0}} is not ours", "A:{{0}}", "one", "A:{{0}}");
-    check_expand("an unknown {{...}} is left verbatim", "A:{{weird}}", "one", "A:{{weird}}");
-    check_expand("an unterminated {{ is left verbatim", "A:{{1", "one", "A:{{1");
-    check_expand("a lone { is left verbatim", "A:{1}", "one", "A:{1}");
-    check_expand("plain text is untouched", "no placeholders here", "one", "no placeholders here");
+    /* ── 替换：位置占位符 + 全量形式 ───────────────────────────── */
+    /* ── `{{…}}` 不是占位符（它是输入层的任务引用）──────────────────
+     * 这是一次有意的对齐，2026-10-16 核过 opencode 源码：它只认 `$1..$n` 与
+     * `$ARGUMENTS`，从来没有 `{{…}}` 占位符。把 `{{…}}` 也当占位符是我们自己的
+     * 旧别名，它让同一个拼写在两层有两种意思。现在它在这一层是纯文本。 */
+    check_expand("`{{1}}` is NOT a placeholder", "A:{{1}}", "one", "A:{{1}}\n\none");
+    check_expand("`{{@}}` neither", "A:{{@}}", "one two", "A:{{@}}\n\none two");
+    check_expand("`{{1:-D}}` neither", "A:{{1:-D}}", "", "A:{{1:-D}}");
 
-    /* ── 不变式：模板层**完全不碰 `$`** ────────────────────────────
-     * 这是换掉 `$` 参数语法的全部理由：输入层用 `$`（`$$`/`$N`/`$LAST`/`$NAME` 都是
-     * **任务引用**，见 tests/test_cmd_parse.c::test_expand_vars_dollar_syntax）。
-     * 模板层只要碰一次 `$1`，就会抢走输入层的东西。 */
-    check_expand("$1 is NOT ours -- the input layer's task reference", "A:$1", "one", "A:$1");
-    check_expand("$@ is NOT ours either", "A:$@", "one", "A:$@");
-    check_expand("$$ is NOT ours", "A:$$", "one", "A:$$");
-    check_expand("$HOME passes through untouched", "run $HOME/bin", "one", "run $HOME/bin");
-    check_expand("$ARGUMENTS passes through untouched", "A:$ARGUMENTS", "one", "A:$ARGUMENTS");
+    /* ── 兜底：正文里没有任何引用 → 把用户输入追加在末尾 ────────────
+     * （opencode 的规则，2026-10-16 核过源码；这样 `/prompt x 一些话` 与
+     * `/skill y 一些话` 里的话永远不会被静默丢掉。） */
+    check_expand("no reference: the arguments are appended", "no placeholders here", "one",
+                 "no placeholders here\n\none");
+    check_expand("no reference, no arguments: untouched", "no placeholders here", "", "no placeholders here");
+    check_expand("{{0}} is not ours -> appended", "A:{{0}}", "one", "A:{{0}}\n\none");
+    check_expand("an unknown {{...}} is left verbatim, then appended", "A:{{weird}}", "one",
+                 "A:{{weird}}\n\none");
+    check_expand("an unterminated {{ is not a reference -> appended", "A:{{1", "one", "A:{{1\n\none");
+    check_expand("a lone { is not a reference -> appended", "A:{1}", "one", "A:{1}\n\none");
+
+    /* ── `$…` 是**本层**的占位符 ─────────────────────────────────
+     * 生态写法（pi / Claude Code / opencode）就是我们的写法：与 `{{…}}` 同一套文法、同一个
+     * 展开器（`edc_prompt_placeholder_at`），**没有“翻译”这一步**。 */
+    check_expand("$1 substitutes like {{1}}", "A:$1", "one", "A:one");
+    check_expand("$1 (last) takes the rest too", "A:$1", "one two", "A:one two");
+    check_expand("$10 is the tenth argument (multi-digit, as opencode reads it)",
+                 "A:$10", "1 2 3 4 5 6 7 8 9 ten", "A:ten");
+    check_expand("$10 with one argument is EMPTY -- it is not $1 followed by a 0",
+                 "A:$10", "one", "A:");
+    check_expand("$ARGUMENTS too", "A:$ARGUMENTS", "one two", "A:one two");
+    /* `$@` and the braced family (`${10}` `$@` `${1:-D}` `${@:2:1}`) are GONE: opencode has
+     * only `$1..$n` and `$ARGUMENTS`, and we align with it exactly. They are not
+     * placeholders any more, so they stay as text (and, with no reference found, the
+     * arguments are appended). */
+    check_expand("`$@` is not a form of ours", "A:$@", "one two", "A:$@\n\none two");
+    check_expand("`${1}` is not a form of ours", "A:${1}", "one", "A:${1}\n\none");
+    check_expand("`${1:-D}` is not a form of ours", "A:${1:-D}", "", "A:${1:-D}");
+    check_expand("`$HOME` is not a form of ours -> appended", "run $HOME/bin", "one", "run $HOME/bin\n\none");
+    check_expand("$$ is not a form of ours -> appended", "A:$$", "one", "A:$$\n\none");
 }
 
-/* ── Argument splitting ────────────────────────────────────── */
-
-static void test_split(void)
-{
-    TEST("splits on whitespace");
-    int argc = 0;
-    sds *args = edc_prompt_split_args("one  two\tthree", &argc);
-    CHECK(argc == 3, "three arguments");
-    CHECK(argc == 3 && strcmp(args[0], "one") == 0 && strcmp(args[1], "two") == 0 && strcmp(args[2], "three") == 0,
-          "and they are the words");
-    edc_prompt_args_free(args, argc);
-
-    TEST("double quotes group a spaced argument");
-    args = edc_prompt_split_args("\"API compatibility\" now", &argc);
-    CHECK(argc == 2, "two arguments");
-    CHECK(argc == 2 && strcmp(args[0], "API compatibility") == 0, "the quoted one keeps its space");
-    CHECK(argc == 2 && strcmp(args[1], "now") == 0, "and the rest follows");
-    edc_prompt_args_free(args, argc);
-
-    TEST("single quotes group too");
-    args = edc_prompt_split_args("'a b' c", &argc);
-    CHECK(argc == 2 && strcmp(args[0], "a b") == 0, "single-quoted keeps its space");
-    edc_prompt_args_free(args, argc);
-
-    TEST("backslash escapes the next byte");
-    args = edc_prompt_split_args("a\\ b c", &argc);
-    CHECK(argc == 2 && strcmp(args[0], "a b") == 0, "the escaped space does not split");
-    edc_prompt_args_free(args, argc);
-
-    TEST("operators are ordinary bytes here, not shell syntax");
-    args = edc_prompt_split_args("a | b", &argc);
-    CHECK(argc == 3, "three arguments -- the pipe is just text");
-    CHECK(argc == 3 && strcmp(args[1], "|") == 0, "and it comes through unchanged");
-    edc_prompt_args_free(args, argc);
-
-    TEST("an empty argument line yields no arguments");
-    args = edc_prompt_split_args("   ", &argc);
-    CHECK(argc == 0, "zero arguments");
-    edc_prompt_args_free(args, argc);
-}
 
 /* ── Parsing files ─────────────────────────────────────────── */
 
@@ -186,7 +163,7 @@ static void test_parse(void)
     write_file_at(dir, "other.txt", "not a prompt\n");
 
     TEST("front matter: description + argument-hint");
-    struct edc_prompt *p = edc_prompt_load(dir, "full");
+    struct edc_prompt *p = edc_prompt_load(dir, "full", NULL);
     CHECK(p != NULL, "loaded");
     if (p)
     {
@@ -198,7 +175,7 @@ static void test_parse(void)
     edc_prompt_free(p);
 
     TEST("no front matter: description falls back to the first non-empty line");
-    p = edc_prompt_load(dir, "bare");
+    p = edc_prompt_load(dir, "bare", NULL);
     CHECK(p != NULL, "loaded");
     if (p)
     {
@@ -209,36 +186,100 @@ static void test_parse(void)
     edc_prompt_free(p);
 
     TEST("a value may contain a colon (split on the FIRST one only)");
-    p = edc_prompt_load(dir, "colon");
+    p = edc_prompt_load(dir, "colon", NULL);
     CHECK(p != NULL, "loaded");
     if (p)
         CHECK_STR(p->description, "Review: focus on X", "the colon inside the value survived");
     edc_prompt_free(p);
 
     TEST("front matter opened but never closed is refused, not half-parsed");
-    p = edc_prompt_load(dir, "unclosed");
+    p = edc_prompt_load(dir, "unclosed", NULL);
     CHECK(p == NULL, "NULL");
     edc_prompt_free(p);
 
     TEST("an empty body is refused");
-    p = edc_prompt_load(dir, "empty");
+    p = edc_prompt_load(dir, "empty", NULL);
     CHECK(p == NULL, "NULL");
     edc_prompt_free(p);
 
     TEST("a missing file is refused");
-    p = edc_prompt_load(dir, "nope");
+    p = edc_prompt_load(dir, "nope", NULL);
     CHECK(p == NULL, "NULL");
     edc_prompt_free(p);
 
     TEST("a name that could leave the directory is refused");
-    CHECK(edc_prompt_load(dir, "../secret") == NULL, "../ refused");
-    CHECK(edc_prompt_load(dir, "a/b") == NULL, "/ refused");
-    CHECK(edc_prompt_load(dir, ".hidden") == NULL, "dot-prefixed refused");
-    CHECK(edc_prompt_load(dir, "") == NULL, "empty refused");
-    CHECK(edc_prompt_load(dir, "ok`;rm -rf /") == NULL, "non-[A-Za-z0-9._-] refused");
+    CHECK(edc_prompt_load(dir, "../secret", NULL) == NULL, "../ refused");
+    CHECK(edc_prompt_load(dir, "a/b", NULL) == NULL, "/ refused");
+    CHECK(edc_prompt_load(dir, ".hidden", NULL) == NULL, "dot-prefixed refused");
+    CHECK(edc_prompt_load(dir, "", NULL) == NULL, "empty refused");
+    CHECK(edc_prompt_load(dir, "ok`;rm -rf /", NULL) == NULL, "non-[A-Za-z0-9._-] refused");
+
+    TEST("a symlinked template is refused, not read through");
+    {
+        /* The model can write into workspace/prompts: without this it could plant
+         * `evil.md -> ~/.ssh/id_rsa` and have the contents land in its own context. */
+        char outside[1024], link[1024];
+        snprintf(outside, sizeof(outside), "%s_outside_secret.txt", dir);
+        FILE *f = fopen(outside, "w");
+        if (f)
+        {
+            fputs("TOP-SECRET\n", f);
+            fclose(f);
+        }
+        snprintf(link, sizeof(link), "%s/evil.md", dir);
+        unlink(link);
+        CHECK(symlink(outside, link) == 0, "symlink planted");
+        struct edc_prompt *evil = edc_prompt_load(dir, "evil", NULL);
+        CHECK(evil == NULL, "the link is refused");
+        edc_prompt_free(evil);
+        unlink(link);
+        unlink(outside);
+    }
+
+    TEST("a HARDLINKED template is refused too (lstat cannot see it)");
+    {
+        char outside[1024], href[1024];
+        snprintf(outside, sizeof(outside), "%s_hardlink_secret.txt", dir);
+        FILE *f = fopen(outside, "w");
+        if (f)
+        {
+            fputs("TOP-SECRET\n", f);
+            fclose(f);
+        }
+        snprintf(href, sizeof(href), "%s/linked.md", dir);
+        unlink(href);
+        CHECK(link(outside, href) == 0, "hardlink planted");
+        struct edc_prompt *linked = edc_prompt_load(dir, "linked", NULL);
+        CHECK(linked == NULL, "refused (st_nlink > 1)");
+        edc_prompt_free(linked);
+        unlink(href);
+        unlink(outside);
+    }
+
+    TEST("the sandbox DENY list applies to templates (its roots are outside ro/rw)");
+    {
+        /* Being inside the resource root is not permission: a denied directory still
+         * refuses, even though it is neither in ro_paths nor in rw_paths. */
+        struct edc_prompt *allowed = edc_prompt_load(dir, "bare", NULL);
+        CHECK(allowed != NULL, "loads with no policy (control)");
+        edc_prompt_free(allowed);
+
+        struct edc_config conf;
+        memset(&conf, 0, sizeof(conf));
+        conf.enable_sandbox = true;
+        sds deny[2] = {sdsnew(dir), NULL};
+        conf.sandbox_deny_paths = deny;
+
+        struct edc_prompt *denied_p = edc_prompt_load(dir, "bare", &conf);
+        CHECK(denied_p == NULL, "the same template is refused when its directory is denied");
+        edc_prompt_free(denied_p);
+
+        sdsfree(deny[0]);
+        conf.sandbox_deny_paths = NULL;
+    }
 
     TEST("listing is sorted, only .md, and skips refused files");
-    UT_array *all = edc_prompts_list(dir);
+    UT_array *all = edc_prompts_list(dir, NULL);
     CHECK(utarray_len(all) == 3, "bare / colon / full (no other.txt, no unclosed, no empty)");
     if (utarray_len(all) == 3)
     {
@@ -257,7 +298,7 @@ static void test_parse(void)
     utarray_free(all);
 
     TEST("a missing directory lists as empty, not an error");
-    all = edc_prompts_list("/tmp/edc_prompt_unit_does_not_exist");
+    all = edc_prompts_list("/tmp/edc_prompt_unit_does_not_exist", NULL);
     CHECK(utarray_len(all) == 0, "empty");
     utarray_free(all);
 
@@ -270,7 +311,6 @@ static void test_parse(void)
 int main(void)
 {
     test_expand();
-    test_split();
     test_parse();
 
     printf("\n  %d passed, %d failed\n", passed, failed);

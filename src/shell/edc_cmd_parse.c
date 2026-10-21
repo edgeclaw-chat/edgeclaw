@@ -8,7 +8,7 @@
 /* ── Quoted regions ──────────────────────────────────────────
  *
  * Quotes and escapes follow Python's string rules. The one EdgeClaw addition is
- * `$VAR` interpolation, and that is the only thing the two quote kinds differ on:
+ * `{{…}}` interpolation, and that is the only thing the two quote kinds differ on:
  * single-quoted text is raw (literal = 1, no interpolation), double-quoted text
  * interpolates. Escapes are identical in both, and an unknown escape keeps its
  * backslash -- also as in Python. Not implemented: adjacent literal concatenation
@@ -91,6 +91,20 @@ static sds scan_quoted(const char *q, bool triple, char quote, const char **end_
     return NULL;
 }
 
+sds edc_cmd_unquote(const char *s, const char **end_out)
+{
+    if (!s || !end_out)
+        return NULL;
+
+    bool triple = false;
+    if (strlen(s) >= 3 && (strncmp(s, "\"\"\"", 3) == 0 || strncmp(s, "'''", 3) == 0))
+        triple = true;
+    if (!triple && *s != '"' && *s != '\'')
+        return NULL;
+
+    return scan_quoted(s, triple, *s, end_out);
+}
+
 void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
 {
     if (!opts)
@@ -120,7 +134,7 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
      *     text that merely contains quotes (e.g. JSON) is never truncated;
      *     flags are not scanned in this mode.
      * Escapes are Python's in every case (see append_escape); the two quote kinds
-     * differ only in $VAR interpolation.
+     * differ only in {{…}} interpolation.
      */
     char *s = remaining;
     while (*s == ' ' || *s == '\t')
@@ -208,6 +222,25 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 }
                 continue;
             }
+            /* --with <id>: the explicit spelling of -d -- wait for that task AND inject its
+             * output into this one's context (TASK_DEP_JOIN). Named "with" because that is
+             * what it does; `-d` stays as the short form. */
+            if (strncmp(p, "--with ", 7) == 0)
+            {
+                p += 7;
+                while (*p == ' ')
+                    p++;
+                char *start = p;
+                while (*p && *p != ' ')
+                    p++;
+                if (p > start)
+                {
+                    opts->dep_count++;
+                    opts->dep_ids = realloc(opts->dep_ids, (size_t)opts->dep_count * sizeof(sds));
+                    opts->dep_ids[opts->dep_count - 1] = sdsnewlen(start, p - start);
+                }
+                continue;
+            }
             if (strncmp(p, "--group ", 8) == 0)
             {
                 p += 8;
@@ -236,9 +269,16 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 }
                 continue;
             }
-            /* unrecognized token — skip until space */
-            while (*p && *p != ' ')
-                p++;
+            /* Anything else unrecognized is recorded, not skipped: the caller refuses the
+             * line (option area = options only; see edc_cmd_task_opts.unknown_option). The
+             * first one is kept for the message. */
+            {
+                char *start = p;
+                while (*p && *p != ' ')
+                    p++;
+                if (!opts->unknown_option)
+                    opts->unknown_option = sdsnewlen(start, (size_t)(p - start));
+            }
         }
         sdsfree(work);
         sdsfree(remaining);
@@ -286,8 +326,45 @@ void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
         sdsfree(opts->input);
     if (opts->group_id)
         sdsfree(opts->group_id);
+    if (opts->unknown_option)
+        sdsfree(opts->unknown_option);
     for (int i = 0; i < opts->dep_count; i++)
         sdsfree(opts->dep_ids[i]);
     free(opts->dep_ids);
     memset(opts, 0, sizeof(*opts));
+}
+
+/* ── the shell-line option vocabulary (one table, see edc_cmd_parse.h) ──────── */
+
+/* Mirrors the TK_OPT / TK_OPTARG rules in edc_lex.l. When an option is added there, it
+ * belongs here too -- otherwise the popup would offer what the lexer rejects, or stay
+ * silent about what it accepts. The text stops at the argument shape so completion can
+ * leave a space behind it ("-d " and not "-d <task>"). */
+static const struct
+{
+    const char *text;
+    const char *brief;
+} k_shell_options[] = {
+    {"--bg", "run the task in the background"},
+    {"--new-group", "put the task in a group of its own"},
+    {"-g <group>", "put the task in that existing group"},
+    {"--group <id>", "same as -g"},
+    {"-d <task>", "wait for that task and inject its output"},
+    {"--with <task>", "same as -d"},
+};
+#define EDC_SHELL_OPTION_COUNT (sizeof(k_shell_options) / sizeof(k_shell_options[0]))
+
+size_t edc_cmd_shell_option_count(void)
+{
+    return EDC_SHELL_OPTION_COUNT;
+}
+
+const char *edc_cmd_shell_option_text(size_t index)
+{
+    return index < EDC_SHELL_OPTION_COUNT ? k_shell_options[index].text : NULL;
+}
+
+const char *edc_cmd_shell_option_brief(size_t index)
+{
+    return index < EDC_SHELL_OPTION_COUNT ? k_shell_options[index].brief : NULL;
 }

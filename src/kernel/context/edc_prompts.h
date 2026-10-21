@@ -13,17 +13,21 @@
  *     description: Review staged git changes
  *     argument-hint: "[focus]"
  *     ---
- *     Review the staged changes. Focus on {{1:-correctness and error handling}}.
+ *     Review the staged changes. Focus on $1.
  *
- * Substitution is TEXTUAL and uses `{{…}}`, NEVER `$`: a `$` in the body is copied
- * verbatim and belongs entirely to the input layer it is later executed by (where `$$`,
- * `$N`, `$LAST` and `$NAME` are TASK REFERENCES -- see tests/test_cmd_parse.c). Keeping
- * the two layers' sigils apart is the whole point of the brace syntax: with `$1` we would
- * have eaten a reference the input layer also understands.
+ * Substitution is TEXTUAL, and the placeholders are THIS layer's: `$1` … `$N` and
+ * `$ARGUMENTS` -- exactly opencode's two forms (its expander is `/\$(\d+)/` plus a
+ * `$ARGUMENTS` replaceAll), so a template
+ * brought over from them runs unedited. `{{…}}` is NOT a placeholder here: it belongs to the
+ * INPUT (shell) layer as a task reference, and opencode / pi substitute only the `$` forms,
+ * so a `{{1}}` in a body is plain text -- one spelling, one meaning.
  */
 
 #include "sds.h"
 #include "utarray.h"
+#include <stdbool.h>
+
+struct edc_config;
 
 struct edc_prompt
 {
@@ -31,6 +35,11 @@ struct edc_prompt
     sds description;   /* NULL when absent (front matter, else first non-empty line) */
     sds argument_hint; /* NULL when absent */
     sds body;          /* never empty: a template with an empty body is refused */
+    sds source;        /* the resource ROOT it came from ("" = the single-dir API) */
+    /* The same-named templates this one SHADOWED (their paths, NULL-terminated), recorded
+     * so the collision is REPORTED rather than swallowed -- see edc_skills.h. NULL when
+     * nothing collided. */
+    sds *shadowed;
 };
 
 void edc_prompt_free(struct edc_prompt *prompt);
@@ -39,20 +48,31 @@ void edc_prompt_free(struct edc_prompt *prompt);
  * `<dir>/<name>.md`, when the front matter is malformed, or when the body is empty.
  *
  * |name| must be a bare file name: empty, dot-prefixed, or containing anything outside
- * [A-Za-z0-9._-] is refused, so `/prompt ../../etc/passwd` cannot leave |dir|. */
-struct edc_prompt *edc_prompt_load(const char *dir, const char *name);
+ * [A-Za-z0-9._-] is refused, so `/prompt ../../etc/passwd` cannot leave |dir|.
+ *
+ * A body keeps its placeholders AS WRITTEN (`$1`, `{{1}}`, ...); edc_prompt_expand reads
+ * both. */
+struct edc_prompt *edc_prompt_load(const char *dir, const char *name, const struct edc_config *conf);
 
 /* Every template in |dir| (only direct `*.md` children), sorted by name. A missing or
  * unreadable directory yields an empty array, not an error. UT_array of
  * `struct edc_prompt *`; free each with edc_prompt_free, then utarray_free. */
-UT_array *edc_prompts_list(const char *dir);
+UT_array *edc_prompts_list(const char *dir, const struct edc_config *conf);
+
+/* ── Over the resource roots (edc_resources.h) ───────────────
+ *
+ * A root may keep its templates in `prompts/` (pi) or `command/` `commands/` (opencode /
+ * Claude Code); both layouts are read. Roots are searched IN ORDER and the first one that
+ * has a name wins -- so the workspace shadows a migrated template of the same name, and
+ * `p->source` says which root a template actually came from. */
+struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name, const struct edc_config *conf);
+UT_array *edc_prompts_list_roots(const UT_array *roots, const struct edc_config *conf);
 
 /* Split a command tail into arguments: whitespace-separated, quote-aware (`"…"` /
  * `'…'`), backslash escapes the next byte. Operators (`| ; & >`) are NOT special here --
  * they are ordinary bytes, because these are a template's inputs, not a shell line.
  * Returns a NULL-terminated-free array of sds plus *out_count; free with
  * edc_prompt_args_free. */
-sds *edc_prompt_split_args(const char *s, int *out_count);
 void edc_prompt_args_free(sds *args, int count);
 
 /* Substitute the placeholders below in |prompt|'s body using |args| (|argc| of them).

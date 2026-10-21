@@ -43,6 +43,21 @@ bazel_dep(name = "mbedtls", version = "3.6.5")
 bazel_dep(name = "rules_pkg", version = "1.2.0")
 bazel_dep(name = "ftxui", version = "7.0.0")
 
+# Windows Terminal and VS Code run the TUI under ConPTY, which hands the console the
+# user's typed text as raw UTF-8 *bytes*. ftxui decoded those byte values as code points
+# and re-encoded them, so every non-ASCII character arrived double-encoded (现 = E7 8E B0
+# became "ç" + U+008E + "°") and that mojibake got stored, logged and sent to the model.
+# The patch feeds such byte-valued input to the UTF-8 parser unchanged; real UTF-16 from
+# a classic conhost keeps the original path. The same patch turns ENABLE_PROCESSED_INPUT
+# off, so Ctrl+C arrives as the 0x03 byte (Event::CtrlC) instead of a CTRL_C_EVENT the CRT
+# turns into SIGINT -- the same effect the POSIX branch gets by clearing ISIG.
+single_version_override(
+    module_name = "ftxui",
+    version = "7.0.0",
+    patches = ["//patches:ftxui-conpty-input.patch"],
+    patch_strip = 1,
+)
+
 # POSIX regex (regcomp/regexec) for Windows, where no system <regex.h> exists.
 # PCRE2 ships a POSIX-compatible wrapper (pcre2posix.h) used only on Windows;
 # other platforms keep using the system regex.

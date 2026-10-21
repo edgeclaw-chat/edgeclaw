@@ -157,7 +157,7 @@ int main(void)
     struct edc_config *cfg = edc_config_load(home);
     T_CHECK(cfg != NULL, "config.json loads");
     T_CHECK(cfg && cfg->context_window == EDC_CONFIG_DEFAULT_CONTEXT_WINDOW, "fresh config: default window");
-    T_CHECK(EDC_CONFIG_DEFAULT_CONTEXT_WINDOW == 1024 * 1024, "the default is 1M (deepseek-v4-flash's real window)");
+    T_CHECK(EDC_CONFIG_DEFAULT_CONTEXT_WINDOW == 1024 * 1024, "the default is 1M (deepseek-flash/V4.1-Flash's real window)");
     edc_config_free(cfg);
 
     /* (2) a declared window is read verbatim. */

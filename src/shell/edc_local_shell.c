@@ -26,7 +26,10 @@ static const char *kUsage = "## `!` — run a shell command\n"
                             "\n"
                             "- `!cmd` — run `cmd`\n"
                             "- `!!` — run the previous `!` command of this session again\n"
-                            "- `\\!cmd` — send `!cmd` as ordinary input (a task description) instead\n";
+                            "\n"
+                            "The text after `!` is a command line for the shell, so it is NOT quoted here — "
+                            "quoting is for the strings of our own syntax. To send the text `!cmd` as an ordinary "
+                            "task description instead, write it as a quoted string: `\"!cmd\"`.\n";
 
 /* Create the tool-only task for |cmd|. |raw| is the text the user typed (the turn's
  * user message); `session` owns the task. Returns NULL when the task could not be
@@ -64,19 +67,10 @@ bool edc_local_shell_handle(struct edc_session_manager *sm, struct edc_scheduler
 
     sds raw = sdstrim(sdsnew(message->content), " \t\r\n");
 
-    /* `\!`: the escape. Drop the backslash and send the rest down the ordinary input
-     * path (it becomes a task description, as if `!` were never special). The message is
-     * not ours to rewrite, so the swapped content lives on a shallow copy for the length
-     * of the call -- edc_shell_execute only reads it. */
-    if (sdslen(raw) >= 2 && raw[0] == '\\' && raw[1] == '!')
-    {
-        struct edc_channel_message plain = *message;
-        plain.content = sdsnew(raw + 1);
-        bool handled = edc_shell_execute(sm, sched, to, &plain);
-        sdsfree(plain.content);
-        sdsfree(raw);
-        return handled;
-    }
+    /* (`\!` used to be the escape here. It is gone: a task description is a QUOTED string
+     * now, so `"!cmd"` says "this is text, not the local shell" -- and this branch was
+     * unreachable anyway, since the `content[0] != '!'` guard above rejects a backslash
+     * before it could run.) */
 
     struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
     if (!session)
@@ -121,6 +115,8 @@ bool edc_local_shell_handle(struct edc_session_manager *sm, struct edc_scheduler
     struct edc_task *task = spawn_command_task(sched, session, raw, cmd, message->type);
     if (!task)
         edc_commands_reply(to, "Could not create a task for this command.");
+    else
+        edc_commands_announce_task(to, task);
     sdsfree(raw);
     return true;
 }

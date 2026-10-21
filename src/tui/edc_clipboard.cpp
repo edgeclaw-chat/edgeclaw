@@ -108,22 +108,22 @@ class ToastFadeNode : public ::ftxui::Node
 };
 } // namespace
 
-// The "Copied to clipboard" chip: flat and borderless like the section headers, but
-// on the palette's raised surface (dialog_bg) so it reads as a surface of its own
-// instead of vanishing into the message background. A blank row above and below the
-// label lives inside it, and one cell of margin keeps it off the corner. The heavy
-// left rule is the one UserMessage carries, so the chip reads as something the user
-// just did. |fade| runs from 0 (fully painted) to 1 (gone).
-::ftxui::Element ClipboardToastElement(float fade)
+// The chip look: flat and borderless like the section headers, but on the
+// palette's raised surface (dialog_bg) so it reads as a surface of its own instead
+// of vanishing into the message background. A blank row above and below the label
+// lives inside it, and one cell of margin keeps it off the corner. The heavy left
+// rule is the one UserMessage carries, so the chip reads as something just done.
+// |fade| runs from 0 (fully painted) to 1 (gone).
+::ftxui::Element ToastChipElement(const std::string &label, float fade)
 {
     const auto &pal = style::palette();
     auto bar = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
-    auto label = ::ftxui::text(" Copied to clipboard ") | ::ftxui::bold | ::ftxui::color(pal.accent);
+    auto text = ::ftxui::text(label) | ::ftxui::bold | ::ftxui::color(pal.accent);
     ::ftxui::Element chip = ::ftxui::hbox({
                                 std::move(bar),
                                 ::ftxui::vbox({
                                     ::ftxui::text(""), // breathing room above the label
-                                    std::move(label),
+                                    std::move(text),
                                     ::ftxui::text(""), // and below it
                                 }),
                             }) |
@@ -140,6 +140,11 @@ class ToastFadeNode : public ::ftxui::Node
     });
 }
 
+::ftxui::Element ClipboardToastElement(float fade)
+{
+    return ToastChipElement(" Copied to clipboard ", fade);
+}
+
 // Whether a left-button release ends a drag rather than a plain click. A click
 // also leaves FTXUI with a one-cell selection, which is not something anyone
 // meant to copy, and it may have been aimed at a collapsible entry's footer.
@@ -148,17 +153,17 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y)
     return press_x != release_x || press_y != release_y;
 }
 
-void ClipboardToast::Raise(std::chrono::steady_clock::time_point now)
+void Toast::Raise(std::chrono::steady_clock::time_point now)
 {
     until_ = now + kHold + kFade;
 }
 
-bool ClipboardToast::Visible(std::chrono::steady_clock::time_point now) const
+bool Toast::Visible(std::chrono::steady_clock::time_point now) const
 {
     return now < until_;
 }
 
-float ClipboardToast::Fade(std::chrono::steady_clock::time_point now) const
+float Toast::Fade(std::chrono::steady_clock::time_point now) const
 {
     if (now >= until_)
         return 1.0f;
