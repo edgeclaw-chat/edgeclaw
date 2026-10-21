@@ -17,6 +17,7 @@
  *
  * C++-safe (`edc_api.h` and `edc_app.h` share the rule: include no sds header). */
 #include "edc_api.h"
+#include "edc_compat.h"
 #include "edc_sandbox.h"
 #include "edc_file_index.h"
 #include "edc_path_guard.h"
@@ -623,10 +624,23 @@ bool edc_app_ensure_parent_dir(struct edc_app *app, const char *path)
         return false;
     }
 
-    /* Must stay under the workspace: everything written here is the frontend's own. */
+    /* Must stay under the workspace: everything written here is the frontend's own.
+     * Whole-segment and separator/case aware (edc_path_is_within): a raw
+     * strncmp(parent, root, strlen(root)) also accepted "<workspace>-evil" as inside, and
+     * compared a backslash path against a slash root as different on Windows. Both sides
+     * are resolved first when they exist; a parent that does not exist yet is the usual
+     * case here (this call is what creates it), so it is compared as given. */
     const struct edc_config *cfg = edc_app_config(app);
     const char *root = cfg ? cfg->workspace : NULL;
-    bool ok = root && root[0] && strncmp(parent, root, strlen(root)) == 0;
+    bool ok = false;
+    if (root && root[0])
+    {
+        char *parent_real = realpath(parent, NULL);
+        char *root_real = realpath(root, NULL);
+        ok = edc_path_is_within(parent_real ? parent_real : parent, root_real ? root_real : root);
+        free(parent_real);
+        free(root_real);
+    }
     if (ok)
     {
         EdcError *err = NULL;

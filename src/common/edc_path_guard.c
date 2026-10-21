@@ -15,7 +15,8 @@
 #endif
 
 /* Length of the longest real path prefix in |paths| that contains |resolved|, or -1.
- * The match must end at a path boundary ("/a/bc" is not inside "/a/b"). */
+ * The segment rules -- and the trailing-separator trimming, and the backslash/case
+ * handling a slash-only test got wrong on Windows -- live in edc_path_prefix_len. */
 static int prefix_match_len(const char *resolved, char *const *paths)
 {
     if (!paths || !resolved)
@@ -29,16 +30,9 @@ static int prefix_match_len(const char *resolved, char *const *paths)
         char *entry = realpath(paths[i], NULL);
         if (!entry)
             continue;
-        /* Segment-wise and separator-agnostic: on Windows realpath returns backslashes,
-         * so a slash-only boundary test never matched a deny entry at all. */
-        if (edc_path_is_within(resolved, entry))
-        {
-            size_t len = strlen(entry);
-            while (len > 1 && edc_path_is_sep(entry[len - 1]))
-                len--;
-            if ((int)len > best)
-                best = (int)len;
-        }
+        const int len = edc_path_prefix_len(resolved, entry);
+        if (len > best)
+            best = len;
         free(entry);
     }
     return best;

@@ -467,6 +467,20 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->sandbox_ro_paths = edc_config_default_ro_paths();
     }
 
+    /* The switch is clamped OFF on a platform without a backend (Windows), here -- once,
+     * at the single place the persisted value is read, before anything downstream (the
+     * tool layer, /sandbox, the deny lists) can see it. A config.json written elsewhere,
+     * or copied from a Linux/macOS machine, may still say "enable": true; honouring it
+     * would turn on a policy whose path semantics are not implemented there, which is
+     * how every path silently became an escape. Ignored with a warning instead.
+     * Delete this clamp when the Windows backend lands (see edc_platform_has_sandbox). */
+    if (config->enable_sandbox && !edc_platform_has_sandbox())
+    {
+        log_warn("sandbox: no filesystem-sandbox backend on this platform; running with it OFF "
+                 "(ignoring config.json's sandbox.enable)");
+        config->enable_sandbox = false;
+    }
+
     /* The app's own workspace must be writable: the model edits files there
      * (AGENTS.md, skills/, ...). Make sure it is in rw_paths -- which grants
      * read too -- rather than relying on config.json, and skip it when it is
@@ -1135,6 +1149,15 @@ bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable)
 {
     if (!cfg)
         return false;
+
+    /* Nothing to turn ON where there is no backend: refuse instead of persisting a "true"
+     * that the next load would clamp away (see edc_config_load). This is the entry point
+     * both /sandbox and the app go through, so the refusal lives here and not in the UI. */
+    if (enable && !edc_platform_has_sandbox())
+    {
+        log_warn("sandbox: no filesystem-sandbox backend on this platform; it stays off");
+        return false;
+    }
 
     /* Persist first (mirrors edc_app_set_llm_config): if config.json cannot
      * be written, leave the running app untouched so memory and disk agree. */

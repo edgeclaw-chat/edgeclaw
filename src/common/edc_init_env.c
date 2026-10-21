@@ -564,11 +564,16 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
     }
 
     /* Materialize the sandbox master switch so it is discoverable and editable
-     * in config.json. Defaults to on; the in-TUI /sandbox command rewrites it
-     * (the --sandbox CLI flag intentionally does not). */
+     * in config.json. The in-TUI /sandbox command rewrites it (the --sandbox CLI
+     * flag intentionally does not).
+     *
+     * A written default of "on" only makes sense where there is a backend: on Windows
+     * edc_config_load would clamp it straight back to false, so the file would claim a
+     * state the program never runs with. Materialize the truth instead (see
+     * edc_platform_has_sandbox). */
     if (!cJSON_GetObjectItem(sandbox, "enable"))
     {
-        cJSON_AddBoolToObject(sandbox, "enable", true);
+        cJSON_AddBoolToObject(sandbox, "enable", edc_platform_has_sandbox());
         *changed = true;
     }
 

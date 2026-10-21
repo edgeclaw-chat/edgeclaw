@@ -1,4 +1,5 @@
 #include "edc_shell.h"
+#include "edc_compat.h"
 #include "edc_session_store.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -224,7 +225,12 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 
         if (sdslen(verb) == 0)
         {
-            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", conf->enable_sandbox ? "on" : "off");
+            /* A platform without a backend is not "off": the switch cannot be turned on
+             * at all, and the user should see that instead of hunting for the reason. */
+            const char *state = conf->enable_sandbox ? "on"
+                                : edc_platform_has_sandbox() ? "off"
+                                                             : "off (not supported on this platform)";
+            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", state);
             reply = edc_shell_sandbox_paths_md(reply, conf);
             reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
                                   "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
@@ -234,9 +240,16 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         else if (strcmp(verb, "on") == 0 || strcmp(verb, "off") == 0)
         {
             bool enable = strcmp(verb, "on") == 0;
+            /* The refusal itself lives in edc_config_set_sandbox_enabled (one place); the
+             * reply only has to say WHICH refusal it was, so "on" on a platform with no
+             * backend does not read as a failed write to config.json. */
+            const bool supported = edc_platform_has_sandbox();
             bool saved = edc_config_set_sandbox_enabled(cfg, enable);
-            sds reply = sdscatprintf(sdsempty(), "**Sandbox** — %s%s", enable ? "on" : "off",
-                                     saved ? "" : " (not persisted: config.json write failed)");
+            const char *why = "";
+            if (!saved)
+                why = (enable && !supported) ? " (not supported on this platform)"
+                                             : " (not persisted: config.json write failed)";
+            sds reply = sdscatprintf(sdsempty(), "**Sandbox** `%s`%s", enable ? "on" : "off", why);
             edc_commands_reply(to, reply);
             sdsfree(reply);
             log_info("/sandbox: filesystem sandbox %s (persisted=%d)", enable ? "enabled" : "disabled", saved);

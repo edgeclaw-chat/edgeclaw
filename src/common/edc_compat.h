@@ -248,6 +248,33 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 #endif /* _WIN32 */
 
 /* =========================================================================
+ *  Platform capabilities
+ * ========================================================================= */
+
+/* True when this platform has a filesystem-sandbox backend (see src/sandbox: Landlock /
+ * seccomp / BPF on Linux, a Seatbelt profile on macOS).
+ *
+ * Windows has none yet -- neither the kernel side nor the path semantics the policy
+ * layer needs (two separators, case-insensitive comparison, drive letters and UNC
+ * roots; see the edc_path_* helpers below). Until that backend exists, everything that
+ * could turn the sandbox ON asks this question and leaves it OFF: config.json's
+ * sandbox.enable is clamped at load, `/sandbox on` is refused, and the CLI override
+ * does not take effect. A switch that reads "on" while the enforcement underneath is
+ * wrong is worse than no switch: paths get denied (or allowed) for the wrong reason,
+ * which is exactly what the Windows path bugs looked like.
+ *
+ * This lives in the platform header rather than in src/sandbox because edc_config needs
+ * it and //src/common must not depend on //src/sandbox (sandbox depends on common). */
+static inline bool edc_platform_has_sandbox(void)
+{
+#if defined(__linux__) || defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+/* =========================================================================
  *  GLib compatibility (transitional — remove once all callers use EDC_*)
  * ========================================================================= */
 
@@ -337,26 +364,35 @@ static inline bool edc_path_is_sep(char c)
 #endif
 }
 
-/* True when |path| lies at or below |prefix|, comparing whole path segments: "a/bc"
- * is not inside "a/b". A trailing separator on |prefix| is ignored. On Windows the
- * comparison is case-insensitive and accepts either separator, because realpath
- * (_fullpath) returns backslashes while a configured root may be written with '/'
- * and any case -- a slash-only, case-sensitive test made every workspace path look
- * like an escape and silently refused legitimate writes. */
-static inline bool edc_path_is_within(const char *path, const char *prefix)
+/* How many bytes of |prefix| |path| starts with, as a whole-segment prefix: "a/bc" is
+ * NOT inside "a/b" (the boundary is not a separator). Returns -1 when |prefix| does not
+ * contain |path| at all, and the (separator-trimmed) length of |prefix| when it does --
+ * a path is inside itself, and an empty prefix contains everything (0).
+ *
+ * A trailing separator on |prefix| is ignored. On Windows the comparison ignores case
+ * and treats '\' and '/' as the same boundary, because realpath (_fullpath) returns
+ * backslashes while a configured root may be written with '/' and any case.
+ *
+ * This is the ONE "is A inside B" primitive: edc_path_is_within() is its boolean form,
+ * and the sandbox allow/deny lists use the LENGTH to decide which rule is the most
+ * specific one. Before it, the same comparison was re-implemented in edc_sandbox.c,
+ * edc_path_guard.c and edc_app.c, and only one of the copies knew about backslashes. */
+static inline int edc_path_prefix_len(const char *path, const char *prefix)
 {
     if (!path || !prefix)
-        return false;
+        return -1;
+
     size_t len = strlen(prefix);
     while (len > 1 && edc_path_is_sep(prefix[len - 1]))
         len--;
     if (len == 0)
-        return true;
+        return 0;
+
     for (size_t i = 0; i < len; i++)
     {
         const char a = path[i];
         if (a == '\0')
-            return false; /* path shorter than the prefix */
+            return -1; /* path shorter than the prefix */
         if (edc_path_is_sep(a) && edc_path_is_sep(prefix[i]))
             continue; /* '/' and '\' are the same boundary */
 #ifdef _WIN32
@@ -365,13 +401,24 @@ static inline bool edc_path_is_within(const char *path, const char *prefix)
         if (p >= 'A' && p <= 'Z')
             p = (char)(p - 'A' + 'a');
         if (lower_a != p)
-            return false;
+            return -1;
 #else
         if (a != prefix[i])
-            return false;
+            return -1;
 #endif
     }
-    return path[len] == '\0' || edc_path_is_sep(path[len]);
+
+    /* The prefix has to end on a segment boundary, or "a/bc" would be inside "a/b". */
+    if (path[len] != '\0' && !edc_path_is_sep(path[len]))
+        return -1;
+    return (int)len;
+}
+
+/* True when |path| lies at or below |prefix| (whole segments; see edc_path_prefix_len
+ * for the separator and case rules). A NULL argument is never contained. */
+static inline bool edc_path_is_within(const char *path, const char *prefix)
+{
+    return edc_path_prefix_len(path, prefix) >= 0;
 }
 
 #endif /* EDC_COMPAT_H */

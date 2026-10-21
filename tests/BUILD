@@ -520,6 +520,37 @@ cc_test(
 )
 
 cc_test(
+    name = "test_sandbox_switch",
+    srcs = ["test_sandbox_switch.c"],
+    deps = [
+        "//src/common:common",
+        "//src/common:edc_file_utils",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_sandbox_verify_path",
+    srcs = ["test_sandbox_verify_path.c"],
+    deps = [
+        "//src/common:common",
+        "//src/sandbox:sandbox",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_path_contract",
+    srcs = ["test_path_contract.c"],
+    deps = [
+        "//src/common:edc_compat",
+        "//src/common:edc_file_utils",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [

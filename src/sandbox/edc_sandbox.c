@@ -23,6 +23,17 @@ bool edc_sandbox_init(struct edc_config *conf)
         return false;
     }
 
+    /* No backend on this platform (Windows): nothing below can enforce anything, and the
+     * switch is already clamped off by edc_config_load / refused by /sandbox. Reaching here
+     * with it on means the flag was set by hand -- say so once instead of letting the app
+     * believe it is sandboxed. Returns success: there is no work to do, not a failure. */
+    if (!edc_platform_has_sandbox())
+    {
+        if (conf->enable_sandbox)
+            log_warn("edc_sandbox: no sandbox backend on this platform -- the sandbox is NOT enforced");
+        return true;
+    }
+
 #if defined(__linux__) || defined(__APPLE__)
     if (conf->enable_sandbox)
     {
@@ -71,9 +82,11 @@ const char *edc_sandbox_get_root(struct edc_config *conf)
     return conf->sandbox_root_real;
 }
 
-/* Length of the longest real-path prefix in `paths` that contains
- * `resolved_path` (the match must end at a path boundary), or -1 when no entry
- * matches. */
+/* Length of the longest real path prefix in `paths` that contains `resolved_path`, or -1
+ * when no entry matches. The LENGTH is what path_allowed() compares, so the most specific
+ * entry wins; the whole-segment / separator / case rules come from edc_path_prefix_len.
+ * This used to be a local strncmp that knew only '/', so on Windows no entry below the
+ * sandbox root ever matched and every path under a writable root was refused. */
 static int path_prefix_match_len(const char *resolved_path, char **paths)
 {
     if (!paths || !resolved_path)
@@ -86,12 +99,9 @@ static int path_prefix_match_len(const char *resolved_path, char **paths)
         if (!entry_real)
             continue;
 
-        size_t len = strlen(entry_real);
-        if (strncmp(resolved_path, entry_real, len) == 0 && (resolved_path[len] == '\0' || resolved_path[len] == '/'))
-        {
-            if ((int)len > best)
-                best = (int)len;
-        }
+        const int len = edc_path_prefix_len(resolved_path, entry_real);
+        if (len > best)
+            best = len;
         free(entry_real);
     }
 
@@ -132,12 +142,20 @@ static sds sandbox_verify(struct edc_config *conf, const char *base, const char 
     /* Sandbox off = no enforcement at all, and the path comes back as given (a relative
      * one still anchored at |base|, which is what "the session's directory" means to
      * every caller) -- the tools then fail on their own terms (a missing file reports
-     * "cannot read"), and callers that care about the string are unaffected. */
+     * "cannot read"), and callers that care about the string are unaffected.
+     *
+     * "As given" means an ABSOLUTE path stays absolute, and edc_path_is_absolute is what
+     * knows about drive letters and UNC roots. This used to test path[0] != '/', which
+     * read "D:\ws\x" as relative and anchored it at the session directory, yielding
+     * "D:\ws\D:\ws\x" -- the same failure mode that broke `session new D:\ws`. The
+     * branch is the ONLY one Windows runs (no backend -> the switch is always off, see
+     * edc_platform_has_sandbox), so every absolute path handed to read_file / write_file /
+     * list_dir / edit_file / an @file mention was mangled there. */
     if (!conf->enable_sandbox || !conf->sandbox_root_real)
     {
-        if (base && base[0] && path && path[0] && path[0] != '/')
+        if (base && base[0] && path && path[0] && !edc_path_is_absolute(path))
             return edc_path_join(base, path, NULL);
-        return sdsnew(path);
+        return sdsnew(path ? path : "");
     }
 
     if (!path || !path[0])
