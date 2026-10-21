@@ -1,4 +1,5 @@
 #include "edc_file_index.h"
+#include "edc_compat.h"
 
 #include "edc_file_utils.h"
 #include "sds.h"
