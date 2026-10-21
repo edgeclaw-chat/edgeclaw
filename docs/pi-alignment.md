@@ -617,7 +617,7 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 | **`## Current Time`（时间戳）** | ❌ 违反第一条 ⇒ **已删**（连 `{{time}}` 占位符与那个参数一起清掉；身份头补一句常量行："这个提示词没有时钟，要时间就跑 `date`"） |
 | `## Current Running Directory` / OS / workspace | ✅ 会话内常量（pi 自己也有 `<cwd>`） |
 | 权限表（sandbox 路径） | ✅ 会话配置；只在 config / 绑新 workdir 时变（那是会话事件，pi §7 的"结构性变化 ⇒ 新前缀"） |
-| bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次。**`SOUL.md` / `USER.md` 已删**（见 §2.12） |
+| bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ~~✅ 与 pi 的 `<project_context>` 同性质~~ **2026-10-21 推翻：`BOOTSTRAP_FILES` 整套取消**。工作区不是提示词的来源（只在首次运行铺一次、之后永不更新），契约改由 `edc_context_build_contract()` 运行时生成；`TOOLS.md` / `AGENTS.md` 都已从种子工作区删除，`IDENTITY.md` 随数组一起去掉。`AGENTS.md` 只剩项目维度这一个身份（`~/.edgeclaw/AGENTS.md` + workdir 向上遍历） |
 | 全局记忆 `MEMORY.md` | ✅ **2026-10-10 整套删除**（见 §2.13）：正文先移出提示词，随后连机制一起退休 —— 它是 agent 自己会写、且没有渐进式披露/去重/通知的文件 |
 | 技能清单 | ✅ pi `<skills>` 同款（只放索引，正文惰性读） |
 | session 记忆常量提示 | ✅ 常量（无条数、无内容） |

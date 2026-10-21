@@ -185,11 +185,29 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 
 | # | 需求 | 判据 | 成本 | 依赖 |
 |---|---|---|---|---|
-| **R1** | **MCP 接入**（`mcp.json` 用户/项目两层；stdio + streamable HTTP；`/mcp` 面板；`exposure`/`toolExposure` 按需暴露） | 挂一个 server → 工具出现在工具段且可调用；崩溃/超时不拖死 turn；未启用时工具段完全不出现 | L | R2 |
+| **R1** | **MCP 接入** —— **⏸ 暂缓（2026-10-21 用户裁定）**，见下方"为什么暂缓 / 重开条件" | 挂一个 server → 工具出现在工具段且可调用；崩溃/超时不拖死 turn；未启用时工具段完全不出现 | L | R2 |
 | **R2** | **工具注册面改造**：内建 + 动态注册；system prompt `tools` 段按激活集生成 | 加动态工具不改内建表；禁用某工具后连名字都不出现 | M | — |
 | **R3** | **headless 双模式**：`--print`（管道 stdin、`@path`）+ `--mode json` | 无 tty 下退出码正确、stdout 只有结果；json 可逐行消费；与 TUI **共用同一 kernel 路径**（不复制 agent 循环） | M | — |
 | **R4** | **检索工具 `grep` + `find`** | "找出所有调用 X 的地方"一轮完成；grep 单行 500 字符；走同一输出上限 | S | — |
 | **R5** | **折叠摘要格式**：6 段 + `<read-files>`/`<modified-files>` 累积 + 迭代更新 | 折叠后能说出改过哪些文件、卡在哪；折叠两次不丢第一次信息 | M | `pi-alignment.md` |
+
+> **R1 为什么暂缓（2026-10-21）**
+>
+> 1. **pi 自己也是最近才加的，而且是 extension 不是 core**：`packages/coding-agent/src/extensions/mcp`
+>    4.3k 行 + `packages/mcp` 3.3k 行，core 里只有 `mcp-servers.ts` 346 行的配置与注册表。一个以"最小
+>    harness"为哲学的对手都把它当外挂——说明它不是 harness 的必要组成。
+> 2. **它把"单二进制零依赖"的叙事打穿**：我们不自带运行时，但 `npx` / `uvx` / `docker run` 形态的 server
+>    自带**用户机器上的** Node / Python / 容器。对已有这些 server 的人是零成本，对从零开始的人是"先装 Node"。
+> 3. **真正的成本不在协议，在协议之外**：JSON-RPC 很简单，难的是进程生命周期（`npx` 包裹层的孤儿进程、
+>    崩溃重连、超时）、信任（项目级 `mcp.json` 是提示注入入口）、token（一个 server 几十个工具就是几万 token
+>    的 schema）。这三样都要单独设计，不能顺手塞进一个批次。
+> 4. 生态价值随用户量放大，在用户量还小的时候，做深现有工具（grep/find/web）的收益高于铺协议。
+>
+> **重开条件**（满足其一再谈）：① 有明确的迁移请求（几个人明确说"我因为没 MCP 不走"）；② 我们有了扩展机制
+> （决策 A），MCP 可以作为外挂而不是内核；③ 决定做 HTTP-only 形态（零本地运行时）作为独立小批次。
+>
+> **已经沉淀下来、不会浪费的东西**：`exposure`（direct/deferred）、`edc_toolset_note_change`、
+> `group->tool_deltas`、执行侧 `scope` 判定——这些是"任何动态工具来源"都需要的机制，MCP 只是它第一个消费者。
 
 ### P1 —— 决定留不留
 

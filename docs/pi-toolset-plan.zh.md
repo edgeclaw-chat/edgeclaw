@@ -247,7 +247,7 @@ if (!(tool->scope & want)) → 结构化拒绝
 
 | 观测点 | 形式 |
 |---|---|
-| 缓存命中 | footer 新增 `cache 78%`（`cached_tokens / prompt_tokens`，已有两种解析口径） |
+| 缓存命中 | **不上屏**（2026-10-21 用户裁定：删掉 footer 的 `cache%`，常驻栏位只放会变且要看的东西）。数字仍在记账 —— `cached_tokens / prompt_tokens` 已在 task / group / snapshot 三层累积，日志可查；需要时再开 `/stats` 类命令 |
 | miss 归因 | 日志：`cache miss group=<id> idle=<ms> model_changed=<0|1> toolset_epoch=<n>`；≤1024 token 的 miss 不计（pi 的噪声地板） |
 | 工具集变更 | §6 的日志行 + §6 的用户可见提示 |
 | 测试锚点 | 抓请求断言 `tools` 字段**字节级相等**（同组连跑 10 轮）；delta 消息在折叠后仍然存在 |
@@ -263,11 +263,11 @@ if (!(tool->scope & want)) → 结构化拒绝
 | `src/toolbox/edc_tools_*.c` | 各工具补 snippet / guidelines / scope（纯数据） |
 | **新增** `src/toolbox/edc_toolset.{c,h}` | initial / replay / resolve（**位置修正**：文档原写 `src/kernel/context/`，但 `//src/toolbox` 依赖 `//src/kernel`，反向会成环——声明集是从注册表派生的，本来就属于 toolbox） |
 | **新增** `src/kernel/context/edc_toolset_rules.c` | 条件规则表（代码，非文本） |
-| `src/kernel/context/edc_context.c` | 散文段改为渲染；`BOOTSTRAP_FILES` 去掉手写 `TOOLS.md` |
+| `src/kernel/context/edc_context.c` | 散文段改为渲染；`BOOTSTRAP_FILES` **整套取消**（工作区不再提供提示词文本），契约由 `edc_context_build_contract()` 生成 |
 | `src/actor/edc_llm_request.c` | tools 三档选择 + `prompt_cache_key` + `cache_control` |
 | `src/kernel/task/edc_task_group.c` | `tool_deltas` 字段 + `rebuild_history` 尾部重放（折叠切点无需改动） |
-| `src/tui/edc_status_bar_view.*` | footer 加 cache 字段 |
-| `workspace/TOOLS.md` / `workspace/AGENTS.md` | `TOOLS.md` 删除（不生成、不打包）；`AGENTS.md` 的 `## Available Tools` 清单改为「以 `tools` 字段为准」 |
+| `src/tui/edc_status_bar_view.*` | footer 曾加过 cache 字段，已按同一天的裁定**移除** |
+| `workspace/TOOLS.md` / `workspace/AGENTS.md` | 两个都**删除**，不再打包（内容搬进运行时生成；`AGENTS.md` 只保留项目维度的加载路径） |
 
 ---
 
@@ -275,11 +275,11 @@ if (!(tool->scope & want)) → 结构化拒绝
 
 | 批次 | 内容 | 判据 |
 |---|---|---|
-| **B0** | ✅ `prompt_cache_key`（仅 `api.openai.com`）· ✅ footer `cache%` + 单测 · ✅ **B0-4b：`TOOLS.md` 直接删除**（不生成、不打包、不在 `BOOTSTRAP_FILES`；`AGENTS.md` 的工具清单同步收掉）；⏸ `cache_control` 暂缓（需 Anthropic 原生协议） | footer 百分比与 `cached_tokens` 一致；**代码与注入 prompt 里都不再有工具清单副本** |
+| **B0** | ✅ `prompt_cache_key`（仅 `api.openai.com`）· ⛔ footer `cache%`（做过又删：诊断数字不进常驻栏位） · ✅ **B0-4b：`TOOLS.md` 直接删除**（不生成不打包）· ✅ **2026-10-21：`BOOTSTRAP_FILES` 整套取消**，`workspace/AGENTS.md` 一并删除，契约改为 `edc_context_build_contract()` 运行时生成；⏸ `cache_control` 暂缓（需 Anthropic 原生协议） | **代码与注入 prompt 里都不再有工具清单副本** |
 | **B1** | ✅ `edc_tool` 加 `snippet`/`guidelines`/`scope`/`exposure`（setter + free）· ✅ 10 个 DIRECT 工具补 snippet、7 个 memory 工具标 `SCOPE_MEMORY` · ✅ `edc_toolset.{c,h}`：`initial` / `replay` / `resolve` · ✅ `tests/test_toolset.c`（13 checks） | replay 幂等；移除用例返回 `has_non_additive`；**同一注册表换注册顺序 → 输出字节相同**（已由测试钉住） |
 | **B2** | ✅ `edc_llm_request.c` 改走 `edc_toolset_resolve`（组冻结集；fold 仍 NULL、curator 仍 memory 集）· ✅ system prompt 的 `## Tools` 散文段由 `edc_toolset_render_prompt` 生成（kernel 侧装 provider 钩子，避免成环）· ✅ **执行侧 scope 判定**（curator 只能记忆工具、fold 全拒、拒绝时列出可用工具） | 同组连跑 `tools` 字节级相同；`resolve` 在**纯新增**时返回冻结的初始集（单测已钉）；curator 硬调 `exec_shell` 被结构化拒绝 |
 | **B3** | ✅ `edc_toolset_note_change`（delta + 重算 + epoch/日志）· ✅ `group->tool_deltas` + `rebuild_history` 尾部重放 · ⏳ 触发器留给 B4（今天没有能真正改变工具集的动作） | 纯新增 → 字段字节不变、epoch 不涨；移除 → 字段变、epoch+1；**两次 rebuild 后 delta 仍在且只有一份**（单测已钉） |
-| **B4** | MCP + `exposure` 三态 | `deferred` 工具不在 `tools` 里但能被调用且日志有 `undeclared call` |
+| **B4** | **⏸ 暂缓（2026-10-21 用户裁定，理由与重开条件见 `product-alignment.zh.md` R1）** —— 原计划：MCP 接入 + `exposure` | `deferred` 工具不在 `tools` 里但能被调用且日志有 `undeclared call` |
 
 **B0 可当天做完，且与工具集形态无关**——先把它摘掉，缓存才开始有数可看。
 

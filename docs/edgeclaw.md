@@ -770,7 +770,6 @@ inheriting the parent's memory and conversation context up to the fork point.
 | `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
 | `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
-| `~/.edgeclaw/workspace/AGENTS.md` | Agent behavior instructions (the agent's contract) |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from
