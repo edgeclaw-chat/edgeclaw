@@ -9,21 +9,21 @@
 #include "sds.h"
 #include "utlist_fix.h"
 
-/* Only files that are contractual and do not duplicate the persona stay in the prompt:
- *   - AGENTS.md   -- behaviour contract (tools/skills/memory/event conventions)
- *   - IDENTITY.md -- optional identity override (absent by default)
- * SOUL.md / USER.md were dropped from the prompt and the seed workspace: the former's
- * principles duplicate AGENTS.md, the tool descriptions and skills; the latter is an
- * ALL-EMPTY template (no real fields), pure noise. pi has neither either.
+/* There are no "bootstrap files" any more -- the workspace is not a source of prompt text:
  *
- * TOOLS.md was dropped here for a stronger reason: it was a SECOND description of the tool
- * set, and the model already receives the registry's schemas in the request's `tools` field.
- * Two descriptions drift -- the file went on describing web_search / web_fetch / message /
- * spawn long after the toolbox stopped registering them, so the model called tools that did
- * not exist. The file still exists on disk, but it is now a runtime rendering of the
- * registry (edc_toolset_sync_md), for humans. The model's own terse tool section is
- * generated separately from the same registry (docs/pi-toolset-plan.zh.md §5). */
-const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "IDENTITY.md"};
+ *   - The behaviour contract (skills / memory / guidelines / reminders / device) is generated
+ *     here, in edc_context_build_contract(). It belongs to the BINARY: it describes how this
+ *     program works, so it must change with the program. Shipping it as a file in the user's
+ *     workspace made it a copy that could never be updated -- the workspace is released once,
+ *     on first run, and an existing directory is never touched again.
+ *   - Tool descriptions come from the tool registry (request `tools` field + the generated
+ *     section), never from a file. TOOLS.md was the third copy of that list and it drifted
+ *     (it described web_search / web_fetch / message / spawn long after they were gone).
+ *   - AGENTS.md is PROJECT input, not bootstrap: ~/.edgeclaw/AGENTS.md plus the upward walk
+ *     from the session's workdir, see load_project_context(). A project that has none simply
+ *     gets no <project_instructions> section (same as pi).
+ *   - IDENTITY.md was dropped with the array: a persona override is a different feature
+ *     (custom prompt), not a file the release ships next to the model's instructions. */
 
 /* pi's "context file" candidates (docs/pi-system-prompt-guide.md §3.6): IN a directory
  * only the highest-priority one is taken; an override suppresses only its own directory. */
@@ -77,10 +77,6 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
 
     sds seen[64];
     size_t seen_n = 0;
-    /* The workspace's bootstrap files were collected elsewhere; remember them to avoid duplicates. */
-    for (size_t i = 0; i < sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]) && seen_n < 64; i++)
-        seen[seen_n++] = edc_path_join(workspace, BOOTSTRAP_FILES[i], NULL);
-
     sds body = sdsempty();
 
     /* (1) user-global (pi: ~/.pi/agent/AGENTS.md; us: ~/.edgeclaw/AGENTS.md) */
@@ -202,38 +198,39 @@ static sds edc_context_get_identity(const char *os_name, const char *workspace, 
     return identity;
 }
 
-static sds edc_context_load_bootstrap_files(const char *workspace)
+/* The behaviour contract: how this program works, in the program's own words.
+ *
+ * Generated rather than read from a file because a shipped file cannot be updated: the
+ * workspace is released once, so a workspace/AGENTS.md would freeze at the version the user
+ * first installed (and it did -- copies still described tools that no longer existed). Only
+ * facts that cannot come from a tool's JSON schema live here; anything a schema can say
+ * (parameters, one-line purpose) stays in the registry.
+ *
+ * Interpolated: the workspace path. Everything else is a constant, so two builds of the same
+ * version produce byte-identical prompts (docs/pi-system-prompt-guide.md §7). */
+static sds edc_context_build_contract(const char *workspace)
 {
-    sds result = sdsempty();
-    size_t num_files = sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]);
-
-    for (size_t i = 0; i < num_files; i++)
-    {
-        const char *filename = BOOTSTRAP_FILES[i];
-        sds filepath = edc_path_join(workspace, filename, NULL);
-
-        EdcError *error = NULL;
-        sds content = edc_file_read(filepath, &error);
-
-        if (content)
-        {
-            result = sdscatprintf(result, "## %s\n\n%s", filename, content);
-            sdsfree(content);
-        }
-        else
-        {
-            edc_error_free(error);
-        }
-
-        if (i < num_files - 1)
-        {
-            result = sdscat(result, "\n\n");
-        }
-
-        sdsfree(filepath);
-    }
-
-    return result;
+    return sdscatprintf(sdsempty(),
+        "## How this program works\n\n"
+        "**Skills.** A skill is a directory with a `SKILL.md`: %s/skills/<name>/SKILL.md, and the other "
+        "resource roots this program shares with pi / Claude Code / opencode. The system prompt lists them; "
+        "read a SKILL.md before following it, or let the user run `/skill <name>`.\n\n"
+        "**Memory.** Durable knowledge lives in this session's shared memory, visible to every task and "
+        "group in the session: `memory_write` to record, `memory_search` / `memory_list` / `memory_get` to "
+        "read back, `memory_update` / `memory_supersede` / `memory_delete` to revise. Cross-session memory "
+        "does not exist yet. There is no memory file to edit.\n\n"
+        "**Guidelines.**\n"
+        "- Explain what you are about to do before doing it.\n"
+        "- Multi-step work: plan with `todowrite` first, then execute step by step, updating it as you go.\n"
+        "- Verify after changing something (re-read the file, run the test, check the output).\n"
+        "- When a tool fails, read the error and take a different approach; do not repeat the same call.\n"
+        "- Look things up with tools before asking; ask when the tools genuinely cannot answer.\n"
+        "- Never fake confidence: say what you know and flag what you do not.\n\n"
+        "**Reminders.** Scheduling is the `crontab` tool -- call it (list / add / remove). Writing a "
+        "reminder into a notes file triggers nothing.\n\n"
+        "**Remote device.** The `device_*` tools talk to a separate agent over TCP or a PPPoS serial "
+        "link; they run on that device, not in this sandbox.\n",
+        workspace ? workspace : "(workspace)");
 }
 
 static sds edc_context_load_skills(const struct edc_config *conf, const char *workdir)
@@ -312,7 +309,7 @@ static sds edc_context_build_permissions(struct edc_config *conf)
 
 /* The ONLY session-memory hint: constant text, zero variable content (no count, no
  * content, no ids). Placed at the END of the system prompt -- the last thing the model
- * reads before the long prompt (bootstrap/skills can be tens of thousands of tokens),
+ * reads before the long prompt (project instructions / skills can be tens of thousands of tokens),
  * giving it best recency; the count/content come from the request-time tail notice.
  * Constant => the prompt cache prefix is untouched. */
 static const char kSessionMemoryHint[] =
@@ -360,7 +357,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
 
     sds identity = edc_context_get_identity(os_name, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
-    sds bootstrap = edc_context_load_bootstrap_files(workspace);
+    sds contract = edc_context_build_contract(workspace);
     /* Context files (pi §3.6): user-global + an upward walk from THIS session's workdir
      * -- so a session bound to a project directory really picks up that project's
      * AGENTS.md. */
@@ -370,7 +367,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);
     system_prompt = sdscat(system_prompt, permissions);
-    system_prompt = sdscat(system_prompt, bootstrap);
+    system_prompt = sdscat(system_prompt, contract);
     system_prompt = sdscatsds(system_prompt, project_context);
     system_prompt = sdscat(system_prompt, skills);
 
@@ -393,7 +390,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
 
     sdsfree(identity);
     sdsfree(permissions);
-    sdsfree(bootstrap);
+    sdsfree(contract);
     sdsfree(project_context);
     sdsfree(skills);
 

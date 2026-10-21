@@ -8,7 +8,7 @@
 struct edc_task;
 struct edc_task_group;
 
-/* Base system prompt: identity template + bootstrap files + MEMORY + skills.
+/* Base system prompt: identity template + the generated behaviour contract + project instructions + skills.
  * |workdir| is the session's bound working directory (absolute), used as the
  * identity's "## Current Running Directory"; NULL/empty falls back to the process
  * cwd. Returns a new sds (caller sdsfree). */

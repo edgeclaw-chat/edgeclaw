@@ -275,8 +275,7 @@ static void test_system_prompt_cwd(void)
 
 /* pi 的纪律 (docs/pi-system-prompt-guide.md §7: "无任何日期/时间戳注入 … 跨天、重启、resume
  * prompt 字节完全不变")。这里钉住它 —— 提示词里不许有时钟, 也不许留未替换的占位符。 */
-static void test_system_prompt_has_no_clock(void)
-{
+static void test_system_prompt_has_no_clock(void){
     TEST("system prompt: 无时钟 / 无未替换占位符 (pi §7 的确定性纪律)");
 
     struct edc_config *cfg = make_config("/tmp/test_edc_noclock_ws");
@@ -339,6 +338,43 @@ static void test_memory_file_mechanism_is_gone(void)
 /* pi 的"上下文文件"发现 (docs/pi-system-prompt-guide.md §3.6): 用户全局一份 + 从**工作目录**
  * 向上遍历到根, 同一目录里只取优先级最高的候选 (override > AGENTS.md > AGENTS.MD > CLAUDE.md >
  * CLAUDE.MD), 每个文件带自己的路径。绑定到某个项目目录的 session 就是靠这个吃到项目的规矩。 */
+/* 2026-10-21: 工作区不再是提示词的来源。BOOTSTRAP_FILES 已取消 —— workspace 只在首次运行
+ * 铺一次、之后永不更新，一份放在那里的 AGENTS.md 会永久停在安装那天的版本（它曾长期宣称
+ * web_search / web_fetch / message / spawn 四个不存在的工具）。契约改由 edc_context_build_contract()
+ * 运行时生成；AGENTS.md 只剩"项目维度"这一个身份（~/.edgeclaw/AGENTS.md + workdir 向上遍历）。
+ * 这条测试就是那个 bug 的回归守卫。 */
+static void test_workspace_files_are_not_prompt_sources(void)
+{
+    TEST("工作区不再提供提示词：旧的 workspace/AGENTS.md 不被注入");
+
+    char ws[64];
+    make_tmpdir(ws, sizeof(ws));
+    char stale[128];
+    snprintf(stale, sizeof(stale), "%s/AGENTS.md", ws);
+    EdcError *err = NULL;
+    edc_file_write(stale,
+                   "# Agent Instructions\n\nSTALE-MARKER\n\n"
+                   "## Available Tools\n- **Web**: `web_search`, `web_fetch`\n"
+                   "- **Comm**: `message`, `spawn`\n",
+                   -1, &err);
+    if (err)
+        edc_error_free(err);
+
+    struct edc_config *cfg = make_config(ws);
+    /* 未绑定工作目录 ⇒ 不做项目级向上遍历，于是这份文件没有任何注入路径。 */
+    sds p = edc_context_build_system_prompt(cfg, NULL);
+
+    CHECK(p && strstr(p, "STALE-MARKER") == NULL, "旧 bootstrap 文件的内容不再进 prompt");
+    CHECK(p && strstr(p, "How this program works") != NULL, "契约段是运行时生成的");
+    CHECK(p && strstr(p, "web_search") == NULL, "提示词里不再出现不存在的工具");
+    CHECK(p && strstr(p, "spawn") == NULL, "提示词里不再出现不存在的工具");
+
+    sdsfree(p);
+    edc_config_free(cfg);
+    unlink(stale);
+    rmdir(ws);
+}
+
 static void test_project_context_discovery(void)
 {
     TEST("project context: 全局 + 向上遍历 + override 优先 + 可关掉");
@@ -530,6 +566,7 @@ int main(void)
     test_verify_path_at();
     test_system_prompt_cwd();
     test_system_prompt_has_no_clock();
+    test_workspace_files_are_not_prompt_sources();
     test_memory_file_mechanism_is_gone();
     test_project_context_discovery();
     test_task_workdir_owner();
