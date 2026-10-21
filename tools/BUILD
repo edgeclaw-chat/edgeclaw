@@ -16,6 +16,15 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+# Build-time tool: fetches models.dev and writes models_catalog.json (see
+# //:models_catalog_json). `--no-test` is used by the build so a slow/unreachable
+# provider endpoint cannot stall it; run the script directly for the full probe.
+py_binary(
+    name = "gen_models",
+    srcs = ["gen_models.py"],
+    visibility = ["//visibility:public"],
+)
+
 # Build-time tool: embeds the generated AI-model catalog as a C byte array (see
 # //:models_catalog_embedded_c). An absent catalog embeds an empty one.
 py_binary(

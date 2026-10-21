@@ -288,8 +288,12 @@ def endpoint_check(pid, base, catalog_ids, timeout=15):
 
 def test_providers(providers, timeout=15):
     """Run endpoint_check on each provider; returns {pid: (verdict, note)}."""
-    return {pid: endpoint_check(pid, providers[pid].get("api") or "", providers[pid].get("models") or [], timeout)
-            for pid in sorted(providers.keys())}
+    results = {}
+    for pid in sorted(providers.keys()):
+        print(f"  testing {pid} ...", file=sys.stderr, flush=True)
+        results[pid] = endpoint_check(pid, providers[pid].get("api") or "",
+                                      providers[pid].get("models") or [], timeout)
+    return results
 
 
 def probe(providers, timeout=15):
@@ -345,6 +349,8 @@ def main():
     ap.add_argument("--provider", action="append", help="add a provider id to the default list (repeatable)")
     ap.add_argument("--all", action="store_true", help="every provider models.dev knows (big)")
     ap.add_argument("--keep-all", action="store_true", help="do not drop providers that fail the endpoint test")
+    ap.add_argument("--no-test", action="store_true",
+                    help="skip the per-provider endpoint test (fast, offline-friendly; keeps every provider)")
     ap.add_argument("--check", action="store_true", help="exit 1 if --out is stale (does not write)")
     ap.add_argument("--probe", action="store_true", help="only print the per-provider endpoint test")
     ap.add_argument("--smoke", action="store_true", help="real 1-token call using each provider's env key")
@@ -380,14 +386,18 @@ def main():
         print(f"all {len(providers)} providers passed the endpoint test.")
         return 0
 
-    # TEST + DROP (the update pipeline). --keep-all skips the drop but still reports.
-    results = test_providers(providers)
-    drop = [pid for pid in results if results[pid][0] == "drop"]
-    if not args.keep_all:
-        for pid in drop:
-            print(f"drop {pid}: {results[pid][1]}", file=sys.stderr)
-            del providers[pid]
-        models = prune_models(providers, models)
+    # TEST + DROP (the update pipeline). --keep-all skips the drop but still reports;
+    # --no-test skips the probes entirely (a slow/unreachable endpoint can stall each
+    # provider for its full timeout, which looks like a hang).
+    drop = []
+    if not args.no_test:
+        results = test_providers(providers)
+        drop = [pid for pid in results if results[pid][0] == "drop"]
+        if not args.keep_all:
+            for pid in drop:
+                print(f"drop {pid}: {results[pid][1]}", file=sys.stderr)
+                del providers[pid]
+            models = prune_models(providers, models)
 
     source = args.from_api or args.api_url
 

@@ -196,14 +196,30 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# The generated AI-model catalog (tools/gen_models.py) is NOT committed (a fresh build
-# input; see .gitignore). This embeds it as a byte array so the wizard / model picker work
-# offline. When it is absent -- a plain `bazel build` on a clean checkout -- an EMPTY
-# catalog is embedded (see tools/embed_models.py). Regenerate before packaging:
-# tools/package.sh runs gen_models.py first.
+# The AI-model catalog (models.dev, via tools/gen_models.py). It is NOT committed (a
+# generated build input; see .gitignore), so this rule produces it as part of the build:
+# when a local models_catalog.json exists it is used as-is (offline / pinned builds),
+# otherwise the tool fetches it. `--no-test` keeps the fetch fast -- it skips per-provider
+# endpoint probes (run tools/gen_models.py directly for the full validation).
+# --no-sandbox/local: the fetch needs network, which sandboxed Bazel actions do not have.
+genrule(
+    name = "models_catalog_json",
+    srcs = glob(["models_catalog.json"], allow_empty = True),
+    outs = ["models_catalog.generated.json"],
+    cmd = "if [ -n '$(SRCS)' ]; then cp $(SRCS) $@; " +
+          "else $(execpath //tools:gen_models) --no-test --out $@; fi",
+    tools = ["//tools:gen_models"],
+    tags = ["no-sandbox", "requires-network"],
+    local = 1,
+    visibility = ["//visibility:public"],
+)
+
+# Embed the catalog as a byte array so the wizard / model picker work offline, with no
+# file next to the executable. The input always comes from //:models_catalog_json, so
+# the empty-catalog fallback in tools/embed_models.py is no longer reachable from here.
 genrule(
     name = "models_catalog_embedded_c",
-    srcs = glob(["models_catalog.json"], allow_empty = True),
+    srcs = [":models_catalog_json"],
     outs = ["models_catalog_embedded.c"],
     cmd = "$(execpath //tools:embed_models) --out $@ --name edc_bundled_models_catalog --header edc_bundled_models_catalog.h $(SRCS)",
     tools = ["//tools:embed_models"],
