@@ -13,6 +13,15 @@ void edc_file_utils_init(uv_loop_t *loop);
 sds edc_file_read(const char *path, EdcError **error);
 bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError **error);
 
+/* Replace |dst| with |src| (both paths), atomically where the platform allows it.
+ *
+ * POSIX rename() replaces an existing destination; the Windows CRT rename() does
+ * NOT -- it fails with EEXIST -- so the "write .tmp, then rename" pattern silently
+ * kept the FIRST version of every state file on Windows (session.json, sessions
+ * index, sequence watermarks). This wrapper uses MoveFileExW with REPLACE_EXISTING
+ * on Windows and rename() elsewhere. Returns false with *error set on failure. */
+bool edc_file_rename_replace(const char *src, const char *dst, EdcError **error);
+
 /* Symlink-safe variants for writers whose target path is derived from a
  * directory the sandboxed model can write to (workspace, session dirs, ...).
  * They refuse to operate when:

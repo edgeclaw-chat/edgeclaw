@@ -446,13 +446,19 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
         return false;
     }
 
-    /* atomic rename */
-    if (rename(tmp, path) != 0)
+    /* atomic replace (POSIX rename / Windows MoveFileEx REPLACE_EXISTING) */
     {
-        log_error("save_state: rename %s -> %s failed: %s", tmp, path, strerror(errno));
-        sdsfree(path);
-        sdsfree(tmp);
-        return false;
+        EdcError *rerr = NULL;
+        bool renamed = edc_file_rename_replace(tmp, path, &rerr);
+        if (!renamed)
+        {
+            log_error("save_state: %s", rerr ? rerr->message : "rename failed");
+            if (rerr)
+                edc_error_free(rerr);
+            sdsfree(path);
+            sdsfree(tmp);
+            return false;
+        }
     }
 
     sdsfree(path);
@@ -468,10 +474,13 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
 static void session_quarantine_state(struct edc_session *session, const char *path, const char *why)
 {
     sds broken = edc_path_join(session->history_dir, "session.json.broken", NULL);
-    if (rename(path, broken) == 0)
+    EdcError *rerr = NULL;
+    if (edc_file_rename_replace(path, broken, &rerr))
         log_warn("load_state: quarantined %s -> %s (%s)", path, broken, why);
     else
-        log_error("load_state: cannot quarantine %s (%s): %s", path, why, strerror(errno));
+        log_error("load_state: cannot quarantine %s (%s): %s", path, why, rerr ? rerr->message : "rename failed");
+    if (rerr)
+        edc_error_free(rerr);
     sdsfree(broken);
     /* Whether or not the rename worked, this session's slot is no longer this
      * process's responsibility: on failure the original file is still at path and a

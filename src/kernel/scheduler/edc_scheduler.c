@@ -192,8 +192,13 @@ static void sched_persist_task_seq(struct edc_scheduler *sched)
         if (fprintf(f, "%lld\n", (long long)sched->next_task_id) < 0)
             log_debug("task_seq: write %s failed: %s", tmp, strerror(errno));
         fclose(f);
-        if (rename(tmp, path) != 0)
-            log_warn("task_seq: rename %s -> %s failed: %s", tmp, path, strerror(errno));
+        EdcError *rerr = NULL;
+        if (!edc_file_rename_replace(tmp, path, &rerr))
+        {
+            log_warn("task_seq: %s", rerr ? rerr->message : "rename failed");
+            if (rerr)
+                edc_error_free(rerr);
+        }
     }
 
     sdsfree(tmp);

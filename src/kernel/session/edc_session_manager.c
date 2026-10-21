@@ -61,8 +61,13 @@ static void edc_sm_persist_session_seq(struct edc_session_manager *sm)
         if (fprintf(f, "%lld\n", sm->next_session_id) < 0)
             log_debug("session_seq: write %s failed: %s", tmp, strerror(errno));
         fclose(f);
-        if (rename(tmp, path) != 0)
-            log_warn("session_seq: rename %s -> %s failed: %s", tmp, path, strerror(errno));
+        EdcError *rerr = NULL;
+        if (!edc_file_rename_replace(tmp, path, &rerr))
+        {
+            log_warn("session_seq: %s", rerr ? rerr->message : "rename failed");
+            if (rerr)
+                edc_error_free(rerr);
+        }
     }
     sdsfree(tmp);
     sdsfree(path);
