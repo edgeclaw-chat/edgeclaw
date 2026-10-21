@@ -23,14 +23,15 @@ bool edc_sandbox_init(struct edc_config *conf)
         return false;
     }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
     if (conf->enable_sandbox)
     {
         /* Kernel isolation is applied per-command inside the embedded sandbox
          * helper (see src/sandbox/sandbox_helper.c), NOT in the app process:
-         * the layers are irreversible and inherited, so applying them here
-         * would sandbox the app itself. In-process enforcement is the
-         * tool-layer path verification in edc_sandbox_verify_path(). */
+         * the rules are irreversible and inherited (Landlock/seccomp on Linux,
+         * a Seatbelt profile on macOS), so applying them here would sandbox the
+         * app itself. In-process enforcement is the tool-layer path
+         * verification in edc_sandbox_verify_path(). */
         log_info("edc_sandbox: kernel isolation runs in the per-command helper; "
                  "path validation is the in-process enforcement");
     }

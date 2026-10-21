@@ -12,9 +12,36 @@
  *
  * Kept as a comma-separated string so edc_init_env (which persists the list as
  * text) and edc_config (which stores it as an array) share one source of
- * truth. /run is needed because /etc/resolv.conf is usually a symlink into it
- * (DNS), and /sys for the many tools that inspect kernel state read-only. */
+ * truth.
+ *
+ * The two lists differ because the kernel backends differ, not for style:
+ * on Linux /run is needed because /etc/resolv.conf is usually a symlink into it
+ * (DNS) and /sys is read by the many tools that inspect kernel state. On macOS
+ * none of /proc, /sys, /run, /lib exists -- leaving them in grants nothing and
+ * would silently shrink the whitelist -- while three other roots are mandatory:
+ * /System (the dyld shared cache; without it dylib loading aborts before main),
+ * /Library (Frameworks: python.org, /Library/Apple, the CLT) and /Applications
+ * (the /usr/bin/git, clang and make shims are thin stubs that dlopen
+ * /Applications/Xcode-*.app/.../libxcrun.dylib). /opt and /usr/local cover
+ * Homebrew on Apple Silicon and Intel respectively. */
+#if defined(__APPLE__)
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/System,/Library,/Applications,/bin,/sbin,/etc,/dev,/opt,/usr/local"
+#else
 #define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run"
+#endif
+
+/* Default writable set, minus the two entries that depend on runtime values
+ * (the workspace and ~/.cache), which both callers add themselves. */
+#define EDC_SANDBOX_DEFAULT_RW_PATHS "/tmp,/dev"
+
+/* $TMPDIR writable path, or NULL.
+ *
+ * TMPDIR is per-user and per-boot (macOS: /var/folders/xx/.../T), so it cannot
+ * be a compile-time default, yet the toolchain needs it: xcrun and the compilers
+ * write their caches there and fail with "couldn't create cache file" without it.
+ * edc_shell_env forwards TMPDIR to the command, so the sandbox has to allow the
+ * same path. Always NULL on Linux, where /tmp already covers it. */
+const char *edc_sandbox_default_tmpdir(void);
 
 struct llm_api_conf
 {

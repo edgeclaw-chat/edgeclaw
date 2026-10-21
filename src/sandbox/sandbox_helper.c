@@ -25,6 +25,7 @@
 #include "edc_bpf_sandbox.h"
 #include "edc_landlock_sandbox.h"
 #include "edc_ns_sandbox.h"
+#include "edc_seatbelt_sandbox.h"
 #include "log.h"
 #include <errno.h>
 #include <limits.h>
@@ -147,6 +148,60 @@ int main(int argc, char **argv)
     }
     if (!ns_enforced && !landlock_ok && !seccomp_ok && verbose())
         fprintf(stderr, "sandbox_helper: no kernel sandbox available (path checks only)\n");
+#elif defined(__APPLE__)
+    /* Seatbelt: ONE SBPL profile covers what the three Linux layers do
+     * together (allow-lists, deny masks, metadata mutators -- see
+     * edc_seatbelt_sandbox.h). Applied here, in the helper's own fresh
+     * single-threaded process, for the same reason as on Linux: the rules are
+     * irreversible and inherited, so applying them in the app would sandbox
+     * the app itself. */
+    char *profile = edc_seatbelt_build_profile(ro, rw, deny, /*strict_read=*/true);
+    char *sb_err = NULL;
+
+    if (!profile || !edc_seatbelt_probe(profile, &sb_err))
+    {
+        /* The strict read allow-list is the layer most likely to be
+         * incomplete: dyld reads paths no allow-list predicts, and an
+         * over-tight profile does not fail with EPERM -- it aborts inside
+         * dyld4::CacheFinder before main() ever runs. Relax reads and retry
+         * once. Write containment and the deny masks -- the part that
+         * actually contains a misbehaving command -- are unaffected. */
+        log_warn("seatbelt: strict read profile unusable (%s); retrying with reads unrestricted",
+                 sb_err ? sb_err : "unknown");
+        free(sb_err);
+        sb_err = NULL;
+        free(profile);
+
+        profile = edc_seatbelt_build_profile(ro, rw, deny, /*strict_read=*/false);
+        if (!edc_seatbelt_probe(profile, &sb_err))
+        {
+            /* Fail closed. Unlike the Linux path there is no weaker kernel
+             * layer left to fall back to (ns -> seccomp): exec'ing the command
+             * anyway would leave only the tool-layer path checks, which is
+             * exactly the hole this backend exists to close. 126 is reported
+             * as the command's exit status, with the reason on its stderr. */
+            fprintf(stderr, "sandbox_helper: seatbelt unavailable (%s); refusing to run unsandboxed\n",
+                    sb_err ? sb_err : "no profile");
+            free(sb_err);
+            free(profile);
+            return 126;
+        }
+    }
+    free(sb_err);
+    sb_err = NULL;
+
+    if (!edc_seatbelt_apply(profile, &sb_err))
+    {
+        fprintf(stderr, "sandbox_helper: sandbox_init failed: %s; refusing to run unsandboxed\n",
+                sb_err ? sb_err : "unknown");
+        free(sb_err);
+        free(profile);
+        return 126;
+    }
+    free(profile);
+
+    if (verbose())
+        fprintf(stderr, "sandbox_helper: seatbelt=on\n");
 #else
     (void)ro;
     (void)rw;
@@ -156,9 +211,16 @@ int main(int argc, char **argv)
     (void)ndeny;
 #endif
 
-    /* Re-resolve the cwd through the new mount tree (see the capture above). */
+#ifdef __linux__
+    /* Re-resolve the cwd through the new mount tree (see the capture above).
+     * Seatbelt replaces no mounts, so on macOS the cwd is still valid and a
+     * chdir() would only add a permission check that can fail. */
     if (have_saved_cwd)
         chdir(saved_cwd);
+#else
+    (void)saved_cwd;
+    (void)have_saved_cwd;
+#endif
 
     /* exec keeps our pid, so the parent's kill(-pid) / exit handling still work;
      * never fork here. */

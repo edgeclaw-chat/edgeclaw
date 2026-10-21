@@ -761,11 +761,25 @@ cc_test(
 cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
+    # Must run OUTSIDE bazel's own sandbox: on macOS the test asserts that the
+    # helper applies a Seatbelt profile, and sandbox_init() refuses to nest --
+    # under darwin-sandbox it fails with "Operation not permitted" and the helper
+    # (correctly) refuses to run the command.
+    tags = ["local"],
     deps = [
         "//src/common:common",
         "//src/sandbox:sandbox",
         "@libuv",
         "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_config_sandbox_defaults",
+    srcs = ["test_config_sandbox_defaults.c"],
+    deps = [
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )

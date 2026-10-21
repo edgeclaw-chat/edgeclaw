@@ -63,21 +63,31 @@ static sds *edc_config_default_ro_paths(void)
     return edc_config_split_paths(EDC_SANDBOX_DEFAULT_RO_PATHS);
 }
 
-/* Fresh copy of the default writable set: the app workspace, /tmp, /dev and
- * the user's cache directory (~/.cache). The cache is writable so the tools a
- * shell command may run keep working under the sandbox -- package managers and
- * build systems (bazel, pip, cargo, ...) write their caches there. Follows the
- * same shape as edc_config_default_ro_paths(). */
+/* Fresh copy of the default writable set: the app workspace, /tmp, /dev, the
+ * user's cache directory (~/.cache) and, on macOS, $TMPDIR. The cache is
+ * writable so the tools a shell command may run keep working under the sandbox
+ * -- package managers and build systems (bazel, pip, cargo, ...) write their
+ * caches there. Follows the same shape as edc_config_default_ro_paths(). */
 static sds *edc_config_default_rw_paths(const char *workspace)
 {
-    sds *out = g_new0(sds, 5);
+    /* workspace + /tmp + /dev + ~/.cache + $TMPDIR + NULL */
+    sds *out = g_new0(sds, 6);
     out[0] = sdsnew(workspace);
-    out[1] = sdsnew("/tmp");
-    out[2] = sdsnew("/dev");
+
+    sds *static_paths = edc_config_split_paths(EDC_SANDBOX_DEFAULT_RW_PATHS);
+    int n = 1;
+    for (int i = 0; static_paths && static_paths[i]; i++)
+        out[n++] = static_paths[i];
+    free(static_paths);
+
     sds home = edc_homedir();
     if (home && sdslen(home) > 0)
-        out[3] = edc_path_join(home, ".cache", NULL);
+        out[n++] = edc_path_join(home, ".cache", NULL);
     sdsfree(home);
+
+    const char *tmpdir = edc_sandbox_default_tmpdir();
+    if (tmpdir)
+        out[n++] = sdsnew(tmpdir);
     return out;
 }
 
@@ -103,6 +113,16 @@ static void sds_array_add_unique(sds **arrp, const char *s)
     *arrp = realloc(*arrp, (size_t)(n + 2) * sizeof(sds));
     (*arrp)[n] = sdsnew(s);
     (*arrp)[n + 1] = NULL;
+}
+
+const char *edc_sandbox_default_tmpdir(void)
+{
+#if defined(__APPLE__)
+    const char *tmp = getenv("TMPDIR");
+    return (tmp && tmp[0]) ? tmp : NULL;
+#else
+    return NULL;
+#endif
 }
 
 sds edc_config_resolve_bc_home(void)
@@ -405,6 +425,17 @@ struct edc_config *edc_config_load(const char *edc_home)
         }
     }
 
+    /* $TMPDIR cannot be in the default list (per-user, per-boot), and a
+     * config.json written elsewhere never names it -- yet edc_shell_env forwards
+     * TMPDIR to every command, so the sandbox must allow the same path or the
+     * toolchain cannot write its caches. Added here, after both branches, so an
+     * existing config.json gets it too. */
+    {
+        const char *tmpdir = edc_sandbox_default_tmpdir();
+        if (tmpdir)
+            sds_array_add_unique(&config->sandbox_rw_paths, tmpdir);
+    }
+
     /* The user's home directory is read-only: the model may read the user's
      * files but must not modify them. The workspace and the launch directory
      * are in rw_paths above; path_allowed()'s longest-prefix-wins rule lets
@@ -466,6 +497,28 @@ struct edc_config *edc_config_load(const char *edc_home)
                 "edc_config: sandbox ro_paths: dropped legacy '/' (whole-filesystem read), using system whitelist");
         }
     }
+
+#if defined(__APPLE__)
+    /* A config.json written on Linux (or by an older default) carries /proc,
+     * /sys, /run and /lib, none of which exists here: every read they were
+     * meant to grant is simply missing, so a shell command would fail on the
+     * first dylib it needs. /proc is the signature -- it can never resolve on
+     * macOS, and no one here adds it by hand -- so its presence means "this
+     * whitelist was not written for this platform" and topping up is safe. A
+     * list the user trimmed deliberately on macOS does not carry it. */
+    if (config->sandbox_ro_paths && sds_array_contains(config->sandbox_ro_paths, "/proc"))
+    {
+        sds *defs = edc_config_default_ro_paths();
+        for (int i = 0; defs && defs[i]; i++)
+        {
+            sds_array_add_unique(&config->sandbox_ro_paths, defs[i]);
+            sdsfree(defs[i]);
+        }
+        free(defs);
+        log_info("edc_config: sandbox ro_paths: Linux-only entries found (no /proc here), "
+                 "added the macOS system dirs");
+    }
+#endif
 
     /* Prepend the directory edgeclaw was launched from to rw_paths so that the
      * current directory is always writable (even with the filesystem sandbox

@@ -7,13 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef __linux__
 #include <sys/stat.h>
-#endif
 
 sds edc_sandbox_helper_path(struct edc_config *conf)
 {
-#ifdef __linux__
     if (!conf || !conf->edc_home || sdslen(conf->edc_home) == 0)
         return NULL;
 
@@ -61,15 +58,10 @@ sds edc_sandbox_helper_path(struct edc_config *conf)
     }
     chmod(path, 0700);
     return path;
-#else
-    (void)conf;
-    return NULL;
-#endif
 }
 
 bool edc_sandbox_helper_prepare(struct edc_config *conf, const char *cmd, sds *out_file, char ***out_args)
 {
-#ifdef __linux__
     if (!conf || !cmd || !out_file || !out_args)
         return false;
 
@@ -114,11 +106,4 @@ bool edc_sandbox_helper_prepare(struct edc_config *conf, const char *cmd, sds *o
     *out_file = path;
     *out_args = argv;
     return true;
-#else
-    (void)conf;
-    (void)cmd;
-    (void)out_file;
-    (void)out_args;
-    return false;
-#endif
 }
