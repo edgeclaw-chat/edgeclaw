@@ -3,6 +3,7 @@
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_endpoint_probe.h"

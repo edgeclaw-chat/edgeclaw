@@ -3,6 +3,7 @@
 #include "edc_bundled_docs.h"
 #include "edc_bundled_workspace.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_secret.h"

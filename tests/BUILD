@@ -549,6 +549,14 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+cc_test(
+    name = "test_platform_caps",
+    srcs = ["test_platform_caps.c"],
+    deps = [
+        "//src/common:edc_platform",
+    ],
+    linkopts = LINK_OPTS,
+)
 
 cc_test(
     name = "test_session_workdir",

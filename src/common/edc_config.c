@@ -1,6 +1,7 @@
 ﻿#include "edc_config.h"
 #include "cJSON.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_path.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"

@@ -1,4 +1,5 @@
-﻿#include "edc_compat.h"
+#include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_error.h"
 #include "edc_output_buf.h"
 #include "edc_sandbox.h"
@@ -91,14 +92,13 @@ static void shell_ctx_kill_group(struct edc_tool_shell_ctx *ctx)
 {
     if (!ctx || ctx->child_exited)
         return;
-#ifdef _WIN32
-    /* No process groups to signal here. */
-    uv_process_kill(&ctx->process, SIGTERM);
-#else
-    if (ctx->process.pid > 0)
-        kill(-ctx->process.pid, SIGKILL);
+    /* POSIX: the child is spawned detached (setsid), so it leads its own group and the
+     * GROUP signal is what also takes down grandchildren -- for `sh -c 'a && sudo b'`,
+     * killing only the shell leaves the grandchild running and holding the pipes open.
+     * edc_platform_kill_process_group() is the no-op form where there are no process
+     * groups, so the child itself is terminated here either way. */
+    edc_platform_kill_process_group(ctx->process.pid);
     uv_process_kill(&ctx->process, SIGKILL);
-#endif
 }
 
 /* Why the command ended is recorded as a flag, not as text appended to the output: the
@@ -367,11 +367,10 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      * connected. It also leaves the child in libuv's job object, so it does not
      * outlive the app.
      */
-#ifdef _WIN32
-    options.flags |= UV_PROCESS_WINDOWS_HIDE;
-#else
-    options.flags |= UV_PROCESS_DETACHED;
-#endif
+    /* Which flags is the same platform fact, one line up: detach on POSIX (setsid), hide
+     * on Windows (no console, pipes connected). */
+    const struct edc_platform_caps *caps = edc_platform_caps();
+    options.flags |= (caps->spawn_mode == EDC_SPAWN_HIDE) ? UV_PROCESS_WINDOWS_HIDE : UV_PROCESS_DETACHED;
 
     const char *spawn_file = NULL;
     char **spawn_args = NULL;
@@ -379,36 +378,31 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     sds sandbox_helper_file = NULL;
     char **sandbox_helper_args = NULL;
     char **spawn_env = NULL;
-#ifdef _WIN32
-    plain_args[0] = (char *)"powershell.exe";
-    plain_args[1] = (char *)"-NonInteractive";
-    plain_args[2] = (char *)"-Command";
-    plain_args[3] = (char *)cmd_s;
-    spawn_file = "powershell.exe";
+    /* The shell is a platform FACT (see edc_platform.h), not a decision made here: the
+     * table holds the file to spawn and the argument prefix ("sh" "-c", or
+     * "powershell.exe" "-NonInteractive" "-Command"), and the command line is appended.
+     * Keeping it in the table is what stops the three places that care about the shell --
+     * this one, the kill above and the tests -- from each knowing their own answer. */
+    int argv_n = 0;
+    for (const char *const *a = caps->shell_argv_head;
+         a && *a && argv_n < (int)G_N_ELEMENTS(plain_args) - 2; a++)
+        plain_args[argv_n++] = (char *)*a;
+    plain_args[argv_n++] = (char *)cmd_s;
+    plain_args[argv_n] = NULL;
+    spawn_file = caps->shell_file;
     spawn_args = plain_args;
-#else
-    /* When the filesystem sandbox is enabled, run the command through the
-     * embedded sandbox helper: it applies the kernel sandbox (Landlock/seccomp)
-     * in its own fresh process and then execs /bin/sh. We cannot apply it here
-     * (it would sandbox the app) nor between fork/exec (not async-signal-safe
-     * in this multithreaded process). exec keeps the pid, so the timeout kill
-     * and exit handling below are unaffected. Falls back to /bin/sh when the
-     * helper cannot be materialized. */
-    if (tb_ctx->tb->conf && tb_ctx->tb->conf->enable_sandbox &&
+
+    /* Where there IS a kernel sandbox, run the command through the embedded helper: it
+     * applies Landlock/seccomp in its own fresh process and then execs the shell, keeping
+     * the pid, so the timeout kill and the exit handling below are unaffected. It cannot
+     * be applied here (that would sandbox the app) nor between fork and exec (not
+     * async-signal-safe in this multithreaded process). The table above is the fallback. */
+    if (caps->kernel_sandbox && tb_ctx->tb->conf && tb_ctx->tb->conf->enable_sandbox &&
         edc_sandbox_helper_prepare(tb_ctx->tb->conf, cmd_s, &sandbox_helper_file, &sandbox_helper_args))
     {
         spawn_file = sandbox_helper_file;
         spawn_args = sandbox_helper_args;
     }
-    else
-    {
-        plain_args[0] = (char *)"sh";
-        plain_args[1] = (char *)"-c";
-        plain_args[2] = (char *)cmd_s;
-        spawn_file = "/bin/sh";
-        spawn_args = plain_args;
-    }
-#endif
     options.file = spawn_file;
     options.args = spawn_args;
     /* Minimal whitelist, never NULL: NULL makes uv_spawn inherit the app's
@@ -547,13 +541,9 @@ void edc_tool_shell_abort_all(void)
         LL_DELETE(active_contexts, ctx);
         if (!ctx->child_exited)
         {
-            uv_process_kill(&ctx->process,
-#ifdef _WIN32
-                            SIGTERM
-#else
-                            SIGKILL
-#endif
-            );
+            /* SIGKILL everywhere: libuv ignores the signal NUMBER on Windows (it calls
+             * TerminateProcess), and this is a teardown -- there is nobody left to ask politely. */
+            uv_process_kill(&ctx->process, SIGKILL);
         }
         uv_timer_stop(&ctx->timeout_timer);
 

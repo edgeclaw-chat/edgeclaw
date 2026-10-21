@@ -19,6 +19,7 @@
  * Windows at all (compare tests/test_config_sandbox_defaults.c, which cannot). */
 
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_init_env.h"

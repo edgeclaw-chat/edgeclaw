@@ -20,6 +20,20 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Platform capabilities: the CHOICES (is there a kernel sandbox, which shell to spawn,
+# how to start it) and the OPERATIONS whose implementation differs (mlock, signalling a
+# process group). Its own target rather than part of //src/common:common, because
+# edc_secret_lib needs it and common depends on edc_secret_lib -- putting it in common
+# would close a cycle.
+cc_library(
+    name = "edc_platform",
+    srcs = ["edc_platform.c"],
+    hdrs = ["edc_platform.h"],
+    includes = ["."],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "edc_error",
     srcs = ["edc_error.c"],
@@ -106,6 +120,7 @@ cc_library(
     deps = [
         "//src/common:edc_error",
         "//src/common:edc_file_utils",
+        "//src/common:edc_platform",
         "//src/common:mbedtls_config",
         "@log.c//:log.c",
         "@mbedtls//:mbedtls",
@@ -168,6 +183,7 @@ cc_library(
         "//src/common:edc_datetime_utils",
         "//src/common:edc_error",
         "//src/common:edc_file_utils",
+        "//src/common:edc_platform",
         "//src/common:edc_secret_lib",
         "//src/common:edc_string_utils",
         "//src/common:mbedtls_config",

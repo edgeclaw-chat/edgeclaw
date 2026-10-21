@@ -1,5 +1,6 @@
 #include "edc_shell.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_session_store.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"

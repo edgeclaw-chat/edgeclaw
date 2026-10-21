@@ -274,28 +274,11 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
  *  Platform capabilities
  * ========================================================================= */
 
-/* True when this platform has a filesystem-sandbox backend (see src/sandbox: Landlock /
- * seccomp / BPF on Linux, a Seatbelt profile on macOS).
- *
- * Windows has none yet -- neither the kernel side nor the path semantics the policy
- * layer needs (two separators, case-insensitive comparison, drive letters and UNC
- * roots; see edc_path.h). Until that backend exists, everything that could turn the
- * sandbox ON asks this question and leaves it OFF: config.json's sandbox.enable is
- * clamped at load, `/sandbox on` is refused, and the CLI override does not take
- * effect. A switch that reads "on" while the enforcement underneath is wrong is worse
- * than no switch: paths get denied (or allowed) for the wrong reason, which is exactly
- * what the Windows path bugs looked like.
- *
- * This lives in the platform header rather than in src/sandbox because edc_config needs
- * it and //src/common must not depend on //src/sandbox (sandbox depends on common). */
-static inline bool edc_platform_has_sandbox(void)
-{
-#if defined(__linux__) || defined(__APPLE__)
-    return true;
-#else
-    return false;
-#endif
-}
+/* What this build can do lives in edc_platform.h: one table of CHOICES (is there a
+ * kernel sandbox, which shell to spawn, how to start it) and the few OPERATIONS whose
+ * implementation differs per platform (mlock, signalling a process group). This header
+ * kept the single yes/no answer while there was exactly one question; several later,
+ * "ask the platform" needed a home of its own. */
 
 /* =========================================================================
  *  GLib compatibility (transitional — remove once all callers use EDC_*)
