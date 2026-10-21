@@ -115,6 +115,75 @@ static void sds_array_add_unique(sds **arrp, const char *s)
     (*arrp)[n + 1] = NULL;
 }
 
+/* ── sandbox path canonicalisation ─────────────────────────────────────────
+ *
+ * The three lists are assembled from four different sources -- config.json
+ * (written by whichever platform or version), the built-in defaults, and the
+ * runtime appends (workspace, $HOME, $TMPDIR, cwd) -- and the sources disagreed
+ * on spelling: edc_init_env used to write "<workspace>/" with a trailing slash,
+ * none of the appends resolved symlinks, and the config entries had been stored
+ * resolved.
+ *
+ * Nothing reads the lists without calling realpath() first, so the disagreement
+ * was invisible to the sandbox itself. It was not invisible to /sandbox list,
+ * nor to the strcmp-based dedup in sds_array_add_unique -- a second spelling of
+ * one directory could slip past it. Canonicalising once, at the end of the load,
+ * puts every later comparison on the same coordinate system.
+ *
+ * A path that cannot be resolved is kept: a read-only entry for a directory that
+ * does not exist yet is still meaningful (it starts applying the moment the
+ * directory appears), and dropping it would silently widen the policy. */
+static sds sandbox_path_canonical(sds entry)
+{
+    if (!entry || entry[0] != '/')
+        return entry;
+
+    char *rp = realpath(entry, NULL);
+    if (rp)
+    {
+        sds out = sdsnew(rp); /* also strips a trailing slash and any symlink */
+        free(rp);
+        sdsfree(entry);
+        return out;
+    }
+
+    /* Unresolvable: trim trailing slashes so "<dir>/" and "<dir>" still compare
+     * equal. "/" itself is left alone. */
+    size_t len = sdslen(entry);
+    while (len > 1 && entry[len - 1] == '/')
+        len--;
+    if (len == sdslen(entry))
+        return entry;
+    sds out = sdsnewlen(entry, len);
+    sdsfree(entry);
+    return out;
+}
+
+/* Canonicalise every entry and drop duplicates, keeping the FIRST occurrence --
+ * order matters, rw_paths[0] becomes the sandbox root. NULL-safe. */
+static void sds_array_canonicalize(sds **arrp)
+{
+    if (!arrp || !*arrp)
+        return;
+
+    sds *arr = *arrp;
+    int n = 0;
+    for (int i = 0; arr[i]; i++)
+    {
+        sds entry = sandbox_path_canonical(arr[i]);
+        bool duplicate = false;
+        for (int j = 0; j < n && !duplicate; j++)
+            duplicate = strcmp(arr[j], entry) == 0;
+        if (duplicate)
+        {
+            sdsfree(entry);
+            continue;
+        }
+        arr[n++] = entry; /* n <= i, so the compaction is in place and safe */
+    }
+    arr[n] = NULL;
+}
+
 const char *edc_sandbox_default_tmpdir(void)
 {
 #if defined(__APPLE__)
@@ -565,6 +634,12 @@ struct edc_config *edc_config_load(const char *edc_home)
         }
         sdsfree(cwd);
     }
+
+    /* One spelling per directory for everything below -- and for /sandbox list,
+     * which reads these arrays. See sandbox_path_canonical(). */
+    sds_array_canonicalize(&config->sandbox_ro_paths);
+    sds_array_canonicalize(&config->sandbox_rw_paths);
+    sds_array_canonicalize(&config->sandbox_deny_paths);
 
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {

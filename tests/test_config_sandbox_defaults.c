@@ -69,6 +69,24 @@ static bool has_path(sds *arr, const char *want)
     return false;
 }
 
+/* One spelling per directory: no trailing slash (except "/"), no duplicates.
+ * The loader canonicalises all three lists at the end of the read, and everything
+ * downstream -- the sandbox backends, /sandbox list, the strcmp-based dedup in
+ * sds_array_add_unique -- assumes that. */
+static bool list_is_canonical(sds *arr)
+{
+    for (int i = 0; arr && arr[i]; i++)
+    {
+        size_t len = strlen(arr[i]);
+        if (len > 1 && arr[i][len - 1] == '/')
+            return false;
+        for (int j = 0; j < i; j++)
+            if (strcmp(arr[i], arr[j]) == 0)
+                return false;
+    }
+    return true;
+}
+
 /* How many entries name the same directory. Used to catch the duplicate that the
  * loader used to append: two spellings of one directory ("<ws>/" from
  * edc_init_env, "<ws>" from the loader) both landed in rw_paths. */
@@ -126,6 +144,10 @@ int main(void)
     T_CHECK(cfg->workspace && has_path(cfg->sandbox_rw_paths, cfg->workspace), "rw has the workspace");
     T_CHECK(count_path(cfg->sandbox_rw_paths, cfg->workspace) == 1,
             "the workspace appears exactly once in rw (no duplicate spelling)");
+    if (!list_is_canonical(cfg->sandbox_rw_paths))
+        dump_list("rw_paths", cfg->sandbox_rw_paths);
+    T_CHECK(list_is_canonical(cfg->sandbox_ro_paths), "ro is canonical: no trailing slash, no duplicates");
+    T_CHECK(list_is_canonical(cfg->sandbox_rw_paths), "rw is canonical: no trailing slash, no duplicates");
 
     /* ── 2. the platform-specific part ───────────────────────────────────── */
 #if defined(__APPLE__)
@@ -178,6 +200,33 @@ int main(void)
     T_CHECK(!has_path(cfg->sandbox_ro_paths, "/System"),
             "the migration is macOS-only: Linux keeps its list untouched");
 #endif
+
+    edc_config_free(cfg);
+
+    /* ── 4. canonicalisation collapses two spellings of one directory ─────── */
+    /* Persist a trailing-slash spelling next to the canonical one: the loader
+     * must hand back a single entry, because that is what every strcmp-based
+     * consumer downstream (dedup included) expects. */
+    cfg = edc_config_load(home);
+    T_CHECK(cfg != NULL, "edc_config_load reads the config back");
+    if (!cfg)
+        return 1;
+
+    char ws_slash[PATH_MAX];
+    snprintf(ws_slash, sizeof(ws_slash), "%s/", cfg->workspace);
+    T_CHECK(edc_config_update_sandbox_path(home, ws_slash, EDC_SANDBOX_PATH_RW, true),
+            "persist a trailing-slash spelling of the workspace");
+    edc_config_free(cfg);
+
+    cfg = edc_config_load(home);
+    T_CHECK(cfg != NULL, "edc_config_load reads the config back again");
+    if (!cfg)
+        return 1;
+    if (count_path(cfg->sandbox_rw_paths, cfg->workspace) != 1)
+        dump_list("rw_paths", cfg->sandbox_rw_paths);
+    T_CHECK(count_path(cfg->sandbox_rw_paths, cfg->workspace) == 1,
+            "two spellings of the workspace collapse into one entry");
+    T_CHECK(list_is_canonical(cfg->sandbox_rw_paths), "rw is canonical after the collapse");
 
     edc_config_free(cfg);
 
