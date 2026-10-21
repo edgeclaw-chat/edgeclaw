@@ -58,10 +58,10 @@ static sds *edc_config_split_paths(const char *csv)
     return out;
 }
 
-/* Fresh copy of the default read-only whitelist (EDC_SANDBOX_DEFAULT_RO_PATHS). */
+/* Fresh copy of the default read-only whitelist (see edc_sandbox_default_ro_paths). */
 static sds *edc_config_default_ro_paths(void)
 {
-    return edc_config_split_paths(EDC_SANDBOX_DEFAULT_RO_PATHS);
+    return edc_config_split_paths(edc_sandbox_default_ro_paths());
 }
 
 /* Fresh copy of the default writable set: the app workspace, /tmp, /dev, the
@@ -75,7 +75,7 @@ static sds *edc_config_default_rw_paths(const char *workspace)
     sds *out = g_new0(sds, 6);
     out[0] = sdsnew(workspace);
 
-    sds *static_paths = edc_config_split_paths(EDC_SANDBOX_DEFAULT_RW_PATHS);
+    sds *static_paths = edc_config_split_paths(edc_sandbox_default_rw_paths());
     int n = 1;
     for (int i = 0; static_paths && static_paths[i]; i++)
         out[n++] = static_paths[i];
@@ -192,6 +192,18 @@ static void sds_array_canonicalize(sds **arrp)
         arr[n++] = entry; /* n <= i, so the compaction is in place and safe */
     }
     arr[n] = NULL;
+}
+
+const char *edc_sandbox_default_rw_paths(void)
+{
+    /* "/tmp,/dev" are POSIX facts. A drive letter does not create them. */
+    return edc_platform_has_sandbox() ? EDC_SANDBOX_DEFAULT_RW_PATHS : "";
+}
+
+const char *edc_sandbox_default_ro_paths(void)
+{
+    /* No backend = nothing to whitelist (see edc_config.h). */
+    return edc_platform_has_sandbox() ? EDC_SANDBOX_DEFAULT_RO_PATHS : "";
 }
 
 const char *edc_sandbox_default_tmpdir(void)
@@ -546,7 +558,16 @@ struct edc_config *edc_config_load(const char *edc_home)
      * are in rw_paths above; path_allowed()'s longest-prefix-wins rule lets
      * those more specific entries win, so they stay writable even though they
      * live inside the read-only home. This also covers ~/.edgeclaw (config.json
-     * and the key verifier) without a separate entry. */
+     * and the key verifier) without a separate entry.
+     *
+     * Not on a platform with no backend: there the entry states a rule nothing enforces,
+     * and it is the one entry that made the read-only list look non-empty (i.e. look like
+     * a policy) on a platform where the whole list is inert. */
+    if (!edc_platform_has_sandbox())
+    {
+        /* nothing to add */
+    }
+    else
     {
         sds home = edc_homedir();
         if (home && sdslen(home) > 0)

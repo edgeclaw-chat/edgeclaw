@@ -43,6 +43,17 @@
  * same path. Always NULL on Linux, where /tmp already covers it. */
 const char *edc_sandbox_default_tmpdir(void);
 
+/* The default writable / readable sets for THIS platform, as comma-separated text (the
+ * shape edc_init_env persists and edc_config splits).
+ *
+ * Empty where the platform has no sandbox backend: there is nothing to whitelist, and the
+ * POSIX list is not merely useless on Windows but wrong -- _fullpath("/usr") resolves to
+ * C:\usr, so the entry silently names a directory that has nothing to do with the one
+ * meant, and "/tmp" and "/dev" are not writable places on a machine that has neither.
+ * What every platform does have is the app's own directories, which the callers add. */
+const char *edc_sandbox_default_rw_paths(void);
+const char *edc_sandbox_default_ro_paths(void);
+
 struct llm_api_conf
 {
     sds model;

@@ -83,6 +83,15 @@ int main(void)
         return 1;
     }
 
+    /* The scratch name is per pid and a pid can be reused, so a config.json left by an
+     * earlier run would silently become this run's fixture (it did: an old one carried the
+     * POSIX whitelist). Start from a known state. */
+    {
+        char stale[600];
+        snprintf(stale, sizeof(stale), "%s%cconfig.json", home, PATH_SEP);
+        remove(stale);
+    }
+
     /* ── 1. a fresh config records what this build can actually do ─────────── */
     CHECK(edc_init_env(home, true), "edc_init_env creates config.json");
 
@@ -93,7 +102,47 @@ int main(void)
     CHECK(cfg->enable_sandbox == backend,
           backend ? "fresh config: sandbox on (this platform has a backend)"
                   : "fresh config: sandbox OFF (no backend on this platform)");
+
+    /* The default path LISTS are platform facts as well: where nothing is enforced there is
+     * nothing to whitelist, so the POSIX whitelist must not be written into a file that
+     * then claims /usr is readable (on Windows that resolves to C:\usr). */
+    {
+        const bool have_ro = cfg->sandbox_ro_paths && cfg->sandbox_ro_paths[0] != NULL;
+        CHECK(have_ro == backend, backend ? "ro defaults exist where there is a backend"
+                                          : "no ro defaults where there is no backend");
+    }
     edc_config_free(cfg);
+
+    /* ── the file itself: one spelling, no foreign paths ───────────────────── */
+    {
+        char path[600];
+        char text[8192];
+        snprintf(path, sizeof(path), "%s%cconfig.json", home, PATH_SEP);
+
+        FILE *f = fopen(path, "rb");
+        CHECK(f != NULL, "config.json exists");
+        if (f)
+        {
+            const size_t n = fread(text, 1, sizeof(text) - 1, f);
+            text[n] = '\0';
+            fclose(f);
+
+            if (!backend)
+            {
+                CHECK(strstr(text, "/proc") == NULL,
+                      "the POSIX whitelist is not written where there is no backend");
+                CHECK(strstr(text, "/tmp") == NULL, "/tmp is not a writable path where there is no backend");
+            }
+#ifdef _WIN32
+            /* The entry used to be built with "%s/workspace", so the file carried
+             * "C:\Users\x\.edgeclaw/workspace" -- one spelling per directory, which is what
+             * the file is for. */
+            CHECK(strstr(text, "/workspace") == NULL, "the workspace entry is not a mixed-separator spelling");
+            CHECK(strstr(text, "\\\\workspace") != NULL,
+                  "the workspace entry is written with the platform separator");
+#endif
+        }
+    }
 
     /* ── 2. a config that claims "on" is clamped where there is no backend ──
      * edc_config_update_sandbox_enabled() is the raw writer (it does not consult the

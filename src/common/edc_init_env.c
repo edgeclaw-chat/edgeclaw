@@ -20,16 +20,31 @@
 /* Default writable paths. The launch directory is prepended when the config
  * is loaded, so it is not listed here. ~/.cache is included so tool/build
  * caches (bazel, pip, ...) keep working under the sandbox; see
- * edc_config_default_rw_paths(). */
+ * edc_config_default_rw_paths().
+ *
+ * The entries are BUILT, not formatted: edc_home already carries the platform's
+ * separators, so "%s/workspace" wrote a mixed spelling ("C:\Users\x\.edgeclaw/workspace")
+ * into config.json -- a file whose whole job is to be one canonical statement of the
+ * policy. The platform-specific part ("/tmp,/dev" -- nothing where there is no backend)
+ * comes from edc_sandbox_default_rw_paths(). */
 static sds default_sandbox_rw_extra(const char *edc_home)
 {
-    /* No trailing slash on the workspace entry: every consumer resolves paths
-     * before matching, and the slash only made the entry differ from the
-     * unresolved config->workspace that edc_config compares against. */
-    sds base = sdscatprintf(sdsempty(), "%s/workspace, %s", edc_home, EDC_SANDBOX_DEFAULT_RW_PATHS);
+    /* No trailing separator on the workspace entry: every consumer resolves paths before
+     * matching, and the separator only made the entry differ from the unresolved
+     * config->workspace that edc_config compares against. */
+    sds base = edc_path_join(edc_home, "workspace", NULL);
+
+    const char *platform_paths = edc_sandbox_default_rw_paths();
+    if (platform_paths && platform_paths[0])
+        base = sdscatprintf(base, ", %s", platform_paths);
+
     sds home = edc_homedir();
     if (home && sdslen(home) > 0)
-        base = sdscatprintf(base, ", %s/.cache", home);
+    {
+        sds cache = edc_path_join(home, ".cache", NULL);
+        base = sdscatprintf(base, ", %s", cache);
+        sdsfree(cache);
+    }
     sdsfree(home);
     /* Per-user, per-boot, so not part of the compile-time default (see
      * edc_sandbox_default_tmpdir). */
@@ -46,7 +61,8 @@ static sds default_sandbox_rw_extra(const char *edc_home)
 static sds default_sandbox_ro(const char *edc_home)
 {
     (void)edc_home;
-    return sdsnew(EDC_SANDBOX_DEFAULT_RO_PATHS);
+    /* Empty where there is no backend; see edc_config.h. */
+    return sdsnew(edc_sandbox_default_ro_paths());
 }
 
 /* Parse existing config.json into a edc_init_env_result.
