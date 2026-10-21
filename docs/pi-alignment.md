@@ -14,7 +14,7 @@
 | **什么时候折** | `tokens > contextWindow − reserveTokens`（默认 16k） | **只剩 token 轴**：`ctx > 窗口 − reserve`；窗口默认 **1M**，`<= 0` 在启动时被修成默认值（2026-10-10，见 §2.9） | **P2 ✅**（消息条数轴已整条退休） |
 | **折到哪里** | 从尾部往前累加到 `keepRecentTokens`(20k) 的**合法切点** | **折最老的一半**（按 task / 消息数） | **P2** 改尾部 token 预算 |
 | **切点安全** | 永不切在 `toolResult` 上 | `edc_llm_history_safe_start` 把起点回退到非 tool 消息 | ✅ 已具备 |
-| **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | "concise markdown" 一句，只有 `## Existing Group Memory` 前缀 | **P2** 采纳格式与迭代规则 + 卫生检查 |
+| **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | ~~"concise markdown" 一句~~ **2026-10-21 更正：6 段 + 迭代 + split turn + max_tokens(32768) + 文件追踪，均已落地** | ~~**P2**~~ ✅ 完成 |
 | **窗口爆了怎么办** | 三类溢出识别 → 压缩 → **重试一次** | 三类溢出识别 → **一条带数字的提示**（不自动恢复，裁决 #10） | **P3 ✅** |
 | **摘要调用的成本** | 计入会话 usage | 折叠任务在**系统组**，用量记在系统组 | 已知，不改 |
 
@@ -126,7 +126,7 @@ long long edc_context_estimate_text(const char *s);
 - **触发**：`edc_group_fold_due` = `foldable > 0 && unfolded_msgs >= group_fold_msg_threshold`（默认 500，你配 200）。**纯消息条数**。
 - **切点**：`edc_group_fold_build_prompt` = 按 `completion_seq` 排序后，从最老开始按"消息数 ≤ 未折叠总数的一半"选一批 task；**折最老一半**，`max_seq` = 最后被选中的 task 的 `completion_seq`。
 - **屏障**：起折给组内每个非终态成员挂 `SEQUENCE` dep（B1）；在飞成员到下一个请求边界才 park。
-- **摘要**：`## Existing Group Memory` + `## New Completed Tasks`（每条 `role: content` + `output:`）+ 一句 "Merge … Output ONLY the merged Group Memory as concise markdown."。**没有**结构化格式、没有迭代规则、没有 `max_tokens`。
+- **摘要**：~~`## Existing Group Memory` + 一句 "concise markdown"，没有结构化格式/迭代规则/`max_tokens`~~ **2026-10-21 更正：这一段的现状描述已过期** —— `edc_group_fold.c` 现在有 `kInitialSummaryInstruction`（6 段）、`kUpdateSummaryInstruction`（迭代更新）、`kSplitTurnInstruction`、`EDC_FOLD_SUMMARY_MAX_TOKENS = 32768`，以及 code 侧抽取的 `<read-files>`/`<modified-files>`。
 - **落地**：`edc_group_fold_deliver_memory` 写 `group->memory`，把 `completion_seq <= fold_max_seq` 的已完成 task 标 `turns_folded`，推 `folded_through_completion_seq`。**只要内容非空就写**（无卫生检查）。
 - **失败**：折叠任务走一般错误路径 → task ERROR；**记忆与水位不动**；下一次有 task 完成、又满足条数阈值 → 再折一次。
 - **折叠范围**：只折**已完成** task 的 turns（`edc_task_is_foldable` = `COMPLETED && !turns_folded && sink != GROUP_MEMORY`）。**正在跑的长任务永远不会被压**。

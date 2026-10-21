@@ -59,7 +59,7 @@
 | 工具并行 | ❌ 串行 `req->next` | ✅ 嵌套调用 + 写串行队列 | `/` `nested-tool-calls.ts`、`file-mutation-queue.ts` |
 | 先落盘再副作用 | ❌ 只在 settle 落盘 | ✅ | — |
 | 运行中输入 steer/followUp | ❌ 输入即建任务，无受理段 | ✅ | `edc_scheduler.c` / `agent-session.ts:320` |
-| 压缩摘要格式 | ❌ 一句 "concise markdown" | ✅ 6 段 + 文件追踪 + 迭代 | `edc_group_fold.c` / `docs/compaction.md` |
+| 压缩摘要格式 | ✅ 6 段 + 迭代更新 + split turn + `<read-files>`/`<modified-files>` | ✅ 同形 | `edc_group_fold.c:52/84/96` / `docs/compaction.md` |
 | 上下文估算 + 尾部 + token 轴折叠 | ✅ 刚落地（对齐 pi 的 P1/P2） | ✅ | `edc_token_estimate.c` |
 | Pi Packages（资源打包） | ❌ | ✅ | — |
 | 项目信任 | ❌ **已拍板不做** | ✅ `/trust` | — / `trust-manager.ts` |
@@ -108,7 +108,7 @@ token 消耗肉眼可见。成本最低的一条（spawn `rg`/`grep` 走沙箱�
 
 ### 3.5 R5 折叠摘要格式
 
-触发轴已对齐 pi（token 轴 + reserve），但**摘要内容**仍是一句 "concise markdown"。
+触发轴已对齐 pi（token 轴 + reserve），**摘要格式也已对齐**（2026-10-21 核实：早前文档把它写成"仍是一句 concise markdown"是错的）。
 pi 的摘要格式是 6 段：
 
 ```
@@ -186,10 +186,10 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 | # | 需求 | 判据 | 成本 | 依赖 |
 |---|---|---|---|---|
 | **R1** | **MCP 接入** —— **⏸ 暂缓（2026-10-21 用户裁定）**，见下方"为什么暂缓 / 重开条件" | 挂一个 server → 工具出现在工具段且可调用；崩溃/超时不拖死 turn；未启用时工具段完全不出现 | L | R2 |
-| **R2** | **工具注册面改造**：内建 + 动态注册；system prompt `tools` 段按激活集生成 | 加动态工具不改内建表；禁用某工具后连名字都不出现 | M | — |
+| **R2** | ✅ **已完成（2026-10-21）**：工具集由注册表派生（`edc_toolset`），组内冻结、散文段生成、执行侧按 scope 判定；实作见 `pi-toolset-plan.zh.md` B0–B3 | 同组连跑 `tools` 字节级相同；禁用后散文段里也不出现（`test_toolset.c` 37 checks） | — | — |
 | **R3** | **headless 双模式**：`--print`（管道 stdin、`@path`）+ `--mode json` | 无 tty 下退出码正确、stdout 只有结果；json 可逐行消费；与 TUI **共用同一 kernel 路径**（不复制 agent 循环） | M | — |
 | **R4** | **检索工具 `grep` + `find`** | "找出所有调用 X 的地方"一轮完成；grep 单行 500 字符；走同一输出上限 | S | — |
-| **R5** | **折叠摘要格式**：6 段 + `<read-files>`/`<modified-files>` 累积 + 迭代更新 | 折叠后能说出改过哪些文件、卡在哪；折叠两次不丢第一次信息 | M | `pi-alignment.md` |
+| **R5** | ✅ **已完成（2026-10-21）**：6 段格式 + 迭代更新 + split turn + 精确路径要求 + `max_tokens`（早就有）；`<read-files>`/`<modified-files>` 从 tool call 抽取、跨折叠累积、上限 50、确定性顺序（本次补） | 折叠后能说出改过哪些文件、卡在哪；折叠两次取并集不重复（`test_group_fold.c` 三个用例钉住） | — | — |
 
 > **R1 为什么暂缓（2026-10-21）**
 >
