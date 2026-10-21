@@ -326,4 +326,52 @@ static inline bool edc_path_is_absolute(const char *path)
 #endif
 }
 
+/* True when |c| separates path segments here: both '\' and '/' on Windows, '/'
+ * elsewhere. */
+static inline bool edc_path_is_sep(char c)
+{
+#ifdef _WIN32
+    return c == '\\' || c == '/';
+#else
+    return c == '/';
+#endif
+}
+
+/* True when |path| lies at or below |prefix|, comparing whole path segments: "a/bc"
+ * is not inside "a/b". A trailing separator on |prefix| is ignored. On Windows the
+ * comparison is case-insensitive and accepts either separator, because realpath
+ * (_fullpath) returns backslashes while a configured root may be written with '/'
+ * and any case -- a slash-only, case-sensitive test made every workspace path look
+ * like an escape and silently refused legitimate writes. */
+static inline bool edc_path_is_within(const char *path, const char *prefix)
+{
+    if (!path || !prefix)
+        return false;
+    size_t len = strlen(prefix);
+    while (len > 1 && edc_path_is_sep(prefix[len - 1]))
+        len--;
+    if (len == 0)
+        return true;
+    for (size_t i = 0; i < len; i++)
+    {
+        const char a = path[i];
+        if (a == '\0')
+            return false; /* path shorter than the prefix */
+        if (edc_path_is_sep(a) && edc_path_is_sep(prefix[i]))
+            continue; /* '/' and '\' are the same boundary */
+#ifdef _WIN32
+        const char lower_a = (a >= 'A' && a <= 'Z') ? (char)(a - 'A' + 'a') : a;
+        char p = prefix[i];
+        if (p >= 'A' && p <= 'Z')
+            p = (char)(p - 'A' + 'a');
+        if (lower_a != p)
+            return false;
+#else
+        if (a != prefix[i])
+            return false;
+#endif
+    }
+    return path[len] == '\0' || edc_path_is_sep(path[len]);
+}
+
 #endif /* EDC_COMPAT_H */

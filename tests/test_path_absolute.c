@@ -91,12 +91,91 @@ static void test_absolute_workdir_is_not_anchored(void)
     free(real);
 }
 
+static void test_path_is_within(void)
+{
+    log_info("  TEST: edc_path_is_within");
+
+    CHECK(edc_path_is_within("/a/b", "/a"), "child is within");
+    CHECK(edc_path_is_within("/a", "/a"), "self is within");
+    CHECK(!edc_path_is_within("/a/bc", "/a/b"), "segment boundary respected");
+    CHECK(edc_path_is_within("/a/b", "/a/"), "trailing separator tolerated");
+    CHECK(!edc_path_is_within("/a/b", "/a/bc"), "longer prefix is not a parent");
+#ifdef _WIN32
+    CHECK(edc_path_is_within("D:\\ws\\sub", "D:/ws"), "mixed separators");
+    CHECK(edc_path_is_within("d:\\ws\\sub", "D:\\WS"), "case-insensitive");
+    CHECK(!edc_path_is_within("D:\\wsx\\sub", "D:\\ws"), "segment boundary (windows)");
+#endif
+}
+
+/* Nested creation and the containment guard, which used to fail on Windows: the guard
+ * compared the resolved parent against the root with pr[len] == '/' only, so a real
+ * backslash path was always "outside". */
+static void test_nested_dir_and_write_containment(void)
+{
+    log_info("  TEST: nested directory creation + write containment");
+
+    sds cwd = edc_cwd();
+    char *root = cwd ? realpath(cwd, NULL) : NULL;
+    CHECK(root != NULL, "cwd resolves");
+    if (!root)
+    {
+        sdsfree(cwd);
+        return;
+    }
+
+    sds nested = edc_path_join(root, ".edc_test_nested", "a", "b", "c", NULL);
+    EdcError *err = NULL;
+    bool ok = edc_dir_create_with_parents(nested, 0700, &err);
+    CHECK(ok, "nested a/b/c created from scratch");
+    if (!ok && err)
+        log_error("    mkdir error: %s", err->message);
+    if (err)
+        edc_error_free(err);
+    CHECK(edc_file_is_dir(nested), "every level exists");
+
+    sds file = edc_path_join(nested, "note.txt", NULL);
+    err = NULL;
+    ok = edc_file_write_safe(file, "hi", 2, root, &err);
+    CHECK(ok, "write inside the root is accepted");
+    if (!ok && err)
+        log_error("    write error: %s", err->message);
+    if (err)
+        edc_error_free(err);
+
+    sds up = edc_path_dirname(root);
+    sds outside = edc_path_join(up, "edc_test_should_not_exist.txt", NULL);
+    err = NULL;
+    ok = edc_file_write_safe(outside, "hi", 2, root, &err);
+    CHECK(!ok, "write outside the root is refused");
+    if (err)
+        edc_error_free(err);
+
+    remove(file);
+    sds dir = sdsdup(nested);
+    for (int i = 0; i < 4 && dir; i++) /* c, b, a, .edc_test_nested */
+    {
+        rmdir(dir);
+        sds parent = edc_path_dirname(dir);
+        sdsfree(dir);
+        dir = parent;
+    }
+    sdsfree(dir);
+    sdsfree(outside);
+    sdsfree(up);
+    sdsfree(file);
+    sdsfree(nested);
+    sdsfree(cwd);
+    free(root);
+}
+
 int main(void)
 {
     log_info("== test_path_absolute ==");
 
     test_absolute_predicate();
     test_absolute_workdir_is_not_anchored();
+    test_path_is_within();
+    test_nested_dir_and_write_containment();
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;
