@@ -93,7 +93,7 @@ int main(int argc, char **argv)
     // on stdout are interpreted the way FTXUI produced them. Must run before
     // theme::Init()/ScreenInteractive, both of which already write to stdout.
     ::SetConsoleOutputCP(CP_UTF8);
-    ::SetConsoleCP(CP_UTF8); // also decode typed/pasted UTF-8 input correctly
+    ::SetConsoleCP(CP_UTF8); // keys arrive as UTF-8 *bytes* under ConPTY: see patches/ftxui-conpty-input.patch
 #endif
 
     const int sandbox_override = ParseSandboxFlag(argc, argv);

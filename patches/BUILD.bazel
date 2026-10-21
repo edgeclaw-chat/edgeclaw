@@ -1,3 +1,4 @@
 exports_files([
+    "ftxui-conpty-input.patch",
     "sed-static-link.patch",
 ])
