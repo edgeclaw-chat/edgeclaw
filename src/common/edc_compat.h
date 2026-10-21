@@ -71,33 +71,6 @@ static inline char *win32_strndup(const char *s, size_t n)
 #define usleep(usec) Sleep((DWORD)((usec) / 1000))
 #endif
 
-/* ---- time ---- */
-/* localtime_r / gmtime_r as FUNCTIONS with the POSIX signature on every platform.
- *
- * These cannot be `#define`s: the platforms disagree on the SHAPE of the call -- POSIX
- * returns struct tm *, the Windows CRT returns errno_t and takes the arguments in the
- * opposite order -- so a macro is only usable where the return value is ignored.
- * `return localtime_r(&t, out) != NULL;` expanded to `errno_t != NULL`, which is always
- * true, and that is why four files kept their own #ifdef copy instead of using it.
- * A caller asks for a pointer here and gets one, on both platforms. */
-static inline struct tm *edc_localtime_r(const time_t *t, struct tm *out)
-{
-#ifdef _WIN32
-    return localtime_s(out, t) == 0 ? out : NULL;
-#else
-    return localtime_r(t, out);
-#endif
-}
-
-static inline struct tm *edc_gmtime_r(const time_t *t, struct tm *out)
-{
-#ifdef _WIN32
-    return gmtime_s(out, t) == 0 ? out : NULL;
-#else
-    return gmtime_r(t, out);
-#endif
-}
-
 /* ---- I/O ---- */
 #ifdef _WIN32
 #include <stdio.h>
@@ -269,6 +242,36 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 #define PATH_SEP '/'
 
 #endif /* _WIN32 */
+
+/* =========================================================================
+ *  Time
+ * ========================================================================= */
+
+/* localtime_r / gmtime_r as FUNCTIONS with the POSIX signature on every platform.
+ *
+ * These cannot be `#define`s: the platforms disagree on the SHAPE of the call -- POSIX
+ * returns struct tm *, the Windows CRT returns errno_t and takes the arguments in the
+ * opposite order -- so a macro is only usable where the return value is ignored.
+ * `return localtime_r(&t, out) != NULL;` expanded to `errno_t != NULL`, which is always
+ * true, and that is why four files kept their own #ifdef copy instead of using it.
+ * A caller asks for a pointer here and gets one, on both platforms. */
+static inline struct tm *edc_localtime_r(const time_t *t, struct tm *out)
+{
+#ifdef _WIN32
+    return localtime_s(out, t) == 0 ? out : NULL;
+#else
+    return localtime_r(t, out);
+#endif
+}
+
+static inline struct tm *edc_gmtime_r(const time_t *t, struct tm *out)
+{
+#ifdef _WIN32
+    return gmtime_s(out, t) == 0 ? out : NULL;
+#else
+    return gmtime_r(t, out);
+#endif
+}
 
 /* =========================================================================
  *  Platform capabilities
