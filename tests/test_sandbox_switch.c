@@ -112,6 +112,31 @@ int main(void)
         CHECK(have_ro == backend, backend ? "ro defaults exist where there is a backend"
                                           : "no ro defaults where there is no backend");
     }
+
+    /* The whitelist is PREPARED per platform even where nothing enforces it yet: on Windows
+     * it is built from %SystemRoot% / %ProgramFiles% / %ProgramData% (the directories are
+     * not at fixed paths), on POSIX it is the compile-time list. Two questions, two
+     * functions on purpose -- "what would it be" is assertable today, "what is in force"
+     * follows the backend rule above. */
+    {
+        const char *planned = edc_sandbox_platform_ro_paths();
+        CHECK(planned != NULL && planned[0] != '\0', "a platform whitelist exists to plan with");
+#ifdef _WIN32
+        const char *sysroot = getenv("SystemRoot");
+        if (sysroot && sysroot[0])
+            CHECK(planned && strstr(planned, sysroot) != NULL, "the whitelist names %SystemRoot%");
+        else
+            passed++;
+        CHECK(planned && strstr(planned, "/usr") == NULL, "and no POSIX directory");
+        CHECK(planned && strchr(planned, ':') != NULL, "entries are absolute Windows paths");
+        /* ... and the prepared list stays out of the config while there is no backend. */
+        CHECK(!backend && edc_sandbox_default_ro_paths()[0] == '\0',
+              "the prepared whitelist is not applied without a backend");
+#else
+        CHECK(planned && strcmp(planned, edc_sandbox_default_ro_paths()) == 0,
+              "with a backend, the planned list is the one in force");
+#endif
+    }
     edc_config_free(cfg);
 
     /* ── the file itself: one spelling, no foreign paths ───────────────────── */

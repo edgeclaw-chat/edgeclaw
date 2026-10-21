@@ -201,10 +201,47 @@ const char *edc_sandbox_default_rw_paths(void)
     return edc_platform_has_sandbox() ? EDC_SANDBOX_DEFAULT_RW_PATHS : "";
 }
 
+#if defined(_WIN32)
+const char *edc_sandbox_platform_ro_paths(void)
+{
+    /* Built from the environment, once: %SystemRoot% is not always C:\Windows, and a
+     * whitelist naming a directory that does not exist grants nothing and says nothing --
+     * the same reasoning that made $TMPDIR a run-time value on macOS. Every entry that the
+     * environment does not name is simply left out; with none of them the compile-time
+     * fallback keeps the conventional layout. */
+    static char buf[1024];
+    static bool built = false;
+    if (built)
+        return buf;
+
+    static const char *const k_vars[] = {"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"};
+    buf[0] = '\0';
+    for (size_t i = 0; i < G_N_ELEMENTS(k_vars); i++)
+    {
+        const char *dir = getenv(k_vars[i]);
+        if (!dir || !dir[0])
+            continue;
+        if (buf[0])
+            strncat(buf, ",", sizeof(buf) - strlen(buf) - 1);
+        strncat(buf, dir, sizeof(buf) - strlen(buf) - 1);
+    }
+    if (!buf[0])
+        snprintf(buf, sizeof(buf), "%s", EDC_SANDBOX_DEFAULT_RO_PATHS);
+
+    built = true;
+    return buf;
+}
+#else
+const char *edc_sandbox_platform_ro_paths(void)
+{
+    return EDC_SANDBOX_DEFAULT_RO_PATHS;
+}
+#endif
+
 const char *edc_sandbox_default_ro_paths(void)
 {
     /* No backend = nothing to whitelist (see edc_config.h). */
-    return edc_platform_has_sandbox() ? EDC_SANDBOX_DEFAULT_RO_PATHS : "";
+    return edc_platform_has_sandbox() ? edc_sandbox_platform_ro_paths() : "";
 }
 
 const char *edc_sandbox_default_tmpdir(void)

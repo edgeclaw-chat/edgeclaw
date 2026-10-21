@@ -14,7 +14,7 @@
  * text) and edc_config (which stores it as an array) share one source of
  * truth.
  *
- * The two lists differ because the kernel backends differ, not for style:
+ * The lists differ because the kernel backends differ, not for style:
  * on Linux /run is needed because /etc/resolv.conf is usually a symlink into it
  * (DNS) and /sys is read by the many tools that inspect kernel state. On macOS
  * none of /proc, /sys, /run, /lib exists -- leaving them in grants nothing and
@@ -23,8 +23,16 @@
  * /Library (Frameworks: python.org, /Library/Apple, the CLT) and /Applications
  * (the /usr/bin/git, clang and make shims are thin stubs that dlopen
  * /Applications/Xcode-*.app/.../libxcrun.dylib). /opt and /usr/local cover
- * Homebrew on Apple Silicon and Intel respectively. */
-#if defined(__APPLE__)
+ * Homebrew on Apple Silicon and Intel respectively.
+ *
+ * Windows has no fixed layout to name here: %SystemRoot% is C:\Windows on almost every
+ * machine, and "almost" is exactly the assumption that leaves a whitelist pointing at a
+ * directory which does not exist (granting nothing, silently). Its list is therefore built
+ * from the environment at run time -- edc_sandbox_platform_ro_paths() -- and the macro is
+ * only the fallback for a process with no environment at all. */
+#if defined(_WIN32)
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "C:\\Windows,C:\\Program Files,C:\\Program Files (x86),C:\\ProgramData"
+#elif defined(__APPLE__)
 #define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/System,/Library,/Applications,/bin,/sbin,/etc,/dev,/opt,/usr/local"
 #else
 #define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run"
@@ -43,14 +51,24 @@
  * same path. Always NULL on Linux, where /tmp already covers it. */
 const char *edc_sandbox_default_tmpdir(void);
 
-/* The default writable / readable sets for THIS platform, as comma-separated text (the
- * shape edc_init_env persists and edc_config splits).
+/* The read-only whitelist this platform WOULD use, ready for the day it has a backend:
+ * the compile-time list on POSIX, and on Windows the system directories read out of
+ * %SystemRoot% / %ProgramFiles% / %ProgramFiles(x86)% / %ProgramData% (falling back to
+ * EDC_SANDBOX_DEFAULT_RO_PATHS when the environment says nothing). Both are comma
+ * separated, the shape edc_init_env persists and edc_config splits.
  *
- * Empty where the platform has no sandbox backend: there is nothing to whitelist, and the
- * POSIX list is not merely useless on Windows but wrong -- _fullpath("/usr") resolves to
- * C:\usr, so the entry silently names a directory that has nothing to do with the one
- * meant, and "/tmp" and "/dev" are not writable places on a machine that has neither.
- * What every platform does have is the app's own directories, which the callers add. */
+ * Separate from edc_sandbox_default_ro_paths() below on purpose: that one applies the "no
+ * backend, no policy" rule, this one is the answer to "what would it be", which is what the
+ * tests can assert while the Windows backend is still missing. */
+const char *edc_sandbox_platform_ro_paths(void);
+
+/* The defaults actually IN FORCE on this platform, or "" where the sandbox has no backend:
+ * there is nothing to whitelist then, and writing a list nothing consults is how the POSIX
+ * whitelist ended up in a Windows config.json claiming C:\usr is readable.
+ *
+ * What every platform does have is the app's own directories, which the callers add. The
+ * writable list has no Windows entry yet: %TEMP% is per-user (like $TMPDIR on macOS) and
+ * belongs with the backend, not with a compile-time constant. */
 const char *edc_sandbox_default_rw_paths(void);
 const char *edc_sandbox_default_ro_paths(void);
 
