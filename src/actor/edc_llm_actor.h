@@ -24,6 +24,11 @@ struct edc_llm_actor_req
     size_t turn_begin;
     cJSON *history;
     cJSON *tools;
+    /* Stable per-conversation key for the provider's automatic prefix cache (OpenAI's
+     * `prompt_cache_key`): one conversation's requests then share a cache shard instead of
+     * landing on whichever shard the load balancer picks. The producer sets it from the
+     * group id; NULL = the field is not sent. Freed with the request. */
+    sds cache_key;
     bool history_owned; /* Phase 5: true = history needs cJSON_Delete */
     cJSON *tail_parts;  /* owned by req: an ARRAY of role=system messages appended in
                            order at the absolute tail of messages (after the turn).

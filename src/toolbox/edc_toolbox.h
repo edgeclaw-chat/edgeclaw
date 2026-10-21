@@ -50,6 +50,10 @@ extern void edc_toolbox_free(struct edc_toolbox *tb);
 
 extern void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool);
 extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
+/* The request-shaped schema entry for one tool ({"type":"function","function":{...}}).
+ * Exposed because the declaration set is derived elsewhere (edc_toolset); the caller owns
+ * the returned object. */
+extern cJSON *edc_tool_to_schema(const struct edc_tool *tool);
 
 extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJSON *args,
                              void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *));

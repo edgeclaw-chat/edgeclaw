@@ -39,6 +39,23 @@ struct edc_task_group
 
     cJSON *history; /* shared message history */
 
+    /* The declaration set this group's requests send -- WHICH tools the model is told about
+     * (docs/pi-toolset-plan.zh.md, I2 "组内冻结"). Resolved once on first use from the
+     * registry + the transcript's deltas, and recomputed only when a change is non-additive
+     * (a removal or a redefinition). Not persisted: both halves are reproducible (the
+     * registry from config, the deltas from `history`), and history[0] is not persisted
+     * either -- see the note in edc_group_fold.c about that slot being refilled on load.
+     * `toolset_epoch` counts real changes, for logs and cache-miss attribution. */
+    cJSON *tools_decl;
+    uint32_t toolset_epoch;
+
+    /* "Tool set changed" notices, one system message per change. They are NOT turns, and
+     * `history` is rebuilt from turns (fold landing / restart), so they live here and
+     * rebuild_history re-appends them at the tail. In memory only, on purpose: the set
+     * itself is rebuilt from the registry + config, which is the durable source of truth;
+     * the notices only explain a change to the model within this process's lifetime. */
+    cJSON *tool_deltas;
+
     /* L1 fold state: the summarized memory. What has been folded is tracked per
      * turn (edc_turn.folded_prefix) — the history below only ever holds what is
      * still sent, so no group-level watermark is needed. */

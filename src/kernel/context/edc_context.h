@@ -14,6 +14,14 @@ struct edc_task_group;
  * cwd. Returns a new sds (caller sdsfree). */
 extern sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir);
 
+/* The system prompt's tool section comes from the tool registry, which this package must not
+ * depend on (//src/toolbox depends on //src/kernel; the reverse would be a cycle). So the
+ * assembly root -- which owns both -- installs a provider once at startup, and the prompt
+ * builder just calls it. NULL provider = no tool section (tests, headless builds).
+ * The provider returns an owned sds ("" when the scope declares nothing). */
+typedef sds (*EdcToolSectionFn)(void *ctx);
+extern void edc_context_set_tool_section_provider(EdcToolSectionFn fn, void *ctx);
+
 /* Runtime todo reminder (a fresh role=system message). The caller decides whether
  * to call it by the throttle rule: only when EDC_TODO_SYNC_REMIND_GAP requests have
  * passed without a todowrite call. The returned message is appended at the very END

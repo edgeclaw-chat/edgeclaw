@@ -26,6 +26,8 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
         cJSON_Delete(req->history);
     if (req->tail_parts)
         cJSON_Delete(req->tail_parts);
+    if (req->cache_key)
+        sdsfree(req->cache_key);
     free(req);
 }
 
@@ -166,6 +168,16 @@ static void llm_add_wire_message(cJSON *messages, cJSON *item)
     cJSON_AddItemToArray(messages, copy); /* owned: freed with the body */
 }
 
+/* OpenAI's automatic prefix cache is sharded by `prompt_cache_key`, so a stable key keeps
+ * one conversation's requests on the same shard instead of whichever replica the load
+ * balancer picks. Only api.openai.com documents the field: an OpenAI-compatible provider
+ * that does not know it may reject the whole request as an unknown argument, and its cache
+ * is keyed on content alone. pi gates it to that host for the same reason. */
+static bool llm_url_takes_prompt_cache_key(const char *url)
+{
+    return url && strstr(url, "api.openai.com") != NULL;
+}
+
 static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req,
                                    void *request_id)
 {
@@ -174,6 +186,9 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     cJSON *body = cJSON_CreateObject();
 
     cJSON_AddStringToObject(body, "model", state->api_conf.model);
+
+    if (req->cache_key && llm_url_takes_prompt_cache_key(state->api_conf.api_url))
+        cJSON_AddStringToObject(body, "prompt_cache_key", req->cache_key);
 
     /* Only a fold's one-shot summary asks for a cap (it has to fit in the fold's
      * reserve); a normal reply is never capped. */

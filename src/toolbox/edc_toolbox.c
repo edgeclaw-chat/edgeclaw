@@ -11,6 +11,7 @@
 #include "edc_tools_shell.h"
 #include "edc_tools_todo.h"
 #include "edc_tools_memory.h"
+#include "edc_task.h" /* the sink, which decides what a task may run (edc_tool_scope_for_task) */
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
@@ -145,7 +146,7 @@ static cJSON *edc_tool_params_to_json(struct edc_tool_param *params)
     return result;
 }
 
-static cJSON *edc_tool_to_schema(const struct edc_tool *tool)
+cJSON *edc_tool_to_schema(const struct edc_tool *tool)
 {
     cJSON *function = cJSON_CreateObject();
     cJSON_AddStringToObject(function, "name", tool->name);
@@ -218,6 +219,46 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
     return true;
 }
 
+/* Which tool kinds a task may RUN. This is NOT the declaration set: that one decides what
+ * the model is told about (edc_toolset), while this decides what actually executes. They
+ * differ on purpose -- a deferred tool is callable without being declared, and a curator
+ * must not be dragged into shell work just because the model asked (docs/pi-toolset-plan.zh.md,
+ * I4 "声明 ≠ 权限"). */
+static uint32_t edc_tool_scope_for_task(const struct edc_task *task)
+{
+    if (!task)
+        return EDC_TOOL_SCOPE_NORMAL; /* a non-task path (no per-task policy to apply) */
+    switch (task->sink)
+    {
+    case EDC_SINK_SESSION_MEMORY:
+        return EDC_TOOL_SCOPE_MEMORY;
+    case EDC_SINK_GROUP_MEMORY:
+        /* A fold's one-shot summary declares no tools at all; a stray call must not run. */
+        return 0;
+    default:
+        return EDC_TOOL_SCOPE_NORMAL;
+    }
+}
+
+/* The names a task of |scope| may actually use, for the rejection message: "not available"
+ * without saying what IS available leaves the model guessing. */
+static sds edc_toolbox_names_for_scope(const struct edc_toolbox *tb, uint32_t scope)
+{
+    sds names = sdsempty();
+    if (!tb)
+        return names;
+    struct edc_tool *t, *tmp;
+    HASH_ITER(hh, tb->tools, t, tmp)
+    {
+        if ((t->scope & scope) == 0)
+            continue;
+        if (sdslen(names) > 0)
+            names = sdscat(names, ", ");
+        names = sdscatsds(names, t->name);
+    }
+    return names;
+}
+
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,
                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
@@ -228,6 +269,20 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
     HASH_FIND_STR(ctx->tb->tools, name, tool);
     if (tool)
     {
+        const uint32_t want = edc_tool_scope_for_task(ctx->task);
+        if ((tool->scope & want) == 0)
+        {
+            sds available = edc_toolbox_names_for_scope(ctx->tb, want);
+            edc_error_set(&error, EDC_ERR_INVAL, "Error: %s is not available to this task%s. Available: %s", name,
+                          want == 0 ? " (it declares no tools)" : "",
+                          sdslen(available) > 0 ? available : "(none)");
+            log_info("toolbox: refused %s for task %s (scope %u)", name,
+                     ctx->task && ctx->task->task_id ? ctx->task->task_id : "(none)", want);
+            sdsfree(available);
+            callback(ctx, NULL, error);
+            return;
+        }
+
         if (!edc_tool_validate_params(tool, args, &error))
         {
             callback(ctx, NULL, error);

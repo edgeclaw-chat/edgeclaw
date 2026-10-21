@@ -11,12 +11,19 @@
 
 /* Only files that are contractual and do not duplicate the persona stay in the prompt:
  *   - AGENTS.md   -- behaviour contract (tools/skills/memory/event conventions)
- *   - TOOLS.md    -- tool quick reference
  *   - IDENTITY.md -- optional identity override (absent by default)
  * SOUL.md / USER.md were dropped from the prompt and the seed workspace: the former's
  * principles duplicate AGENTS.md, the tool descriptions and skills; the latter is an
- * ALL-EMPTY template (no real fields), pure noise. pi has neither either. */
-const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "TOOLS.md", "IDENTITY.md"};
+ * ALL-EMPTY template (no real fields), pure noise. pi has neither either.
+ *
+ * TOOLS.md was dropped here for a stronger reason: it was a SECOND description of the tool
+ * set, and the model already receives the registry's schemas in the request's `tools` field.
+ * Two descriptions drift -- the file went on describing web_search / web_fetch / message /
+ * spawn long after the toolbox stopped registering them, so the model called tools that did
+ * not exist. The file still exists on disk, but it is now a runtime rendering of the
+ * registry (edc_toolset_sync_md), for humans. The model's own terse tool section is
+ * generated separately from the same registry (docs/pi-toolset-plan.zh.md §5). */
+const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "IDENTITY.md"};
 
 /* pi's "context file" candidates (docs/pi-system-prompt-guide.md §3.6): IN a directory
  * only the highest-priority one is taken; an override suppresses only its own directory. */
@@ -335,6 +342,17 @@ static const char kSessionMemoryHint[] =
     "New or updated entries are announced at the tail of your context (a \"## Session Memory Updates\" block)\n"
     "when something changed. Keep progress logs and todos out of it.\n";
 
+/* Installed by the assembly root (see edc_context.h); NULL = no tool section, which is what
+ * a unit test that builds a prompt without a registry wants. */
+static EdcToolSectionFn g_tool_section_fn = NULL;
+static void *g_tool_section_ctx = NULL;
+
+void edc_context_set_tool_section_provider(EdcToolSectionFn fn, void *ctx)
+{
+    g_tool_section_fn = fn;
+    g_tool_section_ctx = ctx;
+}
+
 sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir)
 {
     const char *workspace = conf->workspace;
@@ -355,6 +373,20 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     system_prompt = sdscat(system_prompt, bootstrap);
     system_prompt = sdscatsds(system_prompt, project_context);
     system_prompt = sdscat(system_prompt, skills);
+
+    /* The tool section: rendered from the registry by the provider the assembly root
+     * installed (see edc_context.h). It sits inside the frozen system prompt, so it is
+     * generated once per group and lives in the cached prefix -- which is exactly why it
+     * must be deterministic and must not restate the request's `tools` field. */
+    if (g_tool_section_fn)
+    {
+        sds tools = g_tool_section_fn(g_tool_section_ctx);
+        if (tools)
+        {
+            system_prompt = sdscatsds(system_prompt, tools);
+            sdsfree(tools);
+        }
+    }
     system_prompt = sdscat(system_prompt, kSessionMemoryHint);
 
     sdsfree(os_name);

@@ -17,12 +17,49 @@
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
+#include "edc_toolbox.h"
+#include "edc_toolset.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+
+/* ── The tool registry, plugged into the two consumers that sit below it ────
+ *
+ * The kernel renders the system prompt and the actor assembles the request, but neither may
+ * include the toolbox (//src/toolbox depends on //src/kernel, so the reverse is a cycle).
+ * Both take a function pointer instead, installed here -- the one place that owns everything. */
+
+/* The system prompt's tool section: what the model is told it has, in prose. */
+static sds app_tool_section(void *ctx)
+{
+    return edc_toolset_render_prompt((struct edc_toolbox *)ctx, EDC_TOOL_SCOPE_NORMAL);
+}
+
+/* A group's declaration set, resolved once and then frozen (docs/pi-toolset-plan.zh.md, I2:
+ * one conversation must send the same `tools` bytes every turn). Returning NULL would make
+ * the request fall back to the process-wide array, so this always answers when there is a
+ * toolbox. */
+static cJSON *app_group_tools(void *ctx, struct edc_task *task)
+{
+    struct edc_toolbox *tb = (struct edc_toolbox *)ctx;
+    if (!tb)
+        return NULL;
+    struct edc_task_group *group = task ? task->group : NULL;
+    if (!group)
+        return tb->schemas; /* no group to freeze against: the process-wide set */
+
+    if (!group->tools_decl)
+    {
+        group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+        group->toolset_epoch++;
+        log_info("toolset: group %s declares %d tools (epoch %u)", group->group_id,
+                 group->tools_decl ? cJSON_GetArraySize(group->tools_decl) : 0, group->toolset_epoch);
+    }
+    return group->tools_decl;
+}
 
 /* ── Composition root: defined ONLY here (opaque) ────────────
  * Outside reads through the accessors; userland receives its own few pieces
@@ -157,6 +194,13 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     edc_toolbox_actor_bind_scheduler(app->toolbox_actor, app->scheduler);
     edc_llm_request_bind_scheduler(app->scheduler, app->llm_actor, app->toolbox ? app->toolbox->schemas : NULL,
                                    app->toolbox ? app->toolbox->memory_schemas : NULL);
+
+    /* The registry, in the two places that need it but sit below the toolbox in the
+     * layering: the system prompt's tool section and the per-group declaration set
+     * (docs/pi-toolset-plan.zh.md). Both are rendered from the same registry, so they cannot
+     * disagree with the request's `tools` field. */
+    edc_context_set_tool_section_provider(app_tool_section, app->toolbox);
+    edc_llm_request_bind_group_tools(app_group_tools, app->toolbox);
 
     edc_actor_runner_start(app->runner);
 

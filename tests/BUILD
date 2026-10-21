@@ -231,6 +231,18 @@ cc_test(
 )
 
 cc_test(
+    name = "test_toolset",
+    srcs = ["test_toolset.c"],
+    deps = [
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_output_buf",
     srcs = ["test_output_buf.c"],
     deps = [

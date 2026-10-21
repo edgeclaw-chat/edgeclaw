@@ -638,7 +638,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                                     edc_param_str_type("POSIX ERE (grep -E)", NULL)),
                                true),
             memory_search_exec);
+        edc_tool_set_snippet(tool, "Search this session's durable notes");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -648,7 +653,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         params->next = edc_tool_param_new("n", edc_param_int_type("How many to list (default 20, max 50)", 1, 50), false);
         const char *d2 = "List this session's shared memory entries (index lines: id, title, summary).";
         struct edc_tool *tool = edc_tool_new("memory_list", d2, params, memory_list_exec);
+        edc_tool_set_snippet(tool, "List this session's durable notes");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -661,7 +671,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                                     edc_param_str_type("Entry id, e.g. \"m12\"", NULL)),
                                true),
             memory_get_exec);
+        edc_tool_set_snippet(tool, "Read notes in full, by id");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -675,7 +690,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         params->next->next = edc_tool_param_new("detail", edc_param_str_type("Full detail: paths, commands, error text", NULL), false);
         struct edc_tool *tool = edc_tool_new("memory_write", desc, params, memory_write_exec);
         sdsfree(desc);
+        edc_tool_set_snippet(tool, "Record a durable note");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -698,7 +718,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                      edc_param_object_type("One entry update", props, G_N_ELEMENTS(props))),
                 true),
             memory_update_exec);
+        edc_tool_set_snippet(tool, "Revise a note in place");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -712,7 +737,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                  edc_param_str_type("Entry id, e.g. \"m9\"", NULL)),
             true);
         struct edc_tool *tool = edc_tool_new("memory_supersede", desc, sp, memory_supersede_exec);
+        edc_tool_set_snippet(tool, "Retire a note (kept, marked obsolete)");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
     {
@@ -727,7 +757,12 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                  edc_param_str_type("Entry id, e.g. \"m9\"", NULL)),
             true);
         struct edc_tool *tool = edc_tool_new("memory_delete", desc, dp, memory_delete_exec);
+        edc_tool_set_snippet(tool, "Delete a note for real");
         edc_tool_set_keep_full_output(tool, true); /* the agent's own store: never cut silently */
+        /* Both scopes on purpose: an ordinary reply may write and search memory (that is how
+         * the agent remembers anything), while the curator's task must see ONLY these. The
+         * MEMORY bit is what makes the curator's set exactly the memory tools. */
+        edc_tool_set_scope(tool, EDC_TOOL_SCOPE_NORMAL | EDC_TOOL_SCOPE_MEMORY);
         edc_toolbox_register(tb, tool);
     }
 }

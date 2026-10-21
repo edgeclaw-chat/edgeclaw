@@ -59,9 +59,10 @@ int main(void)
      * workspace on first run without a source tree on disk. */
     T_CHECK(edc_bundled_workspace_count > 0, "workspace table is empty");
 
-    /* Known top-level entries. */
+    /* Known top-level entries. (TOOLS.md is deliberately NOT here: there is no tool document
+     * at all -- the request's `tools` field is the only catalog.) */
     const char *required[] = {
-        "AGENTS.md",           "TOOLS.md", "ssl/cacert.pem",
+        "AGENTS.md",           "ssl/cacert.pem",
     };
     for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++)
     {

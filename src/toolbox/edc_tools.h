@@ -11,6 +11,15 @@
 
 typedef void (*EdcDestroyNotify)(void *data);
 
+/* Which task kinds may DECLARE a tool (see struct edc_tool.scope). A fold task declares no
+ * tools at all, so it has no bit here. */
+#define EDC_TOOL_SCOPE_NORMAL (1u << 0) /* an ordinary reply task */
+#define EDC_TOOL_SCOPE_MEMORY (1u << 1) /* the session-memory curator's one-shot call */
+
+/* How the model sees a tool (see struct edc_tool.exposure). */
+#define EDC_TOOL_EXPOSURE_DIRECT 0   /* full schema in the request's `tools` field */
+#define EDC_TOOL_EXPOSURE_DEFERRED 1 /* named in prose only; called by name */
+
 struct edc_tool_param
 {
     sds name;
@@ -50,6 +59,24 @@ struct edc_tool
 {
     sds name;
     sds desc;
+    /* One-line selection summary for the system prompt's tool section ("- name: snippet").
+     * A snippet is an affordance for CHOOSING a tool, not a second copy of the signature:
+     * the request's `tools` field already carries name/description/parameters, so a snippet
+     * must never restate the parameters. NULL = the tool is not listed there.
+     * See docs/pi-toolset-plan.zh.md §5. */
+    sds snippet;
+    /* Behavioural notes that belong to no JSON schema field (output caps, ".gitignore"
+     * semantics, "device_* runs remotely"). One per line; NULL = none. */
+    sds guidelines;
+    /* Which kinds of task may declare this tool (bitmask of EDC_TOOL_SCOPE_*). Defaults to
+     * NORMAL so a tool registered without a setter behaves exactly as before. This is the
+     * DECLARATION bitmask, not a permission gate: the execution-side check lives in
+     * edc_toolbox_exec and answers a different question. */
+    uint32_t scope;
+    /* EDC_TOOL_EXPOSURE_DIRECT = the request's `tools` field carries this tool's full
+     * schema; DEFERRED = only the prompt's prose names it and the model calls it by name
+     * (the MCP shape, unused until B4). */
+    uint8_t exposure;
     struct edc_tool_param *params;
     void *priv;
 
@@ -67,6 +94,15 @@ struct edc_tool
 extern struct edc_tool *edc_tool_new(const char *name, const char *desc, struct edc_tool_param *params,
                                      edc_tool_exec_async_fn exec);
 extern void edc_tool_free(struct edc_tool *tool);
+/* Set the one-line selection summary shown in the system prompt's tool section (NULL
+ * clears it). Do not restate the parameters: the `tools` field already carries them. */
+extern void edc_tool_set_snippet(struct edc_tool *tool, const char *snippet);
+/* Add newline-separated behavioural notes that no JSON schema field can carry. */
+extern void edc_tool_set_guidelines(struct edc_tool *tool, const char *lines);
+/* Which task kinds may declare this tool (bitmask of EDC_TOOL_SCOPE_*). */
+extern void edc_tool_set_scope(struct edc_tool *tool, uint32_t scope);
+/* How the model sees this tool (EDC_TOOL_EXPOSURE_*). DIRECT is the default. */
+extern void edc_tool_set_exposure(struct edc_tool *tool, uint8_t exposure);
 /* Install the tool's abort hook (kept out of edc_tool_new so the 17 existing constructions
  * did not have to grow a NULL argument). */
 extern void edc_tool_set_abort(struct edc_tool *tool, edc_tool_abort_fn abort);

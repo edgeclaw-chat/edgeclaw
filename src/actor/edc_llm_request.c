@@ -19,6 +19,12 @@
 #include <cJSON.h>
 #include <string.h>
 
+/* The per-group declaration set resolver, installed by the assembly root: the registry lives
+ * in the toolbox package, which this one must not depend on. NULL = fall back to the
+ * process-wide schema array. Declared up here because the request builder (below) reads it. */
+static EdcGroupToolsFn g_group_tools = NULL;
+static void *g_group_tools_ctx = NULL;
+
 /* Splice the dependency material INTO the task's own input: rewrite the active turn's
  * first user message in place -- so it persists with the turn (no longer a derived block
  * that appears in one request only). Returns false when there is no user message to
@@ -304,9 +310,18 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     if (task->sink == EDC_SINK_SESSION_MEMORY)
         tools = memory_schemas;
     else if (!is_memory_sink)
-        tools = tool_schemas;
+        /* A normal reply declares the GROUP's set, not the process's: the group is the
+         * conversation, and one conversation must send the same `tools` bytes every turn or
+         * it loses the provider's cached prefix (docs/pi-toolset-plan.zh.md, I2). The
+         * resolver is installed by the assembly root because it needs the registry. */
+        tools = g_group_tools ? g_group_tools(g_group_tools_ctx, task) : tool_schemas;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
                                                           task->active_turn ? &task->active_turn->messages : NULL);
+    /* Stable per-group key for the provider's automatic prefix cache (docs/pi-toolset-plan.zh.md,
+     * B0): every request of one conversation then shares a cache shard. Only a normal reply --
+     * a fold or curator call is one-shot and would just take space in someone else's shard. */
+    if (!is_memory_sink && task->group && task->group->group_id)
+        req->cache_key = sdsnew(task->group->group_id);
     /* The summary's output budget (a): paired with the corpus cap
      * EDC_FOLD_MAX_CORPUS_TOKENS, keeping a single fold's compression ratio achievable
      * (<= 4:1). This is the only exception to "requests never send max_tokens". */
@@ -393,9 +408,14 @@ void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *ll
 {
     if (!sched)
         return;
-
     g_llm_actor = llm_actor;
     g_tool_schemas = tool_schemas;
     g_memory_schemas = memory_schemas;
     sched->send_llm = edc_llm_request_cb_send_llm;
+}
+
+void edc_llm_request_bind_group_tools(EdcGroupToolsFn fn, void *ctx)
+{
+    g_group_tools = fn;
+    g_group_tools_ctx = ctx;
 }

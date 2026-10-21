@@ -207,7 +207,10 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
     const char *desc = "Read the contents of a file at the given path.";
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), true));
-    edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_read_file_async));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_read_file_async);
+    edc_tool_set_snippet(tool, "Read a file (whole, or a line range)");
+    edc_tool_set_guidelines(tool, "Capped at 2000 lines / 64KB per call.");
+    edc_toolbox_register(tb, tool);
 }
 
 static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -239,7 +242,9 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), true));
     LL_APPEND(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), true));
 
-    edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_write_file_async));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_write_file_async);
+    edc_tool_set_snippet(tool, "Write a file (missing parent directories are created)");
+    edc_toolbox_register(tb, tool);
 }
 
 static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -256,7 +261,10 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
 
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), true));
-    edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async);
+    edc_tool_set_snippet(tool, "List one directory level");
+    edc_tool_set_guidelines(tool, "One level only -- it does not recurse.");
+    edc_toolbox_register(tb, tool);
 }
 
 static sds edc_edit_file_try_create(const char *path, sds safe_path, const char *old_text, const char *new_text,
@@ -688,6 +696,8 @@ static void edc_tool_create_edit_file(struct edc_toolbox *tb)
     struct edc_tool_param *params[] = {
         path, old_text, new_text, replace_all, occurrence, line_hint, expected_replacements, NULL};
     struct edc_tool *tool = edc_tool_new_v(name, desc, params, edc_tool_exec_edit_file_async);
+    edc_tool_set_snippet(tool, "Replace an exact snippet in a file (disambiguate when it repeats)");
+    edc_tool_set_guidelines(tool, "Read the file first: old_text must match it byte for byte.");
     edc_toolbox_register(tb, tool);
 }
 

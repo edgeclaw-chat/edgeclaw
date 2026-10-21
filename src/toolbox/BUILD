@@ -18,6 +18,7 @@ cc_library(
         "edc_tools_memory.c",
         "edc_tools_shell.c",
         "edc_tools_todo.c",
+        "edc_toolset.c",
     ],
     hdrs = [
         "edc_output_buf.h",
@@ -32,6 +33,7 @@ cc_library(
         "edc_tools_memory.h",
         "edc_tools_shell.h",
         "edc_tools_todo.h",
+        "edc_toolset.h",
     ],
     includes = ["."],
     deps = [

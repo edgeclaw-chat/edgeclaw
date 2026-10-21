@@ -615,6 +615,8 @@ struct edc_tool *edc_tool_create_device_shell(struct edc_toolbox *tb)
     struct edc_tool *tool =
         edc_tool_new("device_shell", "Execute a shell command on a remote device agent (PPPoS or TCP socket)", params,
                      edc_tool_device_shell_exec_async);
+    edc_tool_set_snippet(tool, "Run a command on the remote device");
+    edc_tool_set_guidelines(tool, "Runs on the device over PPPoS/TCP, not in this sandbox.");
     edc_toolbox_register(tb, tool);
     return tool;
 }

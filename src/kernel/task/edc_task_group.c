@@ -52,6 +52,10 @@ void edc_task_group_free(struct edc_task_group *group)
     free(group->group_id);
     if (group->history)
         cJSON_Delete(group->history);
+    if (group->tools_decl)
+        cJSON_Delete(group->tools_decl);
+    if (group->tool_deltas)
+        cJSON_Delete(group->tool_deltas);
     if (group->memory)
         sdsfree(group->memory);
     free(group);
@@ -167,11 +171,16 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
         return;
 
     /* Keep the existing system prompt object: requests add history[0] by
-     * reference, so replacing the object would strand the ones in flight. */
+     * reference, so replacing the object would strand the ones in flight.
+     * A tool-set notice is the one thing that must NOT be kept: it can sit at index 0 (a
+     * group whose prompt was never built) and keeping it here would duplicate it, because
+     * the notices are re-appended below. `toolset_reason` is the marker that identifies one. */
     cJSON *sys0 = NULL;
     if (group->history && cJSON_GetArraySize(group->history) > 0)
     {
-        sys0 = cJSON_DetachItemFromArray(group->history, 0);
+        cJSON *first = cJSON_GetArrayItem(group->history, 0);
+        if (first && !cJSON_HasObjectItem(first, "toolset_reason"))
+            sys0 = cJSON_DetachItemFromArray(group->history, 0);
         cJSON_Delete(group->history);
     }
     group->history = cJSON_CreateArray();
@@ -206,6 +215,16 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
             edc_task_group_history_add_turn(group, task->turns.data[qi]);
     }
     free(arr);
+
+    /* Tool-set change notices go last: they are not turns, so every rebuild (a fold landing
+     * or a restart) has to put them back. Losing them would leave the model holding a tool
+     * that silently stopped existing -- the exact failure this design exists to avoid. */
+    if (group->tool_deltas)
+    {
+        cJSON *delta = NULL;
+        cJSON_ArrayForEach(delta, group->tool_deltas)
+            edc_task_group_history_add_owned(group, cJSON_Duplicate(delta, 1));
+    }
 }
 
 /* ── Member management ─────────────────────────────────────── */

@@ -699,6 +699,7 @@ static void edc_tool_create_crontab(struct edc_toolbox *tb)
     tool->priv = state;
     tool->priv_free_fn = (EdcDestroyNotify)edc_tool_crontab_state_free;
 
+    edc_tool_set_snippet(tool, "Schedule a reminder or recurring job");
     edc_toolbox_register(tb, tool);
 
     if (state->sched)

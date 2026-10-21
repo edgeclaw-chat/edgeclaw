@@ -620,6 +620,8 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
     /* A running command is the one thing here that must be killed when its task is
      * cancelled -- which matters most for `!cmd`, whose commands have no timeout. */
     edc_tool_set_abort(tool, edc_tool_shell_abort);
+    edc_tool_set_snippet(tool, "Run a shell command locally");
+    edc_tool_set_guidelines(tool, "Output is capped; the child sees a minimal environment.");
     edc_toolbox_register(tb, tool);
     return tool;
 }
