@@ -100,6 +100,13 @@ int main(int argc, char **argv)
 
     edc_log_init();
 
+    // Settle the colour depth first: ftxui::Color::RGB() quantises to whatever
+    // depth is in force when the colour is built, and the palettes are built
+    // lazily on first use. Left to ftxui, a Windows session comes up 256-colour
+    // and every surface step in the palette lands on the same grey rung (see
+    // edc_theme.hpp).
+    edc::theme::InitColorSupport();
+
     // Pick the palette before anything renders: the probe asks the terminal for its
     // background colour, which needs the tty still in cooked mode and unclaimed.
     edc::theme::Init();

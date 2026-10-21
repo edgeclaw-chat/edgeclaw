@@ -386,11 +386,14 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (skip_ctx && cJSON_IsBool(skip_ctx))
         config->skip_context_files = cJSON_IsTrue(skip_ctx);
 
-    /* Shell-like syntax switch, top-level "shell_syntax". Defaults OFF: the operators
-     * (`| ; & > >> 2> <`) and the sigils (`+ !`) spell out a Unix shell, and a user who
-     * does not expect that gets a silent mess (the whole line as one task description)
-     * rather than an error. Turned on with /shell on. */
-    config->shell_syntax = false;
+    /* Shell-like syntax switch, top-level "shell_syntax". Defaults ON: the operators
+     * (`| ; & > >> 2>`) and the sigils (`+ !`) are the product's own idiom, and a line
+     * that starts with no quote and no sigil is still a plain message -- so nothing has
+     * to be escaped to talk normally. A user who wants every line to be one verbatim
+     * task description (no operators to get wrong, no sigil at all) turns it off with
+     * /shell off; an explicit `false` in config.json is honoured, so the old opt-in
+     * default survives for anyone who already made that choice. */
+    config->shell_syntax = true;
     cJSON *shell_syntax = cJSON_GetObjectItem(conf, "shell_syntax");
     if (shell_syntax && cJSON_IsBool(shell_syntax))
         config->shell_syntax = cJSON_IsTrue(shell_syntax);

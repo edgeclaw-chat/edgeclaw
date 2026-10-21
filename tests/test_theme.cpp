@@ -35,6 +35,19 @@
 
 static int g_failures = 0;
 
+// Cross-platform environment write for the override tests.
+static void SetEnv(const char *name, const char *value)
+{
+#if defined(_WIN32)
+    _putenv_s(name, value ? value : "");
+#else
+    if (value && *value)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
+#endif
+}
+
 #define TEST(name)                                                                                                     \
     do                                                                                                                 \
     {                                                                                                                  \
@@ -625,6 +638,74 @@ void test_palette_provider(void)
     CHECK(edc::style::palette().accent == real.accent, "nullptr restores the built-in theme palette");
 }
 
+/* The depth has to be settled before the first palette is built: Color::RGB()
+ * quantises to whatever depth is in force at that moment. At 256 colours the
+ * surfaces land on the xterm grey ramp, whose rungs are 10 sRGB levels apart, so
+ * window_bg #0E0F0D (#121212) and pane_bg #272822 (#262626) end up one rung
+ * from each other -- 1.25:1, the "1.11:1" failure all over again. Which is why
+ * these tests pin the decision table, including the two Windows cases ftxui's own
+ * detection cannot see. */
+void test_parse_color_depth(void)
+{
+    TEST("$EDGECLAW_COLOR parses truecolor / 256 / 16");
+
+    edc::theme::ColorDepth depth = edc::theme::ColorDepth::kUnset;
+    CHECK(edc::theme::ParseColorDepth("truecolor", depth) && depth == edc::theme::ColorDepth::kTrueColor,
+          "truecolor not understood");
+    CHECK(edc::theme::ParseColorDepth(" 24BIT ", depth) && depth == edc::theme::ColorDepth::kTrueColor,
+          "a padded, upper-case 24bit not understood");
+    CHECK(edc::theme::ParseColorDepth("256", depth) && depth == edc::theme::ColorDepth::kPalette256,
+          "256 not understood");
+    CHECK(edc::theme::ParseColorDepth("16", depth) && depth == edc::theme::ColorDepth::kPalette16,
+          "16 not understood");
+    CHECK(!edc::theme::ParseColorDepth("auto", depth), "\"auto\" accepted as a depth");
+    CHECK(!edc::theme::ParseColorDepth("", depth), "an empty value accepted as a depth");
+}
+
+void test_detect_color_depth(void)
+{
+    TEST("the depth detection knows about Windows Terminal and conhost");
+
+    using edc::theme::ColorDepth;
+    const auto detect = [](const char *colorterm, const char *term, const char *term_program,
+                           const char *wt_session, const char *conemu, bool windows) {
+        return edc::theme::DetectColorDepth(colorterm, term, term_program, wt_session, conemu, windows);
+    };
+
+    // Windows Terminal sets neither COLORTERM nor TERM, only WT_SESSION. This is
+    // the case that made every surface step invisible on Windows.
+    CHECK(detect("", "", "", "8f3c9d10-...", "", false) == ColorDepth::kTrueColor, "$WT_SESSION ignored");
+    CHECK(detect("", "", "", "", "ON", false) == ColorDepth::kTrueColor, "$ConEmuANSI=ON ignored");
+    // A legacy conhost sets no variable at all.
+    CHECK(detect("", "", "", "", "", true) == ColorDepth::kTrueColor, "conhost left at 256 colours");
+    // ...but an explicit "this terminal does 256" still wins over the platform default.
+    CHECK(detect("", "xterm-256color", "", "", "", true) == ColorDepth::kPalette256,
+          "an explicit 256 hint was overruled by the Windows default");
+    // The POSIX signals keep their meaning.
+    CHECK(detect("truecolor", "", "", "", "", false) == ColorDepth::kTrueColor, "$COLORTERM ignored");
+    CHECK(detect("", "screen-256color", "", "", "", false) == ColorDepth::kPalette256, "$TERM=screen ignored");
+    // Nothing to go on: leave ftxui's own detection alone rather than guessing.
+    CHECK(detect("", "", "", "", "", false) == ColorDepth::kUnset,
+          "a POSIX shell with no hints forced a depth");
+}
+
+void test_init_color_support(void)
+{
+    TEST("$EDGECLAW_COLOR is installed into ftxui");
+
+    SetEnv("EDGECLAW_COLOR", "256");
+    edc::theme::InitColorSupport();
+    CHECK(ftxui::Terminal::ColorSupport() == ftxui::Terminal::Color::Palette256, "256 not installed");
+
+    SetEnv("EDGECLAW_COLOR", "truecolor");
+    edc::theme::InitColorSupport();
+    CHECK(ftxui::Terminal::ColorSupport() == ftxui::Terminal::Color::TrueColor, "truecolor not installed");
+
+    SetEnv("EDGECLAW_COLOR", "");
+    // Everything after this measures colours as the palette designs them.
+    ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+}
+
 int main(void)
 {
     // Pin truecolor before anything builds a palette (the palette's statics take
@@ -642,6 +723,9 @@ int main(void)
     test_light_palette_contrast();
     test_surface_separation();
     test_split_gutter();
+    test_parse_color_depth();
+    test_detect_color_depth();
+    test_init_color_support();
     test_breath_curve();
     test_breath_endpoints();
     test_task_state_table();

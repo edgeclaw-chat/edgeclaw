@@ -292,9 +292,9 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
     if (strcmp(content, "/shell") == 0 || strncmp(content, "/shell ", 7) == 0)
     {
         /* The ONLY way to flip the shell-like syntax switch (there is deliberately no CLI
-         * flag): one statement, and it persists. Off by default -- the operators below
-         * spell out a Unix shell vocabulary, so a user who does not expect it should not
-         * get a half-parsed task out of it. */
+         * flag): one statement, and it persists. ON by default -- the operators below are
+         * the product's own idiom; `/shell off` is the escape hatch for a workflow that
+         * wants every line to be one verbatim task description. */
         sds arg = sdstrim(sdsnew(content + 6), " \t");
         sds reply;
         if (sdslen(arg) == 0)
@@ -304,8 +304,9 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                                  "The sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell "
                                  "command), and the operators `|` `;` `&` `>` `>>` `2>` — no `<`\n"
                                  "(it is `@file`'s job now).\n\n"
-                                 "Off, every line that is not a `/` command is one task description, "
-                                 "verbatim.\n\n"
+                                 "On (the default), a line that begins with a quote or the `+` sigil is "
+                                 "parsed; every other line is one task description, verbatim. Off, that "
+                                 "is true of every line, the quoted and `+` forms included.\n\n"
                                  "Toggle: `/shell on|off` (persisted to config.json).\n",
                                  cfg->shell_syntax ? "on" : "off");
         }
@@ -572,10 +573,10 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
 }
 
 /* Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
- * tokenizing, so no `| ; & > >> 2> <` operators and no `+ ! @` sigil. This is the
- * DEFAULT path, and it is why the switch exists: those operators spell out a Unix shell
- * vocabulary, and a user who does not expect them would otherwise get a silently
- * half-parsed task instead of their text.
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ ! @` sigil. `/shell off`
+ * selects this path (the DEFAULT is ON); the switch exists because those operators spell
+ * out a Unix shell vocabulary, and a user who does not expect them would otherwise get a
+ * silently half-parsed task instead of their text.
  *
  * It goes through edc_shell_spawn_task (the single creation entry point) rather than
  * building a spec here, so "how an input line becomes a task" keeps one owner. The
@@ -583,10 +584,10 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
  * place to put new work. */
 /**
  * Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
- * tokenizing, so no `| ; & > >> 2> <` operators and no `+ !` sigil. This is the DEFAULT
- * path, and it is why the switch exists: those operators spell out a Unix shell
- * vocabulary, and a user who does not expect them would otherwise get a silently
- * half-parsed task instead of their text.
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ !` sigil. `/shell off` selects
+ * this path (the DEFAULT is ON); the switch exists because those operators spell out a
+ * Unix shell vocabulary, and a user who does not expect them would otherwise get a
+ * silently half-parsed task instead of their text.
  *
  * It goes through edc_shell_spawn_task (the single creation entry point) rather than
  * building a spec here, so "how an input line becomes a task" keeps one owner. The

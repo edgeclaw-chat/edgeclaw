@@ -738,6 +738,20 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The bundled user manual: the table must be non-empty (the binary carries docs/), and
+# edc_init_env must release it to <edc_home>/docs and refresh a stale copy -- the path
+# the system prompt names.
+cc_test(
+    name = "test_bundled_docs",
+    srcs = ["test_bundled_docs.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # context_window 的配置面（默认 0 = 未配置/未知）：三个生产者都跑真的
 # —— edc_init_env 建/补 config.json + edc_config_load 读回。
 cc_test(

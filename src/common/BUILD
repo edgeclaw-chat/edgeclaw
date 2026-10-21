@@ -130,6 +130,7 @@ cc_library(
     name = "common",
     srcs = [
         ":workspace_embedded.c",
+        "//:docs_embedded_c",
         "//:models_catalog_embedded_c",
         "edc_config.c",
         "edc_containers.c",
@@ -141,6 +142,8 @@ cc_library(
         "edc_payload.c",
     ],
     hdrs = [
+        "edc_bundled_docs.h",
+        "edc_bundled_files.h",
         "edc_bundled_workspace.h",
         "edc_bundled_models_catalog.h",
         "edc_compat.h",

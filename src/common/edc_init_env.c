@@ -1,5 +1,6 @@
 ﻿#include "edc_init_env.h"
 #include "cJSON.h"
+#include "edc_bundled_docs.h"
 #include "edc_bundled_workspace.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -271,6 +272,68 @@ static bool edc_init_env_workspace(const char *dest_workspace)
     }
 
     log_info("Bundled workspace released successfully");
+    return true;
+}
+
+/* Release the bundled user manual (see edc_bundled_docs.h) into dest_docs.
+ *
+ * Unlike the workspace -- the user's own writable tree, written once and then left
+ * alone -- this directory is a REFERENCE the model reads, so it tracks the binary: a
+ * file whose bytes differ from the bundle (a new release, or one deleted / edited by
+ * hand) is rewritten, while identical files are left untouched so a normal start
+ * performs no writes.
+ *
+ * Files that are no longer part of the bundle are NOT deleted: this is not a mirror, and
+ * pruning could remove a note the user put there. */
+static bool edc_init_env_docs(const char *dest_docs)
+{
+    size_t written = 0;
+
+    for (size_t i = 0; i < edc_bundled_docs_count; i++)
+    {
+        const struct edc_bundled_file *file = &edc_bundled_docs_entries[i];
+        sds dest_path = edc_path_join(dest_docs, file->path, NULL);
+
+        EdcError *error = NULL;
+        sds current = edc_file_read(dest_path, &error);
+        if (error)
+            edc_error_free(error);
+
+        const bool same = current && sdslen(current) == file->size && memcmp(current, file->data, file->size) == 0;
+        sdsfree(current);
+        if (same)
+        {
+            sdsfree(dest_path);
+            continue;
+        }
+
+        /* Recreate the parent directories of nested entries (the manual is flat today,
+         * but the table is a tree like the workspace's). */
+        sds parent = edc_path_dirname(dest_path);
+        bool parent_ok = edc_dir_create_with_parents(parent, 0755, NULL);
+        sdsfree(parent);
+        if (!parent_ok)
+        {
+            log_error("Failed to create parent directory for %s", dest_path);
+            sdsfree(dest_path);
+            return false;
+        }
+
+        error = NULL;
+        if (!edc_file_write(dest_path, (const char *)file->data, (ssize_t)file->size, &error))
+        {
+            log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
+            if (error)
+                edc_error_free(error);
+            sdsfree(dest_path);
+            return false;
+        }
+        sdsfree(dest_path);
+        written++;
+    }
+
+    if (written > 0)
+        log_info("Released bundled manual (%zu of %zu files) to %s", written, edc_bundled_docs_count, dest_docs);
     return true;
 }
 
@@ -740,6 +803,7 @@ exit_free_env:
 bool edc_init_env(const char *edc_home, bool setup)
 {
     sds workspace = edc_path_join(edc_home, "workspace", NULL);
+    sds docs = edc_path_join(edc_home, "docs", NULL);
     sds conf_file = edc_path_join(edc_home, "config.json", NULL);
 
     bool ret = true;
@@ -776,8 +840,19 @@ bool edc_init_env(const char *edc_home, bool setup)
         goto exit_;
     }
 
+    /* The manual the system prompt points at (see edc_context_get_identity). Failing
+     * here is logged and non-fatal in spirit, but it is still reported as a failed init:
+     * a prompt that names a file nobody can read is worse than a loud startup error. */
+    if (!edc_init_env_docs(docs))
+    {
+        log_error("Failed to initialize docs.");
+        ret = false;
+        goto exit_;
+    }
+
 exit_:
     sdsfree(workspace);
+    sdsfree(docs);
     sdsfree(conf_file);
     return ret;
 }

@@ -123,12 +123,13 @@ struct edc_config
      * (default -> false). */
     bool skip_context_files;
     /* Whether the SHELL-LIKE input syntax is on: the sigils `+<desc>` (a new group) and
-     * `!<cmd>` (the local shell), and the operators `|` `;` `&` `>` `>>` `2>` `<`. OFF by
-     * default -- those operators spell out a Unix shell vocabulary, which a user coming
-     * from another system has no reason to know, and getting them wrong is silent (the
-     * line just becomes one odd task). config.json's top-level `shell_syntax` (true)
-     * turns it on. Flipped at runtime ONLY through /shell on|off -- deliberately no CLI
-     * flag, so there is one way to say it and it is persisted with it. */
+     * `!<cmd>` (the local shell), and the operators `|` `;` `&` `>` `>>` `2>` `<`. ON by
+     * default -- those operators are this product's own idiom, and ordinary text still
+     * needs no escaping, because a line that begins with no quote and no sigil is never
+     * parsed. config.json's top-level `shell_syntax` (false) turns it OFF, which makes
+     * every line one verbatim task description. Flipped at runtime ONLY through
+     * /shell on|off -- deliberately no CLI flag, so there is one way to say it and it is
+     * persisted with it. */
     bool shell_syntax;
     /* Read the project-level resource dirs (./.edgeclaw, ./.claude, ./.agents, ./.opencode,
      * ./.pi) for prompt templates and skills. ON by default; config.json's top-level

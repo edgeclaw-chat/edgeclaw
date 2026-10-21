@@ -30,10 +30,11 @@ background with `&`, to a fresh conversation with `+`, or into a dependency chai
 is a directory + a set of groups; `/task fork` starts a child that inherits the parent's
 memory and conversation but leads a group of its own.
 
-**A shell vocabulary — strictly optional.** Off by default. Turn it on with `/shell on`
-and `"a" | "b"`, `"a" ; "b"`, `"task" &`, `"task" > out.md` compose tasks the way a
-pipeline composes commands. Leave it off and every non-`/` line is one task, verbatim —
-nothing is ever half-parsed.
+**A shell vocabulary — on by default.** Turn it off with `/shell off` and every non-`/`
+line becomes one task, verbatim — nothing is ever half-parsed. Left on (the default),
+`"a" | "b"`, `"a" ; "b"`, `"task" &`, `"task" > out.md` compose tasks the way a
+pipeline composes commands, while a line that begins with no quote and no sigil is still
+one plain task description.
 
 **`@file` references.** `explain @src/main.c` or `@src/main.c#40-80`. The file is read
 through the sandbox, anchored at the session's directory, capped (2000 lines / 64 KB per

@@ -431,8 +431,9 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"General", "/sandbox", "the filesystem sandbox (on/off, ro/rw/deny paths)", NULL},
     {"General", "/shell", "the shell-like input syntax: sigils + operators (on/off)",
      "The switch owns the sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell command), and "
-     "the operators `|` `;` `&` `>` `>>` `2>`. OFF by default: they spell out a Unix shell vocabulary, "
-     "and with the switch off every line that is not a `/` command is ONE task description, verbatim. "
+     "the operators `|` `;` `&` `>` `>>` `2>`. ON by default: they are this product's own idiom, and "
+     "a line that begins with no quote and no sigil is still one plain task description, verbatim. "
+     "With the switch off, EVERY line that is not a `/` command is one task description, verbatim. "
      "`/shell on|off` is the only way to flip it (persisted; no CLI flag).\n\n"
      "It governs what you TYPE. A `/prompt` or `/skill` body is a document, not input to this layer, so the "
      "switch never changes what a template does. And `@` is not part of it either: `@file` is a file "

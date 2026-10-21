@@ -6,6 +6,15 @@ EdgeClaw is an interactive terminal AI assistant offering shell-like task manage
 It supports multi-turn conversations, tool calling, and Unix-inspired process
 control for orchestrating multiple parallel agent tasks.
 
+This manual ships inside the binary: on startup EdgeClaw releases the manual chapters it
+was built from into `$EDC_HOME/docs` (`~/.edgeclaw/docs` by default), and its system prompt
+names `$EDC_HOME/docs/edgeclaw.md`, so the agent can read up on *how EdgeClaw itself is
+used* without the source tree -- and without being pointed at a file by hand. What ships is
+the manual, not this project's design notes: this chapter, the man page, the input-syntax
+and local-shell notes, the tool-output limits and the prompt library. A released file whose
+bytes differ from the bundled copy is rewritten on the next start (an upgraded binary never
+leaves an old manual behind); files you add to that directory are left alone.
+
 ## Quick Start
 
 ```bash
@@ -99,20 +108,25 @@ Shell below); a `!n` or `!!` inside a task description is literal text.
 
 ---
 
-## Shell-like Syntax (off by default)
+## Shell-like Syntax (on by default)
 
 Everything below borrows a shell's vocabulary: the sigil `+` (open a new group) and the
-operators `|` `;` `&` `>` `>>` `2>`. **That vocabulary is off until you ask for it**,
-because it presumes you know a Unix shell — and
-it fails *silently* when you do not: a line with a stray `|` becomes one odd task instead
-of two, and nothing tells you why.
+operators `|` `;` `&` `>` `>>` `2>`. **That vocabulary is ON by default** — the operators
+are EdgeClaw's own idiom — and it costs ordinary text nothing: a line is only parsed when
+it *begins* with a quote or with `+`, so plain conversation needs no escaping and a `|`
+inside a sentence is just a character.
 
 ```
-/shell on
+/shell off
 ```
 
-With it **off** (the default), every line that is not a `/` command is **one task
-description, verbatim** — no operators to get wrong, no sigil to escape.
+With it **off**, every line that is not a `/` command is **one task description,
+verbatim** — no operators to get wrong, no sigil to escape. That is the escape hatch for a
+workflow where even the quoted forms are unwanted.
+
+The one thing to know while it is on: an **unquoted operand** in a shell line is refused,
+never guessed (`"a" | b` comes back with the fix), because nothing says whether that `|`
+was a pipe you meant or text you typed.
 
 A line that starts with `/` is **always a command**, never a message. If no command answers
 to that word the line is refused with `Unknown command`; it is not sent to the model, and
@@ -190,7 +204,7 @@ outside it:
 
 ## Quick Task Syntax (`+`)
 
-Needs the shell-like syntax: **off by default**, `/shell on` turns it on.
+Needs the shell-like syntax (**on by default**); `/shell off` turns it off.
 
 Use `+` to create a task in a **new** group with one line:
 
@@ -437,8 +451,8 @@ of the parent's conversation context up to the fork point (`desc` is its input).
 
 ## Shell-like Job Control
 
-Everything in this section needs the shell-like syntax (see above): it is **off by
-default**, and `/shell on` turns it on.
+Everything in this section needs the shell-like syntax (see above): it is **on by
+default**, and `/shell off` turns it off.
 
 **Every string in a shell line is quoted** — `"alpha" | "beta"`, never `alpha | beta`.
 Unquoted, nothing says whether that `|` is a pipe the user meant or a `|` inside their text,
@@ -489,7 +503,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/sandbox rm-rw <dir>` | Drop a read-write path |
 | `/sandbox add-deny <dir>` | Mask a dir (wins over ro/rw; e.g. `~/.ssh`) |
 | `/sandbox rm-deny <dir>` | Unmask a dir |
-| `/shell [on\|off]` | Turn the shell-like input syntax on or off (off by default; persisted; `/shell` alone reports the state) |
+| `/shell [on\|off]` | Turn the shell-like input syntax on or off (on by default; persisted; `/shell` alone reports the state) |
 
 ### Session
 
