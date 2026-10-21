@@ -80,6 +80,7 @@ cc_library(
     hdrs = ["edc_datetime_utils.h"],
     includes = ["."],
     deps = [
+        "//src/common:edc_compat",
         "@sds//:sds",
     ],
     linkstatic = True,

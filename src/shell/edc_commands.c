@@ -3280,11 +3280,7 @@ static bool jobs_save(struct edc_config *cfg, cJSON *db, sds *err)
 /* Host-local wall clock (the schedules without an IANA tz are host-local). */
 static bool jobs_localtime(time_t t, struct tm *out)
 {
-#ifdef _WIN32
-    return localtime_s(out, &t) == 0;
-#else
-    return localtime_r(&t, out) != NULL;
-#endif
+    return edc_localtime_r(&t, out) != NULL;
 }
 
 /* "2026-10-19 09:00 (in 2h 13m)" -- the number a person needs; the raw unix timestamp
