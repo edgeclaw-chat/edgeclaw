@@ -69,6 +69,18 @@ static bool has_path(sds *arr, const char *want)
     return false;
 }
 
+/* How many entries name the same directory. Used to catch the duplicate that the
+ * loader used to append: two spellings of one directory ("<ws>/" from
+ * edc_init_env, "<ws>" from the loader) both landed in rw_paths. */
+static int count_path(sds *arr, const char *want)
+{
+    int n = 0;
+    for (int i = 0; arr && arr[i]; i++)
+        if (same_path(arr[i], want))
+            n++;
+    return n;
+}
+
 /* Printed only on failure: a missing entry is far easier to read as the whole
  * list than as one assertion per line. */
 static void dump_list(const char *label, sds *arr)
@@ -106,7 +118,14 @@ int main(void)
     T_CHECK(has_path(cfg->sandbox_ro_paths, "/bin"), "ro has /bin");
     T_CHECK(has_path(cfg->sandbox_rw_paths, "/tmp"), "rw has /tmp");
     T_CHECK(has_path(cfg->sandbox_rw_paths, "/dev"), "rw has /dev");
+    if (!cfg->workspace || count_path(cfg->sandbox_rw_paths, cfg->workspace) != 1)
+    {
+        dump_list("rw_paths", cfg->sandbox_rw_paths);
+        fprintf(stderr, "  workspace = [%s]\n", cfg->workspace ? cfg->workspace : "(null)");
+    }
     T_CHECK(cfg->workspace && has_path(cfg->sandbox_rw_paths, cfg->workspace), "rw has the workspace");
+    T_CHECK(count_path(cfg->sandbox_rw_paths, cfg->workspace) == 1,
+            "the workspace appears exactly once in rw (no duplicate spelling)");
 
     /* ── 2. the platform-specific part ───────────────────────────────────── */
 #if defined(__APPLE__)

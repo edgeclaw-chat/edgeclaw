@@ -399,14 +399,22 @@ struct edc_config *edc_config_load(const char *edc_home)
      * (AGENTS.md, skills/, ...). Make sure it is in rw_paths -- which grants
      * read too -- rather than relying on config.json, and skip it when it is
      * already present (the default list includes it). rw_paths[0] stays the
-     * launch directory (prepended below), so the sandbox root is unchanged. */
+     * launch directory (prepended below), so the sandbox root is unchanged.
+     *
+     * Both sides are resolved before comparing. config->workspace is built from
+     * edc_home exactly as given, while the entries come from config.json and are
+     * already resolved there -- so a raw string compare missed the match whenever
+     * the home sits behind a symlink (/tmp -> /private/tmp on macOS), and a
+     * second copy of the same directory was appended on every load. */
     {
+        char *ws_real = realpath(config->workspace, NULL);
+        const char *ws_key = ws_real ? ws_real : config->workspace;
         bool have_workspace = false;
         for (int i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[i] && !have_workspace; i++)
         {
             char *entry_real = realpath(config->sandbox_rw_paths[i], NULL);
             const char *entry_key = entry_real ? entry_real : config->sandbox_rw_paths[i];
-            if (strcmp(config->workspace, entry_key) == 0)
+            if (strcmp(ws_key, entry_key) == 0)
                 have_workspace = true;
             if (entry_real)
                 free(entry_real);
@@ -423,6 +431,7 @@ struct edc_config *edc_config_load(const char *edc_home)
             config->sandbox_rw_paths[rw_count] = sdsnew(config->workspace);
             config->sandbox_rw_paths[rw_count + 1] = NULL;
         }
+        free(ws_real);
     }
 
     /* $TMPDIR cannot be in the default list (per-user, per-boot), and a

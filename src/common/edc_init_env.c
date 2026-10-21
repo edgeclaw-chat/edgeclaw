@@ -22,7 +22,10 @@
  * edc_config_default_rw_paths(). */
 static sds default_sandbox_rw_extra(const char *edc_home)
 {
-    sds base = sdscatprintf(sdsempty(), "%s/workspace/, %s", edc_home, EDC_SANDBOX_DEFAULT_RW_PATHS);
+    /* No trailing slash on the workspace entry: every consumer resolves paths
+     * before matching, and the slash only made the entry differ from the
+     * unresolved config->workspace that edc_config compares against. */
+    sds base = sdscatprintf(sdsempty(), "%s/workspace, %s", edc_home, EDC_SANDBOX_DEFAULT_RW_PATHS);
     sds home = edc_homedir();
     if (home && sdslen(home) > 0)
         base = sdscatprintf(base, ", %s/.cache", home);
