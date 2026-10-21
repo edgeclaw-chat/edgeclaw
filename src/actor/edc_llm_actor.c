@@ -147,24 +147,80 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     }
 }
 
-/* A turn message may carry fields that exist for the store and the UI only -- today the
- * folded-paste `payload` (the pasted bytes, already expanded into the content). They must
- * not travel to the API: a copy without them is what goes on the wire, and the original
- * stays untouched in the turn (it is what fork/serialize copy). Every other message keeps
- * the zero-copy reference path. */
+/* A stored message carries fields that exist for us and for the UI only: the folded-paste
+ * `payload`, and a tool-set delta's `tools_added` / `tools_removed` / `toolset_reason` /
+ * `pinned` bookkeeping. None of them may travel to the API -- OpenAI rejects unknown message
+ * fields with a 400, and a provider that merely ignores them is still charged for the bytes.
+ *
+ * The list is an ALLOWLIST on purpose: a new store-only field added later is dropped by
+ * default instead of silently shipped. A copy is made only when something has to go, so the
+ * ordinary message keeps the zero-copy reference path. */
+static const char *const kWireMessageKeys[] = {"role",   "content", "name",
+                                               "tool_call_id", "tool_calls", "function_call", "refusal"};
+
+bool edc_llm_wire_key_is_standard(const char *key)
+{
+    if (!key)
+        return false;
+    for (size_t i = 0; i < sizeof(kWireMessageKeys) / sizeof(kWireMessageKeys[0]); i++)
+    {
+        if (strcmp(key, kWireMessageKeys[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Does |msg| carry anything that must not go on the wire? */
+static bool llm_message_needs_strip(const cJSON *msg)
+{
+    const cJSON *child = NULL;
+    cJSON_ArrayForEach(child, msg)
+    {
+        if (!edc_llm_wire_key_is_standard(child->string))
+            return true;
+    }
+    return false;
+}
+
 static void llm_add_wire_message(cJSON *messages, cJSON *item)
 {
     if (!item)
         return;
-    if (!cJSON_HasObjectItem(item, "payload"))
+    if (!llm_message_needs_strip(item))
     {
         cJSON_AddItemReferenceToArray(messages, item);
         return;
     }
+
     cJSON *copy = cJSON_Duplicate(item, 1);
     if (!copy)
         return;
-    cJSON_DeleteItemFromObject(copy, "payload");
+    const cJSON *child = NULL;
+    cJSON_ArrayForEach(child, copy)
+    {
+        if (!edc_llm_wire_key_is_standard(child->string))
+            log_debug("llm wire: dropping store-only message key '%s'", child->string ? child->string : "?");
+    }
+    /* Collect first, delete after: mutating while iterating the same list is how children get
+     * skipped. */
+    sds drop = sdsempty();
+    cJSON_ArrayForEach(child, copy)
+    {
+        if (!edc_llm_wire_key_is_standard(child->string))
+        {
+            drop = sdscatprintf(drop, "%s\n", child->string ? child->string : "");
+        }
+    }
+    int n = 0;
+    char **names = sdssplitlen(drop, (ssize_t)sdslen(drop), "\n", 1, &n);
+    for (int i = 0; names && i < n; i++)
+    {
+        if (names[i] && names[i][0])
+            cJSON_DeleteItemFromObject(copy, names[i]);
+    }
+    if (names)
+        sdsfreesplitres(names, n);
+    sdsfree(drop);
     cJSON_AddItemToArray(messages, copy); /* owned: freed with the body */
 }
 

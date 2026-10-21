@@ -59,4 +59,9 @@ extern void edc_llm_actor_req_free(struct edc_llm_actor_req *req);
 extern struct edc_llm_actor_resp *edc_llm_actor_resp_new();
 extern void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp);
 
+/* Whether a chat-completions message key may travel to the provider. Everything else in a
+ * stored message is ours (the folded-paste payload, a tool-set delta's bookkeeping) and is
+ * dropped on the way out -- see llm_add_wire_message. Exposed so a test can pin the policy. */
+extern bool edc_llm_wire_key_is_standard(const char *key);
+
 #endif

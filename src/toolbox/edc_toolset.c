@@ -167,24 +167,47 @@ cJSON *edc_toolset_replay(cJSON *initial, cJSON *history, bool *has_non_additive
     return sorted;
 }
 
+/* A delta may carry the schema of a tool that is not DIRECT (that is how the model learns a
+ * deferred tool by name). It must not enter the `tools` field: deferred means "not declared
+ * here, reachable by name". Filtering by the registry's CURRENT exposure also means flipping a
+ * live tool to deferred removes it from the field on the next request. */
+static void drop_non_direct(struct edc_toolbox *tb, cJSON *set)
+{
+    if (!tb || !set)
+        return;
+    for (int i = cJSON_GetArraySize(set) - 1; i >= 0; i--)
+    {
+        const char *name = entry_name(cJSON_GetArrayItem(set, i));
+        if (!name)
+            continue;
+        struct edc_tool *tool = NULL;
+        HASH_FIND_STR(tb->tools, name, tool);
+        if (tool && tool->exposure != EDC_TOOL_EXPOSURE_DIRECT)
+            cJSON_DeleteItemFromArray(set, i);
+    }
+}
+
 cJSON *edc_toolset_resolve(struct edc_toolbox *tb, cJSON *history, uint32_t scope)
 {
     cJSON *initial = edc_toolset_initial(tb, scope);
     bool non_additive = false;
     cJSON *current = edc_toolset_replay(initial, history, &non_additive);
+    cJSON_Delete(initial);
 
-    /* The one decision this function exists for: a pure addition does NOT enter the field.
-     * The model learns about the new tool from the delta message in the transcript, while the
-     * request keeps sending the frozen initial set -- that is what preserves the provider's
-     * cached prefix. Only a removal or a redefinition (which changes an entry the prefix
-     * already carries) forces the field to be recomputed, and that costs one cache miss. */
+    /* ALWAYS the current set. The `tools` field is the contract: it is the only place the
+     * model gets a tool's parameter schema, so it has to describe what exists right now --
+     * adding, removing or redefining a DIRECT tool all change it. An earlier version froze
+     * the field on pure additions to save a cache miss, which silently downgraded a direct
+     * tool to a deferred one (name known, schema unknown): the saving was real, the semantics
+     * were not. What preserves the prefix now is the CONFIG: a tool that should not disturb
+     * it is declared deferred, and then never enters the field in the first place.
+     *
+     * `non_additive` stays useful, but only for attribution: it says whether this change
+     * rewrote entries the cached prefix already carried (one miss) or just appended. */
+    drop_non_direct(tb, current);
     if (non_additive)
-    {
-        cJSON_Delete(initial);
-        return current;
-    }
-    cJSON_Delete(current);
-    return initial;
+        log_debug("toolset: the transcript's deltas are non-additive (removal/redefinition)");
+    return current;
 }
 
 /* ── recording a change ───────────────────────────────────────────────────────── */

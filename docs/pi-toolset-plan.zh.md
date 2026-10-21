@@ -19,15 +19,15 @@
 
 **D5 总方针（2026-10-21 用户拍板）**：**照 pi 的实现走**，不发明第四档。
 我们与 pi 的唯一必然差异是：**我们没有 Anthropic 的 mid-conversation tool changes beta**，
-所以主路径固定是 pi 的"降级档"——纯新增时冻结字段、出现移除时重算字段。这不是偏离，是 pi 三档里的第三档。
+所以主路径固定是 pi 的**最后一档：永远发当前集**（`getCurrentTools`）。中间档（纯新增时冻结、靠消息锚定）的前提是"传输能在消息里新增工具声明"，OpenAI chat-completions 做不到——工具 schema 只能来自 `tools` 字段。
 
 ---
 
 ## 1. 不变式
 
 - **I1 单一真源**：**只有两处**描述工具——请求的 `tools` 字段（签名）与 system prompt 的散文段（选择引导），都由注册表生成。任何手写清单、任何独立文档都视为缺陷。
-- **I2 组内冻结**：同一 group 的所有正常任务，请求体 `tools` 字段**字节级相同**（直到发生一次非追加变更）。
-- **I3 变更只追加**：新增工具写进 history 的 delta 消息，**不改** `tools` 字段；移除工具才重算字段。
+- **I2 组内稳定**：同一 group 的正常任务在两次变更之间，请求体 `tools` 字段**字节级相同**。
+- **I3 字段是契约，头部不可变**：`tools` 字段**始终等于当前声明集**（DIRECT 工具的增/删/改都跟着变）；system prompt 的 `history[0]` 在组的生命周期内**永不改写**，散文的更新以**追加一个 `<tools>` 段**表达（pi 的形状）。
 - **I4 声明 ≠ 权限**：dispatch 按 `allowed`（per-task scope）判定；`declared` 只影响模型知道什么。
 - **I5 可见**：缓存命中率、工具集变更（含原因）必须可见；变更引起的 miss 不静默。
 - **I6 确定性构建**：散文段按固定顺序（注册名排序）生成，同一组状态第二次生成字符串**逐字节相等**（不读时钟、不依赖 hash 迭代顺序）。
@@ -114,17 +114,21 @@ bool edc_toolset_replay(cJSON *history, cJSON **decl /*out*/, bool *has_non_addi
 cJSON *edc_toolset_resolve(struct edc_toolbox *tb, struct edc_task_group *g);
 ```
 
-**冻结 / 重算规则**（直接对齐 pi 的 `resolveTranscriptTools` + `hasNonAdditiveToolChanges`）：
+**规则**（2026-10-21 修正，对齐 pi 的最后一档）：**`tools` 字段永远等于当前声明集**。
 
 ```
-has_non_additive = 历史里出现过 tools_removed，或同名重定义
-requestTools     = has_non_additive ? 当前集 : 初始集
+declared = registry ∩ scope ∩ exposure == DIRECT     ← 每次重算，永远是"现在"
 ```
 
-| 变更类型 | `tools` 字段 | 缓存 | 模型怎么知道 |
+| 变更类型 | `tools` 字段 | 缓存 | 为什么 |
 |---|---|---|---|
-| 纯新增（deferred 形态） | **不变**（初始集） | 保住 | delta 消息里的散文 + schema 在消息里 |
-| 移除 / 重定义 | **重算** | **一次 miss**（记日志、可见） | delta 消息说明原因，字段里也没有它了 |
+| direct 工具新增 | **变**（多一项） | **一次 miss** | 字段是模型拿到 schema 的唯一途径，"只有名字"不等于可用 |
+| direct 工具移除/重定义 | **变** | **一次 miss** | 同上 |
+| **deferred** 工具增删 | **不变** | **保住** | 它本来就不在字段里——省缓存靠**配置**，不靠代码偷偷降级 |
+
+> 早期实现曾在"纯新增"时冻结字段以省一次 miss。那确实是省了，但代价是把一个 direct 工具
+> 降级成了 deferred（名字知道、参数不知道）——用缓存优化改掉了语义。现在改为：想省缓存就把它
+> 声明成 deferred。
 
 ---
 
@@ -277,8 +281,8 @@ if (!(tool->scope & want)) → 结构化拒绝
 |---|---|---|
 | **B0** | ✅ `prompt_cache_key`（仅 `api.openai.com`）· ⛔ footer `cache%`（做过又删：诊断数字不进常驻栏位） · ✅ **B0-4b：`TOOLS.md` 直接删除**（不生成不打包）· ✅ **2026-10-21：`BOOTSTRAP_FILES` 整套取消**，`workspace/AGENTS.md` 一并删除，契约改为 `edc_context_build_contract()` 运行时生成；⏸ `cache_control` 暂缓（需 Anthropic 原生协议） | **代码与注入 prompt 里都不再有工具清单副本** |
 | **B1** | ✅ `edc_tool` 加 `snippet`/`guidelines`/`scope`/`exposure`（setter + free）· ✅ 10 个 DIRECT 工具补 snippet、7 个 memory 工具标 `SCOPE_MEMORY` · ✅ `edc_toolset.{c,h}`：`initial` / `replay` / `resolve` · ✅ `tests/test_toolset.c`（13 checks） | replay 幂等；移除用例返回 `has_non_additive`；**同一注册表换注册顺序 → 输出字节相同**（已由测试钉住） |
-| **B2** | ✅ `edc_llm_request.c` 改走 `edc_toolset_resolve`（组冻结集；fold 仍 NULL、curator 仍 memory 集）· ✅ system prompt 的 `## Tools` 散文段由 `edc_toolset_render_prompt` 生成（kernel 侧装 provider 钩子，避免成环）· ✅ **执行侧 scope 判定**（curator 只能记忆工具、fold 全拒、拒绝时列出可用工具） | 同组连跑 `tools` 字节级相同；`resolve` 在**纯新增**时返回冻结的初始集（单测已钉）；curator 硬调 `exec_shell` 被结构化拒绝 |
-| **B3** | ✅ `edc_toolset_note_change`（delta + 重算 + epoch/日志）· ✅ `group->tool_deltas` + `rebuild_history` 尾部重放 · ⏳ 触发器留给 B4（今天没有能真正改变工具集的动作） | 纯新增 → 字段字节不变、epoch 不涨；移除 → 字段变、epoch+1；**两次 rebuild 后 delta 仍在且只有一份**（单测已钉） |
+| **B2** | ✅ `edc_llm_request.c` 改走 `edc_toolset_resolve`（组冻结集；fold 仍 NULL、curator 仍 memory 集）· ✅ system prompt 的 `## Tools` 散文段由 `edc_toolset_render_prompt` 生成（kernel 侧装 provider 钩子，避免成环）· ✅ **执行侧 scope 判定**（curator 只能记忆工具、fold 全拒、拒绝时列出可用工具） | 同组连跑 `tools` 字节级相同；`resolve` **永远返回当前集**（新增即声明、deferred 被过滤，单测已钉）；curator 硬调 `exec_shell` 被结构化拒绝 |
+| **B3** | ✅ `edc_toolset_note_change`（delta + 重算 + epoch/日志）· ✅ `group->tool_deltas` + `rebuild_history` 尾部重放 · ⏳ 触发器留给 B4（今天没有能真正改变工具集的动作） | 新增 **direct** → 字段变、epoch+1；新增 **deferred** → 字节不变、epoch 不涨；移除 → 字段变、epoch+1；**两次 rebuild 后 delta 仍在且只有一份**（单测已钉） |
 | **B4** | **⏸ 暂缓（2026-10-21 用户裁定，理由与重开条件见 `product-alignment.zh.md` R1）** —— 原计划：MCP 接入 + `exposure` | `deferred` 工具不在 `tools` 里但能被调用且日志有 `undeclared call` |
 
 **B0 可当天做完，且与工具集形态无关**——先把它摘掉，缓存才开始有数可看。

@@ -769,8 +769,25 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     harness_down(&h);
 }
 
+/* 存进 turn 的消息会挂一些"只给我们自己看"的键（折叠粘贴的 payload、工具集变更的
+ * tools_added / tools_removed / toolset_reason / pinned）。它们**不能**上 wire：OpenAI 对
+ * message 上的未知字段是整单 400。这条测试钉住的是白名单策略本身 —— 漏一个键，请求就打挂。 */
+static void test_wire_message_keys_are_allowlisted(void)
+{
+    TEST("wire: message 只带 provider 认识的键（store-only 一律剥掉）");
+
+    const char *allowed[] = {"role", "content", "name", "tool_call_id", "tool_calls", "function_call", "refusal"};
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
+        CHECK(edc_llm_wire_key_is_standard(allowed[i]), "wire key allowed");
+
+    const char *dropped[] = {"payload", "tools_added", "tools_removed", "toolset_reason", "pinned"};
+    for (size_t i = 0; i < sizeof(dropped) / sizeof(dropped[0]); i++)
+        CHECK(!edc_llm_wire_key_is_standard(dropped[i]), "store-only key dropped");
+}
+
 int main(void)
 {
+    test_wire_message_keys_are_allowlisted();
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
     test_session_memory_notice_reaches_the_tail();

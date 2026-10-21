@@ -283,32 +283,46 @@ static void test_replay_is_stable_when_reapplied(void)
     edc_toolbox_free(tb);
 }
 
-static void test_resolve_keeps_the_field_frozen_on_additions(void)
+static void test_resolve_always_reflects_the_current_set(void)
 {
-    TEST("resolve: an addition does NOT enter the field; a removal does");
+    TEST("resolve: the field is the contract -- additions, removals and deferred all follow");
     struct edc_toolbox *tb = bare_toolbox();
     add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    add_tool(tb, "mcp__x", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DEFERRED);
 
-    /* Pure addition: the field must stay exactly the initial set -- the model learns about
-     * the new tool from the transcript's delta message, not from the schema array. */
+    /* A new DIRECT tool enters the field: it is the only place the model gets its schema,
+     * so "known by name only" would not be the same thing. */
     cJSON *history = cJSON_CreateArray();
-    cJSON *added = schema_entry("delta", "appeared mid-session");
+    cJSON *added = schema_entry("beta", "appeared mid-session");
     cJSON_AddItemToArray(history, delta_message(NULL, added));
     cJSON_Delete(added);
 
     cJSON *decl = edc_toolset_resolve(tb, history, EDC_TOOL_SCOPE_NORMAL);
     sds names = names_of(decl);
-    CHECK(strcmp(names, "alpha") == 0, "additive -> still the frozen initial set, got %s", names);
+    CHECK(strcmp(names, "alpha,beta") == 0, "an added tool IS declared, got %s", names);
     sdsfree(names);
     cJSON_Delete(decl);
 
-    /* Removal: the field MUST change, because the prefix it lives in already carried the
-     * tool. That is the one change worth a cache miss. */
+    /* A removal leaves the field. */
     cJSON *history2 = cJSON_CreateArray();
     cJSON_AddItemToArray(history2, delta_message("alpha", NULL));
     cJSON *decl2 = edc_toolset_resolve(tb, history2, EDC_TOOL_SCOPE_NORMAL);
-    CHECK(cJSON_GetArraySize(decl2) == 0, "non-additive -> the tool is gone from the field");
+    CHECK(cJSON_GetArraySize(decl2) == 0, "the removed tool is gone from the field");
     cJSON_Delete(decl2);
+
+    /* A DEFERRED tool never enters the field, even when a delta carries its schema --
+     * that is the whole point of deferred: named in prose, called by name, not declared. */
+    cJSON *history3 = cJSON_CreateArray();
+    cJSON *deferred_entry = schema_entry("mcp__x", "a deferred tool");
+    cJSON_AddItemToArray(history3, delta_message(NULL, deferred_entry));
+    cJSON_Delete(deferred_entry);
+    cJSON *decl3 = edc_toolset_resolve(tb, history3, EDC_TOOL_SCOPE_NORMAL);
+    sds names3 = names_of(decl3);
+    CHECK(strcmp(names3, "alpha") == 0, "a deferred tool is filtered out of the field, got %s", names3);
+    sdsfree(names3);
+    cJSON_Delete(decl3);
+
+    cJSON_Delete(history3);
     cJSON_Delete(history2);
     cJSON_Delete(history);
     edc_toolbox_free(tb);
@@ -354,9 +368,9 @@ static void test_render_prompt_is_terse_and_ruleful(void)
     edc_toolbox_free(tb);
 }
 
-static void test_note_change_additive_keeps_the_field(void)
+static void test_note_change_adding_a_direct_tool_rewrites_the_field(void)
 {
-    TEST("note_change: a pure addition keeps the field, records the notice");
+    TEST("note_change: adding a direct tool rewrites the field (one cache reset)");
     struct edc_toolbox *tb = bare_toolbox();
     add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
 
@@ -368,19 +382,49 @@ static void test_note_change_additive_keeps_the_field(void)
     const uint32_t epoch_before = group->toolset_epoch;
 
     cJSON *added = cJSON_CreateArray();
-    cJSON_AddItemToArray(added, schema_entry("delta", "appeared"));
+    cJSON_AddItemToArray(added, schema_entry("beta", "appeared"));
     CHECK(edc_toolset_note_change(tb, group, added, NULL, 0, "test:added"), "records the change");
     cJSON_Delete(added);
 
     char *after = cJSON_PrintUnformatted(group->tools_decl);
-    CHECK(strcmp(before, after) == 0, "the request's tools field must stay byte-identical");
-    CHECK(group->toolset_epoch == epoch_before, "additive -> no cache reset, no epoch bump");
+    CHECK(strcmp(before, after) != 0, "the field now carries the new tool");
+    CHECK(group->toolset_epoch == epoch_before + 1, "a declared-set change is one cache reset");
     CHECK(group->tool_deltas && cJSON_GetArraySize(group->tool_deltas) == 1, "notice kept for rebuilds");
     CHECK(cJSON_GetArraySize(group->history) == 1, "the next request already sees the notice");
     char *printed = cJSON_PrintUnformatted(group->history);
     CHECK(strstr(printed, "Tool set changed") != NULL, "the model is told, in prose");
     CHECK(strstr(printed, "test:added") != NULL, "the reason is in the notice");
     cJSON_free(printed);
+
+    cJSON_free(before);
+    cJSON_free(after);
+    edc_task_group_free(group);
+    edc_toolbox_free(tb);
+}
+
+static void test_note_change_adding_a_deferred_tool_keeps_the_bytes(void)
+{
+    TEST("note_change: adding a deferred tool leaves the field byte-identical");
+    struct edc_toolbox *tb = bare_toolbox();
+    add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    add_tool(tb, "mcp__fs", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DEFERRED);
+
+    struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
+    group->group_id = strdup("g1b");
+    group->history = cJSON_CreateArray();
+    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    char *before = cJSON_PrintUnformatted(group->tools_decl);
+    const uint32_t epoch_before = group->toolset_epoch;
+
+    cJSON *added = cJSON_CreateArray();
+    cJSON_AddItemToArray(added, schema_entry("mcp__fs", "connected"));
+    CHECK(edc_toolset_note_change(tb, group, added, NULL, 0, "mcp:connected:fs"), "records the change");
+    cJSON_Delete(added);
+
+    char *after = cJSON_PrintUnformatted(group->tools_decl);
+    CHECK(strcmp(before, after) == 0, "deferred stays out of the field -> the prefix is kept");
+    CHECK(group->toolset_epoch == epoch_before, "no cache reset for a deferred tool");
+    CHECK(group->tool_deltas && cJSON_GetArraySize(group->tool_deltas) == 1, "the model still hears about it");
 
     cJSON_free(before);
     cJSON_free(after);
@@ -460,9 +504,10 @@ int main(void)
     test_pure_addition_keeps_the_field_frozen();
     test_redefinition_is_non_additive();
     test_replay_is_stable_when_reapplied();
-    test_resolve_keeps_the_field_frozen_on_additions();
+    test_resolve_always_reflects_the_current_set();
     test_render_prompt_is_terse_and_ruleful();
-    test_note_change_additive_keeps_the_field();
+    test_note_change_adding_a_direct_tool_rewrites_the_field();
+    test_note_change_adding_a_deferred_tool_keeps_the_bytes();
     test_note_change_removal_rewrites_the_field();
     test_notices_survive_a_history_rebuild();
 
