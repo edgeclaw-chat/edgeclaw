@@ -771,7 +771,6 @@ inheriting the parent's memory and conversation context up to the fork point.
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
 | `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
 | `~/.edgeclaw/workspace/AGENTS.md` | Agent behavior instructions (the agent's contract) |
-| `~/.edgeclaw/workspace/TOOLS.md` | Tool quick reference |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from
@@ -797,4 +796,5 @@ higher one wins and the shadowed copy is named: a warning in the log, and a
 ## See Also
 
 - Architecture: `docs/task-session-architecture.md`
+- Product gaps & requirement list vs pi: `docs/product-alignment.zh.md`
 - Source: <https://github.com/edgeclaw-chat/edgeclaw>

@@ -677,7 +677,11 @@ pi 没有这一层）；工作目录就是 workspace 时那 5 个文件会被**�
 **用户自己那份也删了**（2026-10-10 裁决）：`~/.edgeclaw/workspace/HEARTBEAT.md` 里那条"时钟哨兵"
 任务一并丢掉 —— 反正本仓库没有任何东西会去执行它（要周期任务，用真实现的 `crontab` 工具）。
 
-**仍然保留的**：`AGENTS.md`（行为契约）、`TOOLS.md`（工具速查）—— 它们与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。`TOOLS.md` 与 provider 的 tools 字段确有部分重复，但它是"给人看的清单 + 额外说明（设备、通道）"，暂留。
+**仍然保留的**：`AGENTS.md`（行为契约）—— 它与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。
+
+> **2026-10-21 更正**：`TOOLS.md` 已**删除**（不生成、不打包）。上面"暂留"的判断被推翻：它是一份手写副本，
+> 长期描述着 `web_search` / `web_fetch` / `message` / `spawn` 四个注册表里没有的工具；而工具清单本来就在
+> 每次请求的 `tools` 字段里。`AGENTS.md` 里的 `## Available Tools` 清单也一并收掉。见 `docs/pi-toolset-plan.zh.md`。
 
 ## §2.13 删掉 MEMORY.md 机制（2026-10-10）
 
