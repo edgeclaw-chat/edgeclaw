@@ -1784,23 +1784,15 @@ void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
     // number the sidebar shows for that group.
     long long ctx = 0;
     bool estimated = false;
-    long long cache_cached = 0;
-    long long cache_prompt = 0;
     for (const TaskGroup &g : snap.groups)
     {
         if (!g.fg)
             continue;
         ctx = g.ctx_tokens;
         estimated = g.ctx_estimated;
-        /* The prompt-cache hit rate is derived from these two (cached / prompt), the same
-         * accumulated usage the sidebar rolls up. Without it the cache work has no
-         * observable at all -- see docs/pi-toolset-plan.zh.md. */
-        cache_cached = g.tokens_cached;
-        cache_prompt = g.tokens_prompt;
         break;
     }
     status_bar_->SetContextUsage(ctx, estimated);
-    status_bar_->SetCacheUsage(cache_cached, cache_prompt);
 }
 
 void TUIWindow::SyncWorking(const TaskSnapshot &snap)
