@@ -1,198 +1,44 @@
 diff --git a/src/ftxui/component/app.cpp b/src/ftxui/component/app.cpp
-index e52d33a..c297e58 100644
+index e52d33a..f149af4 100644
 --- a/src/ftxui/component/app.cpp
 +++ b/src/ftxui/component/app.cpp
-@@ -169,6 +169,10 @@ struct App::Internal {
+@@ -1303,6 +1303,39 @@ void App::Internal::Signal(int signal) {
  
-   // Pre-existing in Internal:
-   TerminalInputParser terminal_input_parser;
-+  // Bytes of a character that has not fully arrived yet. The console reports typed text
-+  // as one single-byte code unit per record, so a multi-byte character is assembled here
-+  // and only whole sequences are handed to the parser (see FetchTerminalEvents).
-+  std::string utf8_bytes_;
-   task::TaskRunner task_runner;
-   std::chrono::time_point<std::chrono::steady_clock> last_char_time =
-       std::chrono::steady_clock::now();
-@@ -616,12 +620,26 @@ void App::Internal::Install() {
-   // https://docs.microsoft.com/en-us/windows/console/setconsolemode
-   const int enable_line_input = 0x0002;
-   const int enable_echo_input = 0x0004;
--  const int enable_virtual_terminal_input = 0x0200;
-   const int enable_window_input = 0x0008;
-+  const int enable_mouse_input = 0x0010;
-+  const int enable_quick_edit_mode = 0x0040;
-+  const int enable_extended_flags = 0x0080;
-   in_mode &= ~enable_echo_input;
-   in_mode &= ~enable_line_input;
--  in_mode |= enable_virtual_terminal_input;
-+  // Deliberately NOT enable_virtual_terminal_input (0x0200). With it, conhost re-encodes
-+  // the input into a VT byte stream and ReadConsoleInput reports one INPUT_RECORD per
-+  // byte -- and holds the tail of a multi-byte character back until the next key arrives.
-+  // Typed Chinese therefore reached the application double-encoded and one character
-+  // late. Without it the console reports the keys as they are typed; FetchTerminalEvents
-+  // reassembles the bytes it still gets (see utf8_bytes_).
-+  //
-+  // The mouse then has to come from the console too (MOUSE_EVENT records, translated back
-+  // into SGR sequences in FetchTerminalEvents): with VT input off the terminal's own
-+  // reports never reach us. Quick-edit has to go as well, or it swallows the drag.
-   in_mode |= enable_window_input;
-+  in_mode |= enable_mouse_input;
-+  in_mode |= enable_extended_flags;
-+  in_mode &= ~enable_quick_edit_mode;
- 
-   SetConsoleMode(stdin_handle, in_mode);
-   SetConsoleMode(stdout_handle, out_mode);
-@@ -693,10 +711,16 @@ void App::Internal::Install() {
-   });
- 
-   if (track_mouse_) {
-+#if defined(_WIN32)
-+    // Windows takes the mouse from the console (ENABLE_MOUSE_INPUT, translated in
-+    // FetchTerminalEvents). Asking the terminal for VT reports as well would deliver
-+    // every event twice, so the terminal-side tracking stays off here.
-+#else
-     enable({DECMode::kMouseVt200});
-     enable({DECMode::kMouseAnyEvent});
-     enable({DECMode::kMouseUrxvtMode});
-     enable({DECMode::kMouseSgrExtMode});
-+#endif
-   }
- 
-   // After installing the new configuration, flush it to the terminal to
-@@ -1353,17 +1377,133 @@ size_t App::Internal::FetchTerminalEvents() {
-           // Wait for the Low Surrogate to arrive in the next record.
-           continue;
-         }
--        for (auto it : to_string(wstring)) {
--          terminal_input_parser.Add(it);
-+        // The console reports typed text one single-byte code unit per record (a Chinese
-+        // character is three records), so encoding those units as code points would
-+        // expand every non-ASCII byte a second time: 鐜?(E7 8E B0) became U+00E7 U+008E
-+        // U+00B0. Such a batch already IS the original UTF-8 stream, so its bytes go to
-+        // utf8_bytes_ and are handed on as whole sequences only -- a partial sequence
-+        // left in the parser is flushed as Event::Special after 50ms without input, which
-+        // silently dropped characters. Anything above 0xFF came from a console that
-+        // reports real UTF-16 and keeps the to_string() path.
-+        bool byte_units = true;
-+        for (const wchar_t unit : wstring) {
-+          if (unit < 0 || unit > 0xff) {
-+            byte_units = false;
-+            break;
-+          }
+ size_t App::Internal::FetchTerminalEvents() {
+ #if defined(_WIN32)
++  // Install() puts stdin into ENABLE_VIRTUAL_TERMINAL_INPUT mode (0x0200), whose contract
++  // is that the application reads a VT *byte* stream. Reading it through
++  // ReadConsoleInput instead makes conhost re-encode every byte into its own
++  // INPUT_RECORD -- and hold the tail of a multi-byte character back until the next key
++  // arrives, so CJK text reached the application double-encoded and one character late.
++  // Read the stream the way the mode intends: terminal_input_parser is a VT/UTF-8 state
++  // machine and decodes it directly, which also keeps keys, SGR mouse reports and
++  // bracketed-paste markers as the sequences the rest of the code expects.
++  // ReadConsoleInput stays as the fallback for a console that is not in VT mode.
++  {
++    const auto stdin_handle = GetStdHandle(STD_INPUT_HANDLE);
++    DWORD mode = 0;
++    DWORD pending_records = 0;
++    const bool vt_input = GetConsoleMode(stdin_handle, &mode) != 0 &&
++                          (mode & 0x0200) != 0;  // ENABLE_VIRTUAL_TERMINAL_INPUT
++    const bool pending =
++        (GetNumberOfConsoleInputEvents(stdin_handle, &pending_records) != 0 &&
++         pending_records > 0) ||
++        WaitForSingleObject(stdin_handle, 0) == WAIT_OBJECT_0;
++    if (vt_input && pending) {
++      char buffer[1024];
++      DWORD read_bytes = 0;
++      if (ReadFile(stdin_handle, buffer, static_cast<DWORD>(sizeof(buffer)),
++                   &read_bytes, nullptr) &&
++          read_bytes > 0) {
++        last_char_time = std::chrono::steady_clock::now();
++        for (DWORD i = 0; i < read_bytes; ++i) {
++          terminal_input_parser.Add(buffer[i]);
 +        }
-+        if (!byte_units) {
-+          for (auto it : to_string(wstring)) {
-+            terminal_input_parser.Add(it);
-+          }
-+        } else {
-+          for (const wchar_t unit : wstring) {
-+            utf8_bytes_ += static_cast<char>(unit);
-+          }
-+          while (!utf8_bytes_.empty()) {
-+            const auto lead = static_cast<unsigned char>(utf8_bytes_[0]);
-+            size_t length = 1;
-+            if (lead >= 0xf0) {
-+              length = 4;
-+            } else if (lead >= 0xe0) {
-+              length = 3;
-+            } else if (lead >= 0xc0) {
-+              length = 2;
-+            } else if (lead >= 0x80) {
-+              length = 0;  // continuation byte with no lead: not decodable
-+            }
-+            if (length == 0) {
-+              utf8_bytes_.erase(0, 1);
-+              continue;
-+            }
-+            if (utf8_bytes_.size() < length) {
-+              break;  // the rest of this character arrives in a later record
-+            }
-+            bool complete = true;
-+            for (size_t i = 1; i < length; ++i) {
-+              if ((static_cast<unsigned char>(utf8_bytes_[i]) & 0xc0) != 0x80) {
-+                complete = false;
-+                break;
-+              }
-+            }
-+            if (!complete) {
-+              utf8_bytes_.erase(0, 1);
-+              continue;
-+            }
-+            for (size_t i = 0; i < length; ++i) {
-+              terminal_input_parser.Add(utf8_bytes_[i]);
-+            }
-+            utf8_bytes_.erase(0, length);
-+          }
-         }
-         wstring.clear();
-       } break;
-       case WINDOW_BUFFER_SIZE_EVENT:
-         public_->Post(Event::Special({0}));
-         break;
-+      case MOUSE_EVENT: {
-+        // The console reports the mouse as records (see Install(): the terminal's VT
-+        // mouse tracking is not used on Windows). Re-encode each record into the SGR
-+        // sequence the parser already understands, so widgets see exactly the events
-+        // they would get on POSIX: button 0 left / 1 middle / 2 right, bit 32 motion,
-+        // bit 64 wheel; 'M' press, 'm' release; coordinates 1-based like the terminal's.
-+        const MOUSE_EVENT_RECORD& mouse = r.Event.MouseEvent;
-+        static int last_button = 0;  // a release record does not name the button
-+        CONSOLE_SCREEN_BUFFER_INFO info;
-+        int x = mouse.dwMousePosition.X;
-+        int y = mouse.dwMousePosition.Y;
-+        if (GetConsoleScreenBufferInfo(GetStdHandle(STD_INPUT_HANDLE), &info)) {
-+          x -= info.srWindow.Left;
-+          y -= info.srWindow.Top;
-+        }
-+        if (x < 0 || y < 0) {
-+          break;  // outside the visible window
-+        }
-+        const WORD buttons = mouse.dwButtonState;
-+        int code = 0;
-+        char terminator = 'M';
-+        if ((mouse.dwEventFlags & MOUSE_WHEELED) != 0) {
-+          code = (static_cast<short>(HIWORD(mouse.dwButtonState)) > 0) ? 64 : 65;
-+        } else if ((mouse.dwEventFlags & MOUSE_MOVED) != 0) {
-+          code = 35;  // motion without a button
-+          if ((buttons & FROM_LEFT_1ST_BUTTON_PRESSED) != 0) {
-+            code = 32;
-+          } else if ((buttons & FROM_LEFT_2ND_BUTTON_PRESSED) != 0) {
-+            code = 33;
-+          } else if ((buttons & RIGHTMOST_BUTTON_PRESSED) != 0) {
-+            code = 34;
-+          }
-+        } else if ((buttons & FROM_LEFT_1ST_BUTTON_PRESSED) != 0) {
-+          code = 0;
-+          last_button = 0;
-+        } else if ((buttons & FROM_LEFT_2ND_BUTTON_PRESSED) != 0) {
-+          code = 1;
-+          last_button = 1;
-+        } else if ((buttons & RIGHTMOST_BUTTON_PRESSED) != 0) {
-+          code = 2;
-+          last_button = 2;
-+        } else {
-+          code = last_button;
-+          terminator = 'm';
-+        }
-+        if ((mouse.dwControlKeyState & SHIFT_PRESSED) != 0) {
-+          code += 4;
-+        }
-+        if ((mouse.dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) != 0) {
-+          code += 8;
-+        }
-+        if ((mouse.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0) {
-+          code += 16;
-+        }
-+        const std::string sequence = "\x1b[<" + std::to_string(code) + ";" +
-+                                     std::to_string(x + 1) + ";" +
-+                                     std::to_string(y + 1) + terminator;
-+        for (const char byte : sequence) {
-+          terminal_input_parser.Add(byte);
-+        }
-+      } break;
-       case MENU_EVENT:
-       case FOCUS_EVENT:
--      case MOUSE_EVENT:
-         // TODO(mauve): Implement later.
-         break;
-     }
++        return static_cast<size_t>(read_bytes);
++      }
++    }
++  }
+   auto get_input_records = [&]() -> std::vector<INPUT_RECORD> {
+     // Check if there is input in the console.
+     auto console = GetStdHandle(STD_INPUT_HANDLE);
