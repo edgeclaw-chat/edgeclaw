@@ -168,6 +168,57 @@ static void test_nested_dir_and_write_containment(void)
     free(root);
 }
 
+/* The transcript append is edc_file_fopen_safe(path, "a", root). Its guard compared
+ * resolved[len] == '/' only, so on Windows every write under a root was refused:
+ * chat.jsonl was never written and the chat area came back empty after a restart (the
+ * same test also gated jobs.json, the skill files and prompt files). */
+static void test_guarded_append_under_root(void)
+{
+    log_info("  TEST: guarded append under a root");
+
+    sds cwd = edc_cwd();
+    char *root = cwd ? realpath(cwd, NULL) : NULL;
+    CHECK(root != NULL, "cwd resolves");
+    if (!root)
+    {
+        sdsfree(cwd);
+        return;
+    }
+
+    sds dir = edc_path_join(root, ".edc_test_guard", NULL);
+    EdcError *err = NULL;
+    CHECK(edc_dir_create_with_parents(dir, 0700, &err), "test dir created");
+    if (err)
+        edc_error_free(err);
+
+    sds file = edc_path_join(dir, "chat.jsonl", NULL);
+    FILE *f = edc_file_fopen_safe(file, "a", root);
+    CHECK(f != NULL, "append under the root is allowed");
+    if (f)
+    {
+        fputs("x\n", f);
+        fclose(f);
+        FILE *check = fopen(file, "rb");
+        CHECK(check != NULL, "the appended file exists");
+        if (check)
+            fclose(check);
+    }
+
+    sds outside = edc_path_join(root, "..", "edc_test_guard_outside.txt", NULL);
+    FILE *bad = edc_file_fopen_safe(outside, "a", root);
+    CHECK(bad == NULL, "append outside the root is refused");
+    if (bad)
+        fclose(bad);
+
+    remove(file);
+    rmdir(dir);
+    sdsfree(outside);
+    sdsfree(file);
+    sdsfree(dir);
+    sdsfree(cwd);
+    free(root);
+}
+
 int main(void)
 {
     log_info("== test_path_absolute ==");
@@ -176,6 +227,7 @@ int main(void)
     test_absolute_workdir_is_not_anchored();
     test_path_is_within();
     test_nested_dir_and_write_containment();
+    test_guarded_append_under_root();
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

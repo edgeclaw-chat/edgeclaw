@@ -29,9 +29,13 @@ static int prefix_match_len(const char *resolved, char *const *paths)
         char *entry = realpath(paths[i], NULL);
         if (!entry)
             continue;
-        size_t len = strlen(entry);
-        if (strncmp(resolved, entry, len) == 0 && (resolved[len] == '\0' || resolved[len] == '/'))
+        /* Segment-wise and separator-agnostic: on Windows realpath returns backslashes,
+         * so a slash-only boundary test never matched a deny entry at all. */
+        if (edc_path_is_within(resolved, entry))
         {
+            size_t len = strlen(entry);
+            while (len > 1 && edc_path_is_sep(entry[len - 1]))
+                len--;
             if ((int)len > best)
                 best = (int)len;
         }
@@ -56,8 +60,9 @@ static bool within_root(const char *resolved, const char *root)
     char *root_real = realpath(root, NULL);
     if (!root_real)
         return false; /* a root that does not resolve cannot contain anything */
-    size_t len = strlen(root_real);
-    bool ok = strncmp(resolved, root_real, len) == 0 && (resolved[len] == '\0' || resolved[len] == '/');
+    /* A slash-only boundary test made every backslash path look like an escape, so on
+     * Windows every write under a root was refused (chat.jsonl, jobs.json, skills). */
+    const bool ok = edc_path_is_within(resolved, root_real);
     free(root_real);
     return ok;
 }
@@ -75,7 +80,7 @@ sds edc_path_guard_resolve(const struct edc_path_rules *rules, const char *path,
     /* 1. Relative paths resolve against the caller's base -- a "@file" or a template name
      *    means what the session's directory means by it. */
     sds joined = NULL;
-    if (rules->base && rules->base[0] && path[0] != '/')
+    if (rules->base && rules->base[0] && !edc_path_is_absolute(path))
         joined = edc_path_join(rules->base, path, NULL);
     else
         joined = sdsnew(path);
@@ -100,8 +105,11 @@ sds edc_path_guard_resolve(const struct edc_path_rules *rules, const char *path,
         sdsfree(parent);
         if (parent_real)
         {
-            const char *slash = strrchr(joined, '/');
-            sds rebuilt = edc_path_join(parent_real, slash ? slash + 1 : joined, NULL);
+            const char *last_sep = NULL;
+            for (const char *q = joined; *q; q++)
+                if (edc_path_is_sep(*q))
+                    last_sep = q;
+            sds rebuilt = edc_path_join(parent_real, last_sep ? last_sep + 1 : joined, NULL);
             free(parent_real);
             resolved = strdup(rebuilt);
             sdsfree(rebuilt);
