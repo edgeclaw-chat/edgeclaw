@@ -13,7 +13,6 @@
 // exactly what a fully rendered log produced.
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
-#include "edc_style.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -587,46 +586,6 @@ static void test_spacer_row_is_not_painted(void)
     PASS();
 }
 
-// Two messages sit on one continuous pane_bg surface, so tone cannot separate
-// them: a message and the panel under it carry the same background, and the
-// 1.25-1.35:1 steps the palette does have are the first thing a 256-colour
-// terminal quantises away. The list therefore draws a dim hairline in the spacer
-// row it already reserves (see MessageListNode::Render): a glyph survives every
-// colour depth, and it is the mark the split gutter, the sidebar sections and the
-// input box use.
-static void test_spacer_row_is_drawn_as_a_hairline(void)
-{
-    TEST("the spacer row between messages is a dim hairline");
-    auto chat = std::make_shared<edc::ChatWidget>();
-    const auto now = ::time(nullptr);
-    chat->AddMessage(std::make_shared<edc::Message>("A", now));
-    chat->AddMessage(std::make_shared<edc::Message>("B", now));
-
-    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(30), ftxui::Dimension::Fixed(12));
-    ftxui::Render(screen, chat->Render() | ftxui::flex);
-
-    // Rows 0..2 are message A, row 3 is the spacer, rows 4..6 are message B. The
-    // rightmost column belongs to the scroll indicator, so it is not counted.
-    int rule_cells = 0;
-    bool ink_is_line_dim = true;
-    bool background_left_alone = true;
-    for (int x = 0; x < 29; x++)
-    {
-        const ftxui::Cell &cell = screen.CellAt(x, 3);
-        if (cell.character != "\u2500")
-            continue;
-        rule_cells++;
-        if (cell.foreground_color != edc::style::palette().line_dim)
-            ink_is_line_dim = false;
-        if (cell.background_color != ftxui::Color())
-            background_left_alone = false;
-    }
-    ASSERT(rule_cells >= 20, "the spacer row is not a rule (%d cells)", rule_cells);
-    ASSERT(ink_is_line_dim, "the rule is not drawn in line_dim");
-    ASSERT(background_left_alone, "the rule repainted the pane background instead of letting it show");
-    PASS();
-}
-
 // ftxui's flow containers only break *between* their children, so a run with no
 // space in it (CJK text, a long URL or path) is a single unbreakable child that
 // used to overflow its box and be clipped by the stencil — the text past the
@@ -822,7 +781,6 @@ int main(void)
     test_expand_grows_the_item();
     test_clear_resets_the_log();
     test_spacer_row_is_not_painted();
-    test_spacer_row_is_drawn_as_a_hairline();
     test_unbroken_run_wraps_in_every_message_type();
     test_unbroken_run_rewraps_on_resize();
     test_selection_collects_message_text();

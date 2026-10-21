@@ -1,6 +1,5 @@
 #include "edc_message_list.hpp"
 
-#include "edc_style.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/dom/node.hpp"
@@ -129,30 +128,6 @@ class MessageListNode : public ::ftxui::Node
             ::ftxui::Element element = list_.items_[i]->Render();
             element->SetBox(item);
             element->Render(screen);
-
-            /* The row of air between two messages is where this layout draws a
-             * boundary. It has to be a glyph: both panes are one continuous
-             * pane_bg surface, so a message and the panel under it carry the same
-             * background -- there is no tonal edge between two messages at all --
-             * and the 1.25-1.35:1 steps the palette does have are the first thing
-             * lost when the terminal only offers 256 colours (see
-             * theme::InitColorSupport). A dim hairline survives all of that, and
-             * it is the mark the split gutter, the sidebar sections and the input
-             * box already use. */
-            if (i + 1 < list_.items_.size())
-            {
-                const int rule_row = box_.y_min + list_.prefix_[i] + height;
-                if (rule_row >= stencil.y_min && rule_row <= stencil.y_max)
-                {
-                    const ::ftxui::Color rule = style::palette().line_dim;
-                    for (int x = stencil.x_min; x <= stencil.x_max; x++)
-                    {
-                        ::ftxui::Cell &cell = screen.CellAt(x, rule_row);
-                        cell.character = "\u2500"; // the horizontal rule glyph
-                        cell.foreground_color = rule;
-                    }
-                }
-            }
 
             const ::ftxui::Box visible = ::ftxui::Box::Intersection(item, stencil);
             if (!visible.IsEmpty())

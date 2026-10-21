@@ -222,14 +222,17 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // ResizableSplit keeps "main" on the right at a drag-adjustable width; its
     // separator is style::split_gutter, so the sidebar stays borderless while the
     // seam between the two panes is still findable (and grabbable).
-    /* The whole left pane wears pane_bg, in one piece. RenderMain paints the panel's
-     * contents, but only the message bubbles carry a background of their own: every
-     * other row (the input box, the footer, the working bar, the blank line under it,
-     * the space below the last message) used to fall through to the backdrop. That is
-     * what made the pane look like loose blocks on the terminal's own colour instead
-     * of one panel -- and the pane's edge could not be located at all. */
+    /* The left column keeps the backdrop, and the message bubbles keep pane_bg --
+     * exactly the layout the widgets themselves draw, unchanged. It is deliberately
+     * NOT painted pane_bg as a whole: a pane-coloured bubble on a pane-coloured panel
+     * is 1:1, so two messages and the space between them became one flat field and no
+     * block edge could be found at all. Against the backdrop a bubble is 1.29:1 -- a
+     * real step -- and the backdrop is the palette's own colour (theme::palette's
+     * window_bg, the same one the split gutter and the frame use) rather than whatever
+     * the terminal happens to be themed with, which is what makes the edge measurable.
+     * The pane's outer edge is still the gutter's hairline (style::split_gutter). */
     auto main_area = ::ftxui::Renderer(container_, [this] {
-        return RenderMain() | ::ftxui::bgcolor(style::palette().pane_bg);
+        return RenderMain();
     });
     // The sidebar column is a real component (ui::SidebarView, built in
     // edc_sidebar.cpp) so a test can compose the very same layout: both sections
