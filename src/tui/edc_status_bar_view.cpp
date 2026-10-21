@@ -82,6 +82,12 @@ void StatusBarView::SetContextUsage(long long tokens, bool estimated)
     ctx_estimated_ = estimated;
 }
 
+void StatusBarView::SetCacheUsage(long long cached, long long prompt)
+{
+    cache_cached_ = cached;
+    cache_prompt_ = prompt;
+}
+
 void StatusBarView::SetHint(std::string hint)
 {
     hint_ = std::move(hint);
@@ -106,16 +112,31 @@ std::string StatusBarView::ContextText(long long used, bool estimated, int windo
     return s;
 }
 
-std::string StatusBarView::RightText(int pane_width, const std::string &left, const std::string &model,
-                                     const std::string &ctx, bool sandbox_on)
+std::string StatusBarView::CacheText(long long cached, long long prompt)
 {
-    // Right end: what changes (the model in use, the current context size) and the one
-    // state that is a safety report (the sandbox), joined by middle dots so they read as
-    // one compact unit. Everything else deliberately stays out: a switch that changes
-    // once in a blue moon does not earn a permanent cell, and "/help" lives in the
-    // input's placeholder, where the reader is about to type.
+    // Nothing reported yet: showing "cache 0%" would read as a measured miss, which is a
+    // different (and much worse) claim than "no usage reported".
+    if (prompt <= 0)
+        return "";
+    long long pct = (cached * 100) / prompt;
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100)
+        pct = 100;
+    return std::string("cache ") + std::to_string(pct) + "%";
+}
+
+std::string StatusBarView::RightText(int pane_width, const std::string &left, const std::string &model,
+                                     const std::string &ctx, const std::string &cache, bool sandbox_on)
+{
+    // Right end: what changes (the model in use, the current context size, how well the
+    // prompt cache is hitting) and the one state that is a safety report (the sandbox),
+    // joined by middle dots so they read as one compact unit. Everything else deliberately
+    // stays out: a switch that changes once in a blue moon does not earn a permanent cell,
+    // and "/help" lives in the input's placeholder, where the reader is about to type.
     // Flush to the pane's right edge with the filler; as the pane narrows, drop fields
-    // from the front outward -- the model first, then ctx -- and never drop the sandbox.
+    // from the front outward -- the model first, then ctx, then the cache hit rate -- and
+    // never drop the sandbox.
     const std::string sandbox = std::string("sandbox:") + (sandbox_on ? "on" : "off");
 
     std::vector<std::string> fields;
@@ -123,6 +144,8 @@ std::string StatusBarView::RightText(int pane_width, const std::string &left, co
         fields.push_back(model);
     if (!ctx.empty())
         fields.push_back(ctx);
+    if (!cache.empty())
+        fields.push_back(cache);
     fields.push_back(sandbox);
 
     const int budget = pane_width - ::ftxui::string_width(left) - 1;
@@ -167,8 +190,9 @@ std::string StatusBarView::CurrentDir() const
     const int pane_w = terminal_->width() - sidebar_width_() - 2;
     const bool sandbox_on = sandbox_enabled_();
     const std::string ctx = ContextText(ctx_tokens_, ctx_estimated_, context_window_ ? context_window_() : 0);
+    const std::string cache = CacheText(cache_cached_, cache_prompt_);
 
-    const std::string right = RightText(pane_w, left, model_, ctx, sandbox_on);
+    const std::string right = RightText(pane_w, left, model_, ctx, cache, sandbox_on);
 
     // The left end is one dim run: the working directory -- or, while a hint is up, the
     // hint in its place (same style: no highlight, same corner).

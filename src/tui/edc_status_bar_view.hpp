@@ -47,6 +47,12 @@ class StatusBarView : public Widget
     // "ctx 45k/128k" (ctx 45k when the window is unknown).
     void SetContextUsage(long long tokens, bool estimated);
 
+    // How much of this conversation's input the provider served from its prompt cache
+    // (accumulated over the group: cached / prompt). Shown as "cache 78%" and hidden
+    // while no usage has been reported. Without it an optimization cannot be verified:
+    // the number is the only observable the cache work has. See docs/pi-toolset-plan.zh.md.
+    void SetCacheUsage(long long cached, long long prompt);
+
     // A transient hint shown at the LEFT end, after the working directory (e.g.
     // "Ctrl+C again to quit"). Empty hides it.
     void SetHint(std::string hint);
@@ -56,14 +62,18 @@ class StatusBarView : public Widget
     static std::string LeftText(const std::string &dir, const std::string &hint);
 
     // The right-hand text for |pane_width| columns with |left| already drawn:
-    // "model · ctx · sandbox:on|off", dropping fields from the front outward as the pane
-    // narrows (the model first, then ctx), leaving the sandbox state alone. Pure, so the
-    // drop policy is unit-testable.
+    // "model · ctx · cache · sandbox:on|off", dropping fields from the front outward as the
+    // pane narrows (the model first, then ctx, then the cache rate), leaving the sandbox
+    // state alone. Pure, so the drop policy is unit-testable.
     static std::string RightText(int pane_width, const std::string &left, const std::string &model,
-                                 const std::string &ctx, bool sandbox_on);
+                                 const std::string &ctx, const std::string &cache, bool sandbox_on);
 
     // "ctx 45k/128k" (with "~" when the size is an estimate); "" when |used| is 0. Pure.
     static std::string ContextText(long long used, bool estimated, int window);
+
+    // "cache 78%" (the share of this conversation's input the provider read from its
+    // prompt cache); "" while nothing has been reported. Pure.
+    static std::string CacheText(long long cached, long long prompt);
 
   protected:
     ::ftxui::Element Draw(const Frame &frame) override;
@@ -82,6 +92,8 @@ class StatusBarView : public Widget
     std::string hint_;
     long long ctx_tokens_ = 0;
     bool ctx_estimated_ = false;
+    long long cache_cached_ = 0;
+    long long cache_prompt_ = 0;
 };
 
 } // namespace edc::ui
