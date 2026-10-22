@@ -4,6 +4,7 @@
  *   `"a" 2>> "e"`     → REDIR{fd=2, append=true}
  * 这一步**不改生产行为**（老 tokenizer 仍在用），所以这里只验新 API。 */
 #include "edc_lex.h"
+#include "sds.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -150,6 +151,69 @@ int main(void)
         sdsfree(msg);
     }
 
+    /* ── 命令参数：edc_argv_from_tail 走同一套 bash 词法 ─────────────────── */
+    TEST("argv: quotes are syntax, backslashes are bytes");
+    {
+        int n = 0;
+        sds err = NULL;
+        sds *argv = edc_argv_from_tail("dev 'D:\\repo\\sub'", &n, &err);
+        CHECK(argv != NULL && n == 2, "two words");
+        CHECK(argv && strcmp(argv[0], "dev") == 0, "the bare word");
+        CHECK(argv && strcmp(argv[1], "D:\\repo\\sub") == 0, "the quoted Windows path, quotes gone");
+        CHECK(err == NULL, "no error");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("D:\\github\\edgeclaw", &n, &err);
+        CHECK(argv != NULL && n == 1 && strcmp(argv[0], "D:\\github\\edgeclaw") == 0, "unquoted path keeps every backslash");
+        sdsfreesplitres(argv, n);
+    }
+
+    TEST("argv: `\\n` in double quotes is literal, $'…' is where it escapes");
+    {
+        int n = 0;
+        sds err = NULL;
+        sds *argv = edc_argv_from_tail("\"a\\nb\"", &n, &err);
+        CHECK(argv != NULL && n == 1 && strcmp(argv[0], "a\\nb") == 0, "double quotes: backslash + n");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("$'a\\nb'", &n, &err);
+        CHECK(argv != NULL && n == 1 && strcmp(argv[0], "a\nb") == 0, "$'…': a real newline");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("'''a\\nb'''", &n, &err);
+        CHECK(argv != NULL && n == 1 && strcmp(argv[0], "a\nb") == 0, "'''…''': the same, in-tree alias");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("'a\\nb'", &n, &err);
+        CHECK(argv != NULL && n == 1 && strcmp(argv[0], "a\\nb") == 0, "single quotes stay raw");
+        sdsfreesplitres(argv, n);
+    }
+
+    TEST("argv: a quoted argument with spaces is ONE word");
+    {
+        int n = 0;
+        sds err = NULL;
+        sds *argv = edc_argv_from_tail("spaced 'my repo' tail", &n, &err);
+        CHECK(argv != NULL && n == 3, "three words");
+        CHECK(argv && strcmp(argv[1], "my repo") == 0, "the middle one kept its space");
+        sdsfreesplitres(argv, n);
+    }
+
+    TEST("argv: an unterminated quote is an ERROR, not a dropped argument");
+    {
+        int n = 0;
+        sds err = NULL;
+        sds *argv = edc_argv_from_tail("dev 'oops", &n, &err);
+        CHECK(argv == NULL, "no argv");
+        CHECK(n == 0, "no words");
+        CHECK(err != NULL && strstr(err, "Unterminated") != NULL, "the error names the problem");
+        sdsfree(err);
+
+        err = NULL;
+        argv = edc_argv_from_tail("dev \"oops", &n, &err);
+        CHECK(argv == NULL && err != NULL, "same for a double quote");
+        sdsfree(err);
+    }
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

@@ -1,4 +1,4 @@
-/* The shell-like syntax switch: what the input means with it OFF (the default).
+/* The shell-like syntax switch: what the input means with it OFF (the opt-out).
  *
  * The point of the switch is that the operators (`| ; & > >> 2> <`) and the sigil `+`
  * (plus the quoting rule) spell out a Unix shell vocabulary. A user who does not expect
@@ -9,7 +9,9 @@
  * inert, ON they are not (that direction is what test_shell_job_control covers in depth;
  * here it is the control that keeps these cases from passing vacuously).
  *
- * It also pins `/shell on|off` as the only way to flip it.
+ * The product default is ON (see edc_config.c): the config here is hand-built, so this
+ * test spells the default out and then enters OFF through `/shell off` -- the same door a
+ * user has. `/shell on|off` is the only way to flip it, which is pinned below.
  *
  * harness copied from test_shell_job_control: drive the public edc_commands_handler entry,
  * then call edc_scheduler_schedule (the message end is the tick). No channel actor, so
@@ -219,10 +221,19 @@ int main(void)
     install_resolver(sched, sess);
     sched->send_llm = mock_send_llm;
 
-    /* ── 默认关闭: 算符只是普通文本 ─────────────────────────────── */
+    /* ── /shell off: 算符只是普通文本（产品默认是打开的） ─────────────────────────────── */
 
-    TEST("default is OFF (a fresh config must opt in)");
-    CHECK(!cfg->shell_syntax, "shell_syntax starts false");
+    /* This config never goes through edc_config_load, so the product default is spelled
+     * out (ON, see edc_config.c) instead of being inherited from zero-init. The OFF cases
+     * below are then entered the way a user enters them: `/shell off`. */
+    cfg->shell_syntax = true;
+
+    TEST("the switch starts ON (the product default)");
+    CHECK(cfg->shell_syntax, "shell_syntax starts true");
+
+    TEST("`/shell off` is the opt-out the OFF cases below run under");
+    CHECK(run_shell_cmd(cfg, sm, (struct edc_reply_to){}, "off"), "`/shell off` is a builtin");
+    CHECK(!cfg->shell_syntax, "the live config now says off");
 
     test_input_kind_table();
 

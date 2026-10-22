@@ -67,12 +67,18 @@ static void push_unquoted(const char *raw, size_t len)
 }
 %}
 %%
-"\"\"\""[^"]*"\"\"\""       { push_quoted(yytext, true); }
-"'''"[^']*"'''"             { push_quoted(yytext, false); }
-\"([^"\\]|\\.)*\"           { push_quoted(yytext, true); }
-'([^'\\]|\\.)*'             { push_quoted(yytext, false); }
-\"([^\"\\]|\\.)*$          { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
-'([^'\\]|\\.)*$            { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+    /* bash quoting (see edc_cmd_parse.c): '…' is RAW, "…" carries only \" and \\, and the
+     * escape-carrying form is ANSI-C -- spelled $'…' the way bash spells it, or '''…'''
+     * (the in-tree alias). """…""" is "…" with a body that may hold a bare ". */
+"$'"[^']*"'"                 { push_quoted(yytext, false); }
+"'''"[^']*"'''"              { push_quoted(yytext, false); }
+"\"\"\""[^"]*"\"\"\""        { push_quoted(yytext, true); }
+\"([^"\\]|\\.)*\"            { push_quoted(yytext, true); }
+'[^']*'                      { push_quoted(yytext, false); }
+"$'"[^']*$                   { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+"'''"[^']*$                  { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+\"([^\"\\]|\\.)*$            { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+'[^']*$                      { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 "2>>"                       { chunk_t *c = push(C_REDIR); c->fd = 2; c->append = true; }
 "2>"                        { chunk_t *c = push(C_REDIR); c->fd = 2; }
 ">>"                        { chunk_t *c = push(C_REDIR); c->fd = 1; c->append = true; }
@@ -170,8 +176,13 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
     {
         chunk_t *c = &g_chunks[i];
         const bool wordish = (c->kind == C_UNQUOTED || c->kind == C_QUOTED);
-        /* 开关关闭：sigil/算符/选项**不成为 token**，降级成文本（并记一笔供 note 用） */
-        const bool disabled = (mode == EDC_LEX_SHELL_OFF) && !wordish && c->kind != C_WS && c->kind != C_REST;
+        /* 开关关闭：sigil/算符/选项**不成为 token**，降级成文本（并记一笔供 note 用）。
+         * 两个例外，都不是“开关能管的语法”：
+         *   C_BADQ  未闭合引号是词法错误 —— 降级成文本就是静默丢参；
+         *   C_SLASH 行首 `/` 是派发前缀（命令层），与 shell 开关无关 ——
+         *           它得成 TK_SLASH_CMD，否则命令行进不了文法。 */
+        const bool disabled = (mode == EDC_LEX_SHELL_OFF) && !wordish && c->kind != C_WS &&
+                              c->kind != C_REST && c->kind != C_BADQ && c->kind != C_SLASH;
 
         if (wordish || disabled)
         {
@@ -288,17 +299,31 @@ void edc_lex_out_free(edc_lex_out *out)
     out->count = 0;
 }
 
-sds *edc_argv_from_tail(const char *tail, int *out_count)
+sds *edc_argv_from_tail(const char *tail, int *out_count, sds *out_error)
 {
     if (out_count)
         *out_count = 0;
+    if (out_error)
+        *out_error = NULL;
+
     edc_lex_out o;
     if (!edc_lex(tail ? tail : "", EDC_LEX_SHELL_OFF, &o))
         return NULL;
+
     sds *args = NULL;
     int n = 0;
     for (int i = 0; i < o.count; i++)
     {
+        /* A region that opened and never closed is a syntax error, not an argument that
+         * silently disappears -- skipping the token is what used to happen. */
+        if (o.toks[i].kind == TK_BAD_QUOTED)
+        {
+            if (out_error)
+                *out_error = edc_lex_unterminated_quote(o.toks[i].value, o.toks[i].begin + 1);
+            edc_lex_out_free(&o);
+            sdsfreesplitres(args, n);
+            return NULL;
+        }
         if (o.toks[i].kind != TK_WORD)
             continue; /* OFF 模式下一切都是 word；这里只是防 EOF */
         args = realloc(args, sizeof(sds) * (size_t)(n + 1));

@@ -85,7 +85,11 @@ static inline sds edc_lex_unterminated_quote(const char *text, size_t col)
 }
 
 /* 一段文本 -> argv：切词**归词法器**（相邻片段拼接、引号已去），所以
- * `review "a b"` 得到 2 个参数而不是 3 个。命令层用它，算符不参与（SHELL_OFF）。 */
-sds *edc_argv_from_tail(const char *tail, int *out_count);
+ * `review "a b"` 得到 2 个参数而不是 3 个。命令层用它，算符不参与（SHELL_OFF）。
+ *
+ * 引号规则就是 bash 的（见 edc_cmd_parse.c 的 quoting 块）：'…' 全字面、"…" 只认 \" 与 \\、
+ * $'…' / '''…''' 是 ANSI-C 转义。**未闭合引号是错误**：返回 NULL 并把可读信息放进
+ * |out_error|（调用方 sdsfree），绝不把一个参数静默丢掉。结果用 sdsfreesplitres() 释放。 */
+sds *edc_argv_from_tail(const char *tail, int *out_count, sds *out_error);
 
 #endif

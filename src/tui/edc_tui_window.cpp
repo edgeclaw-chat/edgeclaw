@@ -219,9 +219,21 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // (TaskWidget) with the todo list (TodoWidget) stacked under it. Both sections
     // are always present (an empty list still shows its "▾/▸ Todos 0/0" header, so
     // the sidebar is stable from startup) and take only their natural height.
-    // ResizableSplit keeps "main" on the right at a drag-adjustable width; the
-    // separator is a blank column, so the sidebar stays borderless but grabbable.
-    auto main_area = ::ftxui::Renderer(container_, [this] { return RenderMain(); });
+    // ResizableSplit keeps "main" on the right at a drag-adjustable width; its
+    // separator is style::split_gutter, so the sidebar stays borderless while the
+    // seam between the two panes is still findable (and grabbable).
+    /* The left column keeps the backdrop, and the message bubbles keep pane_bg --
+     * exactly the layout the widgets themselves draw, unchanged. It is deliberately
+     * NOT painted pane_bg as a whole: a pane-coloured bubble on a pane-coloured panel
+     * is 1:1, so two messages and the space between them became one flat field and no
+     * block edge could be found at all. Against the backdrop a bubble is 1.29:1 -- a
+     * real step -- and the backdrop is the palette's own colour (theme::palette's
+     * window_bg, the same one the split gutter and the frame use) rather than whatever
+     * the terminal happens to be themed with, which is what makes the edge measurable.
+     * The pane's outer edge is still the gutter's hairline (style::split_gutter). */
+    auto main_area = ::ftxui::Renderer(container_, [this] {
+        return RenderMain();
+    });
     // The sidebar column is a real component (ui::SidebarView, built in
     // edc_sidebar.cpp) so a test can compose the very same layout: both sections
     // fit-content with their headers pinned, the tree anchored to its bottom --
@@ -234,7 +246,7 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         main_area,                          // back (left pane)
         ::ftxui::Direction::Right,          // direction
         &sidebar_width_,                    // main_size
-        [] { return ::ftxui::text("  "); }, // subtle separator, drag grab area
+        style::split_gutter,                // gutter + hairline, and the drag grab area
     });
     Add(split_);
 

@@ -1,8 +1,10 @@
 ﻿#include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_platform.h"
 #include "edc_sandbox.h"
 #include "edc_scheduler.h"
+#include "edc_string_utils.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "sds.h"
@@ -147,10 +149,39 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
     lctx->result = sdscatprintf(lctx->result, "%s%s\n", prefix, name);
 }
 
+/* ── A leading UTF-8 BOM: metadata on Windows, content elsewhere ─────────────
+ *
+ * PowerShell writes UTF-8 WITH a BOM by default (and so do most Windows editors), so a file the
+ * model has just created through exec_shell starts with U+FEFF. Left in, it shows up as an
+ * invisible character in read_file's result AND makes edit_file's first-line match fail
+ * against a string that looks identical to the one on screen.
+ *
+ * Stripped here, at the TOOL boundary, and NOT inside edc_file_read(): that reader also feeds
+ * config and session state, where the bytes must stay exactly as they are on every platform.
+ * Whether a BOM is metadata at all is the platform's answer (edc_platform_bom_is_metadata).
+ *
+ * |had_bom| reports what was dropped, so a rewrite can put it back: an edit must not change
+ * bytes it was not asked to change. */
+static sds fs_read_for_tool(const char *path, bool *had_bom, EdcError **error)
+{
+    if (had_bom)
+        *had_bom = false;
+
+    sds content = edc_file_read(path, error);
+    if (!content || !edc_platform_bom_is_metadata())
+        return content;
+    if (sdslen(content) < 3 || memcmp(content, "\xEF\xBB\xBF", 3) != 0)
+        return content;
+
+    if (had_bom)
+        *had_bom = true;
+    return edc_str_strip_utf8_bom(content);
+}
+
 static sds edc_tool_read_file_io(struct fs_job *job, EdcError **error)
 {
     EdcError *gerror = NULL;
-    sds content = edc_file_read(job->safe_path, &gerror);
+    sds content = fs_read_for_tool(job->safe_path, NULL, &gerror);
     if (!content)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
@@ -291,7 +322,7 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path, const char 
     if (old_text && old_text[0] == '\0')
     {
         EdcError *gerror = NULL;
-        sds content = edc_file_read(safe_path, &gerror);
+        sds content = fs_read_for_tool(safe_path, NULL, &gerror);
         if (!content)
         {
             if (gerror)
@@ -543,7 +574,8 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     sds result = NULL;
 
     EdcError *gerror = NULL;
-    content = edc_file_read(safe_path, &gerror);
+    bool had_bom = false;
+    content = fs_read_for_tool(safe_path, &had_bom, &gerror);
     if (!content)
     {
         edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
@@ -576,6 +608,15 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     sds new_content;
     edc_edit_file_apply_replacements(content, content_len, old_text, old_len, new_text, positions, selected,
                                      &new_content);
+
+    /* An edit must not change bytes it was not asked to change: a file that had a BOM still has
+     * one afterwards. sdscatsds copies its argument, so the old handle is released here. */
+    if (had_bom)
+    {
+        sds with_bom = sdscatsds(sdsnewlen("\xEF\xBB\xBF", 3), new_content);
+        sdsfree(new_content);
+        new_content = with_bom;
+    }
 
     if (!edc_file_write(safe_path, new_content, -1, error))
     {

@@ -3,6 +3,7 @@
 #include "edc_theme.hpp"
 
 #include <cmath>
+#include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 #include <memory>
 #include <string>
@@ -18,6 +19,14 @@ namespace style
 // Semantic colour roles, not raw values.
 struct Palette
 {
+    // The backdrop: whatever the panes do not cover. A borderless layout spends this
+    // colour on one job only -- the gutter between two panes -- so it is the only thing
+    // that says "two panes meet here". It therefore has to be a visible step away from
+    // pane_bg, which the old #1E1F1C was not: it sat 1.11:1 from #272822, under the
+    // threshold of a perceptible edge, and a terminal themed after Monokai has #272822
+    // as its own background -- so panes, gutter and terminal collapsed into one flat
+    // field with no component boundaries left. Every surface pair is now kept at or
+    // above kMinSurfaceSeparation (see the note on the palettes).
     ::ftxui::Color window_bg;
     ::ftxui::Color pane_bg;
     ::ftxui::Color text_dim;
@@ -25,7 +34,15 @@ struct Palette
     // foreground would pair a light terminal's black with the dark palette's
     // near-black pane.
     ::ftxui::Color text;
+    // Rules and hairlines: the section rules, the todo header rule, the markdown
+    // rule, and the split's one-cell divider. It has to stay readable on BOTH the
+    // pane and the gutter, since the divider is drawn in the gutter and the section
+    // rules on the pane.
     ::ftxui::Color line_dim;
+    // The raised surface: modals and popups float over a pane, so this is the tone
+    // that tells them apart from what is underneath (1.36:1 dark, 1.30:1 light). It
+    // was white on the light palette, i.e. identical to the pane, which left every
+    // popup with no surface of its own.
     ::ftxui::Color dialog_bg;
 
     ::ftxui::Color accent;         // cyan: headers, in_progress, spinner
@@ -59,11 +76,19 @@ struct Palette
 // static initialization -- a file-scope object would run before main() and can
 // crash.
 
+// Smallest contrast ratio allowed between a surface and the surface drawn on top of
+// it (pane on backdrop, hairline on either). Below this a boundary stops being an
+// edge and becomes a rumour: 1.11:1 was invisible, 1.25:1 reads as a step on an
+// ordinary panel. Asserted in tests/test_theme.cpp.
+constexpr double kMinSurfaceSeparation = 1.25;
+
 // The original Monokai, for dark terminals.
 inline const Palette &dark_palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(30, 31, 28),    // window_bg
+        // Not Monokai's #272822: the backdrop has to be its own, darker tone so the
+        // panes and the split gutter stay distinguishable (1.29:1 against the pane).
+        ::ftxui::Color::RGB(14, 15, 13),    // window_bg
         ::ftxui::Color::RGB(39, 40, 34),    // pane_bg
         ::ftxui::Color::RGB(117, 113, 94),  // text_dim
         ::ftxui::Color::RGB(248, 248, 242), // text
@@ -101,12 +126,18 @@ inline const Palette &dark_palette()
 inline const Palette &light_palette()
 {
     static const Palette k = {
-        ::ftxui::Color::RGB(237, 237, 237), // window_bg
+        // Darkened from Monokai Light's inactiveSelection #EDEDED, which sat only
+        // 1.17:1 from the white pane -- the same "one flat field" failure the dark
+        // palette had. 1.32:1 against the pane, and line_dim is a step below both.
+        ::ftxui::Color::RGB(223, 223, 223), // window_bg
         ::ftxui::Color::RGB(255, 255, 255), // pane_bg
         ::ftxui::Color::RGB(159, 159, 143), // text_dim
         ::ftxui::Color::RGB(0, 0, 0),       // text
-        ::ftxui::Color::RGB(224, 224, 224), // line_dim
-        ::ftxui::Color::RGB(255, 255, 255), // dialog_bg
+        // Monokai Light's invisibles is #E0E0E0, i.e. exactly the backdrop: a rule in
+        // that colour vanishes into the gutter and is barely there on white. One step
+        // down (1.61:1 on the pane, 1.21:1 on the gutter) makes rules read as lines.
+        ::ftxui::Color::RGB(204, 204, 204), // line_dim
+        ::ftxui::Color::RGB(226, 226, 226), // dialog_bg (raised surface, not the pane)
         ::ftxui::Color::RGB(40, 198, 228),  // accent
         ::ftxui::Color::RGB(106, 175, 25),  // ok
         ::ftxui::Color::RGB(253, 151, 31),  // warn
@@ -160,6 +191,23 @@ inline const Palette &palette()
     if (const std::shared_ptr<const IPalette> &provider = palette_provider_slot())
         return provider->colors();
     return theme::IsLight() ? light_palette() : dark_palette();
+}
+
+// ── The borderless split's seam ──────────────────────────────
+// One cell of backdrop plus one hairline: the only boundary the borderless layout
+// draws. Neither pane carries a frame, so this is what has to survive -- and pure
+// tonal contrast did not: the old two-blank-cell separator was painted in window_bg,
+// 1.11:1 from pane_bg, which reads as nothing (and as exactly nothing on a terminal
+// themed after Monokai, where pane_bg IS the terminal's own background). Hence the
+// hairline, in the same dim rule colour the section headers, the todo header and the
+// input box already wear. It is also ResizableSplit's drag handle, so a visible mark
+// is honest: that column is grabbable.
+inline ::ftxui::Element split_gutter()
+{
+    return ::ftxui::hbox({
+        ::ftxui::text(" "),
+        ::ftxui::text("│") | ::ftxui::color(palette().line_dim),
+    });
 }
 
 // ── The input box's accents ──────────────────────────────────

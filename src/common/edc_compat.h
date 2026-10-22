@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/types.h>
 
 /*
@@ -70,11 +71,6 @@ static inline char *win32_strndup(const char *s, size_t n)
 #define usleep(usec) Sleep((DWORD)((usec) / 1000))
 #endif
 
-/* ---- time ---- */
-#ifdef _WIN32
-#define localtime_r(tp, tm) localtime_s(tm, tp)
-#endif
-
 /* ---- I/O ---- */
 #ifdef _WIN32
 #include <stdio.h>
@@ -138,6 +134,13 @@ static inline char *win32_realpath(const char *path, char *resolved)
 
 /* ---- environment ---- */
 #define unsetenv(name) SetEnvironmentVariable(name, NULL)
+static inline int win32_setenv(const char *name, const char *value, int overwrite)
+{
+    (void)overwrite;
+    SetEnvironmentVariable(name, value);
+    return _putenv_s(name, value) == 0 ? 0 : -1;
+}
+#define setenv(name, value, overwrite) win32_setenv(name, value, overwrite)
 
 /* ---- binary mode flag (Windows text-mode open() breaks binary I/O) ---- */
 #ifndef O_BINARY
@@ -241,6 +244,46 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 #endif /* _WIN32 */
 
 /* =========================================================================
+ *  Time
+ * ========================================================================= */
+
+/* localtime_r / gmtime_r as FUNCTIONS with the POSIX signature on every platform.
+ *
+ * These cannot be `#define`s: the platforms disagree on the SHAPE of the call -- POSIX
+ * returns struct tm *, the Windows CRT returns errno_t and takes the arguments in the
+ * opposite order -- so a macro is only usable where the return value is ignored.
+ * `return localtime_r(&t, out) != NULL;` expanded to `errno_t != NULL`, which is always
+ * true, and that is why four files kept their own #ifdef copy instead of using it.
+ * A caller asks for a pointer here and gets one, on both platforms. */
+static inline struct tm *edc_localtime_r(const time_t *t, struct tm *out)
+{
+#ifdef _WIN32
+    return localtime_s(out, t) == 0 ? out : NULL;
+#else
+    return localtime_r(t, out);
+#endif
+}
+
+static inline struct tm *edc_gmtime_r(const time_t *t, struct tm *out)
+{
+#ifdef _WIN32
+    return gmtime_s(out, t) == 0 ? out : NULL;
+#else
+    return gmtime_r(t, out);
+#endif
+}
+
+/* =========================================================================
+ *  Platform capabilities
+ * ========================================================================= */
+
+/* What this build can do lives in edc_platform.h: one table of CHOICES (is there a
+ * kernel sandbox, which shell to spawn, how to start it) and the few OPERATIONS whose
+ * implementation differs per platform (mlock, signalling a process group). This header
+ * kept the single yes/no answer while there was exactly one question; several later,
+ * "ask the platform" needed a home of its own. */
+
+/* =========================================================================
  *  GLib compatibility (transitional — remove once all callers use EDC_*)
  * ========================================================================= */
 
@@ -296,5 +339,10 @@ typedef ssize_t gssize;
 #ifdef _WIN32
 #define timegm _mkgmtime
 #endif
+
+/* Path semantics live in edc_path.h (separator, absolute, containment, normal form).
+ * They were moved out of this transitional header because nothing treated them as the
+ * one implementation while they sat here -- three copies had already grown elsewhere.
+ * This header keeps only what is a PLATFORM fact (PATH_SEP) or a libc shim. */
 
 #endif /* EDC_COMPAT_H */

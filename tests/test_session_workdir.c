@@ -553,6 +553,31 @@ static void test_history_dir_convention(void)
     edc_config_free(cfg);
 }
 
+/* Regression: an absolute path must never be anchored at a base. The old code treated
+ * only a leading slash as absolute, so a Windows path like "D:\ws" became "<base>\D:\ws"
+ * and realpath failed -- creating a session with an explicit workdir failed outright.
+ * The base here does not exist: a relative path must fail, an absolute one must resolve. */
+static void test_absolute_workdir_not_anchored(void)
+{
+    TEST("absolute workdir is not anchored at base (platform form)");
+
+    sds cwd = edc_cwd();
+    char *real = cwd ? realpath(cwd, NULL) : NULL;
+    CHECK(cwd != NULL && real != NULL, "cwd is an absolute, existing directory");
+
+    EdcError *err = NULL;
+    sds resolved = edc_session_resolve_workdir("/no/such/base/edgeclaw-xyz", cwd, &err);
+    CHECK(resolved != NULL, "absolute workdir resolves despite a bogus base");
+    CHECK(resolved && real && strcmp(resolved, real) == 0, "resolved == realpath(cwd)");
+    if (!resolved && err)
+        log_error("    resolve error: %s", err->message);
+    if (err)
+        edc_error_free(err);
+    sdsfree(resolved);
+    sdsfree(cwd);
+    free(real);
+}
+
 int main(void)
 {
     log_info("== test_session_workdir ==");
@@ -561,6 +586,7 @@ int main(void)
     test_default_unbound();
     test_invalid_workdir();
     test_resolve_relative();
+    test_absolute_workdir_not_anchored();
     test_resolve_tilde();
     test_persist_roundtrip();
     test_verify_path_at();

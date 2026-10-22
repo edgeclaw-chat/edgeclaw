@@ -1,4 +1,6 @@
 #include "edc_shell.h"
+#include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_session_store.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
@@ -96,11 +98,14 @@ static sds edc_shell_append_provider_models(sds out, const char *pid, const char
 }
 
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
-                              struct edc_channel_message *message)
+                              const struct edc_ast_cmd *cmd)
 {
-    sds content = sdstrim(sdsnew(message->content), " \t\r\n");
+    /* The line was parsed once (edc_ast_cmd): name and every argument are already
+     * unquoted here, so these builtins match on the NAME and never on raw text. */
+    if (!cmd || !cmd->name)
+        return false;
 
-    if (strcmp(content, "/whoami") == 0)
+    if (strcmp(cmd->name, "whoami") == 0)
     {
         struct edc_session *sess = edc_session_manager_get_active(sm);
         struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
@@ -128,14 +133,20 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         }
         edc_commands_reply(to, out);
         sdsfree(out);
-        sdsfree(content);
         return true;
     }
-    if (strcmp(content, "/model") == 0 || strncmp(content, "/model ", 7) == 0)
+    if (strcmp(cmd->name, "model") == 0)
     {
-        const char *arg = strncmp(content, "/model ", 7) == 0 ? content + 7 : "";
-        while (*arg == ' ' || *arg == '\t')
-            arg++;
+        /* The words joined back with single spaces: `/model <id>` and
+         * `/model search <q>` keep reading exactly as they always did. */
+        sds argtext = sdsempty();
+        for (int i = 0; i < cmd->argc; i++)
+        {
+            if (i > 0)
+                argtext = sdscat(argtext, " ");
+            argtext = sdscatsds(argtext, cmd->argv[i]);
+        }
+        const char *arg = argtext;
         const char *cur = cfg->llm_api_conf.model;
 
         if (*arg == '\0')
@@ -208,23 +219,28 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
-        sdsfree(content);
+        sdsfree(argtext);
         return true;
     }
-    if (strcmp(content, "/sandbox") == 0 || strncmp(content, "/sandbox ", 9) == 0)
+    if (strcmp(cmd->name, "sandbox") == 0)
     {
-        sds arg = sdstrim(sdsnew(content + 8), " \t");
-
-        /* Split "<verb> [path]". */
-        char *sp = strchr(arg, ' ');
-        sds verb = sp ? sdsnewlen(arg, (size_t)(sp - arg)) : sdsdup(arg);
-        sds rest = sp ? sdstrim(sdsnew(sp + 1), " \t") : sdsempty();
+        /* argv[0] is the verb, argv[1] the path -- the parser already unquoted both, so
+         * `/sandbox add-rw 'D:\my repo'` arrives as ONE path word (the raw-text version
+         * stored the quotes in config.json verbatim). */
+        const char *verb = (cmd->argc > 0) ? cmd->argv[0] : "";
+        const char *rest = (cmd->argc > 1) ? cmd->argv[1] : "";
+        const int nargs = cmd->argc;
 
         struct edc_config *conf = cfg;
 
-        if (sdslen(verb) == 0)
+        if (*verb == '\0')
         {
-            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", conf->enable_sandbox ? "on" : "off");
+            /* A platform without a backend is not "off": the switch cannot be turned on
+             * at all, and the user should see that instead of hunting for the reason. */
+            const char *state = conf->enable_sandbox ? "on"
+                                : edc_platform_has_sandbox() ? "off"
+                                                             : "off (not supported on this platform)";
+            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", state);
             reply = edc_shell_sandbox_paths_md(reply, conf);
             reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
                                   "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
@@ -234,9 +250,16 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         else if (strcmp(verb, "on") == 0 || strcmp(verb, "off") == 0)
         {
             bool enable = strcmp(verb, "on") == 0;
+            /* The refusal itself lives in edc_config_set_sandbox_enabled (one place); the
+             * reply only has to say WHICH refusal it was, so "on" on a platform with no
+             * backend does not read as a failed write to config.json. */
+            const bool supported = edc_platform_has_sandbox();
             bool saved = edc_config_set_sandbox_enabled(cfg, enable);
-            sds reply = sdscatprintf(sdsempty(), "**Sandbox** — %s%s", enable ? "on" : "off",
-                                     saved ? "" : " (not persisted: config.json write failed)");
+            const char *why = "";
+            if (!saved)
+                why = (enable && !supported) ? " (not supported on this platform)"
+                                             : " (not persisted: config.json write failed)";
+            sds reply = sdscatprintf(sdsempty(), "**Sandbox** `%s`%s", enable ? "on" : "off", why);
             edc_commands_reply(to, reply);
             sdsfree(reply);
             log_info("/sandbox: filesystem sandbox %s (persisted=%d)", enable ? "enabled" : "disabled", saved);
@@ -255,10 +278,11 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                                                                : EDC_SANDBOX_PATH_DENY;
             const char *klabel = (kind == EDC_SANDBOX_PATH_RW) ? "rw" : (kind == EDC_SANDBOX_PATH_DENY) ? "deny" : "ro";
             bool add = (strncmp(verb, "add-", 4) == 0);
-            if (sdslen(rest) == 0)
+            if (nargs != 2)
             {
-                edc_commands_reply(to,
-                                   "Usage: /sandbox add-rw|add-ro|add-deny <dir> | rm-rw|rm-ro|rm-deny <dir>");
+                edc_commands_reply(to, "Usage: /sandbox add-rw|add-ro|add-deny <dir> | "
+                                       "rm-rw|rm-ro|rm-deny <dir> (quote a directory that contains "
+                                       "spaces)");
             }
             else
             {
@@ -283,29 +307,26 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                                "Usage: /sandbox [on|off|list] | add-rw|add-ro|add-deny|rm-rw|rm-ro|rm-deny <dir>");
         }
 
-        sdsfree(verb);
-        sdsfree(rest);
-        sdsfree(arg);
-        sdsfree(content);
         return true;
     }
-    if (strcmp(content, "/shell") == 0 || strncmp(content, "/shell ", 7) == 0)
+    if (strcmp(cmd->name, "shell") == 0)
     {
         /* The ONLY way to flip the shell-like syntax switch (there is deliberately no CLI
-         * flag): one statement, and it persists. Off by default -- the operators below
-         * spell out a Unix shell vocabulary, so a user who does not expect it should not
-         * get a half-parsed task out of it. */
-        sds arg = sdstrim(sdsnew(content + 6), " \t");
+         * flag): one statement, and it persists. ON by default -- the operators below are
+         * the product's own idiom; `/shell off` is the escape hatch for a workflow that
+         * wants every line to be one verbatim task description. */
+        const char *arg = (cmd->argc > 0) ? cmd->argv[0] : "";
         sds reply;
-        if (sdslen(arg) == 0)
+        if (*arg == '\0')
         {
             reply = sdscatprintf(sdsempty(),
                                  "## Shell-like syntax `%s`\n\n"
                                  "The sigils `+<desc>` (open a new group) and `!<cmd>` (run a local shell "
                                  "command), and the operators `|` `;` `&` `>` `>>` `2>` — no `<`\n"
                                  "(it is `@file`'s job now).\n\n"
-                                 "Off, every line that is not a `/` command is one task description, "
-                                 "verbatim.\n\n"
+                                 "On (the default), a line that begins with a quote or the `+` sigil is "
+                                 "parsed; every other line is one task description, verbatim. Off, that "
+                                 "is true of every line, the quoted and `+` forms included.\n\n"
                                  "Toggle: `/shell on|off` (persisted to config.json).\n",
                                  cfg->shell_syntax ? "on" : "off");
         }
@@ -323,11 +344,8 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         }
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfree(arg);
-        sdsfree(content);
         return true;
     }
-    sdsfree(content);
     return false;
 }
 
@@ -572,10 +590,10 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
 }
 
 /* Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
- * tokenizing, so no `| ; & > >> 2> <` operators and no `+ ! @` sigil. This is the
- * DEFAULT path, and it is why the switch exists: those operators spell out a Unix shell
- * vocabulary, and a user who does not expect them would otherwise get a silently
- * half-parsed task instead of their text.
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ ! @` sigil. `/shell off`
+ * selects this path (the DEFAULT is ON); the switch exists because those operators spell
+ * out a Unix shell vocabulary, and a user who does not expect them would otherwise get a
+ * silently half-parsed task instead of their text.
  *
  * It goes through edc_shell_spawn_task (the single creation entry point) rather than
  * building a spec here, so "how an input line becomes a task" keeps one owner. The
@@ -583,10 +601,10 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
  * place to put new work. */
 /**
  * Shell-like syntax OFF: the whole line becomes ONE task description, verbatim -- no
- * tokenizing, so no `| ; & > >> 2> <` operators and no `+ !` sigil. This is the DEFAULT
- * path, and it is why the switch exists: those operators spell out a Unix shell
- * vocabulary, and a user who does not expect them would otherwise get a silently
- * half-parsed task instead of their text.
+ * tokenizing, so no `| ; & > >> 2> <` operators and no `+ !` sigil. `/shell off` selects
+ * this path (the DEFAULT is ON); the switch exists because those operators spell out a
+ * Unix shell vocabulary, and a user who does not expect them would otherwise get a
+ * silently half-parsed task instead of their text.
  *
  * It goes through edc_shell_spawn_task (the single creation entry point) rather than
  * building a spec here, so "how an input line becomes a task" keeps one owner. The

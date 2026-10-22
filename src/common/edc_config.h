@@ -12,9 +12,65 @@
  *
  * Kept as a comma-separated string so edc_init_env (which persists the list as
  * text) and edc_config (which stores it as an array) share one source of
- * truth. /run is needed because /etc/resolv.conf is usually a symlink into it
- * (DNS), and /sys for the many tools that inspect kernel state read-only. */
+ * truth.
+ *
+ * The lists differ because the kernel backends differ, not for style:
+ * on Linux /run is needed because /etc/resolv.conf is usually a symlink into it
+ * (DNS) and /sys is read by the many tools that inspect kernel state. On macOS
+ * none of /proc, /sys, /run, /lib exists -- leaving them in grants nothing and
+ * would silently shrink the whitelist -- while three other roots are mandatory:
+ * /System (the dyld shared cache; without it dylib loading aborts before main),
+ * /Library (Frameworks: python.org, /Library/Apple, the CLT) and /Applications
+ * (the /usr/bin/git, clang and make shims are thin stubs that dlopen
+ * /Applications/Xcode-*.app/.../libxcrun.dylib). /opt and /usr/local cover
+ * Homebrew on Apple Silicon and Intel respectively.
+ *
+ * Windows has no fixed layout to name here: %SystemRoot% is C:\Windows on almost every
+ * machine, and "almost" is exactly the assumption that leaves a whitelist pointing at a
+ * directory which does not exist (granting nothing, silently). Its list is therefore built
+ * from the environment at run time -- edc_sandbox_platform_ro_paths() -- and the macro is
+ * only the fallback for a process with no environment at all. */
+#if defined(_WIN32)
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "C:\\Windows,C:\\Program Files,C:\\Program Files (x86),C:\\ProgramData"
+#elif defined(__APPLE__)
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/System,/Library,/Applications,/bin,/sbin,/etc,/dev,/opt,/usr/local"
+#else
 #define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run"
+#endif
+
+/* Default writable set, minus the two entries that depend on runtime values
+ * (the workspace and ~/.cache), which both callers add themselves. */
+#define EDC_SANDBOX_DEFAULT_RW_PATHS "/tmp,/dev"
+
+/* $TMPDIR writable path, or NULL.
+ *
+ * TMPDIR is per-user and per-boot (macOS: /var/folders/xx/.../T), so it cannot
+ * be a compile-time default, yet the toolchain needs it: xcrun and the compilers
+ * write their caches there and fail with "couldn't create cache file" without it.
+ * edc_shell_env forwards TMPDIR to the command, so the sandbox has to allow the
+ * same path. Always NULL on Linux, where /tmp already covers it. */
+const char *edc_sandbox_default_tmpdir(void);
+
+/* The read-only whitelist this platform WOULD use, ready for the day it has a backend:
+ * the compile-time list on POSIX, and on Windows the system directories read out of
+ * %SystemRoot% / %ProgramFiles% / %ProgramFiles(x86)% / %ProgramData% (falling back to
+ * EDC_SANDBOX_DEFAULT_RO_PATHS when the environment says nothing). Both are comma
+ * separated, the shape edc_init_env persists and edc_config splits.
+ *
+ * Separate from edc_sandbox_default_ro_paths() below on purpose: that one applies the "no
+ * backend, no policy" rule, this one is the answer to "what would it be", which is what the
+ * tests can assert while the Windows backend is still missing. */
+const char *edc_sandbox_platform_ro_paths(void);
+
+/* The defaults actually IN FORCE on this platform, or "" where the sandbox has no backend:
+ * there is nothing to whitelist then, and writing a list nothing consults is how the POSIX
+ * whitelist ended up in a Windows config.json claiming C:\usr is readable.
+ *
+ * What every platform does have is the app's own directories, which the callers add. The
+ * writable list has no Windows entry yet: %TEMP% is per-user (like $TMPDIR on macOS) and
+ * belongs with the backend, not with a compile-time constant. */
+const char *edc_sandbox_default_rw_paths(void);
+const char *edc_sandbox_default_ro_paths(void);
 
 struct llm_api_conf
 {
@@ -96,12 +152,13 @@ struct edc_config
      * (default -> false). */
     bool skip_context_files;
     /* Whether the SHELL-LIKE input syntax is on: the sigils `+<desc>` (a new group) and
-     * `!<cmd>` (the local shell), and the operators `|` `;` `&` `>` `>>` `2>` `<`. OFF by
-     * default -- those operators spell out a Unix shell vocabulary, which a user coming
-     * from another system has no reason to know, and getting them wrong is silent (the
-     * line just becomes one odd task). config.json's top-level `shell_syntax` (true)
-     * turns it on. Flipped at runtime ONLY through /shell on|off -- deliberately no CLI
-     * flag, so there is one way to say it and it is persisted with it. */
+     * `!<cmd>` (the local shell), and the operators `|` `;` `&` `>` `>>` `2>` `<`. ON by
+     * default -- those operators are this product's own idiom, and ordinary text still
+     * needs no escaping, because a line that begins with no quote and no sigil is never
+     * parsed. config.json's top-level `shell_syntax` (false) turns it OFF, which makes
+     * every line one verbatim task description. Flipped at runtime ONLY through
+     * /shell on|off -- deliberately no CLI flag, so there is one way to say it and it is
+     * persisted with it. */
     bool shell_syntax;
     /* Read the project-level resource dirs (./.edgeclaw, ./.claude, ./.agents, ./.opencode,
      * ./.pi) for prompt templates and skills. ON by default; config.json's top-level

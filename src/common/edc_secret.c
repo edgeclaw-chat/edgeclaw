@@ -1,5 +1,6 @@
 ﻿#include "edc_secret.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "log.h"
@@ -14,7 +15,6 @@
 #include <stdio.h>
 #include <string.h>
 #ifndef _WIN32
-#include <sys/mman.h>
 #include <termios.h>
 #endif
 #include <unistd.h>
@@ -155,15 +155,22 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
 
 static bool lock_master_key(void)
 {
-#ifndef _WIN32
-    if (mlock(g_master_key, BC_KEY_SIZE) != 0)
+    /* Which of the three answers comes back is a platform fact (edc_platform.h): no mlock
+     * at all is normal, mlock refusing is worth a warning, and either way the key stays
+     * usable -- it is simply not pinned against being swapped out. */
+    switch (edc_platform_lock_memory(g_master_key, BC_KEY_SIZE))
     {
+    case EDC_LOCK_OK:
+        g_key_mlocked = true;
+        return true;
+    case EDC_LOCK_UNSUPPORTED:
+        log_debug("master key is not locked in memory: no mlock on this platform");
+        return true;
+    case EDC_LOCK_FAILED:
+    default:
         log_warn("mlock master key failed: %s", strerror(errno));
         return false;
     }
-    g_key_mlocked = true;
-#endif
-    return true;
 }
 
 static bool store_verify_hash(const char *edc_home)
@@ -348,13 +355,11 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
 
 void edc_secret_cleanup(void)
 {
-#ifndef _WIN32
     if (g_key_mlocked)
     {
-        munlock(g_master_key, BC_KEY_SIZE);
+        edc_platform_unlock_memory(g_master_key, BC_KEY_SIZE);
         g_key_mlocked = false;
     }
-#endif
     memset(g_master_key, 0, BC_KEY_SIZE);
     g_secret_ready = false;
 }
@@ -364,13 +369,11 @@ void edc_secret_lockdown(void)
     if (!g_secret_ready)
         return;
 
-#ifndef _WIN32
     if (g_key_mlocked)
     {
-        munlock(g_master_key, BC_KEY_SIZE);
+        edc_platform_unlock_memory(g_master_key, BC_KEY_SIZE);
         g_key_mlocked = false;
     }
-#endif
     memset(g_master_key, 0, BC_KEY_SIZE);
     g_secret_ready = false;
 

@@ -32,6 +32,12 @@ void edc_strfreev(char **str_array);
 
 sds edc_str_utf8_make_valid(const char *str, ssize_t len);
 
+/* Drop a leading UTF-8 BOM (EF BB BF) if there is one, and return the same handle (the caller
+ * keeps ownership; sds shrinks in place). Anything else -- no BOM, a shorter buffer, a UTF-16
+ * BOM -- is returned untouched: a UTF-16 file is not UTF-8 at all, and quietly eating its first
+ * two bytes would only make the next reader misread it as text. */
+sds edc_str_strip_utf8_bom(sds content);
+
 sds edc_str_utf8_truncate(const char *str, size_t max_chars, bool append_dots);
 
 sds edc_str_uri_escape(const char *str, size_t len);

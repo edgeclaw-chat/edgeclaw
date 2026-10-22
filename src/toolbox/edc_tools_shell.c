@@ -1,4 +1,5 @@
-﻿#include "edc_compat.h"
+#include "edc_compat.h"
+#include "edc_platform.h"
 #include "edc_error.h"
 #include "edc_output_buf.h"
 #include "edc_sandbox.h"
@@ -91,14 +92,13 @@ static void shell_ctx_kill_group(struct edc_tool_shell_ctx *ctx)
 {
     if (!ctx || ctx->child_exited)
         return;
-#ifdef _WIN32
-    /* No process groups to signal here. */
-    uv_process_kill(&ctx->process, SIGTERM);
-#else
-    if (ctx->process.pid > 0)
-        kill(-ctx->process.pid, SIGKILL);
+    /* POSIX: the child is spawned detached (setsid), so it leads its own group and the
+     * GROUP signal is what also takes down grandchildren -- for `sh -c 'a && sudo b'`,
+     * killing only the shell leaves the grandchild running and holding the pipes open.
+     * edc_platform_kill_process_group() is the no-op form where there are no process
+     * groups, so the child itself is terminated here either way. */
+    edc_platform_kill_process_group(ctx->process.pid);
     uv_process_kill(&ctx->process, SIGKILL);
-#endif
 }
 
 /* Why the command ended is recorded as a flag, not as text appended to the output: the
@@ -208,6 +208,42 @@ static void on_shell_exit(uv_process_t *process, int64_t exit_status, int term_s
     shell_ctx_try_complete(ctx);
 }
 
+/* Windows: a command's bytes can arrive in the ANSI code page -- a native grandchild (python,
+ * gcc: they follow the CRT locale, not the console) or a localized tool. Nothing downstream can
+ * tell: read_file, the TUI and the model's copy all assume UTF-8, and the head is where the
+ * model's copy is cut. So the one invariant is established here, once. Gated by the platform:
+ * on POSIX the conversion answers NULL and this helper does nothing at all.
+ *
+ * Per LINE and not per buffer on purpose -- one command really does emit both encodings in one
+ * invocation (measured: PowerShell's own text plus a python grandchild), so judging the whole
+ * buffer would corrupt the half that was already right. */
+static void shell_ctx_normalize_stream(struct edc_output_buf *b, size_t *converted)
+{
+    *converted = 0;
+    if (!b->data || sdslen(b->data) == 0)
+        return;
+
+    /* The capture cap cut the stream at a byte offset, so the last line can end in the middle
+     * of a character. Transcoding half a character produces a tail that LOOKS like content;
+     * drop it instead -- the truncation note already tells the reader the tail is missing. */
+    if (b->truncated && b->data[sdslen(b->data) - 1] != '\n')
+    {
+        char *last_nl = strrchr(b->data, '\n');
+        if (last_nl)
+            sdsrange(b->data, 0, (ssize_t)(last_nl - b->data));
+        else
+            sdsclear(b->data);
+    }
+
+    size_t len = 0;
+    char *utf8 = edc_platform_output_to_utf8(b->data, sdslen(b->data), &len, converted);
+    if (!utf8)
+        return;
+    sdsfree(b->data);
+    b->data = sdsnewlen(utf8, len);
+    free(utf8); /* malloc'd by the platform layer: NOT an sds handle, so not sdsfree */
+}
+
 static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 {
     if (ctx->completed)
@@ -215,6 +251,13 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     ctx->completed = true;
 
     uv_timer_stop(&ctx->timeout_timer);
+
+    /* Before the notices are formatted, because the truncation note reports what the reader
+     * actually GETS ("kept the first X"), and transcoding changes that byte count. */
+    size_t converted_out = 0;
+    size_t converted_err = 0;
+    shell_ctx_normalize_stream(&ctx->out, &converted_out);
+    shell_ctx_normalize_stream(&ctx->err, &converted_err);
 
     sds out = ctx->out.data ? ctx->out.data : sdsempty();
     sds err = ctx->err.data ? ctx->err.data : sdsempty();
@@ -246,6 +289,12 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     }
     if (ctx->timed_out)
         result = sdscat(result, "[command timed out]\n");
+    /* Transcoding is a change we made to the output, so it is announced rather than silent:
+     * whoever is chasing an encoding problem needs to know which lines are not the raw bytes,
+     * and this line is also how the mechanism stays observable at all. */
+    if (converted_out + converted_err > 0)
+        result = sdscatprintf(result, "[encoding: %zu line(s) converted from cp%u to utf-8]\n",
+                              converted_out + converted_err, edc_platform_ansi_codepage());
 
     if (sdslen(out) > 0)
         result = sdscatprintf(result, "%s\n", out);
@@ -367,48 +416,52 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      * connected. It also leaves the child in libuv's job object, so it does not
      * outlive the app.
      */
-#ifdef _WIN32
-    options.flags |= UV_PROCESS_WINDOWS_HIDE;
-#else
-    options.flags |= UV_PROCESS_DETACHED;
-#endif
+    /* Which flags is the same platform fact, one line up: detach on POSIX (setsid), hide
+     * on Windows (no console, pipes connected). */
+    const struct edc_platform_caps *caps = edc_platform_caps();
+    options.flags |= (caps->spawn_mode == EDC_SPAWN_HIDE) ? UV_PROCESS_WINDOWS_HIDE : UV_PROCESS_DETACHED;
 
     const char *spawn_file = NULL;
     char **spawn_args = NULL;
-    char *plain_args[5] = {0};
+    char *plain_args[EDC_SHELL_ARGV_HEAD_MAX + 2] = {0};
     sds sandbox_helper_file = NULL;
     char **sandbox_helper_args = NULL;
     char **spawn_env = NULL;
-#ifdef _WIN32
-    plain_args[0] = (char *)"powershell.exe";
-    plain_args[1] = (char *)"-NonInteractive";
-    plain_args[2] = (char *)"-Command";
-    plain_args[3] = (char *)cmd_s;
-    spawn_file = "powershell.exe";
+    /* The shell is a platform FACT (see edc_platform.h), not a decision made here: the
+     * table holds the file to spawn and the argument prefix ("sh" "-c", or
+     * "powershell.exe" "-NonInteractive" "-Command"), and the command line is appended.
+     * Keeping it in the table is what stops the three places that care about the shell --
+     * this one, the kill above and the tests -- from each knowing their own answer. */
+    /* Windows: the encoding prologue goes IN FRONT of the command line (the "<- why" lives
+     * with the field in edc_platform.h). It is glued to the command rather than passed
+     * separately because the shell takes ONE command line, and `A;B` means "run A, then B" --
+     * the prologue already ends with ';', so no separator is introduced here. POSIX has no
+     * prologue, so on POSIX this is a NULL test and nothing else. */
+    sds full_cmd = NULL;
+    const char *cmd_line = cmd_s;
+    if (caps->shell_prologue)
+        cmd_line = full_cmd = sdscat(sdsnew(caps->shell_prologue), cmd_s);
+
+    int argv_n = 0;
+    for (const char *const *a = caps->shell_argv_head;
+         a && *a && argv_n < (int)G_N_ELEMENTS(plain_args) - 2; a++)
+        plain_args[argv_n++] = (char *)*a;
+    plain_args[argv_n++] = (char *)cmd_line;
+    plain_args[argv_n] = NULL;
+    spawn_file = caps->shell_file;
     spawn_args = plain_args;
-#else
-    /* When the filesystem sandbox is enabled, run the command through the
-     * embedded sandbox helper: it applies the kernel sandbox (Landlock/seccomp)
-     * in its own fresh process and then execs /bin/sh. We cannot apply it here
-     * (it would sandbox the app) nor between fork/exec (not async-signal-safe
-     * in this multithreaded process). exec keeps the pid, so the timeout kill
-     * and exit handling below are unaffected. Falls back to /bin/sh when the
-     * helper cannot be materialized. */
-    if (tb_ctx->tb->conf && tb_ctx->tb->conf->enable_sandbox &&
+
+    /* Where there IS a kernel sandbox, run the command through the embedded helper: it
+     * applies Landlock/seccomp in its own fresh process and then execs the shell, keeping
+     * the pid, so the timeout kill and the exit handling below are unaffected. It cannot
+     * be applied here (that would sandbox the app) nor between fork and exec (not
+     * async-signal-safe in this multithreaded process). The table above is the fallback. */
+    if (caps->kernel_sandbox && tb_ctx->tb->conf && tb_ctx->tb->conf->enable_sandbox &&
         edc_sandbox_helper_prepare(tb_ctx->tb->conf, cmd_s, &sandbox_helper_file, &sandbox_helper_args))
     {
         spawn_file = sandbox_helper_file;
         spawn_args = sandbox_helper_args;
     }
-    else
-    {
-        plain_args[0] = (char *)"sh";
-        plain_args[1] = (char *)"-c";
-        plain_args[2] = (char *)cmd_s;
-        spawn_file = "/bin/sh";
-        spawn_args = plain_args;
-    }
-#endif
     options.file = spawn_file;
     options.args = spawn_args;
     /* Minimal whitelist, never NULL: NULL makes uv_spawn inherit the app's
@@ -427,6 +480,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
         sdsfree(sandbox_helper_file);
     free(sandbox_helper_args);
     edc_shell_env_free(spawn_env);
+    sdsfree(full_cmd); /* libuv has built the command line by now */
 
     if (r != 0)
     {
@@ -547,13 +601,9 @@ void edc_tool_shell_abort_all(void)
         LL_DELETE(active_contexts, ctx);
         if (!ctx->child_exited)
         {
-            uv_process_kill(&ctx->process,
-#ifdef _WIN32
-                            SIGTERM
-#else
-                            SIGKILL
-#endif
-            );
+            /* SIGKILL everywhere: libuv ignores the signal NUMBER on Windows (it calls
+             * TerminateProcess), and this is a teardown -- there is nobody left to ask politely. */
+            uv_process_kill(&ctx->process, SIGKILL);
         }
         uv_timer_stop(&ctx->timeout_timer);
 

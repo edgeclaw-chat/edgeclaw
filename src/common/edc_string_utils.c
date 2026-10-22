@@ -370,3 +370,13 @@ sds edc_url_chat_completions(const char *base_url)
         return out; /* already a full endpoint */
     return sdscat(out, suffix);
 }
+
+sds edc_str_strip_utf8_bom(sds content)
+{
+    if (!content || sdslen(content) < 3)
+        return content;
+    if (memcmp(content, "\xEF\xBB\xBF", 3) != 0)
+        return content;
+    sdsrange(content, 3, -1);
+    return content;
+}

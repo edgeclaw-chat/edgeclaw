@@ -1,5 +1,6 @@
 #include "edc_file_index.h"
 #include "edc_compat.h"
+#include "edc_path.h"
 
 #include "edc_file_utils.h"
 #include "sds.h"
@@ -71,8 +72,6 @@ static bool prefix_ci(const char *name, const char *prefix, size_t plen)
 static void list_cb(const char *name, int type, void *ud)
 {
     struct list_ctx *c = ud;
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-        return;
     if (c->n >= EDC_FILES_MAX_RESULTS)
         return;
     if (!prefix_ci(name, c->prefix, c->plen))
@@ -133,8 +132,8 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
         }
         if (q[1] == '\0')
             expanded = home;
-        else if (q[1] == '/')
-            expanded = sdscat(home, q + 1); /* home already has no trailing '/'  */
+        else if (edc_path_is_sep(q[1])) /* "~/" and "~\\" both mean home */
+            expanded = sdscat(home, q + 1); /* home has no trailing separator */
         else
         {
             sdsfree(home);
@@ -143,13 +142,16 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
         q = expanded;
         absolute = true;
     }
-    else if (q[0] == '/')
+    else if (edc_path_is_absolute(q)) /* "/x" and, on Windows, "D:\\x" and a UNC root */
     {
         absolute = true;
     }
 
     /* 2. Split into "the directory to read" and "the name being typed". */
-    const char *last = strrchr(q, '/');
+    const char *last = NULL;
+    for (const char *c = q; *c; c++)
+        if (edc_path_is_sep(*c))
+            last = c;
     sds dir_part = last ? sdsnewlen(q, (size_t)(last - q) + 1) : sdsempty();
     sds prefix = sdsnew(last ? last + 1 : q);
 
@@ -181,7 +183,11 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
         return 0;
     }
 
-    sds dir_with_slash = sdscatprintf(sdsempty(), "%s%s", dir_real, strcmp(dir_real, "/") == 0 ? "" : "/");
+    /* The listing prefix has to end on a separator: "/" on POSIX, and on Windows
+     * either "D:\\" (already ended) or a bare "D:". */
+    const size_t dir_len = strlen(dir_real);
+    const bool dir_ended = dir_len > 0 && edc_path_is_sep(dir_real[dir_len - 1]);
+    sds dir_with_slash = sdscatprintf(sdsempty(), "%s%s", dir_real, dir_ended ? "" : "/");
     struct list_ctx ctx = {.dir = dir_with_slash, .prefix = prefix, .plen = sdslen(prefix)};
 
     EdcError *error = NULL;
@@ -195,7 +201,6 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
      *    relative to the completion root, so what the picker inserts stays short -- unless
      *    it walked out of the root with "..", where an absolute path is the honest answer. */
     char *base_real = (!absolute && base) ? realpath(base, NULL) : NULL;
-    const size_t base_len = base_real ? strlen(base_real) : 0;
 
     size_t used = 0, rows = 0;
 
@@ -209,10 +214,12 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
     if (!absolute && base_real && sdslen(prefix) == 0 && q[0])
     {
         size_t qlen = strlen(q);
-        const bool stepped_in = qlen > 0 && q[qlen - 1] == '/';
-        while (qlen > 1 && q[qlen - 1] == '/')
+        const bool stepped_in = qlen > 0 && edc_path_is_sep(q[qlen - 1]);
+        while (qlen > 1 && edc_path_is_sep(q[qlen - 1]))
             qlen--;
-        const bool inside = strncmp(dir_real, base_real, base_len) == 0 && dir_real[base_len] == '/';
+        const int inside_len = edc_path_prefix_len(dir_real, base_real);
+        /* strictly inside: the root itself has no short relative form */
+        const bool inside = inside_len >= 0 && (size_t)inside_len < strlen(dir_real);
         if (stepped_in && inside)
         {
             const int need = snprintf(buf + used, cap - used, "%.*s\ts\n", (int)qlen, q);
@@ -228,11 +235,26 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
     for (size_t i = 0; i < ctx.n && rows < EDC_FILES_MAX_RESULTS; i++)
     {
         const char *path = ctx.hits[i].path;
-        if (!absolute && base_real && strncmp(path, base_real, base_len) == 0 && path[base_len] == '/')
-            path += base_len + 1;
+        if (!absolute && base_real)
+        {
+            const int cut = edc_path_prefix_len(path, base_real);
+            if (cut >= 0 && (size_t)cut < strlen(path))
+            {
+                path += cut;
+                if (edc_path_is_sep(*path))
+                    path++; /* skip the boundary separator */
+            }
+        }
 
-        const int need = snprintf(buf + used, cap - used, "%s%s\t%c\n", path, ctx.hits[i].dir ? "/" : "",
-                                  ctx.hits[i].dir ? 'd' : 'f');
+        /* Emitted in DISPLAY form: this text is what the picker writes into the input box
+         * and what the mention pass later resolves, so it reads the same on both
+         * platforms -- a Windows row comes out as "src/sub/" and not as "src\sub\".
+         * The directory marker stays '/' for the same reason. */
+        sds shown = edc_path_display(path);
+        const int need = snprintf(buf + used, cap - used, "%s%s\t%c\n", shown ? shown : path,
+                                  ctx.hits[i].dir ? "/" : "", ctx.hits[i].dir ? 'd' : 'f');
+        if (shown)
+            sdsfree(shown);
         if (need < 0 || (size_t)need >= cap - used)
             break;
         used += (size_t)need;

@@ -166,11 +166,6 @@ struct list_ctx
 static void list_cb(const char *name, int type, void *userdata)
 {
     struct list_ctx *c = userdata;
-    /* `.` and `..` are on every directory listing and nobody ever means them: the `@`
-     * completion (edc_file_index.c) skips them too, and the model does not need to be
-     * told that a directory contains itself. */
-    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
-        return;
     if (c->n >= EDC_MENTION_MAX_DIR_ENTRIES)
     {
         c->truncated = true;

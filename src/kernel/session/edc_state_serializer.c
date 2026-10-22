@@ -25,9 +25,13 @@
  *     attention on the first load of an old session.
  *   - v10: no `task->fail` -- a failed task's reason is simply unknown, so a resume cannot
  *     warn "this will fail again".
+ *   - v12: no `group->kind` -- the loader re-derived it from the leader sink, which
+ *     lost "System" for a group led by an L2 curation task (the sidebar fell back to
+ *     "Group <id>", and the next memory task then spawned yet another system group
+ *     because no system group could be found).
  * Anything older must run its one-shot migration first
  * (tools/migrate_session_v*.py, see docs/session-model-v3.md §10). */
-#define EDC_STATE_SCHEMA_VERSION 11
+#define EDC_STATE_SCHEMA_VERSION 12
 #define EDC_STATE_SCHEMA_MIN_SUPPORTED 7
 
 /* ══════════════════════════════════════════════════════════════
@@ -310,6 +314,12 @@ static cJSON *group_to_json(struct edc_task_group *group)
     else if (group->group_id)
         cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
+    /* v12: the kind is a property of the group, decided when it is created (a task
+     * adopted with EDC_TASK_PLACE_SYSTEM makes the system group), so it is written
+     * out. Re-deriving it on load from the leader sink lost "System" for a group led
+     * by an L2 curation task, and the next memory task then spawned yet another system
+     * group because none could be found. */
+    cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(group->kind));
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
     cJSON_AddNumberToObject(gj, "fold_epoch", (int)group->fold_epoch);
@@ -942,12 +952,16 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             continue;
         if (is_orph)
             group->is_orphaned = true;
-        /* The system group is the one led by a fold task (sink = GROUP_MEMORY).
-         * `kind` is derived from the leader's sink, not stored: the persistence
-         * layer still knows nothing of "system group" as a concept, only of task
-         * properties. */
-        if (leader->sink == EDC_SINK_GROUP_MEMORY)
-            group->kind = EDC_GROUP_KIND_SYSTEM;
+        /* The kind travels with the group (v12): only its creator knows it, and an L2
+         * curation task leads a system group exactly like an L1 fold task does. There is
+         * deliberately no fallback inferring it from the leader sink: an archive written
+         * before v12 simply has no system group until one is created again. */
+        const char *kind_name = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "kind"));
+        if (kind_name)
+            group->kind = edc_task_group_classify_kind(kind_name);
+        else
+            log_debug("deserialize: group %s carries no kind (pre-v12 archive) -- user group",
+                      group_id ? group_id : "?");
 
         {
             cJSON *mem = cJSON_GetObjectItem(gj, "memory");

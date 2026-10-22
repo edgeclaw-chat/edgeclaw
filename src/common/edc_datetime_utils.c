@@ -1,4 +1,5 @@
 #include "edc_datetime_utils.h"
+#include "edc_compat.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,11 +11,7 @@ static sds format_tm(time_t t, const char *fmt)
         return sdsnew("unknown");
 
     struct tm tm_buf = {0};
-#ifdef _WIN32
-    localtime_s(&tm_buf, &t);
-#else
-    localtime_r(&t, &tm_buf);
-#endif
+    edc_localtime_r(&t, &tm_buf);
 
     char buf[32] = {0};
     strftime(buf, sizeof(buf), fmt, &tm_buf);

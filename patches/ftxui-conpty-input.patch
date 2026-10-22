@@ -2,8 +2,21 @@ diff --git a/src/ftxui/component/app.cpp b/src/ftxui/component/app.cpp
 index e52d33a..f149af4 100644
 --- a/src/ftxui/component/app.cpp
 +++ b/src/ftxui/component/app.cpp
-@@ -1303,6 +1303,39 @@ void App::Internal::Signal(int signal) {
- 
+@@ -617,7 +617,13 @@ void App::Internal::Install() {
+   const int enable_line_input = 0x0002;
+   const int enable_echo_input = 0x0004;
+   const int enable_virtual_terminal_input = 0x0200;
+   const int enable_window_input = 0x0008;
++  // Ctrl+C has to reach the application as the 0x03 byte instead of a
++  // CTRL_C_EVENT the CRT turns into SIGINT -- this is the Windows counterpart
++  // of the ISIG line the POSIX branch clears below. The application then sees
++  // Event::CtrlC and decides for itself what a press means.
++  const int enable_processed_input = 0x0001;
++  in_mode &= ~enable_processed_input;
+   in_mode &= ~enable_echo_input;
+   in_mode &= ~enable_line_input;
+   in_mode |= enable_virtual_terminal_input;
+@@ -1303,6 +1309,39 @@ void App::Internal::Signal(int signal) {
  size_t App::Internal::FetchTerminalEvents() {
  #if defined(_WIN32)
 +  // Install() puts stdin into ENABLE_VIRTUAL_TERMINAL_INPUT mode (0x0200), whose contract
@@ -42,3 +55,4 @@ index e52d33a..f149af4 100644
    auto get_input_records = [&]() -> std::vector<INPUT_RECORD> {
      // Check if there is input in the console.
      auto console = GetStdHandle(STD_INPUT_HANDLE);
+     DWORD number_of_events = 0;

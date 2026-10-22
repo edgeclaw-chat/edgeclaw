@@ -11,6 +11,8 @@
 
 #include "edc_style.hpp"
 #include "edc_theme.hpp"
+#include "ftxui/dom/elements.hpp"
+#include "ftxui/screen/screen.hpp"
 #include "ftxui/screen/terminal.hpp"
 
 #include <algorithm>
@@ -32,6 +34,19 @@
 #endif
 
 static int g_failures = 0;
+
+// Cross-platform environment write for the override tests.
+static void SetEnv(const char *name, const char *value)
+{
+#if defined(_WIN32)
+    _putenv_s(name, value ? value : "");
+#else
+    if (value && *value)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
+#endif
+}
 
 #define TEST(name)                                                                                                     \
     do                                                                                                                 \
@@ -343,14 +358,18 @@ void test_light_palette_contrast(void)
         CHECK(ratio >= role.min_ratio, "%s contrast %.2f < %.2f", role.name, ratio, role.min_ratio);
     }
 
-    // The surfaces come from the theme too -- window_bg is its inactiveSelection
-    // and line_dim its invisibles -- and they keep the dark palette's
-    // relationship: the pane is the lighter one, the window sits behind it.
-    CHECK(light.window_bg == ftxui::Color::RGB(237, 237, 237), "window_bg is not Monokai Light's inactiveSelection");
-    CHECK(light.line_dim == ftxui::Color::RGB(224, 224, 224), "line_dim is not Monokai Light's invisibles");
-    const Rgb window = Hex("ededed");
+    // The surfaces come from the theme too, but no longer verbatim: it keeps Monokai
+    // Light's RELATIONSHIP (the pane is the lighter one, the window sits behind it)
+    // and gives up two of its values, because both were indistinguishable from what
+    // they sit next to. inactiveSelection #EDEDED was 1.17:1 from the white pane, and
+    // invisibles #E0E0E0 would now be the backdrop colour itself -- a rule in it would
+    // vanish into the gutter the borderless split draws with. See
+    // test_surface_separation for the floor both palettes are held to.
+    CHECK(light.window_bg == ftxui::Color::RGB(223, 223, 223), "window_bg drifted from its pinned value");
+    CHECK(light.line_dim == ftxui::Color::RGB(204, 204, 204), "line_dim drifted from its pinned value");
+    const Rgb window = Hex("dfdfdf");
     CHECK(Luminance(pane) > Luminance(window), "pane should be lighter than the window backdrop");
-    CHECK(Contrast(pane, window) > 1.0, "pane and window collapsed into one tone");
+    CHECK(Contrast(pane, window) >= edc::style::kMinSurfaceSeparation, "pane and window collapsed into one tone");
 }
 
 // The shared "working" animation curve (style::breath_phase), used by both the
@@ -384,6 +403,90 @@ ftxui::Color RgbColor(Rgb c)
 {
     return ftxui::Color::RGB(c.r, c.g, c.b);
 }
+
+/* The borderless layout has no frames, so a boundary exists only if the two surfaces
+ * it separates differ enough to see. That is the whole design: pane on backdrop, and a
+ * hairline on both. The palette originally failed it -- #1E1F1C against #272822 is
+ * 1.11:1, i.e. nothing, and exactly nothing on a terminal themed after Monokai, whose
+ * own background IS #272822 (the pane colour). Every component then sat on one flat
+ * field and no block edge could be found. This pins the floor for both palettes and
+ * for the rule colour, so the failure cannot come back quietly.
+ *
+ * Ratios are WCAG contrast between two SURFACES, not text: the bar is the point where
+ * an edge reads on an ordinary panel (a macOS-style sidebar sits at ~1.2:1), not AA. */
+void test_surface_separation(void)
+{
+    TEST("every surface a boundary is drawn with is a visible step from its neighbour");
+
+    struct Case
+    {
+        const char *name;
+        const edc::style::Palette &pal;
+        Rgb window;   // the backdrop / split gutter
+        Rgb pane;     // the panel surface
+        Rgb line;     // rules and hairlines
+        Rgb raised;   // dialog_bg: modals and popups floating over a pane
+    };
+    const Case cases[] = {
+        {"dark", edc::style::dark_palette(), Hex("0e0f0d"), Hex("272822"), Hex("49483e"), Hex("3e3d32")},
+        {"light", edc::style::light_palette(), Hex("dfdfdf"), Hex("ffffff"), Hex("cccccc"), Hex("e2e2e2")},
+    };
+
+    for (const Case &c : cases)
+    {
+        // The hexes restated above must stay the ones the widgets draw with.
+        CHECK(RgbColor(c.window) == c.pal.window_bg, "%s: the test's backdrop drifted from window_bg", c.name);
+        CHECK(RgbColor(c.pane) == c.pal.pane_bg, "%s: the test's pane drifted from pane_bg", c.name);
+        CHECK(RgbColor(c.line) == c.pal.line_dim, "%s: the test's rule colour drifted from line_dim", c.name);
+        CHECK(RgbColor(c.raised) == c.pal.dialog_bg, "%s: the test's raised surface drifted from dialog_bg", c.name);
+
+        // In both themes the pane is the lighter surface: the backdrop recedes.
+        CHECK(Luminance(c.pane) > Luminance(c.window), "%s: the backdrop is not behind the pane", c.name);
+        CHECK(Contrast(c.pane, c.window) >= edc::style::kMinSurfaceSeparation,
+              "%s: pane and backdrop are %.2f:1 apart, below the %.2f floor -- the split gutter "
+              "disappears and the panes merge into one field",
+              c.name, Contrast(c.pane, c.window), edc::style::kMinSurfaceSeparation);
+
+        // The hairline is drawn in the gutter (splitting the panes) and on the pane
+        // (section rules), so it has to be readable on both -- dimmer than the text,
+        // but an edge, not a rumour.
+        CHECK(Contrast(c.line, c.window) >= 1.2, "%s: the rule is lost in the gutter (%.2f:1)", c.name,
+              Contrast(c.line, c.window));
+        CHECK(Contrast(c.line, c.pane) >= 1.4, "%s: the rule is lost on the pane (%.2f:1)", c.name,
+              Contrast(c.line, c.pane));
+
+        // A popup floats over a pane, so its surface has to separate from the pane --
+        // and the pane is only one of the two it can land on (the chat is pane_bg from
+        // edge to edge now, which is exactly why the completion popup cannot be).
+        CHECK(Contrast(c.raised, c.pane) >= edc::style::kMinSurfaceSeparation,
+              "%s: a popup on the pane has no surface of its own (%.2f:1)", c.name, Contrast(c.raised, c.pane));
+    }
+}
+
+/* What the seam is actually made of, drawn rather than reasoned about: two cells --
+ * one of backdrop, one hairline -- because the gutter is also ResizableSplit's drag
+ * handle and a mark on a grabbable column is honest. The cells carry no background of
+ * their own: they let the window backdrop (painted over the whole frame in
+ * TUIWindow::OnRender) show through, which is what makes the gutter read as the gap
+ * BETWEEN two panels rather than as a third panel. */
+void test_split_gutter(void)
+{
+    TEST("the split gutter is one backdrop cell plus one hairline cell");
+
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(2), ::ftxui::Dimension::Fixed(1));
+    ::ftxui::Render(screen, edc::style::split_gutter());
+
+    CHECK(screen.PixelAt(0, 0).character == " ", "the gutter's first cell is not a space");
+    CHECK(screen.PixelAt(1, 0).character == "│", "the gutter's second cell is not a hairline");
+    CHECK(screen.PixelAt(1, 0).foreground_color == edc::style::palette().line_dim,
+          "the hairline is not drawn in line_dim");
+    for (int x = 0; x < 2; x++)
+    {
+        CHECK(screen.PixelAt(x, 0).background_color == ::ftxui::Color::Default,
+              "gutter cell %d paints a background: the backdrop has to show through", x);
+    }
+}
+
 
 // The breath swings between the pane surface and the theme's own accent: the
 // trough is the accent faded into the surface, the peak is the accent untouched
@@ -535,6 +638,74 @@ void test_palette_provider(void)
     CHECK(edc::style::palette().accent == real.accent, "nullptr restores the built-in theme palette");
 }
 
+/* The depth has to be settled before the first palette is built: Color::RGB()
+ * quantises to whatever depth is in force at that moment. At 256 colours the
+ * surfaces land on the xterm grey ramp, whose rungs are 10 sRGB levels apart, so
+ * window_bg #0E0F0D (#121212) and pane_bg #272822 (#262626) end up one rung
+ * from each other -- 1.25:1, the "1.11:1" failure all over again. Which is why
+ * these tests pin the decision table, including the two Windows cases ftxui's own
+ * detection cannot see. */
+void test_parse_color_depth(void)
+{
+    TEST("$EDGECLAW_COLOR parses truecolor / 256 / 16");
+
+    edc::theme::ColorDepth depth = edc::theme::ColorDepth::kUnset;
+    CHECK(edc::theme::ParseColorDepth("truecolor", depth) && depth == edc::theme::ColorDepth::kTrueColor,
+          "truecolor not understood");
+    CHECK(edc::theme::ParseColorDepth(" 24BIT ", depth) && depth == edc::theme::ColorDepth::kTrueColor,
+          "a padded, upper-case 24bit not understood");
+    CHECK(edc::theme::ParseColorDepth("256", depth) && depth == edc::theme::ColorDepth::kPalette256,
+          "256 not understood");
+    CHECK(edc::theme::ParseColorDepth("16", depth) && depth == edc::theme::ColorDepth::kPalette16,
+          "16 not understood");
+    CHECK(!edc::theme::ParseColorDepth("auto", depth), "\"auto\" accepted as a depth");
+    CHECK(!edc::theme::ParseColorDepth("", depth), "an empty value accepted as a depth");
+}
+
+void test_detect_color_depth(void)
+{
+    TEST("the depth detection knows about Windows Terminal and conhost");
+
+    using edc::theme::ColorDepth;
+    const auto detect = [](const char *colorterm, const char *term, const char *term_program,
+                           const char *wt_session, const char *conemu, bool windows) {
+        return edc::theme::DetectColorDepth(colorterm, term, term_program, wt_session, conemu, windows);
+    };
+
+    // Windows Terminal sets neither COLORTERM nor TERM, only WT_SESSION. This is
+    // the case that made every surface step invisible on Windows.
+    CHECK(detect("", "", "", "8f3c9d10-...", "", false) == ColorDepth::kTrueColor, "$WT_SESSION ignored");
+    CHECK(detect("", "", "", "", "ON", false) == ColorDepth::kTrueColor, "$ConEmuANSI=ON ignored");
+    // A legacy conhost sets no variable at all.
+    CHECK(detect("", "", "", "", "", true) == ColorDepth::kTrueColor, "conhost left at 256 colours");
+    // ...but an explicit "this terminal does 256" still wins over the platform default.
+    CHECK(detect("", "xterm-256color", "", "", "", true) == ColorDepth::kPalette256,
+          "an explicit 256 hint was overruled by the Windows default");
+    // The POSIX signals keep their meaning.
+    CHECK(detect("truecolor", "", "", "", "", false) == ColorDepth::kTrueColor, "$COLORTERM ignored");
+    CHECK(detect("", "screen-256color", "", "", "", false) == ColorDepth::kPalette256, "$TERM=screen ignored");
+    // Nothing to go on: leave ftxui's own detection alone rather than guessing.
+    CHECK(detect("", "", "", "", "", false) == ColorDepth::kUnset,
+          "a POSIX shell with no hints forced a depth");
+}
+
+void test_init_color_support(void)
+{
+    TEST("$EDGECLAW_COLOR is installed into ftxui");
+
+    SetEnv("EDGECLAW_COLOR", "256");
+    edc::theme::InitColorSupport();
+    CHECK(ftxui::Terminal::ColorSupport() == ftxui::Terminal::Color::Palette256, "256 not installed");
+
+    SetEnv("EDGECLAW_COLOR", "truecolor");
+    edc::theme::InitColorSupport();
+    CHECK(ftxui::Terminal::ColorSupport() == ftxui::Terminal::Color::TrueColor, "truecolor not installed");
+
+    SetEnv("EDGECLAW_COLOR", "");
+    // Everything after this measures colours as the palette designs them.
+    ftxui::Terminal::SetColorSupport(ftxui::Terminal::Color::TrueColor);
+}
+
 int main(void)
 {
     // Pin truecolor before anything builds a palette (the palette's statics take
@@ -550,6 +721,11 @@ int main(void)
     test_palette_selection();
     test_palette_provider();
     test_light_palette_contrast();
+    test_surface_separation();
+    test_split_gutter();
+    test_parse_color_depth();
+    test_detect_color_depth();
+    test_init_color_support();
     test_breath_curve();
     test_breath_endpoints();
     test_task_state_table();

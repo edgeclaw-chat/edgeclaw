@@ -34,11 +34,7 @@ static void edc_log_rotate(void)
 {
     time_t now = time(NULL);
     struct tm tm_now = {0};
-#ifdef _WIN32
-    localtime_s(&tm_now, &now);
-#else
-    localtime_r(&now, &tm_now);
-#endif
+    edc_localtime_r(&now, &tm_now);
     char new_date[32] = {0};
     strftime(new_date, sizeof(new_date), "%Y-%m-%d", &tm_now);
 

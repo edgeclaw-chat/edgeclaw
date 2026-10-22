@@ -12,8 +12,10 @@ struct edc_config;
  * edc_sandbox_helper_blob.h), that applies the kernel sandbox and then execs
  * /bin/sh. These functions materialize it on disk and build its argv.
  *
- * Linux only; on other platforms edc_sandbox_helper_prepare() returns false
- * and the caller spawns /bin/sh directly.
+ * Linux and macOS. On Windows edc_sandbox_helper_prepare() returns false and
+ * the caller spawns the command directly. The helper itself dispatches to the
+ * ns/landlock/seccomp layers on Linux and to Seatbelt on macOS (see
+ * edc_seatbelt_sandbox.h).
  */
 
 /* Extract the helper under <edc_home>/.cache/ and return its path (caller frees),

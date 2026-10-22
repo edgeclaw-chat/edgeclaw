@@ -123,7 +123,9 @@ int main(void)
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
-    /* The `+/task new` case below is shell syntax; the switch is off by default. */
+    /* The `+/task new` case below is shell syntax, so the switch is set explicitly here
+     * rather than inherited (the product default is ON, but this config is hand-built
+     * and never goes through edc_config_load). */
     cfg->shell_syntax = true;
     struct edc_session_manager *sm = edc_session_manager_new(cfg);
     struct edc_session *sess = edc_session_manager_get_active(sm);

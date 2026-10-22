@@ -65,8 +65,8 @@ extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t ca
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
-/* Whether the shell-like input syntax is on (sigil + operators). Off by default;
- * /shell on|off flips it and /shell alone reports it. It is read per frame so the input
+/* Whether the shell-like input syntax is on (sigil + operators). ON by default;
+ * /shell off turns it off, and /shell alone reports it. It is read per frame so the input
  * line can say how the current line will be read. */
 extern bool edc_app_shell_syntax(const struct edc_app *app);
 

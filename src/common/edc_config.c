@@ -1,6 +1,8 @@
 ﻿#include "edc_config.h"
 #include "cJSON.h"
 #include "edc_compat.h"
+#include "edc_platform.h"
+#include "edc_path.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
@@ -57,27 +59,37 @@ static sds *edc_config_split_paths(const char *csv)
     return out;
 }
 
-/* Fresh copy of the default read-only whitelist (EDC_SANDBOX_DEFAULT_RO_PATHS). */
+/* Fresh copy of the default read-only whitelist (see edc_sandbox_default_ro_paths). */
 static sds *edc_config_default_ro_paths(void)
 {
-    return edc_config_split_paths(EDC_SANDBOX_DEFAULT_RO_PATHS);
+    return edc_config_split_paths(edc_sandbox_default_ro_paths());
 }
 
-/* Fresh copy of the default writable set: the app workspace, /tmp, /dev and
- * the user's cache directory (~/.cache). The cache is writable so the tools a
- * shell command may run keep working under the sandbox -- package managers and
- * build systems (bazel, pip, cargo, ...) write their caches there. Follows the
- * same shape as edc_config_default_ro_paths(). */
+/* Fresh copy of the default writable set: the app workspace, /tmp, /dev, the
+ * user's cache directory (~/.cache) and, on macOS, $TMPDIR. The cache is
+ * writable so the tools a shell command may run keep working under the sandbox
+ * -- package managers and build systems (bazel, pip, cargo, ...) write their
+ * caches there. Follows the same shape as edc_config_default_ro_paths(). */
 static sds *edc_config_default_rw_paths(const char *workspace)
 {
-    sds *out = g_new0(sds, 5);
+    /* workspace + /tmp + /dev + ~/.cache + $TMPDIR + NULL */
+    sds *out = g_new0(sds, 6);
     out[0] = sdsnew(workspace);
-    out[1] = sdsnew("/tmp");
-    out[2] = sdsnew("/dev");
+
+    sds *static_paths = edc_config_split_paths(edc_sandbox_default_rw_paths());
+    int n = 1;
+    for (int i = 0; static_paths && static_paths[i]; i++)
+        out[n++] = static_paths[i];
+    free(static_paths);
+
     sds home = edc_homedir();
     if (home && sdslen(home) > 0)
-        out[3] = edc_path_join(home, ".cache", NULL);
+        out[n++] = edc_path_join(home, ".cache", NULL);
     sdsfree(home);
+
+    const char *tmpdir = edc_sandbox_default_tmpdir();
+    if (tmpdir)
+        out[n++] = sdsnew(tmpdir);
     return out;
 }
 
@@ -103,6 +115,143 @@ static void sds_array_add_unique(sds **arrp, const char *s)
     *arrp = realloc(*arrp, (size_t)(n + 2) * sizeof(sds));
     (*arrp)[n] = sdsnew(s);
     (*arrp)[n + 1] = NULL;
+}
+
+/* ── sandbox path canonicalisation ─────────────────────────────────────────
+ *
+ * The three lists are assembled from four different sources -- config.json
+ * (written by whichever platform or version), the built-in defaults, and the
+ * runtime appends (workspace, $HOME, $TMPDIR, cwd) -- and the sources disagreed
+ * on spelling: edc_init_env used to write "<workspace>/" with a trailing slash,
+ * none of the appends resolved symlinks, and the config entries had been stored
+ * resolved.
+ *
+ * Nothing reads the lists without calling realpath() first, so the disagreement
+ * was invisible to the sandbox itself. It was not invisible to /sandbox list,
+ * nor to the strcmp-based dedup in sds_array_add_unique -- a second spelling of
+ * one directory could slip past it. Canonicalising once, at the end of the load,
+ * puts every later comparison on the same coordinate system.
+ *
+ * A path that cannot be resolved is kept: a read-only entry for a directory that
+ * does not exist yet is still meaningful (it starts applying the moment the
+ * directory appears), and dropping it would silently widen the policy. */
+static sds sandbox_path_canonical(sds entry)
+{
+    /* Only an absolute entry is a sandbox path at all. "Absolute" has to be ASKED, not
+     * guessed from a leading '/': on Windows that guess was false for every entry, so
+     * these lists were never canonicalised there at all -- the trailing backslash
+     * stayed, the symlink stayed, and the strcmp dedup below missed the duplicates it
+     * exists to catch. */
+    if (!entry || !entry[0] || !edc_path_is_absolute(entry))
+        return entry;
+
+    char *rp = realpath(entry, NULL);
+    if (rp)
+    {
+        /* edc_path_norm() rather than sdsnew(): one spelling on every platform --
+         * platform separators, no trailing one, no dot segments. */
+        sds out = edc_path_norm(rp);
+        free(rp);
+        if (out)
+        {
+            sdsfree(entry);
+            return out;
+        }
+        return entry;
+    }
+
+    /* Unresolvable (a directory that does not exist yet keeps its meaning: it starts
+     * applying the moment it appears): the lexical normal form is enough for "<dir>/"
+     * and "<dir>" -- and "<dir>\" and "<dir>" -- to compare equal. */
+    sds out = edc_path_norm(entry);
+    if (!out)
+        return entry;
+    sdsfree(entry);
+    return out;
+}
+
+/* Canonicalise every entry and drop duplicates, keeping the FIRST occurrence --
+ * order matters, rw_paths[0] becomes the sandbox root. NULL-safe. */
+static void sds_array_canonicalize(sds **arrp)
+{
+    if (!arrp || !*arrp)
+        return;
+
+    sds *arr = *arrp;
+    int n = 0;
+    for (int i = 0; arr[i]; i++)
+    {
+        sds entry = sandbox_path_canonical(arr[i]);
+        bool duplicate = false;
+        for (int j = 0; j < n && !duplicate; j++)
+            duplicate = strcmp(arr[j], entry) == 0;
+        if (duplicate)
+        {
+            sdsfree(entry);
+            continue;
+        }
+        arr[n++] = entry; /* n <= i, so the compaction is in place and safe */
+    }
+    arr[n] = NULL;
+}
+
+const char *edc_sandbox_default_rw_paths(void)
+{
+    /* "/tmp,/dev" are POSIX facts. A drive letter does not create them. */
+    return edc_platform_has_sandbox() ? EDC_SANDBOX_DEFAULT_RW_PATHS : "";
+}
+
+#if defined(_WIN32)
+const char *edc_sandbox_platform_ro_paths(void)
+{
+    /* Built from the environment, once: %SystemRoot% is not always C:\Windows, and a
+     * whitelist naming a directory that does not exist grants nothing and says nothing --
+     * the same reasoning that made $TMPDIR a run-time value on macOS. Every entry that the
+     * environment does not name is simply left out; with none of them the compile-time
+     * fallback keeps the conventional layout. */
+    static char buf[1024];
+    static bool built = false;
+    if (built)
+        return buf;
+
+    static const char *const k_vars[] = {"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"};
+    buf[0] = '\0';
+    for (size_t i = 0; i < G_N_ELEMENTS(k_vars); i++)
+    {
+        const char *dir = getenv(k_vars[i]);
+        if (!dir || !dir[0])
+            continue;
+        if (buf[0])
+            strncat(buf, ",", sizeof(buf) - strlen(buf) - 1);
+        strncat(buf, dir, sizeof(buf) - strlen(buf) - 1);
+    }
+    if (!buf[0])
+        snprintf(buf, sizeof(buf), "%s", EDC_SANDBOX_DEFAULT_RO_PATHS);
+
+    built = true;
+    return buf;
+}
+#else
+const char *edc_sandbox_platform_ro_paths(void)
+{
+    return EDC_SANDBOX_DEFAULT_RO_PATHS;
+}
+#endif
+
+const char *edc_sandbox_default_ro_paths(void)
+{
+    /* No backend = nothing to whitelist (see edc_config.h). */
+    return edc_platform_has_sandbox() ? edc_sandbox_platform_ro_paths() : "";
+}
+
+const char *edc_sandbox_default_tmpdir(void)
+{
+#if defined(__APPLE__)
+    const char *tmp = getenv("TMPDIR");
+    return (tmp && tmp[0]) ? tmp : NULL;
+#else
+    return NULL;
+#endif
 }
 
 sds edc_config_resolve_bc_home(void)
@@ -297,11 +446,14 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (skip_ctx && cJSON_IsBool(skip_ctx))
         config->skip_context_files = cJSON_IsTrue(skip_ctx);
 
-    /* Shell-like syntax switch, top-level "shell_syntax". Defaults OFF: the operators
-     * (`| ; & > >> 2> <`) and the sigils (`+ !`) spell out a Unix shell, and a user who
-     * does not expect that gets a silent mess (the whole line as one task description)
-     * rather than an error. Turned on with /shell on. */
-    config->shell_syntax = false;
+    /* Shell-like syntax switch, top-level "shell_syntax". Defaults ON: the operators
+     * (`| ; & > >> 2>`) and the sigils (`+ !`) are the product's own idiom, and a line
+     * that starts with no quote and no sigil is still a plain message -- so nothing has
+     * to be escaped to talk normally. A user who wants every line to be one verbatim
+     * task description (no operators to get wrong, no sigil at all) turns it off with
+     * /shell off; an explicit `false` in config.json is honoured, so the old opt-in
+     * default survives for anyone who already made that choice. */
+    config->shell_syntax = true;
     cJSON *shell_syntax = cJSON_GetObjectItem(conf, "shell_syntax");
     if (shell_syntax && cJSON_IsBool(shell_syntax))
         config->shell_syntax = cJSON_IsTrue(shell_syntax);
@@ -375,18 +527,40 @@ struct edc_config *edc_config_load(const char *edc_home)
         config->sandbox_ro_paths = edc_config_default_ro_paths();
     }
 
+    /* The switch is clamped OFF on a platform without a backend (Windows), here -- once,
+     * at the single place the persisted value is read, before anything downstream (the
+     * tool layer, /sandbox, the deny lists) can see it. A config.json written elsewhere,
+     * or copied from a Linux/macOS machine, may still say "enable": true; honouring it
+     * would turn on a policy whose path semantics are not implemented there, which is
+     * how every path silently became an escape. Ignored with a warning instead.
+     * Delete this clamp when the Windows backend lands (see edc_platform_has_sandbox). */
+    if (config->enable_sandbox && !edc_platform_has_sandbox())
+    {
+        log_warn("sandbox: no filesystem-sandbox backend on this platform; running with it OFF "
+                 "(ignoring config.json's sandbox.enable)");
+        config->enable_sandbox = false;
+    }
+
     /* The app's own workspace must be writable: the model edits files there
      * (AGENTS.md, skills/, ...). Make sure it is in rw_paths -- which grants
      * read too -- rather than relying on config.json, and skip it when it is
      * already present (the default list includes it). rw_paths[0] stays the
-     * launch directory (prepended below), so the sandbox root is unchanged. */
+     * launch directory (prepended below), so the sandbox root is unchanged.
+     *
+     * Both sides are resolved before comparing. config->workspace is built from
+     * edc_home exactly as given, while the entries come from config.json and are
+     * already resolved there -- so a raw string compare missed the match whenever
+     * the home sits behind a symlink (/tmp -> /private/tmp on macOS), and a
+     * second copy of the same directory was appended on every load. */
     {
+        char *ws_real = realpath(config->workspace, NULL);
+        const char *ws_key = ws_real ? ws_real : config->workspace;
         bool have_workspace = false;
         for (int i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[i] && !have_workspace; i++)
         {
             char *entry_real = realpath(config->sandbox_rw_paths[i], NULL);
             const char *entry_key = entry_real ? entry_real : config->sandbox_rw_paths[i];
-            if (strcmp(config->workspace, entry_key) == 0)
+            if (strcmp(ws_key, entry_key) == 0)
                 have_workspace = true;
             if (entry_real)
                 free(entry_real);
@@ -403,6 +577,18 @@ struct edc_config *edc_config_load(const char *edc_home)
             config->sandbox_rw_paths[rw_count] = sdsnew(config->workspace);
             config->sandbox_rw_paths[rw_count + 1] = NULL;
         }
+        free(ws_real);
+    }
+
+    /* $TMPDIR cannot be in the default list (per-user, per-boot), and a
+     * config.json written elsewhere never names it -- yet edc_shell_env forwards
+     * TMPDIR to every command, so the sandbox must allow the same path or the
+     * toolchain cannot write its caches. Added here, after both branches, so an
+     * existing config.json gets it too. */
+    {
+        const char *tmpdir = edc_sandbox_default_tmpdir();
+        if (tmpdir)
+            sds_array_add_unique(&config->sandbox_rw_paths, tmpdir);
     }
 
     /* The user's home directory is read-only: the model may read the user's
@@ -410,7 +596,16 @@ struct edc_config *edc_config_load(const char *edc_home)
      * are in rw_paths above; path_allowed()'s longest-prefix-wins rule lets
      * those more specific entries win, so they stay writable even though they
      * live inside the read-only home. This also covers ~/.edgeclaw (config.json
-     * and the key verifier) without a separate entry. */
+     * and the key verifier) without a separate entry.
+     *
+     * Not on a platform with no backend: there the entry states a rule nothing enforces,
+     * and it is the one entry that made the read-only list look non-empty (i.e. look like
+     * a policy) on a platform where the whole list is inert. */
+    if (!edc_platform_has_sandbox())
+    {
+        /* nothing to add */
+    }
+    else
     {
         sds home = edc_homedir();
         if (home && sdslen(home) > 0)
@@ -467,6 +662,28 @@ struct edc_config *edc_config_load(const char *edc_home)
         }
     }
 
+#if defined(__APPLE__)
+    /* A config.json written on Linux (or by an older default) carries /proc,
+     * /sys, /run and /lib, none of which exists here: every read they were
+     * meant to grant is simply missing, so a shell command would fail on the
+     * first dylib it needs. /proc is the signature -- it can never resolve on
+     * macOS, and no one here adds it by hand -- so its presence means "this
+     * whitelist was not written for this platform" and topping up is safe. A
+     * list the user trimmed deliberately on macOS does not carry it. */
+    if (config->sandbox_ro_paths && sds_array_contains(config->sandbox_ro_paths, "/proc"))
+    {
+        sds *defs = edc_config_default_ro_paths();
+        for (int i = 0; defs && defs[i]; i++)
+        {
+            sds_array_add_unique(&config->sandbox_ro_paths, defs[i]);
+            sdsfree(defs[i]);
+        }
+        free(defs);
+        log_info("edc_config: sandbox ro_paths: Linux-only entries found (no /proc here), "
+                 "added the macOS system dirs");
+    }
+#endif
+
     /* Prepend the directory edgeclaw was launched from to rw_paths so that the
      * current directory is always writable (even with the filesystem sandbox
      * enabled) and becomes the sandbox root / default working directory for
@@ -503,6 +720,12 @@ struct edc_config *edc_config_load(const char *edc_home)
         }
         sdsfree(cwd);
     }
+
+    /* One spelling per directory for everything below -- and for /sandbox list,
+     * which reads these arrays. See sandbox_path_canonical(). */
+    sds_array_canonicalize(&config->sandbox_ro_paths);
+    sds_array_canonicalize(&config->sandbox_rw_paths);
+    sds_array_canonicalize(&config->sandbox_deny_paths);
 
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {
@@ -995,6 +1218,15 @@ bool edc_config_set_sandbox_enabled(struct edc_config *cfg, bool enable)
 {
     if (!cfg)
         return false;
+
+    /* Nothing to turn ON where there is no backend: refuse instead of persisting a "true"
+     * that the next load would clamp away (see edc_config_load). This is the entry point
+     * both /sandbox and the app go through, so the refusal lives here and not in the UI. */
+    if (enable && !edc_platform_has_sandbox())
+    {
+        log_warn("sandbox: no filesystem-sandbox backend on this platform; it stays off");
+        return false;
+    }
 
     /* Persist first (mirrors edc_app_set_llm_config): if config.json cannot
      * be written, leave the running app untouched so memory and disk agree. */

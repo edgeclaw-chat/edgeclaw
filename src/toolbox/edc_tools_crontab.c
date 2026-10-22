@@ -34,23 +34,9 @@
  * For the cron direction ccronexpr parses a timestamp with gmtime_r(), so the
  * local wall clock is passed in re-encoded as a pseudo-UTC timestamp. */
 
-static struct tm *edc_crontab_localtime_r(const time_t *t, struct tm *out)
-{
-#ifdef _WIN32
-    return localtime_s(out, t) == 0 ? out : NULL;
-#else
-    return localtime_r(t, out);
-#endif
-}
-
-static struct tm *edc_crontab_gmtime_r(const time_t *t, struct tm *out)
-{
-#ifdef _WIN32
-    return gmtime_s(out, t) == 0 ? out : NULL;
-#else
-    return gmtime_r(t, out);
-#endif
-}
+/* The host-local / UTC conversions below use edc_localtime_r() / edc_gmtime_r() from
+ * edc_compat.h: the two platforms disagree on the shape of the libc call, and that is the
+ * compat layer's business, not this module's. */
 
 /* host-local wall clock -> real unix time (tm_isdst left to the host zone) */
 static time_t edc_crontab_local_wallclock_to_unix(struct tm *tm)
@@ -63,7 +49,7 @@ static time_t edc_crontab_local_wallclock_to_unix(struct tm *tm)
 static time_t edc_crontab_unix_to_local_wallclock(time_t unix_ts)
 {
     struct tm tm = {0};
-    if (!edc_crontab_localtime_r(&unix_ts, &tm))
+    if (!edc_localtime_r(&unix_ts, &tm))
         return (time_t)-1;
     return timegm(&tm);
 }
@@ -72,7 +58,7 @@ static time_t edc_crontab_unix_to_local_wallclock(time_t unix_ts)
 static time_t edc_crontab_local_wallclock_to_unix_ts(time_t wall_ts)
 {
     struct tm tm = {0};
-    if (!edc_crontab_gmtime_r(&wall_ts, &tm))
+    if (!edc_gmtime_r(&wall_ts, &tm))
         return (time_t)-1;
     return edc_crontab_local_wallclock_to_unix(&tm);
 }

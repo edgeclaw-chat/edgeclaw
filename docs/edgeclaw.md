@@ -6,6 +6,15 @@ EdgeClaw is an interactive terminal AI assistant offering shell-like task manage
 It supports multi-turn conversations, tool calling, and Unix-inspired process
 control for orchestrating multiple parallel agent tasks.
 
+This manual ships inside the binary: on startup EdgeClaw releases the manual chapters it
+was built from into `$EDC_HOME/docs` (`~/.edgeclaw/docs` by default), and its system prompt
+names `$EDC_HOME/docs/edgeclaw.md`, so the agent can read up on *how EdgeClaw itself is
+used* without the source tree -- and without being pointed at a file by hand. What ships is
+the manual, not this project's design notes: this chapter, the man page, the input-syntax
+and local-shell notes, the tool-output limits and the prompt library. A released file whose
+bytes differ from the bundled copy is rewritten on the next start (an upgraded binary never
+leaves an old manual behind); files you add to that directory are left alone.
+
 ## Quick Start
 
 ```bash
@@ -99,20 +108,25 @@ Shell below); a `!n` or `!!` inside a task description is literal text.
 
 ---
 
-## Shell-like Syntax (off by default)
+## Shell-like Syntax (on by default)
 
 Everything below borrows a shell's vocabulary: the sigil `+` (open a new group) and the
-operators `|` `;` `&` `>` `>>` `2>`. **That vocabulary is off until you ask for it**,
-because it presumes you know a Unix shell — and
-it fails *silently* when you do not: a line with a stray `|` becomes one odd task instead
-of two, and nothing tells you why.
+operators `|` `;` `&` `>` `>>` `2>`. **That vocabulary is ON by default** — the operators
+are EdgeClaw's own idiom — and it costs ordinary text nothing: a line is only parsed when
+it *begins* with a quote or with `+`, so plain conversation needs no escaping and a `|`
+inside a sentence is just a character.
 
 ```
-/shell on
+/shell off
 ```
 
-With it **off** (the default), every line that is not a `/` command is **one task
-description, verbatim** — no operators to get wrong, no sigil to escape.
+With it **off**, every line that is not a `/` command is **one task description,
+verbatim** — no operators to get wrong, no sigil to escape. That is the escape hatch for a
+workflow where even the quoted forms are unwanted.
+
+The one thing to know while it is on: an **unquoted operand** in a shell line is refused,
+never guessed (`"a" | b` comes back with the fix), because nothing says whether that `|`
+was a pipe you meant or text you typed.
 
 A line that starts with `/` is **always a command**, never a message. If no command answers
 to that word the line is refused with `Unknown command`; it is not sent to the model, and
@@ -190,7 +204,7 @@ outside it:
 
 ## Quick Task Syntax (`+`)
 
-Needs the shell-like syntax: **off by default**, `/shell on` turns it on.
+Needs the shell-like syntax (**on by default**); `/shell off` turns it off.
 
 Use `+` to create a task in a **new** group with one line:
 
@@ -258,7 +272,8 @@ What happens is worth stating exactly, because it is also how the rest of the sy
 sees it: the command becomes **a task of its own** (its own line in the sidebar, its own
 entry in the group's history) whose only job is to issue one `exec_shell` call. So
 
-- the command runs through `sh -c`, in the session's working directory, subject to the
+- the command runs through `sh -c` (on Windows: `powershell.exe -Command`, with an encoding
+  prologue in front of it), in the session's working directory, subject to the
   sandbox setting (`/sandbox`), with the same output cap as the `exec_shell` tool the model
   uses and **no timeout at all** — a command runs until it exits. Bound it yourself when
   you want to: `!timeout 60 make -j8`;
@@ -437,8 +452,8 @@ of the parent's conversation context up to the fork point (`desc` is its input).
 
 ## Shell-like Job Control
 
-Everything in this section needs the shell-like syntax (see above): it is **off by
-default**, and `/shell on` turns it on.
+Everything in this section needs the shell-like syntax (see above): it is **on by
+default**, and `/shell off` turns it off.
 
 **Every string in a shell line is quoted** — `"alpha" | "beta"`, never `alpha | beta`.
 Unquoted, nothing says whether that `|` is a pipe the user meant or a `|` inside their text,
@@ -466,6 +481,24 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 
 ## Command Reference
 
+**Arguments follow bash quoting.** Every `/command` tail is split the way a shell
+splits words, and nothing is expanded (no `$VAR`, globs or backticks):
+
+- unquoted blanks separate arguments;
+- `'...'` is literal, `"..."` is literal except `\"` and `\\`;
+- escapes have a home of their own, as in bash: `$'...'` (ANSI-C) is the only form
+  that decodes `\n`, `\t`, `\xHH`, `\uHHHH` -- that is how a newline or a tab is
+  written now (a real newline inside quotes works too); in-tree alias: `'''...'''`
+  (its ANSI-C semantics took over the old "raw block" spelling);
+- a value containing spaces has to be quoted: `/session new dev 'D:\my repo'`,
+  `/sandbox add-rw 'C:\Program Files\tool'`;
+- an unterminated quote is a syntax error, not a silently truncated argument;
+- one deliberate Windows concession: outside quotes a backslash is a plain byte (bash
+  would eat it), so `D:\github\edgeclaw` needs no quoting; a space therefore has to
+  be quoted, not escaped (`'C:\Program Files\x'`, not `C:\Program\ Files\x`).
+- free-text tails (`/task fork <id> <desc>`, `/group fold [id] [focus]`) take the
+  remaining words joined by single spaces.
+
 ### General
 
 | Command | Description |
@@ -489,13 +522,13 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/sandbox rm-rw <dir>` | Drop a read-write path |
 | `/sandbox add-deny <dir>` | Mask a dir (wins over ro/rw; e.g. `~/.ssh`) |
 | `/sandbox rm-deny <dir>` | Unmask a dir |
-| `/shell [on\|off]` | Turn the shell-like input syntax on or off (off by default; persisted; `/shell` alone reports the state) |
+| `/shell [on\|off]` | Turn the shell-like input syntax on or off (on by default; persisted; `/shell` alone reports the state) |
 
 ### Session
 
 | Command | Description |
 |---------|-------------|
-| `/session new [name] [dir]` | Start a new session (optionally named, optionally with a working directory) |
+| `/session new [name] <dir>` | Start a new session bound to `<dir>` (the name is optional, the directory is not: an unusable directory fails the command and creates no session) |
 | `/session switch <name_or_id>` | Switch to another session |
 | `/session list` | List all sessions |
 | `/session info` | Show current session details |

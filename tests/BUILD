@@ -437,6 +437,20 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_session_new",
+    srcs = ["test_commands_session_new.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_group_fold",
     srcs = ["test_commands_group_fold.c"],
     deps = [
@@ -549,6 +563,74 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+cc_test(
+    name = "test_path_absolute",
+    srcs = ["test_path_absolute.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_sandbox_switch",
+    srcs = ["test_sandbox_switch.c"],
+    deps = [
+        "//src/common:common",
+        "//src/common:edc_file_utils",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_sandbox_verify_path",
+    srcs = ["test_sandbox_verify_path.c"],
+    deps = [
+        "//src/common:common",
+        "//src/sandbox:sandbox",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_path_contract",
+    srcs = ["test_path_contract.c"],
+    deps = [
+        "//src/common:edc_compat",
+        "//src/common:edc_file_utils",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
+    name = "test_platform_caps",
+    srcs = ["test_platform_caps.c"],
+    deps = [
+        "//src/common:edc_platform",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_utf8_valid",
+    srcs = ["test_utf8_valid.c"],
+    deps = [
+        "//src/common:edc_compat",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_output_utf8",
+    srcs = ["test_output_utf8.c"],
+    deps = [
+        "//src/common:edc_compat",
+        "//src/common:edc_platform",
+    ],
+    linkopts = LINK_OPTS,
+)
 cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
@@ -768,6 +850,20 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The bundled user manual: the table must be non-empty (the binary carries docs/), and
+# edc_init_env must release it to <edc_home>/docs and refresh a stale copy -- the path
+# the system prompt names.
+cc_test(
+    name = "test_bundled_docs",
+    srcs = ["test_bundled_docs.c"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # context_window 的配置面（默认 0 = 未配置/未知）：三个生产者都跑真的
 # —— edc_init_env 建/补 config.json + edc_config_load 读回。
 cc_test(
@@ -802,11 +898,25 @@ cc_test(
 cc_test(
     name = "test_sandbox_helper",
     srcs = ["test_sandbox_helper.c"],
+    # Must run OUTSIDE bazel's own sandbox: on macOS the test asserts that the
+    # helper applies a Seatbelt profile, and sandbox_init() refuses to nest --
+    # under darwin-sandbox it fails with "Operation not permitted" and the helper
+    # (correctly) refuses to run the command.
+    tags = ["local"],
     deps = [
         "//src/common:common",
         "//src/sandbox:sandbox",
         "@libuv",
         "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_config_sandbox_defaults",
+    srcs = ["test_config_sandbox_defaults.c"],
+    deps = [
+        "//src/common:common",
     ],
     linkopts = LINK_OPTS,
 )
@@ -963,6 +1073,7 @@ cc_test(
     srcs = ["test_theme.cpp"],
     deps = [
         "//src/tui:tui",
+        "@ftxui//:dom",
         "@ftxui//:screen",
     ],
     linkstatic = True,
@@ -1281,6 +1392,17 @@ cc_test(
         "@cjson//:cjson",
         "@log.c//:log.c",
         "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_parse_cmd",
+    srcs = ["test_parse_cmd.c"],
+    deps = [
+        "//src/common:common",
+        "//src/shell:lex",
+        "//src/shell:parse",
     ],
     linkopts = LINK_OPTS,
 )
