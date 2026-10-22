@@ -57,6 +57,13 @@ int main(void)
     CHECK(converted == 0, "...and no line is reported as converted");
 
 #if defined(_WIN32)
+    const bool expect_bom_metadata = true; /* Set-Content / Out-File / editors all write one */
+#else
+    const bool expect_bom_metadata = false; /* a BOM here is just bytes */
+#endif
+    CHECK(edc_platform_bom_is_metadata() == expect_bom_metadata, "a leading BOM is metadata on Windows only");
+
+#if defined(_WIN32)
     const unsigned int cp = edc_platform_ansi_codepage();
     CHECK(cp != 0, "Windows has an ANSI code page to name");
 

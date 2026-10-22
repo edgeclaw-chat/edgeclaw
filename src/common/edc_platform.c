@@ -81,6 +81,13 @@ unsigned int edc_platform_ansi_codepage(void)
     return (unsigned int)GetACP();
 }
 
+bool edc_platform_bom_is_metadata(void)
+{
+    /* Everything on this side writes UTF-8 with a BOM: Set-Content, Out-File and `>` (the last
+     * two since the prologue), and most Windows editors. */
+    return true;
+}
+
 /* A buffer that grows as lines are appended. Local on purpose: this file is the one that must
  * NOT grow dependencies (see the header), so it does not borrow sds. */
 struct edc_outbuf
@@ -295,6 +302,11 @@ char *edc_platform_output_to_utf8(const char *buf, size_t len, size_t *out_len, 
 unsigned int edc_platform_ansi_codepage(void)
 {
     return 0; /* no code page to name: nothing is converted on this platform */
+}
+
+bool edc_platform_bom_is_metadata(void)
+{
+    return false; /* a BOM is just bytes here, and nothing on this side writes one */
 }
 #endif
 

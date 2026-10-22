@@ -342,6 +342,45 @@ static void test_url_chat_completions(void)
     T_CHECK(edc_url_chat_completions("") == NULL, "empty -> NULL");
 }
 
+/* A leading UTF-8 BOM is metadata, not content: PowerShell writes one by default on Windows, and
+ * left in place it is invisible in read_file while breaking edit_file's first-line match. */
+static void test_strip_utf8_bom(void)
+{
+    sds s = edc_str_strip_utf8_bom(sdsnew("\xEF\xBB\xBFhello"));
+    T_STREQ(s, "hello", "a leading BOM is dropped");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("hello"));
+    T_STREQ(s, "hello", "no BOM, nothing to do");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("\xEF\xBB\xBF"));
+    T_STREQ(s, "", "a BOM-only file becomes EMPTY -- an empty file, not a one-character one");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("\xEF\xBB\xBF\xE4\xB8\xAD"));
+    T_STREQ(s, "\xE4\xB8\xAD", "and the text after it is untouched");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("\xEF\xBB"));
+    T_STREQ(s, "\xEF\xBB", "a buffer shorter than a BOM is not a BOM");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("\xEF\xBB\xBA"));
+    T_STREQ(s, "\xEF\xBB\xBA", "three bytes that are NOT a BOM are left alone");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("\xFF\xFEh"));
+    T_CHECK((unsigned char)s[0] == 0xFF, "a UTF-16LE BOM is NOT stripped: that file is not UTF-8");
+    sdsfree(s);
+
+    s = edc_str_strip_utf8_bom(sdsnew("mid\xEF\xBB\xBFdle"));
+    T_STREQ(s, "mid\xEF\xBB\xBFdle", "only a LEADING BOM is a BOM");
+    sdsfree(s);
+
+    T_CHECK(edc_str_strip_utf8_bom(NULL) == NULL, "NULL is passed through");
+}
+
 int main(void)
 {
     test_strdup_printf();
@@ -357,6 +396,7 @@ int main(void)
     test_strfreev();
     test_edge_cases();
     test_url_chat_completions();
+    test_strip_utf8_bom();
 
     printf("passed=%d failed=%d\n", passed, failed);
     return failed > 0 ? 1 : 0;

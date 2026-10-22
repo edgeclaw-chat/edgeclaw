@@ -106,6 +106,17 @@ char *edc_platform_output_to_utf8(const char *buf, size_t len, size_t *out_len, 
  * apply. Only used to say WHICH code page a notice is about. */
 unsigned int edc_platform_ansi_codepage(void);
 
+/* TRUE where a leading UTF-8 BOM is METADATA rather than content.
+ *
+ * Windows: true. PowerShell's Set-Content/Out-File and most editors write UTF-8 WITH a BOM, so a
+ * file the model created through exec_shell starts with U+FEFF -- invisible in read_file's
+ * result, and enough to make edit_file's first-line match fail against a string that looks
+ * identical on screen.
+ *
+ * POSIX: false. A BOM there is just bytes, nothing here writes one, and stripping it would
+ * change what read_file returns. */
+bool edc_platform_bom_is_metadata(void);
+
 /* The result is an enum rather than a bool because the caller has to tell the two
  * "no" answers apart: a platform that HAS mlock and failed it is worth a warning, a
  * platform that has none is normal (the key is usable either way, it is just not pinned). */
