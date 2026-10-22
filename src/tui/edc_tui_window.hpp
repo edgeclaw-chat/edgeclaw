@@ -147,10 +147,6 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void ClearInterruptHint();
     // Expire the hint (called once per main-loop iteration from TickAnimations).
     void TickInterruptHint(std::chrono::steady_clock::time_point now);
-    // True while the TUI keeps asking for frames by itself: the working row's bar
-    // (foreground task busy) or a processing task's marker in the task tree. Only
-    // then is the frame rate high enough to matter (see EdcInput::SetAppDrawnCaret).
-    bool Animating() const;
     // Seed + open the setup wizard (reads the persisted config).
     void OpenConnect();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
@@ -343,9 +339,6 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     std::chrono::steady_clock::time_point last_remeasure_frame_;
     // Whether the sidebar is currently breathing, and when that run started.
     bool dot_breathing_ = false;
-    // The Animating() value TickAnimations last saw, so the iteration that ends a
-    // run can ask for the frame that puts the terminal's own caret back.
-    bool caret_animating_ = false;
     std::chrono::steady_clock::time_point breath_started_;
     // Throttles the periodic snapshot refresh (which is what catches background
     // task-state changes, since they send no channel message).

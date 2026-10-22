@@ -166,21 +166,6 @@ class EdcInput : public ::ftxui::ComponentBase
         return cursor_;
     }
 
-    // Draw the caret ourselves instead of leaving it to the terminal.
-    //
-    // The terminal's own caret cannot survive a frame every 33ms -- what the window
-    // asks for while a task runs: FTXUI hides and re-shows the hardware cursor on
-    // every frame, and a blinking cursor shape turns that into a caret that strobes
-    // at the frame rate. While |on|, the widget paints the caret cell itself (a
-    // solid block, the caret's "on" phase) and asks FTXUI for a Hidden hardware
-    // cursor, so the terminal is never asked to blink anything. The cell still
-    // wears `focus`, so FTXUI keeps reporting where the (hidden) cursor belongs and
-    // an input method editor still opens in the right place.
-    void SetAppDrawnCaret(bool on)
-    {
-        app_drawn_caret_ = on;
-    }
-
     ::ftxui::Element OnRender() override;
     bool OnEvent(::ftxui::Event event) override;
 
@@ -267,11 +252,8 @@ class EdcInput : public ::ftxui::ComponentBase
     const Token *TokenEndingAt(int at) const;
     void InvalidateExpansion();
     // One visual row, split into plain text and chips (a chip is drawn as a block).
-    // |caret| marks the caret cell (and carries the cursor shape); |caret_paint|
-    // gives that cell its look when the caret is drawn by us instead of the
-    // terminal (see SetAppDrawnCaret), and is a no-op otherwise.
-    ::ftxui::Element RowElement(const Row &row, int caret_at, bool is_focused, const ::ftxui::Decorator &caret,
-                                const ::ftxui::Decorator &caret_paint) const;
+    ::ftxui::Element RowElement(const Row &row, int caret_at, bool is_focused,
+                                const ::ftxui::Decorator &caret) const;
 
     std::string *content_;
     std::string placeholder_;
@@ -286,8 +268,6 @@ class EdcInput : public ::ftxui::ComponentBase
     // Insert mode (bar caret) vs. overwrite (block caret).
     bool insert_mode_ = true;
     bool hovered_ = false;
-    // See SetAppDrawnCaret(): the terminal gets no caret while this is on.
-    bool app_drawn_caret_ = false;
 
     // Submitted-message history, oldest first. |history_pos_| is the entry shown
     // (== size() while editing the draft); |draft_| is the text stashed when
