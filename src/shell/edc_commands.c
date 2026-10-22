@@ -3711,36 +3711,6 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
      * gone -- the two syntaxes are separate, and a line is one or the other. */
     const edc_in_kind kind = edc_commands_input_kind(cfg, message->content, NULL);
 
-    /* The caller declared "start this in a new group" (a non-interactive frontend; see
-     * edc_channel_message.new_group). Handled HERE rather than by writing a `+` into the
-     * line: `+` is shell syntax and the shell switch belongs to the config, not to the
-     * caller, so relying on it would make the isolation depend on a setting.
-     *
-     * `take_foreground = false`: a scripted run must not move the interactive session's
-     * foreground group or its active task. Commands are excluded -- a command is not a task
-     * and creates no group. */
-    if (message->new_group && kind != EDC_IN_COMMAND && kind != EDC_IN_LOCALSHELL)
-    {
-        struct edc_session *session = cmd_input_session(sm, message);
-        if (!session)
-            return false;
-
-        struct edc_cmd_task_opts popts;
-        edc_cmd_parse_task_opts(message->content, &popts);
-
-        struct edc_task_spec spec;
-        memset(&spec, 0, sizeof(spec));
-        spec.desc = message->content;
-        spec.channel_type = message->type;
-        spec.input = (popts.input && sdslen(popts.input) > 0) ? popts.input : message->content;
-        spec.place = EDC_TASK_PLACE_NEW_GROUP;
-        spec.take_foreground = false;
-        const bool ok = edc_scheduler_task_create(sched, session, &spec) != NULL;
-
-        edc_cmd_task_opts_free(&popts);
-        return ok;
-    }
-
     /* `!cmd`: a user-typed local shell command. It becomes a task of its own that issues
      * one `exec_shell` call and settles on its result -- no model involved, and the
      * output lands in the group's history like any other task's. */

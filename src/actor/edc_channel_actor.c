@@ -38,7 +38,6 @@ struct edc_sched_input *edc_channel_input_new(struct edc_channel_message *msg)
     input->session_id = msg->session_id;
     input->content = msg->content;
     input->type = msg->type;
-    input->new_group = msg->new_group;
     input->origin = msg;
     return input;
 }

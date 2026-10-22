@@ -551,11 +551,8 @@ void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
 
 /* Send a user input. |session_id| names the session it belongs to (the task it
  * spawns lands there). NULL/"" = unspecified, the store picks the default. */
-/* The one implementation; |new_group| is what the headless frontend sets and the TUI does
- * not (see edc_channel_message.new_group for why a caller declares it instead of writing a
- * `+`: that is shell syntax, gated by a config switch). */
 static void send_user_message_impl(struct edc_app *app, const char *session_id, const char *content,
-                                   const char *payload_json, const char *mid, bool new_group)
+                                   const char *payload_json, const char *mid)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
@@ -573,7 +570,6 @@ static void send_user_message_impl(struct edc_app *app, const char *session_id, 
         message->mid = sdsnew(mid);
     if (session_id && *session_id)
         message->session_id = sdsnew(session_id);
-    message->new_group = new_group;
 
     edc_channel_actor_state_t *state = channel->state;
     /* Boundary translation: core does not know channel messages (edc_channel_actor.h). */
@@ -586,14 +582,7 @@ static void send_user_message_impl(struct edc_app *app, const char *session_id, 
 void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
                                const char *payload_json, const char *mid)
 {
-    send_user_message_impl(app, session_id, content, payload_json, mid, false);
-}
-
-void edc_app_send_user_message_new_group(struct edc_app *app, const char *session_id, const char *content)
-{
-    /* No paste payload and no mid: a headless prompt is a line from a script, not a draft
-     * recalled from an input history. The new group is the point -- see the header. */
-    send_user_message_impl(app, session_id, content, NULL, NULL, true);
+    send_user_message_impl(app, session_id, content, payload_json, mid);
 }
 
 /* Request a task tree (the frontend pulls only the one it displays); built on the

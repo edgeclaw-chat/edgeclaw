@@ -52,13 +52,6 @@ struct edc_channel_message
      * folded -- the ordinary case, and the reason no code needs to test for null
      * everywhere but the two places that care. Owned by this message. */
     struct edc_payload *payload;
-    /* A fact the sender declares: start this input in a NEW group instead of the session's
-     * foreground one. A non-interactive frontend sets it so its work cannot queue behind
-     * (or deadlock with) whatever the interactive session is doing -- the group queue is
-     * serial, so sharing a group with a live conversation means waiting for it. Not a
-     * syntax: the `+` prefix is shell syntax and is gated by the shell switch, which is a
-     * property of the config, not of the caller. */
-    bool new_group;
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is
