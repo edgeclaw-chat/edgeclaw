@@ -49,7 +49,7 @@ extern cJSON *edc_toolset_resolve(struct edc_toolbox *tb, cJSON *history, uint32
  * remove. Rendered from the same registry, in name order, so two calls on one registry are
  * byte-identical (the section sits in the cached system prompt). Empty string when the scope
  * declares nothing. Caller owns the result. */
-extern sds edc_toolset_render_prompt(struct edc_toolbox *tb, uint32_t scope);
+extern sds edc_toolset_render_prompt(struct edc_toolbox *tb, uint32_t scope, cJSON *decl);
 
 /* Record that the declaration set changed, and make it so:
  *   - a "Tool set changed (<reason>)" system message is appended to the group (kept in

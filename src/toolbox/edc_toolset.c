@@ -261,19 +261,39 @@ bool edc_toolset_note_change(struct edc_toolbox *tb, struct edc_task_group *grou
     }
     sdsfree(text);
 
-    /* Two copies, one owner each: the master list (survives a history rebuild) and the live
-     * history the next request is assembled from. */
-    if (!group->tool_deltas)
-        group->tool_deltas = cJSON_CreateArray();
-    cJSON_AddItemToArray(group->tool_deltas, cJSON_Duplicate(msg, 1));
-    edc_task_group_history_add_owned(group, cJSON_Duplicate(msg, 1));
-    cJSON_Delete(msg);
-
-    /* Recompute the frozen set: the delta is now in history, so replay sees it. */
+    /* The delta must be IN history before the set is recomputed (replay reads the transcript),
+     * and the recomputation must happen before the notice is duplicated into tool_deltas --
+     * the appended section is part of that notice. So: add to history first, finish the
+     * message, then take the master copy. */
     char *before = group->tools_decl ? cJSON_PrintUnformatted(group->tools_decl) : NULL;
+    edc_task_group_history_add_owned(group, msg);
     cJSON_Delete(group->tools_decl);
     group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
     char *after = group->tools_decl ? cJSON_PrintUnformatted(group->tools_decl) : NULL;
+
+    /* The system prompt's tool section was frozen into history[0] when the group started and
+     * is NEVER rewritten (that would invalidate everything behind it for no reason beyond the
+     * one miss the field already costs). Instead the notice carries a fresh copy: the section
+     * is tagged `<tools>`, so a later copy supersedes the earlier one -- pi's shape, and the
+     * reason it can append instead of rewriting. */
+    sds section = edc_toolset_render_prompt(tb, EDC_TOOL_SCOPE_NORMAL, group->tools_decl);
+    if (section && sdslen(section) > 0)
+    {
+        sds content = sdsnew(cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content")));
+        content = sdscat(content,
+                         "\nThe tool section in the system prompt above is out of date. This is the current "
+                         "one and it supersedes it:");
+        content = sdscatsds(content, section);
+        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(content));
+        sdsfree(content);
+    }
+    if (section)
+        sdsfree(section);
+
+    /* Master copy last: it now carries the appended section (a history rebuild replays it). */
+    if (!group->tool_deltas)
+        group->tool_deltas = cJSON_CreateArray();
+    cJSON_AddItemToArray(group->tool_deltas, cJSON_Duplicate(msg, 1));
 
     const bool changed = (before == NULL) != (after == NULL) ||
                          (before && after && strcmp(before, after) != 0);
@@ -326,24 +346,36 @@ static struct edc_tool **declared_tools(struct edc_toolbox *tb, uint32_t scope, 
     return list;
 }
 
-static bool has_tool(struct edc_tool **list, size_t n, const char *name)
+/* Is |name| in a declaration set? */
+static bool decl_has(cJSON *decl, const char *name)
 {
-    for (size_t i = 0; i < n; i++)
+    if (!decl || !name)
+        return false;
+    for (int i = 0; i < cJSON_GetArraySize(decl); i++)
     {
-        if (strcmp(list[i]->name, name) == 0)
+        const char *have = entry_name(cJSON_GetArrayItem(decl, i));
+        if (have && strcmp(have, name) == 0)
             return true;
     }
     return false;
 }
 
-/* The rules no JSON schema can carry: they are about the SET, not about one tool. Kept in
- * code so they follow the declaration set instead of drifting from it. */
-static void append_rules(sds *out, struct edc_tool **list, size_t n)
+static struct edc_tool *tool_by_name(struct edc_toolbox *tb, const char *name)
 {
-    const bool exec = has_tool(list, n, "exec_shell");
-    const bool grep = has_tool(list, n, "grep");
-    const bool find = has_tool(list, n, "find");
-    const bool device = has_tool(list, n, "device_shell");
+    struct edc_tool *tool = NULL;
+    if (tb && name)
+        HASH_FIND_STR(tb->tools, name, tool);
+    return tool;
+}
+
+/* The rules no JSON schema can carry: they are about the SET, not about one tool. Kept in
+ * code so they follow the declared set instead of drifting from it. */
+static void append_rules(sds *out, struct edc_toolbox *tb, cJSON *decl)
+{
+    const bool exec = decl_has(decl, "exec_shell");
+    const bool grep = decl_has(decl, "grep");
+    const bool find = decl_has(decl, "find");
+    const bool device = decl_has(decl, "device_shell");
 
     sds rules = sdsempty();
     if (exec && !grep && !find)
@@ -354,23 +386,25 @@ static void append_rules(sds *out, struct edc_tool **list, size_t n)
     if (exec && device)
         rules = sdscat(rules,
                        "- The device_* tools run on the remote device; exec_shell runs on this machine.\n");
-    if (has_tool(list, n, "read_file") && has_tool(list, n, "edit_file"))
+    if (decl_has(decl, "read_file") && decl_has(decl, "edit_file"))
         rules = sdscat(rules,
                        "- Read a file before editing it: edit_file's old_text must match the file byte for byte.\n");
 
-    /* Behavioural notes that belong to a tool but not to its schema (output caps, "does not
-     * recurse", "runs on the device"). Stable order: the tools are already name-sorted. */
-    for (size_t i = 0; i < n; i++)
+    /* Behavioural notes that belong to a tool but not to its schema. Stable order: the
+     * declaration set is already name-sorted. */
+    for (int i = 0; decl && i < cJSON_GetArraySize(decl); i++)
     {
-        if (!list[i]->guidelines || sdslen(list[i]->guidelines) == 0)
+        const char *name = entry_name(cJSON_GetArrayItem(decl, i));
+        struct edc_tool *tool = tool_by_name(tb, name);
+        if (!tool || !tool->guidelines || sdslen(tool->guidelines) == 0)
             continue;
         int lines = 0;
-        char **parts = sdssplitlen(list[i]->guidelines, (ssize_t)sdslen(list[i]->guidelines), "\n", 1, &lines);
+        char **parts = sdssplitlen(tool->guidelines, (ssize_t)sdslen(tool->guidelines), "\n", 1, &lines);
         for (int li = 0; parts && li < lines; li++)
         {
             sds line = sdstrim(sdsnew(parts[li]), " \t");
             if (sdslen(line) > 0)
-                rules = sdscatprintf(rules, "- %s: %s\n", list[i]->name, line);
+                rules = sdscatprintf(rules, "- %s: %s\n", name, line);
             sdsfree(line);
         }
         if (parts)
@@ -382,44 +416,84 @@ static void append_rules(sds *out, struct edc_tool **list, size_t n)
     sdsfree(rules);
 }
 
-sds edc_toolset_render_prompt(struct edc_toolbox *tb, uint32_t scope)
+sds edc_toolset_render_prompt(struct edc_toolbox *tb, uint32_t scope, cJSON *decl)
 {
-    size_t n = 0;
-    struct edc_tool **list = declared_tools(tb, scope, &n);
-    if (!list || n == 0)
+    /* |decl| = the set to describe. NULL means "the initial set" (the system prompt's
+     * snapshot at group start); a change notice passes the group's CURRENT set, so the
+     * appended section and the `tools` field cannot disagree. */
+    cJSON *own = NULL;
+    if (!decl)
     {
-        free(list);
+        own = edc_toolset_initial(tb, scope);
+        decl = own;
+    }
+
+    /* Deferred tools are not declared in the field, so this section is the only place the
+     * model can learn they exist -- "deferred" has to mean "named here, called by name", or
+     * it just means "invisible". */
+    struct edc_tool **by_name = NULL;
+    size_t n_by_name = 0;
+    if (tb)
+    {
+        size_t total = (size_t)HASH_COUNT(tb->tools);
+        if (total > 0)
+            by_name = (struct edc_tool **)malloc(sizeof(*by_name) * total);
+        if (by_name)
+        {
+            struct edc_tool *tool, *tmp;
+            HASH_ITER(hh, tb->tools, tool, tmp)
+            {
+                if (tool->exposure != EDC_TOOL_EXPOSURE_DEFERRED)
+                    continue;
+                if ((tool->scope & scope) == 0)
+                    continue;
+                if (decl_has(decl, tool->name))
+                    continue;
+                by_name[n_by_name++] = tool;
+            }
+            if (n_by_name > 1)
+                qsort(by_name, n_by_name, sizeof(*by_name), cmp_tools_by_name);
+        }
+    }
+
+    const int n = cJSON_GetArraySize(decl);
+    if (n == 0 && n_by_name == 0)
+    {
+        free(by_name);
+        cJSON_Delete(own);
         return sdsempty();
     }
 
-    sds out = sdsnew("\n## Tools\n\n");
-    for (size_t i = 0; i < n; i++)
+    /* The tag is what makes a LATER copy authoritative: pi wraps every prompt section in a
+     * tag of its own name, so an update appended mid-conversation supersedes the earlier one
+     * instead of contradicting it. `history[0]` therefore never has to be rewritten. */
+    sds out = sdsnew("\n<tools>\n## Tools\n\n");
+    for (int i = 0; i < n; i++)
     {
-        if (list[i]->snippet && sdslen(list[i]->snippet) > 0)
-            out = sdscatprintf(out, "- %s: %s\n", list[i]->name, list[i]->snippet);
+        const char *name = entry_name(cJSON_GetArrayItem(decl, i));
+        struct edc_tool *tool = tool_by_name(tb, name);
+        if (tool && tool->snippet && sdslen(tool->snippet) > 0)
+            out = sdscatprintf(out, "- %s: %s\n", name, tool->snippet);
         else
-            out = sdscatprintf(out, "- %s\n", list[i]->name);
+            out = sdscatprintf(out, "- %s\n", name ? name : "?");
     }
-    append_rules(&out, list, n);
+    append_rules(&out, tb, decl);
 
-    /* Only worth saying when it can actually happen: a deferred tool (MCP) exists. */
-    bool deferred = false;
-    if (tb)
+    if (n_by_name > 0)
     {
-        struct edc_tool *tool, *tmp;
-        HASH_ITER(hh, tb->tools, tool, tmp)
+        out = sdscat(out, "\nAlso callable by name (definitions are not in this request; call them and the "
+                          "arguments are checked when the call lands):\n");
+        for (size_t i = 0; i < n_by_name; i++)
         {
-            if (tool->exposure == EDC_TOOL_EXPOSURE_DEFERRED)
-            {
-                deferred = true;
-                break;
-            }
+            if (by_name[i]->snippet && sdslen(by_name[i]->snippet) > 0)
+                out = sdscatprintf(out, "- %s: %s\n", by_name[i]->name, by_name[i]->snippet);
+            else
+                out = sdscatprintf(out, "- %s\n", by_name[i]->name);
         }
     }
-    if (deferred)
-        out = sdscat(out, "\nOther tools may become available during this session; a \"Tool set changed\" "
-                           "message says so.\n");
 
-    free(list);
+    out = sdscat(out, "</tools>\n");
+    free(by_name);
+    cJSON_Delete(own);
     return out;
 }

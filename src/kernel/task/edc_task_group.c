@@ -218,12 +218,18 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
 
     /* Tool-set change notices go last: they are not turns, so every rebuild (a fold landing
      * or a restart) has to put them back. Losing them would leave the model holding a tool
-     * that silently stopped existing -- the exact failure this design exists to avoid. */
+     * that silently stopped existing -- the exact failure this design exists to avoid.
+     *
+     * Only the LAST one is replayed. Each notice carries a complete `<tools>` section (the
+     * whole current declaration set, not a diff), so the newest one already subsumes every
+     * earlier one -- and the tag is what lets the model read it as a replacement rather than
+     * as an extra opinion. Replaying them all would accumulate a few hundred tokens per
+     * change in a request that is re-sent every turn, for information that is already stale. */
     if (group->tool_deltas)
     {
-        cJSON *delta = NULL;
-        cJSON_ArrayForEach(delta, group->tool_deltas)
-            edc_task_group_history_add_owned(group, cJSON_Duplicate(delta, 1));
+        const int n = cJSON_GetArraySize(group->tool_deltas);
+        if (n > 0)
+            edc_task_group_history_add_owned(group, cJSON_Duplicate(cJSON_GetArrayItem(group->tool_deltas, n - 1), 1));
     }
 }
 

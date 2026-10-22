@@ -160,7 +160,11 @@ else                                          tools = edc_toolset_resolve(tb, ta
 
 `edc_toolset_render_prompt(cJSON *decl)` → 替换 `edc_context.c` 里现在手写的那段。输出形状：
 
+**整段包在 `<tools>` 标签里** —— 标签就是补丁的身份：会话中追加的同名段**覆盖**前面那份，
+所以 `history[0]` 永远不用重写（pi 的 `system-prompt.ts:190` 对每个 section 都这么包）。
+
 ```
+<tools>
 ## Tools
 
 - read_file: Read a file (offset/limit supported)
@@ -174,8 +178,14 @@ Rules:
 - Use the device_* tools for anything on the remote device; exec_shell runs locally.
 - Outputs are truncated; if a truncation note appears, narrow the query instead of re-reading.
 
-Other tools may become available during this session; a "Tool set changed" message says so.
+Also callable by name (definitions are not in this request; call them and the
+arguments are checked when the call lands):
+- mcp__fs__read_file: Read a file through the filesystem server
+</tools>
 ```
+
+> `deferred` 工具**不进 `tools` 字段**，所以这一段是模型唯一能知道它存在的途径——"deferred"
+> 必须等于"在这里点名、按名字调用"，否则它就只是"不可见"。
 
 生成规则（**每一条都必须来自代码，不许出现手写段落**）：
 
@@ -216,9 +226,16 @@ void edc_toolset_note_change(struct edc_task_group *g,
 ```
 
 行为：
-1. 追加 §2.3 的 delta 消息：存进 `g->tool_deltas`（rebuild 时重放）并同时追加到 `g->history`（下一次请求立刻可见）；
+1. 追加 §2.3 的 delta 消息：存进 `g->tool_deltas`（rebuild 时重放）并同时追加到 `g->history`
+   （下一次请求立刻可见）。消息正文除了"改了什么"，还带**新渲染的 `<tools>` 段**
+   （`edc_toolset_render_prompt(tb, scope, g->tools_decl)`）——头部那份已过期，按标签覆盖。
+   **`history[0]` 在这个过程里一个字节都不改**；
 2. `has_non_additive` → 重算 `g->tools_decl` 并 `toolset_epoch++`；
 3. 日志：`toolset change group=<id> reason=<reason> +<n> -<n> epoch=<n> cache=reset|kept`。
+4. **rebuild 只重放最后一条通知**（`edc_task_group_rebuild_history`）：每条通知都携带**完整**的
+   `<tools>` 段（不是 diff），所以最新那条已经取代了所有更早的；全部重放会让每次变更都留下
+   ~300 token，而这些 token 每轮都在请求里。`tool_deltas` 本身仍保留全部（内存里，几 KB），
+   重建时只取 `size-1`。**不需要字符串匹配**：判据是数组下标，不是 content 里的标签。
 
 触发点：`/reload`、`/mcp` 启停（B4）、`/tools on|off`；模型切换若改变了可用工具集则也算。
 

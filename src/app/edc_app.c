@@ -35,7 +35,7 @@
 /* The system prompt's tool section: what the model is told it has, in prose. */
 static sds app_tool_section(void *ctx)
 {
-    return edc_toolset_render_prompt((struct edc_toolbox *)ctx, EDC_TOOL_SCOPE_NORMAL);
+    return edc_toolset_render_prompt((struct edc_toolbox *)ctx, EDC_TOOL_SCOPE_NORMAL, NULL);
 }
 
 /* A group's declaration set, resolved once and then frozen (docs/pi-toolset-plan.zh.md, I2:

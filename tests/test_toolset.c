@@ -343,7 +343,18 @@ static void test_render_prompt_is_terse_and_ruleful(void)
     HASH_FIND_STR(tb->tools, "memory_write", mem);
     edc_tool_set_snippet(mem, "Record a durable note");
 
-    sds prose = edc_toolset_render_prompt(tb, EDC_TOOL_SCOPE_NORMAL);
+    /* 一个 deferred 工具：它不进 tools 字段，所以散文段是模型唯一能知道它存在的途径。 */
+    add_tool(tb, "mcp__fs", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DEFERRED);
+    struct edc_tool *deferred_tool = NULL;
+    HASH_FIND_STR(tb->tools, "mcp__fs", deferred_tool);
+    edc_tool_set_snippet(deferred_tool, "Read a file through the filesystem server");
+
+    sds prose = edc_toolset_render_prompt(tb, EDC_TOOL_SCOPE_NORMAL, NULL);
+    CHECK(strstr(prose, "<tools>") != NULL && strstr(prose, "</tools>") != NULL,
+          "section is tagged (a later copy supersedes it)");
+    CHECK(strstr(prose, "Also callable by name") != NULL, "deferred tools are listed by name");
+    CHECK(strstr(prose, "- mcp__fs: Read a file through the filesystem server") != NULL,
+          "deferred tool carries its snippet");
     CHECK(strstr(prose, "## Tools") != NULL, "has a tool section");
     CHECK(strstr(prose, "- exec_shell: Run a shell command locally") != NULL, "snippet line for exec_shell");
     CHECK(strstr(prose, "- memory_write: Record a durable note") != NULL, "memory tools are declared too");
@@ -355,12 +366,12 @@ static void test_render_prompt_is_terse_and_ruleful(void)
     CHECK(strstr(prose, "parameters") == NULL && strstr(prose, "type\":") == NULL,
           "no schema restatement in the prose");
 
-    sds again = edc_toolset_render_prompt(tb, EDC_TOOL_SCOPE_NORMAL);
+    sds again = edc_toolset_render_prompt(tb, EDC_TOOL_SCOPE_NORMAL, NULL);
     CHECK(strcmp(prose, again) == 0, "two renderings are byte-identical (it lives in the cached prefix)");
     sdsfree(again);
 
     /* A scope that declares nothing renders nothing: no empty section in the prompt. */
-    sds empty = edc_toolset_render_prompt(tb, 0);
+    sds empty = edc_toolset_render_prompt(tb, 0, NULL);
     CHECK(sdslen(empty) == 0, "no declared tools -> empty string, not an empty heading");
     sdsfree(empty);
 
@@ -494,6 +505,104 @@ static void test_notices_survive_a_history_rebuild(void)
     edc_toolbox_free(tb);
 }
 
+static void test_note_change_appends_the_current_section(void)
+{
+    TEST("note_change: the notice carries the current <tools> section, and history[0] is untouched");
+    struct edc_toolbox *tb = bare_toolbox();
+    add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    add_tool(tb, "beta", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    struct edc_tool *alpha = NULL, *beta = NULL;
+    HASH_FIND_STR(tb->tools, "alpha", alpha);
+    HASH_FIND_STR(tb->tools, "beta", beta);
+    edc_tool_set_snippet(alpha, "Alpha one");
+    edc_tool_set_snippet(beta, "Beta two");
+
+    struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
+    group->group_id = strdup("g-head");
+    group->history = cJSON_CreateArray();
+    /* 模拟已经冻结的 system prompt：note_change 不许碰它。 */
+    cJSON *head = cJSON_CreateObject();
+    cJSON_AddStringToObject(head, "role", "system");
+    cJSON_AddStringToObject(head, "content", "HEAD-SENTINEL");
+    edc_task_group_history_add_owned(group, head);
+    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+
+    const char *removed[] = {"beta"};
+    CHECK(edc_toolset_note_change(tb, group, NULL, removed, 1, "tools:off:beta"), "records the change");
+
+    /* head 一个字节都没动。 */
+    cJSON *head_now = cJSON_GetArrayItem(group->history, 0);
+    CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(head_now, "content")), "HEAD-SENTINEL") == 0,
+          "history[0] is never rewritten");
+
+    /* 追加的那条带着新的段：alpha 在，beta 不在。 */
+    int n = cJSON_GetArraySize(group->history);
+    cJSON *notice = cJSON_GetArrayItem(group->history, n - 1);
+    const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(notice, "content"));
+    CHECK(content && strstr(content, "out of date") != NULL, "it says the earlier section is stale");
+    CHECK(content && strstr(content, "<tools>") != NULL, "and carries a fresh tagged section");
+    CHECK(content && strstr(content, "- alpha: Alpha one") != NULL, "the current list is in it");
+    CHECK(content && strstr(content, "Beta two") == NULL, "the removed tool is not");
+
+    edc_task_group_free(group);
+    edc_toolbox_free(tb);
+}
+
+static void test_rebuild_keeps_only_the_latest_notice(void)
+{
+    TEST("rebuild: only the newest tool-set notice survives (it subsumes the older ones)");
+    struct edc_toolbox *tb = bare_toolbox();
+    add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    add_tool(tb, "beta", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    struct edc_tool *t = NULL;
+    HASH_FIND_STR(tb->tools, "alpha", t);
+    edc_tool_set_snippet(t, "Alpha one");
+    HASH_FIND_STR(tb->tools, "beta", t);
+    edc_tool_set_snippet(t, "Beta two");
+
+    struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
+    group->group_id = strdup("g-rebuild");
+    group->history = cJSON_CreateArray();
+    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+
+    /* 两次变更：先移除 beta，再加入 gamma。 */
+    const char *removed[] = {"beta"};
+    CHECK(edc_toolset_note_change(tb, group, NULL, removed, 1, "r1-remove-beta"), "first change recorded");
+    cJSON *added = cJSON_CreateArray();
+    cJSON_AddItemToArray(added, schema_entry("gamma", "Gamma three"));
+    CHECK(edc_toolset_note_change(tb, group, added, NULL, 0, "r2-add-gamma"), "second change recorded");
+    cJSON_Delete(added);
+
+    int notices = 0;
+    cJSON *m = NULL;
+    cJSON_ArrayForEach(m, group->history) if (cJSON_HasObjectItem(m, "toolset_reason")) notices++;
+    CHECK(notices == 2, "both notices are in history before a rebuild, got %d", notices);
+
+    /* rebuild = 折叠落地 / 重启那条路：history 从 turns 重建，通知只补最后一条。 */
+    edc_task_group_rebuild_history(group);
+
+    notices = 0;
+    const char *content = NULL;
+    cJSON_ArrayForEach(m, group->history)
+    {
+        if (cJSON_HasObjectItem(m, "toolset_reason"))
+        {
+            notices++;
+            content = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+        }
+    }
+    CHECK(notices == 1, "exactly one notice after the rebuild, got %d", notices);
+    CHECK(content && strstr(content, "r2-add-gamma") != NULL, "the survivor is the newest one");
+    CHECK(content && strstr(content, "r1-remove-beta") == NULL, "the older notice is gone");
+    CHECK(content && strstr(content, "- alpha: Alpha one") != NULL, "its section still lists what exists");
+    /* gamma 只在 delta 里、没注册进 registry ⇒ 散文段只给名字（真实路径里 MCP 工具会同时注册，那时才有 snippet）。 */
+    CHECK(content && strstr(content, "- gamma") != NULL, "including the newest addition");
+    CHECK(content && strstr(content, "Beta two") == NULL, "and not what was removed");
+
+    edc_task_group_free(group);
+    edc_toolbox_free(tb);
+}
+
 int main(void)
 {
     log_info("test_toolset: the declaration set (sorted, scope-filtered, replayable)");
@@ -508,6 +617,8 @@ int main(void)
     test_render_prompt_is_terse_and_ruleful();
     test_note_change_adding_a_direct_tool_rewrites_the_field();
     test_note_change_adding_a_deferred_tool_keeps_the_bytes();
+    test_note_change_appends_the_current_section();
+    test_rebuild_keeps_only_the_latest_notice();
     test_note_change_removal_rewrites_the_field();
     test_notices_survive_a_history_rebuild();
 
