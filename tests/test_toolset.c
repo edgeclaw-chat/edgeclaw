@@ -10,6 +10,10 @@
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "edc_task_group.h"
+#include "edc_tools_search.h"
+
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "cJSON.h"
 #include "log.h"
@@ -603,6 +607,145 @@ static void test_rebuild_keeps_only_the_latest_notice(void)
     edc_toolbox_free(tb);
 }
 
+/* ── R4: 检索工具的散文规则与命令拼装 ──────────────────────────── */
+
+static void test_search_tools_flip_the_search_rule(void)
+{
+    TEST("render_prompt: with grep+find the rule switches from exec_shell to 'prefer grep/find'");
+
+    struct edc_toolbox *before = bare_toolbox();
+    add_tool(before, "exec_shell", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    sds no_search = edc_toolset_render_prompt(before, EDC_TOOL_SCOPE_NORMAL, NULL);
+    CHECK(strstr(no_search, "Use exec_shell for searching") != NULL,
+          "without grep/find the model is told to use exec_shell");
+    sdsfree(no_search);
+    edc_toolbox_free(before);
+
+    struct edc_toolbox *after = bare_toolbox();
+    add_tool(after, "exec_shell", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    add_tool(after, "grep", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    add_tool(after, "find", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
+    sds with_search = edc_toolset_render_prompt(after, EDC_TOOL_SCOPE_NORMAL, NULL);
+    CHECK(strstr(with_search, "Use exec_shell for searching") == NULL,
+          "the fallback rule is gone once the tools exist");
+    CHECK(strstr(with_search, "Prefer grep/find over exec_shell") != NULL, "and it is replaced by the preference");
+    sdsfree(with_search);
+    edc_toolbox_free(after);
+}
+
+/* 模型的 pattern 是任意字符串。它进了 `sh -c` 的脚本，所以引号必须被真正关住 ——
+ * 这条测试钉的就是"注入不成立"。 */
+/* find/grep 用同一个 glob 匹配器：`*` 与 `?`，且 `*` 不跨越 '/'
+ * （这样 "*.c" 只匹配当前层的 .c 文件，而不是整条路径里任意位置）。 */
+static void test_search_glob_matching(void)
+{
+    TEST("grep/find: the glob matcher (star does not cross a separator)");
+
+    CHECK(edc_search_glob_match("*.c", "main.c"), "*.c matches main.c");
+    CHECK(!edc_search_glob_match("*.c", "main.h"), "*.c does not match main.h");
+    CHECK(edc_search_glob_match("*", "anything"), "a bare star matches any name");
+    CHECK(edc_search_glob_match("a?c", "abc"), "? matches exactly one character");
+    CHECK(!edc_search_glob_match("a?c", "ac"), "? requires that one character");
+    CHECK(edc_search_glob_match("src/*.c", "src/a.c"), "a glob with a separator matches the relative path");
+    CHECK(!edc_search_glob_match("src/*.c", "src/sub/a.c"), "star must not cross '/'");
+    CHECK(edc_search_glob_match("*main.c", "the_main.c"), "a star prefix is allowed");
+    CHECK(edc_search_glob_match("", "whatever"), "an empty glob accepts everything");
+
+#ifdef _WIN32
+    /* Windows filesystems fold case, so the matcher does too there. */
+    CHECK(edc_search_glob_match("*.C", "main.c"), "on Windows the glob folds case");
+#else
+    CHECK(!edc_search_glob_match("*.C", "main.c"), "on POSIX the glob is case-sensitive");
+#endif
+}
+
+/* ── R4 端到端：真的遍历一个目录树 ──────────────────────────────── */
+
+static void write_test_file(const char *dir, const char *name, const char *body, size_t len)
+{
+    sds path = sdscatprintf(sdsempty(), "%s/%s", dir, name);
+    FILE *f = fopen(path, "wb");
+    if (f)
+    {
+        fwrite(body, 1, len, f);
+        fclose(f);
+    }
+    sdsfree(path);
+}
+
+static void test_search_walks_a_real_tree(void)
+{
+    TEST("grep/find: a real tree -- relative paths, globs, binary and CRLF handling");
+
+    char root[] = "/tmp/edc_search_XXXXXX";
+    if (!mkdtemp(root))
+    {
+        CHECK(false, "mkdtemp failed");
+        return;
+    }
+    sds sub = sdscatprintf(sdsempty(), "%s/sub", root);
+    mkdir(sub, 0755);
+
+    write_test_file(root, "a.c", "int a;\nTODO: alpha\n", 18);
+    write_test_file(root, "b.h", "TODO: header\n", 13);
+    write_test_file(sub, "c.c", "/* TODO: beta */\n", 16);
+    /* 二进制：前 8KB 有 NUL，必须整份跳过（否则会喷乱码） */
+    write_test_file(root, "blob.bin", "TODO\0\0\0", 7);
+    /* CRLF：'\r' 属于行尾，不该出现在结果里 */
+    write_test_file(root, "crlf.c", "TODO: windows\r\n", 15);
+
+    /* grep：所有 TODO，路径相对 root（不带前导 '/'） */
+    sds r = edc_search_run_blocking(root, true, "TODO", NULL, false, false, 100);
+    CHECK(strstr(r, "a.c:2:TODO: alpha") != NULL, "hit with its line number, relative path");
+    CHECK(strstr(r, "sub/c.c:1:"), "a nested file is searched");
+    CHECK(strstr(r, "crlf.c:1:TODO: windows\n") != NULL, "CRLF keeps no stray carriage return");
+    CHECK(strstr(r, "blob.bin") == NULL, "a binary file is skipped");
+    CHECK(strstr(r, "/tmp/") == NULL, "paths are relative to the search root");
+    sdsfree(r);
+
+    /* glob 过滤 */
+    r = edc_search_run_blocking(root, true, "TODO", "*.c", false, false, 100);
+    CHECK(strstr(r, "a.c:2:") != NULL, "glob kept the .c file");
+    CHECK(strstr(r, "b.h") == NULL, "glob dropped the .h file");
+    sdsfree(r);
+
+    /* literal：'(/*' 当正则会报错，当字面量就该命中 */
+    r = edc_search_run_blocking(root, true, "/* TODO", NULL, false, true, 100);
+    CHECK(strstr(r, "sub/c.c:1:") != NULL, "literal mode matches punctuation as-is");
+    sdsfree(r);
+
+    /* limit：只要 1 条，并说明被截断 */
+    r = edc_search_run_blocking(root, true, "TODO", NULL, false, false, 1);
+    int hits = 0;
+    for (const char *q = r; (q = strstr(q, "TODO")) != NULL; q += 4)
+        hits++;
+    CHECK(hits == 1, "limit returns exactly one match");
+    CHECK(strstr(r, "stopped at the limit") != NULL, "and says why it stopped");
+    sdsfree(r);
+
+    /* find：只列文件，不读内容 */
+    r = edc_search_run_blocking(root, false, NULL, "*.c", false, false, 100);
+    CHECK(strstr(r, "a.c") != NULL && strstr(r, "sub/c.c") != NULL, "find lists matching files");
+    CHECK(strstr(r, "TODO") == NULL, "find prints paths, not content");
+    sdsfree(r);
+
+    /* 清理 */
+    sds paths[6];
+    const char *names[] = {"a.c", "b.h", "blob.bin", "crlf.c", NULL};
+    for (int i = 0; names[i]; i++)
+    {
+        paths[i] = sdscatprintf(sdsempty(), "%s/%s", root, names[i]);
+        remove(paths[i]);
+        sdsfree(paths[i]);
+    }
+    sds cc = sdscatprintf(sdsempty(), "%s/c.c", sub);
+    remove(cc);
+    sdsfree(cc);
+    rmdir(sub);
+    sdsfree(sub);
+    rmdir(root);
+}
+
 int main(void)
 {
     log_info("test_toolset: the declaration set (sorted, scope-filtered, replayable)");
@@ -615,6 +758,9 @@ int main(void)
     test_replay_is_stable_when_reapplied();
     test_resolve_always_reflects_the_current_set();
     test_render_prompt_is_terse_and_ruleful();
+    test_search_tools_flip_the_search_rule();
+    test_search_glob_matching();
+    test_search_walks_a_real_tree();
     test_note_change_adding_a_direct_tool_rewrites_the_field();
     test_note_change_adding_a_deferred_tool_keeps_the_bytes();
     test_note_change_appends_the_current_section();

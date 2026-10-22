@@ -14,7 +14,7 @@
 
 1. **pi 的定位是"最小可扩展 harness"**：内建工具只有 8 个、明确**不做** sub-agents 和 plan mode，
    能力靠 extensions / skills / prompt templates / themes，打成 **Pi Packages** 用 npm 或 git 分发。
-2. 我们的差距集中在**接入面**（愿不愿试）：无 MCP、无 headless、无检索工具（grep/find）。
+2. 我们的差距集中在**接入面**（愿不愿试）：无 MCP、无 headless（grep/find 已于 2026-10-21 补上）。
 3. 我们已**超出** pi 的部分不要退化：task/group/依赖图、可见沙箱（pi 靠 docker）、cron、device、
    CJK token 估算、shell 语法、`@file`、粘贴折叠。
 4. 最近两周（10-18 → 10-20）提交全在输入框体验（留人环节），**"愿不愿试"的门槛一条没动**。
@@ -50,7 +50,7 @@
 
 | 能力 | 我们 | pi | 证据（我们 / pi） |
 |---|---|---|---|
-| 检索工具 `grep` / `find` | ❌ 只有 `list_dir`+`read_file` | ✅ | `edc_tools_fs.c` / `tools/{grep,find}.ts` |
+| 检索工具 `grep` / `find` | ✅ | ✅ | `edc_tools_search.c` / `tools/{grep,find}.ts` |
 | web 工具 | ❌ | **❌ 也没有** | `edc_toolbox.c` / 零命中 |
 | MCP | ❌ 零命中 | ✅ | `grep -i mcp src` / `docs/mcp.md` |
 | headless | ❌ 只解析 `--sandbox` | ✅ 四模式 + SDK | `src/tui/main.cpp` / `docs/cli.md` |
@@ -188,7 +188,7 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 | **R1** | **MCP 接入** —— **⏸ 暂缓（2026-10-21 用户裁定）**，见下方"为什么暂缓 / 重开条件" | 挂一个 server → 工具出现在工具段且可调用；崩溃/超时不拖死 turn；未启用时工具段完全不出现 | L | R2 |
 | **R2** | ✅ **已完成（2026-10-21）**：工具集由注册表派生（`edc_toolset`），组内冻结、散文段生成、执行侧按 scope 判定；实作见 `pi-toolset-plan.zh.md` B0–B3 | 同组连跑 `tools` 字节级相同；禁用后散文段里也不出现（`test_toolset.c` 37 checks） | — | — |
 | **R3** | **headless 双模式**：`--print`（管道 stdin、`@path`）+ `--mode json` | 无 tty 下退出码正确、stdout 只有结果；json 可逐行消费；与 TUI **共用同一 kernel 路径**（不复制 agent 循环） | M | — |
-| **R4** | **检索工具 `grep` + `find`** | "找出所有调用 X 的地方"一轮完成；grep 单行 500 字符；走同一输出上限 | S | — |
+| **R4** | ✅ **已完成（2026-10-22，纯 C 版）**：`grep` + `find` 在进程内实现（`edc_tools_search.c`），无子进程、无 shell；遍历在 libuv 线程池，路径先过沙箱；POSIX regex（Windows 用 pcre2-posix）；`literal` / `limit` / `glob` / `ignore_case` / `timeout` | 一轮定位；单行 500 字符；默认 100 条命中并说明截断；二进制/CRLF/.git 等跳过；散文规则自动从"用 exec_shell 搜索"切成"优先 grep/find"（单测钉住） | — | — |
 | **R5** | ✅ **已完成（2026-10-21）**：6 段格式 + 迭代更新 + split turn + 精确路径要求 + `max_tokens`（早就有）；`<read-files>`/`<modified-files>` 从 tool call 抽取、跨折叠累积、上限 50、确定性顺序（本次补） | 折叠后能说出改过哪些文件、卡在哪；折叠两次取并集不重复（`test_group_fold.c` 三个用例钉住） | — | — |
 
 > **R1 为什么暂缓（2026-10-21）**

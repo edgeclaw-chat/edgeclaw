@@ -8,6 +8,7 @@
 #include "edc_tools_device_file.h"
 #include "edc_tools_device_shell.h"
 #include "edc_tools_fs.h"
+#include "edc_tools_search.h"
 #include "edc_tools_shell.h"
 #include "edc_tools_todo.h"
 #include "edc_tools_memory.h"
@@ -174,6 +175,7 @@ void edc_toolbox_register_defaults(struct edc_toolbox *tb)
 {
     edc_tools_fs_register(tb);
     edc_tools_shell_register(tb);
+    edc_tools_search_register(tb);
     edc_tools_crontab_register(tb);
     edc_tools_todo_register(tb);
     edc_tools_memory_register(tb);
