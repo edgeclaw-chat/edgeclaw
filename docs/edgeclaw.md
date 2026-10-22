@@ -345,6 +345,13 @@ Rules:
 - A missing or unreadable file does not drop the message: the task is created and the
   failure appears in the attached content.
 
+**Completion follows the same rule.** Typing `@` opens the picker; it stays open across a
+space when a quote is open (`@"my fi` keeps listing) and closes once the quote is. Taking a
+row writes back the form the parser can read: a path with a space (or a `#`) is quoted for
+you, so `@my` → `my file.txt` inserts `@"my file.txt"`, not `@my file.txt` (which would name
+the file `my`). A directory keeps the quote open for the next level (`@"my dir/`), and a
+`#12` you already typed survives the completion.
+
 What the model sees: your text keeps `@path` verbatim, and the file's content arrives as
 its own message, shaped exactly like a `read_file` result
 (`Called the Read tool with the following input: {"path":"src/main.c"}` + the body). Two

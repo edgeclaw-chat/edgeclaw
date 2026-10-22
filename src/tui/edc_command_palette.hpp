@@ -43,12 +43,20 @@ class CommandPalette
     };
 
     // Where an `@` reference starts and what has been typed after it. Pure: no state, so
-    // the rule can be tested on its own (it is the same rule opencode uses).
+    // the rule can be tested on its own.
+    //
+    // Quoting follows the pass (src/shell/edc_mention.c): `@"my file.txt"` is ONE reference,
+    // so a space inside the quotes does not end it. While the quote is still open the
+    // reference is being typed and stays "active" -- that is what keeps completion alive
+    // across a space.
     struct MentionHit
     {
         bool active = false;
         int begin = 0;        // byte offset of the '@'
-        std::string query;    // what follows it, up to the caret
+        std::string query;    // what follows it (inside the quotes, if quoted), up to the caret
+        bool quoted = false;  // the reference was opened with a quote
+        char quote = 0;       // which one ('"' or ''')
+        std::string range;    // a trailing `#12`/`#12-20`, kept out of the query
     };
     static MentionHit ParseMention(const std::string &content, int cursor);
 
@@ -147,6 +155,11 @@ class CommandPalette
     std::vector<CommandFact> shell_option_rows_;
     Mode mode_ = Mode::Command;
     int trigger_ = 0;
+    // How the reference being completed was written (see MentionHit): what MentionInsert()
+    // needs to produce a form the pass will read back the same way.
+    bool mention_quoted_ = false;
+    char mention_quote_ = '"';
+    std::string mention_range_;
     int cursor_ = 0;
     int selected_ = 0;
     bool open_ = false;

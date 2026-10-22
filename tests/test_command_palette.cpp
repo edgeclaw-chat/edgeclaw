@@ -102,6 +102,99 @@ static void test_mention_trigger(void)
     CHECK(h.active && h.begin == 3 && h.query == "b", "begin 3, query 'b'");
 }
 
+static void test_mention_quoted(void)
+{
+    using Hit = CommandPalette::MentionHit;
+    auto at_end = [](const std::string &text) {
+        return CommandPalette::ParseMention(text, static_cast<int>(text.size()));
+    };
+
+    /* The pass reads `@"my file.txt"` as ONE reference (src/shell/edc_mention.c), so the
+     * completion must not stop at the space inside the quotes -- otherwise the popup dies
+     * exactly when the user needs it. */
+    TEST("a quoted reference stays open across a space");
+    Hit h = at_end("@\"my fi");
+    CHECK(h.active, "still active");
+    CHECK(h.quoted, "and says it is quoted");
+    CHECK(h.query == "my fi", "the query is what is inside the quotes");
+    CHECK(h.begin == 0, "at the line start");
+
+    TEST("single quotes behave the same");
+    h = at_end("看下 @'my fi");
+    CHECK(h.active && h.quoted && h.query == "my fi", "single quotes: same query");
+    /* "看下 " is 7 bytes (3 + 3 + space), so the '@' is at 7 -- the test is about bytes,
+     * which is what begin is. */
+    CHECK(h.begin == 7, "begin points at the '@' (byte offset)");
+
+    TEST("a CLOSED quote is not being typed any more");
+    CHECK(!at_end("@\"my file.txt\"").active, "the reference is complete: no popup");
+    CHECK(!at_end("@\"my file.txt\" ").active, "and not after the trailing space either");
+
+    TEST("an escaped quote is not the closing one");
+    h = at_end("@\"my \\\"half");
+    CHECK(h.active, "still inside the reference");
+
+    /* A `#range` is part of the reference but not part of the name: `@a.c#1` has to keep
+     * listing `a.c`. */
+    TEST("a trailing #range is kept out of the query");
+    h = at_end("@a.c#12");
+    CHECK(h.active && h.query == "a.c" && h.range == "#12", "#12: range split off, name kept");
+    h = at_end("@a.c#12-20");
+    CHECK(h.query == "a.c" && h.range == "#12-20", "#12-20: same");
+    h = at_end("@a#b");
+    CHECK(h.query == "a#b" && h.range.empty(), "a '#' that does not open a range stays in the name");
+}
+
+static void test_mention_insert_quoted(void)
+{
+    TEST("completing inside quotes keeps the quotes and closes them");
+    CommandPalette p;
+    p.SetFileSource({{"my file.txt", ""}});
+    p.Update("@\"my fi", 7);
+    CHECK(p.mode() == CommandPalette::Mode::Mention, "mention mode");
+    CHECK(p.MentionInsert() == "@\"my file.txt\" ", "quotes closed, trailing space outside");
+
+    TEST("a path that NEEDS quotes gets them even when the user typed none");
+    /* `@my` still lists `my file.txt` (the index matches by prefix), but inserting that
+     * row bare would build `@my file.txt` -- which the pass reads as the file `my`. So
+     * completion adds the quotes: the row has to survive being read back. */
+    CommandPalette bare;
+    bare.SetFileSource({{"my file.txt", ""}});
+    bare.Update("@my", 3);
+    CHECK(bare.MentionInsert() == "@\"my file.txt\" ", "quotes added around the whole path");
+
+    TEST("a path with no space is left bare");
+    CommandPalette plain;
+    plain.SetFileSource({{"src/main.c", ""}});
+    plain.Update("@sr", 3);
+    CHECK(plain.MentionInsert() == "@src/main.c ", "unchanged for a path that needs no quotes");
+
+    TEST("single quotes are honoured when the user typed one");
+    CommandPalette sq;
+    sq.SetFileSource({{"my file.txt", ""}});
+    sq.Update("@'my fi", 7);
+    CHECK(sq.MentionInsert() == "@'my file.txt' ", "the user's own quote character is reused");
+
+    TEST("a quoted DIRECTORY stays open (no closing quote, no space yet)");
+    CommandPalette dir;
+    dir.SetFileSource({{"my dir/", ""}});
+    dir.Update("@\"my d", 6);
+    CHECK(dir.MentionInsert() == "@\"my dir/", "open quote, no space: the next level stays reachable");
+
+    TEST("the range survives completion");
+    CommandPalette ranged;
+    ranged.SetFileSource({{"a.c", ""}});
+    ranged.Update("@a.c#12-20", 10);
+    CHECK(ranged.MentionInsert() == "@a.c#12-20 ", "the range is put back after the path");
+
+    TEST("a '#' in the name is protected by quotes");
+    /* Inside quotes the pass takes the closing quote as the end, so `#1` is not a range. */
+    CommandPalette hash;
+    hash.SetFileSource({{"log#1.txt", ""}});
+    hash.Update("@log", 4);
+    CHECK(hash.MentionInsert() == "@\"log#1.txt\" ", "a '#' in the name is protected by the quotes");
+}
+
 static void test_mention_insert(void)
 {
     TEST("@ completion inserts a file with a trailing space, a directory with a slash");
@@ -178,6 +271,8 @@ int main(void)
 {
     printf("=== command palette tests ===\n\n");
     test_mention_trigger();
+    test_mention_quoted();
+    test_mention_insert_quoted();
     test_mention_insert();
     test_enter_takes_the_row();
 
