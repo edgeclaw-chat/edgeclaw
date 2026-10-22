@@ -93,6 +93,26 @@ bazel run   //src/tui:edgeclaw          # build and start
 
 Requires Bazel plus a C/C++17 toolchain.
 
+#### Windows
+
+Bazel runs the flex/bison genrules through a bash, and on Windows it picks that bash
+from the environment — `C:\Windows\System32\bash.exe` (WSL) shadows Git's one, so the
+build only worked where a WSL distro happened to provide flex and bison. Run once, then
+open a new terminal:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\windows\setup-build-env.ps1
+bazel shutdown
+```
+
+This pins `BAZEL_SH` to the bash of the git on PATH, makes your flex/bison visible
+(adds a directory to the user PATH only if they are not already on it — pass
+`-ToolsDir` if needed), and stops Git Bash from rewriting `//labels`. Afterwards
+`bazel build` behaves the same in Windows Terminal and in Git Bash, and WSL is not
+involved. No path is hardcoded: everything is discovered on the machine that runs the
+script. See [tools/windows/README.md](tools/windows/README.md) for what it changes and
+how flex/bison are expected to be provided.
+
 ### First run
 
 No config file? One is written with defaults, and `/connect` opens the setup dialog
