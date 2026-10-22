@@ -87,6 +87,37 @@ int main(void)
     CHECK(ast.cmd && ast.cmd->argc == 1 && strcmp(ast.cmd->argv[0], "--bg") == 0, "--bg kept as a word");
     edc_ast_free(&ast);
 
+    /* ── ③b 带值选项也必须各自成词（这条守的是 PRODUCTION 路径）─────
+     *
+     * Regression, and it belongs HERE rather than only in test_lex: the lexer's option
+     * rules used to match their trailing space as part of the option, so no C_WS followed
+     * to end the word being built and SHELL_OFF folded the option into it -- `-d t1`
+     * arrived as ONE word `-dt1`. Every command handler's getopt reads these words, so
+     * this exact property is what makes `/task new x -d 1` mean anything.
+     *
+     * Asserted through lex + edc_parse (what the dispatcher calls), not through a helper. */
+    TEST("/task new x -d 1: `-d` and its value are separate words");
+    CHECK(parse_line("/task new x -d 1", &ast, &err), "parsed");
+    CHECK(ast.cmd && ast.cmd->argc == 4, "four words after the name");
+    CHECK(ast.cmd && strcmp(ast.cmd->argv[2], "-d") == 0, "`-d` is its own word");
+    CHECK(ast.cmd && strcmp(ast.cmd->argv[3], "1") == 0, "and the value is its own word");
+    edc_ast_free(&ast);
+
+    TEST("/task new x --group g1: same for a long option");
+    CHECK(parse_line("/task new x --group g1", &ast, &err), "parsed");
+    CHECK(ast.cmd && ast.cmd->argc == 4 && strcmp(ast.cmd->argv[2], "--group") == 0 &&
+              strcmp(ast.cmd->argv[3], "g1") == 0,
+          "`--group` and `g1` are separate words");
+    edc_ast_free(&ast);
+
+    TEST("/task new 'x -d 1': quoting makes the whole thing ONE argument");
+    CHECK(parse_line("/task new 'x -d 1'", &ast, &err), "parsed");
+    CHECK(ast.cmd && ast.cmd->argc == 2, "name + one quoted word");
+    CHECK(ast.cmd && strcmp(ast.cmd->argv[1], "x -d 1") == 0, "the option-looking text stayed inside");
+    CHECK(ast.cmd && ast.cmd->argv_quoted && ast.cmd->argv_quoted[1] && !ast.cmd->argv_quoted[0],
+          "argv_quoted: the quoted word is flagged, nothing else is");
+    edc_ast_free(&ast);
+
     /* ── ④ 未闭合引号 ──────────────────────────────────────── */
     TEST("/session new dev 'oops: parse fails with a reason");
     CHECK(!parse_line("/session new dev 'oops", &ast, &err), "parse rejected");

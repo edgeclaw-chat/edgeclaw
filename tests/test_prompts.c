@@ -20,6 +20,53 @@
 #include <string.h>
 #include <unistd.h> /* symlink/unlink */
 
+/* Split a tail the way a shell does -- a TEST helper only.
+ *
+ * This used to be `edc_argv_from_tail` in edc_lex.h. Production does not need it: the
+ * dispatcher sends a command line through edc_lex + edc_parse (the grammar builds
+ * `struct edc_ast_cmd`), and the lexer is the only place that decides word boundaries.
+ * Keeping a public "split this raw text into argv" call would invite the next handler to
+ * bypass the grammar -- which is the very dialect this refactor removed -- so it lives
+ * here, on top of the real lexer, and nothing can call it from src/.
+ *
+ * Quotes are syntax (adjacent fragments join, quotes are gone); operators do not
+ * participate (SHELL_OFF). An unterminated quote is an ERROR: NULL plus a readable
+ * message in |out_error|, never a silently dropped argument. Free with
+ * sdsfreesplitres(). */
+static sds *edc_argv_from_tail(const char *tail, int *out_count, sds *out_error)
+{
+    if (out_count)
+        *out_count = 0;
+    if (out_error)
+        *out_error = NULL;
+
+    edc_lex_out o;
+    if (!edc_lex(tail ? tail : "", EDC_LEX_SHELL_OFF, &o))
+        return NULL;
+
+    sds *args = NULL;
+    int n = 0;
+    for (int i = 0; i < o.count; i++)
+    {
+        if (o.toks[i].kind == TK_BAD_QUOTED)
+        {
+            if (out_error)
+                *out_error = edc_lex_unterminated_quote(o.toks[i].value, o.toks[i].begin + 1);
+            edc_lex_out_free(&o);
+            sdsfreesplitres(args, n);
+            return NULL;
+        }
+        if (o.toks[i].kind != TK_WORD)
+            continue;
+        args = realloc(args, sizeof(sds) * (size_t)(n + 1));
+        args[n++] = sdsdup(o.toks[i].value ? o.toks[i].value : sdsempty());
+    }
+    edc_lex_out_free(&o);
+    if (out_count)
+        *out_count = n;
+    return args;
+}
+
 static int passed = 0, failed = 0;
 
 #define TEST(n)                                                                                                        \
