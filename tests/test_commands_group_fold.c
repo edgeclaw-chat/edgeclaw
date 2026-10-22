@@ -251,6 +251,48 @@ int main(void)
     drive_command(cfg, sched->sessions, sched, "/group info");
     CHECK(g_llm_calls == 0, "不带 id 看前台组, 也不折");
 
+    TEST("/group files: 被折叠走过的文件（含空态与免责声明）");
+    struct edc_task_group *gf = make_group(sess, "16");
+    /* ① 从没折过 */
+    sds files = edc_commands_group_files_text(gf);
+    CHECK(files && strstr(files, "## Tracked files in `16`"), "带组标题");
+    CHECK(files && strstr(files, "never been folded"), "没折过就说没折过");
+    CHECK(files && strstr(files, "not a live view"), "空态也带免责声明");
+    sdsfree(files);
+
+    /* ② 塞一份带两个块的 memory（就是折叠落地写出来的形状） */
+    gf->memory = sdsnew("# Summary\n\n<read-files>\nsrc/a.c\nsrc/\n</read-files>\n\n"
+                        "<modified-files>\nsrc/b.c\n</modified-files>\n");
+    files = edc_commands_group_files_text(gf);
+    CHECK(files && strstr(files, "### Modified (1)"), "先列 modified 与其条数");
+    CHECK(files && strstr(files, "### Read (2)"), "再列 read 与其条数");
+    CHECK(files && strstr(files, "- `src/b.c`"), "改过的路径成条");
+    CHECK(files && strstr(files, "- `src/a.c`"), "读过的路径成条");
+    CHECK(files && strstr(files, "### Modified (1)") && strstr(files, "### Read (2)") &&
+              strstr(files, "### Modified (1)") < strstr(files, "### Read (2)"),
+          "modified 在 read 前面");
+    CHECK(files && strstr(files, "not a live view") && strstr(files, "exec_shell"), "有内容也带免责声明");
+    sdsfree(files);
+
+    /* ③ 有 memory 但没块（旧档案 / 语料没碰文件）：不能说成"没折过" */
+    sdsfree(gf->memory);
+    gf->memory = sdsnew("# Summary\n- only prose\n");
+    files = edc_commands_group_files_text(gf);
+    CHECK(files && strstr(files, "No files recorded"), "有 memory 无块 ⇒ 说没记录, 不误报");
+    CHECK(files && strstr(files, "never been folded") == NULL, "不能说成没折过");
+    sdsfree(files);
+    sdsfree(gf->memory);
+    gf->memory = NULL;
+
+    /* ④ NULL 组 / 命令路径不崩、不带 id 看前台组 */
+    files = edc_commands_group_files_text(NULL);
+    CHECK(files && strstr(files, "no such group"), "NULL 组说得清楚");
+    sdsfree(files);
+    g_llm_calls = 0;
+    drive_command(cfg, sched->sessions, sched, "/group files 16");
+    drive_command(cfg, sched->sessions, sched, "/group files");
+    CHECK(g_llm_calls == 0, "只读, 不折任何东西");
+
     edc_session_free(sess);
     edc_scheduler_free(sched);
     edc_config_free(cfg);

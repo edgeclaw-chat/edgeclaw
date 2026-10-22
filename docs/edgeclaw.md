@@ -668,6 +668,7 @@ and a missing value is a usage error.
 |---------|-------------|
 | `/group list` | List all process groups |
 | `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight); no id = the foreground group |
+| `/group files [id]` | The files the group's **folded** work read / modified. A snapshot written when a fold lands, not a live view: later edits are not reflected and `exec_shell` calls (`sed -i`, `cat`, `git checkout`) are never tracked |
 | `/group history <id>` | The whole group's history, one block per member |
 | `/group fold [id] [focus]` | Fold the group now, ignoring the trigger; no id = the foreground group |
 

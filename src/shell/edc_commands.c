@@ -390,6 +390,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
 
     {"Group", "/group list", "list all groups", NULL},
     {"Group", "/group info [id]", "a group's context / fold numbers (default: the foreground group)", NULL},
+    {"Group", "/group files [id]", "the files the group's folded work read / modified", NULL},
     {"Group", "/group history <id>", "the whole group's history, one block per member", NULL},
     {"Group", "/group fold [id] [focus]", "fold the group now, ignoring the trigger", NULL},
 };
@@ -2072,6 +2073,87 @@ static void edc_commands_handle_group_fold(struct edc_session_manager *sm, struc
     sdsfree(reply);
 }
 
+/* Number of entries in a newline-separated list (the shape
+ * edc_group_fold_tracked_files() hands back). */
+static size_t edc_commands_count_entries(const sds list)
+{
+    if (!list || sdslen(list) == 0)
+        return 0;
+    int n = 0;
+    char **lines = sdssplitlen(list, (ssize_t)sdslen(list), "\n", 1, &n);
+    size_t count = 0;
+    for (int i = 0; lines && i < n; i++)
+    {
+        if (lines[i] && lines[i][0])
+            count++;
+    }
+    if (lines)
+        sdsfreesplitres(lines, n);
+    return count;
+}
+
+/* Append one "### Title (n)" section with its entries as a bullet list. `count` is the
+ * entry count the caller already computed (0 = omit the section entirely). */
+static sds edc_commands_append_file_section(sds out, const char *title, const sds list, size_t count)
+{
+    if (count == 0 || !list)
+        return out;
+    out = sdscatprintf(out, "### %s (%zu)\n", title, count);
+    int n = 0;
+    char **lines = sdssplitlen(list, (ssize_t)sdslen(list), "\n", 1, &n);
+    for (int i = 0; lines && i < n; i++)
+    {
+        if (lines[i] && lines[i][0])
+            out = sdscatprintf(out, "- `%s`\n", lines[i]);
+    }
+    if (lines)
+        sdsfreesplitres(lines, n);
+    return sdscat(out, "\n");
+}
+
+/* `/group files [id]`: the files the group's FOLDED work read / modified.
+ *
+ * What this shows is a snapshot taken at fold landing, not a live view: the lists cover
+ * the turns that became memory, they do not advance afterwards, and `exec_shell` calls
+ * (`sed -i`, `git checkout`, `cat`) were never tracked. Saying so in the output matters
+ * more than the list itself -- a reader who takes it for `git status` will be wrong. */
+sds edc_commands_group_files_text(struct edc_task_group *group)
+{
+    if (!group)
+        return sdsnew("**Group** — no such group (the id is the one on its header).");
+
+    sds reads = NULL;
+    sds writes = NULL;
+    edc_group_fold_tracked_files(group, &reads, &writes);
+    const size_t nr = edc_commands_count_entries(reads);
+    const size_t nw = edc_commands_count_entries(writes);
+
+    sds out = sdscatprintf(sdsempty(), "## Tracked files in `%s`\n\n",
+                           group->group_id ? group->group_id : "?");
+
+    if (nr + nw == 0)
+    {
+        if (!group->memory || sdslen(group->memory) == 0)
+            out = sdscat(out, "This group has never been folded, so nothing is tracked yet.\n");
+        else
+            out = sdscat(out, "No files recorded. Either this group was folded before the lists existed, or the "
+                              "folded corpus touched no `read_file` / `list_dir` / `write_file` / `edit_file`.\n");
+    }
+    else
+    {
+        out = edc_commands_append_file_section(out, "Modified", writes, nw);
+        out = edc_commands_append_file_section(out, "Read", reads, nr);
+    }
+    sdsfree(reads);
+    sdsfree(writes);
+
+    /* The caveat always ships with the list: a reader who takes it for `git status`
+     * will be wrong, and the wrongness is not visible from the list itself. */
+    out = sdscat(out, "_A snapshot taken when a fold landed, not a live view: later edits are not "
+                      "reflected, and `exec_shell` calls (`sed -i`, `cat`, `git checkout`) are never tracked._\n");
+    return out;
+}
+
 /* `/group history <id>`: a group's message history -- one block per member (the block
  * starts with its input, then its own messages, never interleaved across tasks). The
  * group id is the group head's id. */
@@ -2105,6 +2187,23 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
     out = sdscatprintf(out, "- **fold epoch** %u · **memory** %s · **failure streak** %d/%d\n", group->fold_epoch,
                        (group->memory && sdslen(group->memory) > 0) ? "present" : "none (never folded)",
                        group->fold_failures, EDC_FOLD_MAX_FAILURES);
+    {
+        /* The tracked-file counts belong next to `memory`: they are part of it, and this
+         * line is where someone looks to find out whether there is anything to see. */
+        sds reads = NULL;
+        sds writes = NULL;
+        edc_group_fold_tracked_files(group, &reads, &writes);
+        const size_t nr = edc_commands_count_entries(reads);
+        const size_t nw = edc_commands_count_entries(writes);
+        if (nr + nw > 0)
+            out = sdscatprintf(out, "- **tracked files** %zu read · %zu modified (`/group files %s`)\n", nr, nw,
+                               group->group_id ? group->group_id : "<id>");
+        else if (group->memory && sdslen(group->memory) > 0)
+            out = sdscatprintf(out, "- **tracked files** none recorded — this group was folded before the lists "
+                                    "existed, or its corpus touched no readable/writable file\n");
+        sdsfree(reads);
+        sdsfree(writes);
+    }
     out = sdscatprintf(out, "- **fold in flight** %s (one per session) · **barrier on this group** %s\n",
                        (session && edc_scheduler_has_pending_system_task(session)) ? "yes" : "no",
                        edc_group_fold_in_flight(group) ? "yes" : "no");
@@ -2192,6 +2291,29 @@ static void sub_group_info(struct edc_session_manager *sm, struct edc_scheduler 
         return;
     edc_commands_handle_group_info(sm, sched, to, args->argc > 0 ? args->argv[0] : NULL); /* NULL = foreground */
 }
+/* `/group files [id]`: the tracked-file lists, via the same lookup as `/group info`. */
+static void sub_group_files(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                            struct edc_channel_message *message, const struct edc_sub_argv *args)
+{
+    (void)sched;
+    (void)message;
+    if (!sub_argv_exactly_or_none(to, args, 1, "Usage: `/group files [id]`"))
+        return;
+    struct edc_session *sess = edc_session_manager_get_active(sm);
+    const char *id = args->argc > 0 ? args->argv[0] : NULL;
+    const bool named = (id && *id);
+    struct edc_task_group *g =
+        named ? (sess ? edc_session_find_group(sess, id) : NULL) : (sess ? edc_scheduler_get_foreground(sess) : NULL);
+    if (!g)
+    {
+        edc_commands_reply(to, named ? "**Group** — not found (the id is the one on its header)."
+                                     : "**Group** — no foreground group; pass an id: `/group files <id>`.");
+        return;
+    }
+    sds out = edc_commands_group_files_text(g);
+    edc_commands_reply(to, out);
+    sdsfree(out);
+}
 static void sub_group_history(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                               struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
@@ -2207,6 +2329,7 @@ static void sub_group_history(struct edc_session_manager *sm, struct edc_schedul
 static const struct edc_sub_argv_entry k_group_subs[] = {
     {"list", sub_group_list},
     {"info", sub_group_info},
+    {"files", sub_group_files},
     {"history", sub_group_history},
     {"fold", sub_group_fold},
 };
@@ -2229,8 +2352,8 @@ static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session
             return true;
         }
         sds reply = sdscatprintf(sdsempty(),
-                                 "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `history <id>` and "
-                                 "`fold [id] [focus]`, not `%s`.",
+                                 "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `files [id]`, "
+                                 "`history <id>` and `fold [id] [focus]`, not `%s`.",
                                  cmd->argv[0]);
         edc_commands_reply(to, reply);
         sdsfree(reply);
@@ -2238,6 +2361,7 @@ static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session
     }
     edc_commands_reply(to, "Usage: `/group list`   (all groups of the session)\n\n"
                            "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
+                           "Usage: `/group files [id]`   (the files the folded work read / modified)\n\n"
                            "Usage: `/group history <id>`   (the id is the group header's)\n\n"
                            "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
                            "no id = the foreground group)");

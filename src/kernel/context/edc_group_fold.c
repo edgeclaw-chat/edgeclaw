@@ -491,13 +491,69 @@ static sds without_block(sds text, const char *tag)
         sds head = sdsnewlen(text, start);
         sds tail = sdsnew(text + end);
         sdsfree(text);
-        text = sdscatsds(head, tail);
-        sdsfree(head);
+        /* sdscatsds returns its FIRST argument (realloc'd), so `head` IS the buffer
+         * `text` must become -- freeing `head` here freed the very string the next
+         * iteration's strstr() reads (use-after-free: "smallbin double linked list
+         * corrupted" the moment a summary echoed a block back).
+         *
+         * Reachable on every re-fold: `has_memory` puts the previous summary into
+         * <previous-summary>, and kUpdateSummaryInstruction tells the model to output
+         * a complete new summary -- so echoing our own blocks is normal behaviour, not
+         * an edge case. */
+        head = sdscatsds(head, tail);
         sdsfree(tail);
+        text = head;
     }
     sdsfree(open_tag);
     sdsfree(close_tag);
     return text;
+}
+
+/* ── Tracked files: the reader ────────────────────────────────
+ *
+ * The <read-files> / <modified-files> blocks are written by fold_memory_with_files and
+ * live inside `group->memory`. Until they move to structured storage (see
+ * docs/pi-alignment.md R5b), anything that wants to SHOW them (`/group files`) or COUNT
+ * them (`/group info`) has to parse the same blocks the writer writes. Keeping that in
+ * one function means a format change cannot leave a reader behind. */
+
+/* Number of non-empty lines in a newline-separated list. */
+static size_t list_entry_count(const sds list)
+{
+    if (!list || sdslen(list) == 0)
+        return 0;
+    int n = 0;
+    char **lines = sdssplitlen(list, (ssize_t)sdslen(list), "\n", 1, &n);
+    size_t count = 0;
+    for (int i = 0; lines && i < n; i++)
+    {
+        if (lines[i] && lines[i][0])
+            count++;
+    }
+    if (lines)
+        sdsfreesplitres(lines, n);
+    return count;
+}
+
+int edc_group_fold_tracked_files(const struct edc_task_group *group, sds *out_reads, sds *out_writes)
+{
+    sds reads = NULL;
+    sds writes = NULL;
+    if (group && group->memory)
+    {
+        parse_file_block(group->memory, "read-files", &reads);
+        parse_file_block(group->memory, "modified-files", &writes);
+    }
+    const int total = (int)(list_entry_count(reads) + list_entry_count(writes));
+    if (out_reads)
+        *out_reads = reads;
+    else
+        sdsfree(reads);
+    if (out_writes)
+        *out_writes = writes;
+    else
+        sdsfree(writes);
+    return total;
 }
 
 /* The most recent |max| entries of a newline-separated list (frees |list|). */

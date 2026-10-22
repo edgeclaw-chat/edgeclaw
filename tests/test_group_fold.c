@@ -1505,6 +1505,119 @@ static void test_fold_files_are_capped_and_idempotent(void)
     edc_config_free(cfg);
 }
 
+/* 回归: 模型把上一轮的 <read-files> / <modified-files> 回显进新摘要。
+ *
+ * 这不是边角情况: 从第二次折叠起, 语料里就带着 <previous-summary> (即旧 memory),
+ * 而 kUpdateSummaryInstruction 要求"输出完整新摘要" —— 模型照抄那两个块是常规行为。
+ * without_block 就在这条路径上, 曾经在第二轮 strstr() 读已经释放的内存
+ * (use-after-free: "smallbin double linked list corrupted"; 当时所有测试都喂不带块的
+ * 摘要, 循环体一次没执行过, 所以没被抓到)。 */
+static void test_fold_echoed_blocks_are_stripped(void)
+{
+    TEST("R5b: 模型回显旧块时去掉它, 只有一份（without_block 回归）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, "sess-echo", "Echo");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, "sess-echo", "leader work");
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t, "read_file", "keep.c");
+    push_tool_call(t, "edit_file", "old.c");
+    for (int i = 0; i < 4; i++)
+        push_msg(t, "user", "FILL", 200, NULL);
+
+    struct edc_task *fold1 = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold1 != NULL, "第一次折叠起来了");
+    if (!fold1)
+    {
+        edc_session_free(session);
+        edc_scheduler_free(sched);
+        edc_config_free(cfg);
+        return;
+    }
+    edc_group_fold_deliver_memory(fold1, "# Summary 1");
+    CHECK(group->memory && count_occurrences(group->memory, "<modified-files>") == 1, "第一次落地有一个 modified 块");
+
+    /* 第二次: 摘要把旧 memory 的两个块原样抄回来（模型做的事）。 */
+    struct edc_task *fold2 = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    CHECK(fold2 != NULL, "第二个折叠任务");
+    if (fold2)
+    {
+        fold2->sink_group = group;
+        edc_group_fold_deliver_memory(fold2, "# Summary 2\n\n<read-files>\nkeep.c\n</read-files>\n\n"
+                                              "<modified-files>\nold.c\n</modified-files>\n");
+    }
+
+    CHECK(group->memory && strstr(group->memory, "# Summary 2") == group->memory, "新摘要仍在最前面");
+    CHECK(group->memory && count_occurrences(group->memory, "<read-files>") == 1, "回显的 read 块被去掉, 只剩一份");
+    CHECK(group->memory && count_occurrences(group->memory, "<modified-files>") == 1, "回显的 modified 块也只剩一份");
+    CHECK(group->memory && count_occurrences(group->memory, "\nkeep.c\n") == 1, "路径没有被重复");
+    /* 回显的那份正文不该留在摘要里（否则同一批路径出现两次）。 */
+    CHECK(group->memory && strstr(group->memory, "# Summary 1") == NULL, "旧摘要正文没有被抄进来");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* 读取口: /group files 与 /group info 都走 edc_group_fold_tracked_files()。这里钉住
+ * 它给出的条数与两份清单内容 —— 命令层只是排版。 */
+static void test_tracked_files_reader(void)
+{
+    TEST("R5b: tracked_files 读取口（条数 + 两份清单 + 未折叠/空组的空态）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, "sess-reader", "Reader");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    /* ① 从没折过: 0 条, 两个出参都是 NULL。 */
+    struct edc_task_group *group = make_foldable_group(session, "sess-reader", "leader work");
+    sds reads = (sds) "sentinel";
+    sds writes = (sds) "sentinel";
+    CHECK(edc_group_fold_tracked_files(group, &reads, &writes) == 0, "没折过 ⇒ 0 条");
+    CHECK(reads == NULL && writes == NULL, "没折过 ⇒ 两个清单都是 NULL");
+
+    /* ② 折一次, 再读。 */
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t, "read_file", "src/a.c");
+    push_tool_call(t, "list_dir", "src/");
+    push_tool_call(t, "edit_file", "src/b.c");
+    push_tool_call(t, "write_file", "src/c.c");
+    for (int i = 0; i < 4; i++)
+        push_msg(t, "user", "FILL", 200, NULL);
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠任务起来了");
+    if (fold)
+        edc_group_fold_deliver_memory(fold, "# Summary");
+
+    reads = NULL;
+    writes = NULL;
+    CHECK(edc_group_fold_tracked_files(group, &reads, &writes) == 4, "2 读 + 2 改 = 4 条");
+    CHECK(reads && strstr(reads, "src/a.c") && strstr(reads, "src/"), "读清单有两项");
+    CHECK(writes && strstr(writes, "src/b.c") && strstr(writes, "src/c.c"), "改清单有两项");
+
+    /* ③ 出参可以为 NULL（只要条数）。 */
+    CHECK(edc_group_fold_tracked_files(group, NULL, NULL) == 4, "两个出参都能省");
+    /* ④ NULL 组不崩。 */
+    CHECK(edc_group_fold_tracked_files(NULL, NULL, NULL) == 0, "NULL 组 ⇒ 0 条");
+
+    sdsfree(reads);
+    sdsfree(writes);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 static void test_cut_never_orphans_tool_results(void)
 {
     TEST("切点合法性: 第一条留下的消息不能是工具结果 (往回退到它的 assistant, pi §4)");
@@ -1973,6 +2086,8 @@ int main(void)
     test_fold_tracks_touched_files();
     test_fold_files_accumulate_across_folds();
     test_fold_files_are_capped_and_idempotent();
+    test_fold_echoed_blocks_are_stripped();
+    test_tracked_files_reader();
     test_cut_never_orphans_tool_results();
     test_prompt_initial_variant_names_the_sections();
     test_truncated_summary_discards_fold();

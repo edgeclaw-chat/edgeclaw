@@ -47,6 +47,11 @@ extern void edc_commands_reply(struct edc_reply_to to, const char *text);
 extern sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_group *group,
                                         const struct edc_config *conf);
 
+/** The `/group files` body: the tracked-file lists the group's memory carries (the files
+ *  the folded work read / modified), each with the caveat that it is a snapshot taken at
+ *  fold landing. `group` may be NULL. Exposed for tests. */
+extern sds edc_commands_group_files_text(struct edc_task_group *group);
+
 /** The command help, rendered from the command table: with |arg| NULL or empty the full
  *  list, otherwise the matching command(s)' detail. Exposed for tests (and so docs could be
  *  generated from the same table). Caller frees. */
