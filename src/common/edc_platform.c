@@ -2,6 +2,16 @@
 
 #ifdef _WIN32
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include "edc_utf8.h"
+
+#include <stdlib.h>
+#include <string.h>
+
 /* No kernel sandbox backend yet (see src/sandbox: Landlock/seccomp/BPF and Seatbelt are
  * POSIX mechanisms). Windows spawns powershell.exe: -Command takes the rest of the line,
  * and -NonInteractive keeps a prompt from waiting on a console nobody is watching. */
@@ -66,6 +76,162 @@ void edc_platform_kill_process_group(long pid)
     (void)pid; /* no process groups here; the caller terminates the child itself */
 }
 
+unsigned int edc_platform_ansi_codepage(void)
+{
+    return (unsigned int)GetACP();
+}
+
+/* A buffer that grows as lines are appended. Local on purpose: this file is the one that must
+ * NOT grow dependencies (see the header), so it does not borrow sds. */
+struct edc_outbuf
+{
+    char *p;
+    size_t len;
+    size_t cap;
+};
+
+static bool outbuf_append(struct edc_outbuf *o, const char *p, size_t n)
+{
+    if (o->len + n + 1 > o->cap)
+    {
+        size_t cap = o->cap ? o->cap : 512;
+        while (cap < o->len + n + 1)
+            cap *= 2;
+        char *grown = realloc(o->p, cap);
+        if (!grown)
+            return false;
+        o->p = grown;
+        o->cap = cap;
+    }
+    memcpy(o->p + o->len, p, n);
+    o->len += n;
+    o->p[o->len] = '\0';
+    return true;
+}
+
+/* A line that is neither UTF-8 nor legal in the code page: binary, or a character cut in half
+ * by the capture cap. Keep what is ASCII and put one U+FFFD where a sequence should have
+ * started, so the result is valid UTF-8 and the damage is VISIBLE instead of plausible. */
+static bool outbuf_append_repaired(struct edc_outbuf *o, const char *p, size_t n)
+{
+    static const char replacement[] = "\xEF\xBF\xBD"; /* U+FFFD */
+    size_t i = 0;
+    while (i < n)
+    {
+        size_t seq = edc_utf8_seq_len((const unsigned char *)p + i, n - i);
+        if (seq)
+        {
+            if (!outbuf_append(o, p + i, seq))
+                return false;
+            i += seq;
+        }
+        else
+        {
+            if (!outbuf_append(o, replacement, sizeof(replacement) - 1))
+                return false;
+            i++;
+        }
+    }
+    return true;
+}
+
+/* One line that is not UTF-8, transcoded from the ANSI code page. MB_ERR_INVALID_CHARS is what
+ * separates "a line of GBK" from "a line of bytes that is neither": a byte sequence that is not
+ * legal in the code page fails here instead of being mapped to something plausible. */
+static bool outbuf_append_ansi_line(struct edc_outbuf *o, const char *line, size_t len)
+{
+    int wide_len = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, line, (int)len, NULL, 0);
+    if (wide_len <= 0)
+        return false;
+
+    bool ok = false;
+    wchar_t *wide = malloc((size_t)wide_len * sizeof(wchar_t));
+    if (!wide)
+        return false;
+
+    if (MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, line, (int)len, wide, wide_len) == wide_len)
+    {
+        int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide, wide_len, NULL, 0, NULL, NULL);
+        if (utf8_len > 0)
+        {
+            char *utf8 = malloc((size_t)utf8_len);
+            if (utf8)
+            {
+                /* The line keeps its '\n': it is ASCII, so the round trip preserves it. */
+                if (WideCharToMultiByte(CP_UTF8, 0, wide, wide_len, utf8, utf8_len, NULL, NULL) == utf8_len)
+                    ok = outbuf_append(o, utf8, (size_t)utf8_len);
+                free(utf8);
+            }
+        }
+    }
+    free(wide);
+    return ok;
+}
+
+char *edc_platform_output_to_utf8(const char *buf, size_t len, size_t *out_len, size_t *converted_lines)
+{
+    if (out_len)
+        *out_len = 0;
+    if (converted_lines)
+        *converted_lines = 0;
+    if (!buf || len == 0)
+        return NULL;
+
+    /* Most output is ASCII, and a buffer with no byte >= 0x80 is valid UTF-8 by construction:
+     * the decoder never runs for it, and it is the common case. */
+    bool maybe_not_utf8 = false;
+    for (size_t i = 0; i < len; i++)
+    {
+        if ((unsigned char)buf[i] >= 0x80)
+        {
+            maybe_not_utf8 = true;
+            break;
+        }
+    }
+    if (!maybe_not_utf8)
+        return NULL;
+
+    struct edc_outbuf o = {0};
+    size_t converted = 0;
+    size_t i = 0;
+    while (i < len)
+    {
+        const char *nl = memchr(buf + i, '\n', len - i);
+        size_t end = nl ? (size_t)(nl - buf) + 1 : len; /* the line KEEPS its '\n' */
+        size_t line_len = end - i;
+
+        bool ok;
+        if (edc_utf8_is_valid(buf + i, line_len))
+        {
+            ok = outbuf_append(&o, buf + i, line_len);
+        }
+        else
+        {
+            ok = outbuf_append_ansi_line(&o, buf + i, line_len);
+            if (!ok)
+                ok = outbuf_append_repaired(&o, buf + i, line_len);
+            converted++;
+        }
+        if (!ok)
+        {
+            free(o.p);
+            return NULL;
+        }
+        i = end;
+    }
+
+    if (converted == 0)
+    {
+        free(o.p);
+        return NULL; /* everything was already UTF-8: nothing to say */
+    }
+    if (out_len)
+        *out_len = o.len;
+    if (converted_lines)
+        *converted_lines = converted;
+    return o.p;
+}
+
 #else /* POSIX */
 
 #include <signal.h>
@@ -109,6 +275,27 @@ void edc_platform_kill_process_group(long pid)
         kill(-(pid_t)pid, SIGKILL);
 }
 
+/* A command's bytes are already what the caller wants here, and nothing converts them:
+ * returning NULL IS the platform's answer, so the call site needs one check and no #ifdef.
+ * Note what this deliberately does NOT do -- it does not validate. Piping a binary file
+ * through `cat`, or running a tool that still emits GBK, must keep returning those exact
+ * bytes; a "helpful" validation pass here would turn them into a field of U+FFFD, which is a
+ * behaviour change, not a bug fix. */
+char *edc_platform_output_to_utf8(const char *buf, size_t len, size_t *out_len, size_t *converted_lines)
+{
+    (void)buf;
+    (void)len;
+    if (out_len)
+        *out_len = 0;
+    if (converted_lines)
+        *converted_lines = 0;
+    return NULL;
+}
+
+unsigned int edc_platform_ansi_codepage(void)
+{
+    return 0; /* no code page to name: nothing is converted on this platform */
+}
 #endif
 
 const struct edc_platform_caps *edc_platform_caps(void)

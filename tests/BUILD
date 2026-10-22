@@ -559,6 +559,24 @@ cc_test(
 )
 
 cc_test(
+    name = "test_utf8_valid",
+    srcs = ["test_utf8_valid.c"],
+    deps = [
+        "//src/common:edc_compat",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_output_utf8",
+    srcs = ["test_output_utf8.c"],
+    deps = [
+        "//src/common:edc_compat",
+        "//src/common:edc_platform",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
     name = "test_session_workdir",
     srcs = ["test_session_workdir.c"],
     deps = [

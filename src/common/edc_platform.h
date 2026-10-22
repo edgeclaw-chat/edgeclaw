@@ -78,6 +78,34 @@ static inline bool edc_platform_has_sandbox(void)
     return edc_platform_caps()->kernel_sandbox;
 }
 
+/* ── Output encoding ─────────────────────────────────────────────────────────
+ *
+ * A command's output has to be UTF-8 before anything reads it: read_file, the TUI and the
+ * model's copy (which is cut at the HEAD) all assume it, and there is no way to tell from the
+ * bytes afterwards. On Windows they cannot be assumed: a native grandchild follows the CRT
+ * locale (python, gcc -- measured: CP936 even with the console code page moved), while
+ * PowerShell's own text follows the prologue above. On POSIX they can be: sh -c passes bytes
+ * through.
+ *
+ * So the conversion is an OPERATION here rather than a choice in the table -- the POSIX answer
+ * is "there is nothing to convert", which a NULL return expresses better than a flag. */
+
+/* Convert |len| bytes of command output to UTF-8, line by line, and return a MALLOC'D buffer
+ * (*out_len = its length; free() it -- this header stays sds-free so this target keeps no new
+ * dependency). |converted_lines| gets how many lines had to be transcoded.
+ *
+ * Per LINE, not per buffer: one command really does emit both encodings in one invocation
+ * (measured: PowerShell's own text plus a python grandchild), and judging the whole buffer
+ * would corrupt the half that was already right.
+ *
+ * POSIX: returns NULL, meaning "nothing to convert". Deliberately NOT a validation pass --
+ * piping a binary file through `cat` must keep returning those exact bytes. */
+char *edc_platform_output_to_utf8(const char *buf, size_t len, size_t *out_len, size_t *converted_lines);
+
+/* The ANSI code page a shell on this platform encodes with, or 0 where the question does not
+ * apply. Only used to say WHICH code page a notice is about. */
+unsigned int edc_platform_ansi_codepage(void);
+
 /* The result is an enum rather than a bool because the caller has to tell the two
  * "no" answers apart: a platform that HAS mlock and failed it is worth a warning, a
  * platform that has none is normal (the key is usable either way, it is just not pinned). */

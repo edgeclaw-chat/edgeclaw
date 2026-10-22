@@ -15,7 +15,7 @@ cc_library(
 # the whole //src/common:common library.
 cc_library(
     name = "edc_compat",
-    hdrs = ["edc_compat.h"],
+    hdrs = ["edc_compat.h", "edc_utf8.h"],
     includes = ["."],
     visibility = ["//visibility:public"],
 )

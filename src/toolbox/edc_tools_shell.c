@@ -208,6 +208,42 @@ static void on_shell_exit(uv_process_t *process, int64_t exit_status, int term_s
     shell_ctx_try_complete(ctx);
 }
 
+/* Windows: a command's bytes can arrive in the ANSI code page -- a native grandchild (python,
+ * gcc: they follow the CRT locale, not the console) or a localized tool. Nothing downstream can
+ * tell: read_file, the TUI and the model's copy all assume UTF-8, and the head is where the
+ * model's copy is cut. So the one invariant is established here, once. Gated by the platform:
+ * on POSIX the conversion answers NULL and this helper does nothing at all.
+ *
+ * Per LINE and not per buffer on purpose -- one command really does emit both encodings in one
+ * invocation (measured: PowerShell's own text plus a python grandchild), so judging the whole
+ * buffer would corrupt the half that was already right. */
+static void shell_ctx_normalize_stream(struct edc_output_buf *b, size_t *converted)
+{
+    *converted = 0;
+    if (!b->data || sdslen(b->data) == 0)
+        return;
+
+    /* The capture cap cut the stream at a byte offset, so the last line can end in the middle
+     * of a character. Transcoding half a character produces a tail that LOOKS like content;
+     * drop it instead -- the truncation note already tells the reader the tail is missing. */
+    if (b->truncated && b->data[sdslen(b->data) - 1] != '\n')
+    {
+        char *last_nl = strrchr(b->data, '\n');
+        if (last_nl)
+            sdsrange(b->data, 0, (ssize_t)(last_nl - b->data));
+        else
+            sdsclear(b->data);
+    }
+
+    size_t len = 0;
+    char *utf8 = edc_platform_output_to_utf8(b->data, sdslen(b->data), &len, converted);
+    if (!utf8)
+        return;
+    sdsfree(b->data);
+    b->data = sdsnewlen(utf8, len);
+    free(utf8); /* malloc'd by the platform layer: NOT an sds handle, so not sdsfree */
+}
+
 static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 {
     if (ctx->completed)
@@ -215,6 +251,13 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     ctx->completed = true;
 
     uv_timer_stop(&ctx->timeout_timer);
+
+    /* Before the notices are formatted, because the truncation note reports what the reader
+     * actually GETS ("kept the first X"), and transcoding changes that byte count. */
+    size_t converted_out = 0;
+    size_t converted_err = 0;
+    shell_ctx_normalize_stream(&ctx->out, &converted_out);
+    shell_ctx_normalize_stream(&ctx->err, &converted_err);
 
     sds out = ctx->out.data ? ctx->out.data : sdsempty();
     sds err = ctx->err.data ? ctx->err.data : sdsempty();
@@ -246,6 +289,12 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     }
     if (ctx->timed_out)
         result = sdscat(result, "[command timed out]\n");
+    /* Transcoding is a change we made to the output, so it is announced rather than silent:
+     * whoever is chasing an encoding problem needs to know which lines are not the raw bytes,
+     * and this line is also how the mechanism stays observable at all. */
+    if (converted_out + converted_err > 0)
+        result = sdscatprintf(result, "[encoding: %zu line(s) converted from cp%u to utf-8]\n",
+                              converted_out + converted_err, edc_platform_ansi_codepage());
 
     if (sdslen(out) > 0)
         result = sdscatprintf(result, "%s\n", out);

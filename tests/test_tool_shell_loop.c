@@ -21,6 +21,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
+#include "edc_utf8.h"
 #include "log.h"
 
 #include <cJSON.h>
@@ -215,12 +216,67 @@ static void test_runaway_on_stderr_is_killed_too(void)
     harness_down(&h);
 }
 
+/* The encoding invariant, end to end: whatever the command is, the result of a tool call is
+ * valid UTF-8. On Windows that is not free -- PowerShell encodes its own text with the console
+ * code page, and a program that follows the CRT locale encodes independently of it -- so this
+ * is the case that proves the prologue and the boundary conversion TOGETHER, and that tells
+ * them apart: a run where the prologue did the work reports NO conversion.
+ *
+ * The GBK bytes are written straight to the pipe rather than by shelling out to a
+ * locale-dependent program, so the case does not need python (or anything else) installed. */
+static void test_cjk_output_is_utf8(void)
+{
+    TEST("Chinese output: a tool result is valid UTF-8, however the command encoded it");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+#if defined(_WIN32)
+    /* PowerShell's own text: what the prologue is for. */
+    CHECK(run_shell(&h, "Write-Output '\xE4\xB8\xAD\xE6\x96\x87PS'", 10), "the callback fired");
+    CHECK(edc_utf8_is_valid(result_text(), strlen(result_text())), "valid UTF-8: %.80s", result_text());
+    CHECK(strstr(result_text(), "\xE4\xB8\xAD\xE6\x96\x87PS") != NULL, "and the text is intact: %.80s",
+          result_text());
+    /* No conversion here means the SHELL produced UTF-8 -- i.e. the prologue worked. Without
+     * this the two mechanisms mask each other: a broken prologue would still pass, because the
+     * boundary conversion would quietly fix the mojibake afterwards. */
+    CHECK(strstr(result_text(), "converted") == NULL, "the prologue did the work: nothing had to be converted");
+
+    /* A program that encodes with the CRT locale: raw GBK bytes on the pipe. */
+    CHECK(run_shell(&h, "[Console]::OpenStandardOutput().Write([byte[]](0xBC,0xD7,0x0A),0,3)", 10),
+          "the callback fired");
+    CHECK(edc_utf8_is_valid(result_text(), strlen(result_text())), "valid UTF-8: %.80s", result_text());
+    CHECK(strstr(result_text(), "\xE7\x94\xB2") != NULL, "the GBK line became the right character: %.80s",
+          result_text());
+    CHECK(strstr(result_text(), "line(s) converted") != NULL, "and the conversion is announced: %.80s",
+          result_text());
+
+    /* Both encodings in ONE invocation -- exactly what a whole-buffer decision would corrupt. */
+    CHECK(run_shell(&h,
+                    "[Console]::OpenStandardOutput().Write([byte[]](0xBC,0xD7,0x0A),0,3);"
+                    "Write-Output '\xE4\xB8\xAD\xE6\x96\x87PS'",
+                    10),
+          "the callback fired");
+    CHECK(edc_utf8_is_valid(result_text(), strlen(result_text())), "valid UTF-8: %.80s", result_text());
+    CHECK(strstr(result_text(), "\xE7\x94\xB2") != NULL, "the GBK line survives: %.80s", result_text());
+    CHECK(strstr(result_text(), "\xE4\xB8\xAD\xE6\x96\x87PS") != NULL, "and so does the UTF-8 line: %.80s",
+          result_text());
+#else
+    /* POSIX: no conversion AND no validation -- the bytes come back exactly as written. */
+    CHECK(run_shell(&h, "printf '\xE4\xB8\xAD\xE6\x96\x87SH\\n'", 10), "the callback fired");
+    CHECK(strcmp(result_text(), "\xE4\xB8\xAD\xE6\x96\x87SH") == 0,
+          "the bytes come back untouched: %.80s", result_text());
+#endif
+
+    harness_down(&h);
+}
+
 int main(void)
 {
     log_info("=== exec_shell on a real loop: output limits ===");
     log_info("");
 
     test_ordinary_command_is_untouched();
+    test_cjk_output_is_utf8();
     test_volume_is_truncated_but_not_killed();
     test_runaway_is_killed();
     test_runaway_on_stderr_is_killed_too();
