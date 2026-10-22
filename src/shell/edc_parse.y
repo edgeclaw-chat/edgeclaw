@@ -146,17 +146,32 @@ static void cmd_add(const edc_tok *tok)
     c->argv = realloc(c->argv, sizeof(sds) * (size_t)(c->argc + 1));
     c->argv_quoted = realloc(c->argv_quoted, sizeof(bool) * (size_t)(c->argc + 1));
     c->argv[c->argc] = sdsdup((tok && tok->value) ? tok->value : sdsempty());
-    c->argv_quoted[c->argc] = tok && tok->word_quoted;
+    /* The AST outlives the token stream, so the one fact it needs to keep is which words
+     * were quoted (TK_STRING) -- `/prompt review "--strict"` sends the text, a bare
+     * `--strict` is option-shaped and refused. */
+    c->argv_quoted[c->argc] = tok && tok->kind == TK_STRING;
     c->argc++;
 }
 
 %}
-%token T_WORD T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_SLASH_CMD T_EOF2
+%token T_TEXT T_STRING T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_SLASH_CMD T_EOF2
+/* 显式写出来：bison 默认把**第一条规则的左部**当起始符号，而 `word` 现在排在 `input`
+ * 前面（它是两者的公共零件），不加这一行起始符号就成了 `word` —— 症状是每条输入都报
+ * "unexpected T_SLASH_CMD, expecting T_TEXT or T_STRING"。 */
+%start input
 %%
+/* 一个「词」：无引号文本，或一个引号串。选项取值、命令参数、重定向目标都用它 ——
+ * 所以 `-d t1`、`-d "t 1"`、`-d 'D:\\my repo'` 三种写法都成立，而哪种是哪种由
+ * token 种类说清楚，不用再挂 flag。 */
+word
+    : T_TEXT
+    | T_STRING
+    ;
+
 input
     : stage_head rest
     | T_NEWGROUP stage_head rest        { g_ast->new_group = true; }
-    | cmd_head cmd_words
+    | cmd_head cmd_args
     ;
 /* `/cmd arg…`: a command line. Both operands are ordinary shell words (the caller
  * lexes a command line with the shell switch OFF, so `|`, `&`, `--bg` … are plain
@@ -164,17 +179,16 @@ input
 cmd_head
     : T_SLASH_CMD                       { cmd_begin(g_cur); }
     ;
-cmd_words
+cmd_args
     : /* empty */
-    | cmd_words T_WORD                  { cmd_add(g_cur); }
+    | cmd_args word                     { cmd_add(g_cur); }
     ;
+/* shell 行的一个 stage：描述**必须是引号串** —— 现在这是文法说的，不是动作里查的。
+ * 第二条产生式只为那句话服务：裸文本进了 stage 位置就给可读的提示，而不是让 bison
+ * 抛一句 unexpected。 */
 stage_head
-    : T_WORD                            { if (!g_cur->fully_quoted)
-                                          {
-                                              set_err(EDC_QUOTED_DESC_HINT);
-                                              YYERROR;
-                                          }
-                                          stage_begin(); stage_set_word(g_cur); } opts
+    : T_STRING                          { stage_begin(); stage_set_word(g_cur); } opts
+    | T_TEXT                            { set_err(EDC_QUOTED_DESC_HINT); YYERROR; }
     ;
 rest
     : /* empty */
@@ -198,8 +212,8 @@ unless_pipe
 opts
     : /* empty */
     | opts T_OPT                        { opt_noarg(g_cur); }
-    | opts T_OPTARG remember T_WORD     { opt_witharg(g_remember, g_cur); }
-    | opts T_REDIR remember T_WORD      { redir_add(g_cur, g_remember); }
+    | opts T_OPTARG remember word        { opt_witharg(g_remember, g_cur); }
+    | opts T_REDIR remember word         { redir_add(g_cur, g_remember); }
     ;
 remember
     : /* empty */                       { g_remember = g_cur; }
@@ -225,7 +239,7 @@ bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
         if (toks->toks[i].kind == TK_OPTARG)
         {
             const edc_tok *next = (i + 1 < toks->count) ? &toks->toks[i + 1] : NULL;
-            if (!next || next->kind != TK_WORD)
+            if (!next || (next->kind != TK_TEXT && next->kind != TK_STRING))
             {
                 sds msg = opt_needs_value(&toks->toks[i]);
                 if (err)
@@ -273,7 +287,8 @@ int yylex(void)
     g_cur = &g_toks->toks[g_i++];
     switch (g_cur->kind)
     {
-    case TK_WORD: return T_WORD;
+    case TK_TEXT: return T_TEXT;
+    case TK_STRING: return T_STRING;
     case TK_SLASH_CMD: return T_SLASH_CMD;
     case TK_SIGIL_NEWGROUP: return T_NEWGROUP;
     case TK_PIPE: return T_PIPE;

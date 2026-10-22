@@ -56,7 +56,7 @@ static sds *edc_argv_from_tail(const char *tail, int *out_count, sds *out_error)
             sdsfreesplitres(args, n);
             return NULL;
         }
-        if (o.toks[i].kind != TK_WORD)
+        if (o.toks[i].kind != TK_TEXT && o.toks[i].kind != TK_STRING)
             continue;
         args = realloc(args, sizeof(sds) * (size_t)(n + 1));
         args[n++] = sdsdup(o.toks[i].value ? o.toks[i].value : sdsempty());

@@ -1,6 +1,6 @@
 /* 新词法器（flex）的判据 —— 第①步。
  *   `!git log | head` → SIGIL_LOCALSHELL + 一个 TK_RAW_REST（里面的 | 不是算符）
- *   `a"b c"d`         → 一个 word「ab cd」，fully_quoted=false
+ *   `a"b c"d`         → 三个词：TEXT`a` / STRING`b c` / TEXT`d`（不混拼）
  *   `"a" 2>> "e"`     → REDIR{fd=2, append=true}
  * 这一步**不改生产行为**（老 tokenizer 仍在用），所以这里只验新 API。 */
 #include "edc_lex.h"
@@ -46,7 +46,7 @@ static sds *edc_argv_from_tail(const char *tail, int *out_count, sds *out_error)
             sdsfreesplitres(args, n);
             return NULL;
         }
-        if (o.toks[i].kind != TK_WORD)
+        if (o.toks[i].kind != TK_TEXT && o.toks[i].kind != TK_STRING)
             continue;
         args = realloc(args, sizeof(sds) * (size_t)(n + 1));
         args[n++] = sdsdup(o.toks[i].value ? o.toks[i].value : sdsempty());
@@ -90,19 +90,30 @@ int main(void)
     CHECK(o.toks[1].value && strcmp(o.toks[1].value, "git log | head") == 0, "carrying the whole command line");
     edc_lex_out_free(&o);
 
-    TEST("`a\"b c\"d` : adjacent fragments are ONE word (shell word splitting)");
+    /* Quoted and unquoted text are NOT concatenated (decided 2026-10-22): a word is one
+     * TEXT or one STRING, so `a"b c"d` is three words. C concatenates adjacent literals;
+     * we do not, and this is the test that says so. */
+    TEST("`a\"b c\"d` : quoted and bare text do NOT mix -- three words");
     CHECK(edc_lex("a\"b c\"d", EDC_LEX_SHELL_ON, &o), "lex ok");
-    CHECK(o.count == 2, "one word + EOF");
-    CHECK(o.toks[0].kind == TK_WORD, "it is a word");
-    CHECK(o.toks[0].value && strcmp(o.toks[0].value, "ab cd") == 0, "the fragments concatenated (got the value)");
-    CHECK(!o.toks[0].fully_quoted, "and it is not fully quoted");
+    CHECK(o.count == 4, "three words + EOF");
+    CHECK(o.toks[0].kind == TK_TEXT && o.toks[0].value && strcmp(o.toks[0].value, "a") == 0, "bare `a`");
+    CHECK(o.toks[1].kind == TK_STRING && o.toks[1].value && strcmp(o.toks[1].value, "b c") == 0, "quoted `b c`");
+    CHECK(o.toks[2].kind == TK_TEXT && o.toks[2].value && strcmp(o.toks[2].value, "d") == 0, "bare `d`");
     edc_lex_out_free(&o);
 
-    TEST("`\"a b\"` : one word, FULLY quoted (that is what makes it a shell line)");
+    TEST("`\"a b\"` : one STRING (that is what makes it a shell line)");
     CHECK(edc_lex("\"a b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
-    CHECK(o.count == 2 && o.toks[0].kind == TK_WORD, "one word + EOF");
+    CHECK(o.count == 2 && o.toks[0].kind == TK_STRING, "one word + EOF");
     CHECK(o.toks[0].value && strcmp(o.toks[0].value, "a b") == 0, "quotes are delimiters");
-    CHECK(o.toks[0].fully_quoted, "fully_quoted = true");
+    CHECK(o.mode == EDC_LEX_SHELL_ON, "and the stream remembers which mode cut it");
+    edc_lex_out_free(&o);
+
+    /* The switch-off counterpart: still a STRING lexically, but quoting is NOT syntax
+     * there -- which is why the fact and the switch are two different fields. */
+    TEST("`\"a b\"` with the switch OFF is still a STRING, but the mode says OFF");
+    CHECK(edc_lex("\"a b\"", EDC_LEX_SHELL_OFF, &o), "lex ok");
+    CHECK(o.count == 2 && o.toks[0].kind == TK_STRING, "lexically the same token");
+    CHECK(o.mode == EDC_LEX_SHELL_OFF, "the mode is what makes it NOT a shell line");
     edc_lex_out_free(&o);
 
     TEST("`\"a\" 2>> \"e\"` : the redirect carries fd=2 and append");
@@ -117,14 +128,14 @@ int main(void)
     edc_lex_out_free(&o);
     CHECK(edc_lex("\"a\" & x", EDC_LEX_SHELL_ON, &o), "lex ok");
     CHECK(o.count == 4, "three words (a, &, x) + EOF -- no BG token");
-    CHECK(o.toks[0].kind == TK_WORD && o.toks[1].kind == TK_WORD && o.toks[2].kind == TK_WORD,
-          "the `&` stayed a word");
+    CHECK(o.toks[0].kind == TK_STRING && o.toks[1].kind == TK_TEXT && o.toks[2].kind == TK_TEXT,
+          "`a` is a STRING, the `&` and `x` are TEXT");
     edc_lex_out_free(&o);
 
     TEST("`&&` is ONE operator token, not two `&` words");
     CHECK(edc_lex("\"a\" && \"b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
     CHECK(o.count == 4, "word + && + word + EOF");
-    CHECK(o.toks[0].kind == TK_WORD && o.toks[1].kind == TK_ANDAND && o.toks[2].kind == TK_WORD,
+    CHECK(o.toks[0].kind == TK_STRING && o.toks[1].kind == TK_ANDAND && o.toks[2].kind == TK_STRING,
           "the middle token is ANDAND");
     edc_lex_out_free(&o);
 
@@ -147,27 +158,27 @@ int main(void)
     CHECK(o.count == 2 && o.toks[0].kind == TK_OPT, "at end of line it is still an option");
     edc_lex_out_free(&o);
     CHECK(edc_lex("-dfoo", EDC_LEX_SHELL_ON, &o), "lex ok");
-    CHECK(o.count == 2 && o.toks[0].kind == TK_WORD, "no attached form");
+    CHECK(o.count == 2 && o.toks[0].kind == TK_TEXT, "no attached form -- it is plain text");
     edc_lex_out_free(&o);
 
     TEST("`+foo` : sigil, then a plain word (which the parser will call a message)");
     CHECK(edc_lex("+foo", EDC_LEX_SHELL_ON, &o), "lex ok");
-    CHECK(o.count == 3 && o.toks[0].kind == TK_SIGIL_NEWGROUP && o.toks[1].kind == TK_WORD, "sigil + word + EOF");
-    CHECK(o.toks[1].kind == TK_WORD && !o.toks[1].fully_quoted, "and the word is not fully quoted");
+    CHECK(o.count == 3 && o.toks[0].kind == TK_SIGIL_NEWGROUP && o.toks[1].kind == TK_TEXT, "sigil + text + EOF");
     edc_lex_out_free(&o);
 
     TEST("`{{LAST}}` is marked only inside double quotes");
     CHECK(edc_lex("\"see {{LAST}}\"", EDC_LEX_SHELL_ON, &o), "lex ok");
-    CHECK(o.toks[0].kind == TK_WORD && o.toks[0].has_var_refs, "double quotes: marked");
+    CHECK(o.toks[0].kind == TK_STRING && o.toks[0].has_var_refs, "double quotes: marked");
     edc_lex_out_free(&o);
     CHECK(edc_lex("'see {{LAST}}'", EDC_LEX_SHELL_ON, &o), "lex ok");
-    CHECK(o.toks[0].kind == TK_WORD && !o.toks[0].has_var_refs, "single quotes: not marked");
+    CHECK(o.toks[0].kind == TK_STRING && !o.toks[0].has_var_refs, "single quotes: not marked");
     edc_lex_out_free(&o);
 
     TEST("switch OFF: no operator tokens, and the fact is recorded for the note");
     CHECK(edc_lex("\"a\" | \"b\"", EDC_LEX_SHELL_OFF, &o), "lex ok");
     CHECK(o.saw_disabled, "the `|` was seen and refused");
-    CHECK(o.toks[0].kind == TK_WORD, "everything is words");
+    CHECK(o.toks[0].kind == TK_STRING, "the leading quoted word is still a STRING");
+    CHECK(o.mode == EDC_LEX_SHELL_OFF, "and the stream says the switch was OFF");
     edc_lex_out_free(&o);
 
     TEST("an unclosed quote is one token, and the error names it AND where it starts");
