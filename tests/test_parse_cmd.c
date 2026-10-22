@@ -48,6 +48,21 @@ static bool parse_line(const char *text, edc_ast *ast, sds *err)
     return ok;
 }
 
+/* The shell-line counterpart of parse_line(): same lex + edc_parse, but with the switch
+ * ON -- which is the only mode where T_OPT/T_OPTARG exist at all (SHELL_OFF folds them
+ * into ordinary words, on purpose: that is what a command line wants). */
+static bool parse_shell_line(const char *text, edc_ast *ast, sds *err)
+{
+    edc_lex_out toks;
+    memset(ast, 0, sizeof(*ast));
+    *err = NULL;
+    if (!edc_lex(text, EDC_LEX_SHELL_ON, &toks))
+        return false;
+    const bool ok = edc_parse(&toks, ast, err);
+    edc_lex_out_free(&toks);
+    return ok;
+}
+
 int main(void)
 {
     edc_ast ast;
@@ -142,6 +157,63 @@ int main(void)
               "two stages in one pipeline");
         sdsfree(perr);
         edc_ast_free(&ast);
+    }
+
+    /* ── ⑥ shell 行的选项：有参的四个，缺值时给的是"少了东西"而不是 bison 的原文 ──
+     *
+     * 两条独立的事实，都曾经不对：
+     *   ① 短选项的尾随上下文是 `[ \t]`、长选项是 `[ \t\n]`，于是行尾的 `-d` 掉回普通
+     *      WORD，和 `--group` 走了两条完全不同的失败路径；
+     *   ② 两种路径都直接把 bison 的 "syntax error, unexpected …" 抛给用户。
+     * 现在四个选项在行尾都成 OPTARG，且缺值走同一条可读文案（预检里，见 edc_parse）。 */
+    TEST("shell line: an option with a value keeps it, even at end of line");
+    {
+        edc_lex_out toks;
+        CHECK(edc_lex("\"a\" -d", EDC_LEX_SHELL_ON, &toks), "lex ok");
+        CHECK(toks.count >= 3 && toks.toks[1].kind == TK_OPTARG && toks.toks[1].value &&
+                  strcmp(toks.toks[1].value, "-d") == 0,
+              "a trailing `-d` is an OPTARG (it used to fall back to a plain WORD)");
+        edc_lex_out_free(&toks);
+    }
+
+    TEST("shell line: a missing option value is refused with a readable message");
+    {
+        static const struct
+        {
+            const char *line;
+            const char *option; /* the name that has to appear in the reason */
+        } cases[] = {{"\"a\" -d", "-d"},
+                     {"\"a\" -g", "-g"},
+                     {"\"a\" --with", "--with"},
+                     {"\"a\" --group", "--group"}};
+        for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ci++)
+        {
+            edc_ast a;
+            sds perr = NULL;
+            const bool ok = parse_shell_line(cases[ci].line, &a, &perr);
+            char what[128];
+            snprintf(what, sizeof(what), "%s is refused", cases[ci].line);
+            CHECK(!ok, what);
+            snprintf(what, sizeof(what), "%s: the reason says the option needs a value", cases[ci].line);
+            CHECK(perr != NULL && strstr(perr, "needs a value") != NULL, what);
+            snprintf(what, sizeof(what), "%s: it names `%s`", cases[ci].line, cases[ci].option);
+            CHECK(perr != NULL && strstr(perr, cases[ci].option) != NULL, what);
+            sdsfree(perr);
+            edc_ast_free(&a);
+        }
+    }
+
+    TEST("shell line: a quoted value after an option is still one word");
+    {
+        edc_ast a;
+        sds perr = NULL;
+        CHECK(parse_shell_line("\"a\" -d \"t 1\"", &a, &perr), "parsed");
+        CHECK(a.pipelines && a.pipelines->stages && a.pipelines->stages->ndep == 1, "one dependency");
+        CHECK(a.pipelines && a.pipelines->stages && a.pipelines->stages->deps &&
+                  strcmp(a.pipelines->stages->deps[0], "t 1") == 0,
+              "the quoted value kept its space");
+        edc_ast_free(&a);
+        sdsfree(perr);
     }
 
     printf("\n  %d passed, %d failed\n", passed, failed);

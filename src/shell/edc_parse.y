@@ -73,6 +73,20 @@ static void opt_noarg(const edc_tok *o)
         set_err("unknown option");
 }
 /* 带参选项：参数是紧接的那个 word（所以 `-d \"a b\"` 也成立）。 */
+/* 带参选项后面没有值：`"desc" -d` 断了。这不是"未知语法"，是**少了东西**，所以给一句
+ * 能照着改的话，而不是 bison 的 "unexpected T_WORD / end of file"。
+ *
+ * 它在 `edc_parse()` 的 token 预检里跑，不是文法动作：`opts T_OPTARG` 之后 bison 会先把
+ * 空产生式 `remember` 规约掉再去等 T_WORD，所以那条"缺值"规则永远轮不到（试过，动作不执行）。
+ * 预检也正好和上面 TK_BAD_QUOTED 的拦截同一个位置。 */
+static sds opt_needs_value(const edc_tok *o)
+{
+    if (!o || !o->value)
+        return NULL;
+    const char *arg = (strcmp(o->value, "-d") == 0 || strcmp(o->value, "--with") == 0) ? "<task id>" : "<group id>";
+    return sdscatprintf(sdsempty(), "`%s` needs a value: write `\"desc\" %s %s`.", o->value, o->value, arg);
+}
+/* 带参选项：参数是紧接的那个 word（所以 `-d \"a b\"` 也成立）。 */
 static void opt_witharg(const edc_tok *o, const edc_tok *val)
 {
     struct edc_ast_stage *s = cur_stage();
@@ -198,14 +212,30 @@ bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
     if (err)
         *err = NULL;
 
-    /* 未闭合的字面量在哪个位置都不合法：先在 token 层拦一次，文案比 bison 的默认好。 */
+    /* 未闭合的字面量在哪个位置都不合法：先在 token 层拦一次，文案比 bison 的默认好。
+     * 带参选项缺值同理（`"desc" -d` / `"desc" --group`）：那也不是"未知语法"，是少了东西。 */
     for (int i = 0; toks && i < toks->count; i++)
+    {
         if (toks->toks[i].kind == TK_BAD_QUOTED)
         {
             if (err)
                 *err = edc_lex_unterminated_quote(toks->toks[i].value, toks->toks[i].begin + 1);
             return false;
         }
+        if (toks->toks[i].kind == TK_OPTARG)
+        {
+            const edc_tok *next = (i + 1 < toks->count) ? &toks->toks[i + 1] : NULL;
+            if (!next || next->kind != TK_WORD)
+            {
+                sds msg = opt_needs_value(&toks->toks[i]);
+                if (err)
+                    *err = msg;
+                else
+                    sdsfree(msg);
+                return false;
+            }
+        }
+    }
 
     g_toks = toks;
     g_i = 0;

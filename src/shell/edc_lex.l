@@ -105,8 +105,8 @@ static void push_unquoted(const char *raw, size_t len)
 "--new-group"/[ \t\n]       { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
 "--with"/[ \t\n]            { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
 "--group"/[ \t\n]           { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
-"-d"/[ \t]                  { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
-"-g"/[ \t]                  { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
+"-d"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
+"-g"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
 ^"/"[A-Za-z_-]+             { chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
 [ \t\n]+                    { push(C_WS); }
 [^ \t\n|;&<>"' ]+           { push_unquoted(yytext, (size_t)yyleng); }
