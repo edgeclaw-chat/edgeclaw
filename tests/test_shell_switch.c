@@ -17,6 +17,7 @@
  * then call edc_scheduler_schedule (the message end is the tick). No channel actor, so
  * replies go nowhere.
  */
+#include "edc_ast.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
@@ -131,16 +132,29 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
 }
 
 /* `/shell <arg>` through the builtin entry (it is a `/` command, so the switch does not
- * gate it -- which is the whole point: it is how you turn the switch back on). */
+ * gate it -- which is the whole point: it is how you turn the switch back on).
+ *
+ * The entry takes the CMD AST node, not the raw message (aef7347): the lexer and parser
+ * have already split the tail, and no layer below splits raw text again. So build the same
+ * node `/shell <arg>` would have produced. argv is sds* because the parser sdsdup()s every
+ * word, and the node is released the way edc_ast_free() does it. */
 static bool run_shell_cmd(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
                           const char *arg)
 {
-    char line[64];
-    snprintf(line, sizeof(line), "/shell%s%s", arg[0] ? " " : "", arg);
-    struct edc_channel_message *m =
-        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(line));
-    bool handled = edc_shell_handle_builtin(cfg, sm, to, m);
-    edc_channel_message_free(m);
+    struct edc_ast_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.name = sdsnew("shell");
+    if (arg[0])
+    {
+        cmd.argv = malloc(sizeof(sds));
+        cmd.argv[0] = sdsnew(arg);
+        cmd.argc = 1;
+    }
+    const bool handled = edc_shell_handle_builtin(cfg, sm, to, &cmd);
+    sdsfree(cmd.name);
+    for (int i = 0; i < cmd.argc; i++)
+        sdsfree(cmd.argv[i]);
+    free(cmd.argv);
     return handled;
 }
 

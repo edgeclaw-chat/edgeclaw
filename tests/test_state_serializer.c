@@ -1983,7 +1983,7 @@ static void test_schema_version_is_current(void)
     CHECK(json != NULL, "serialize returns non-NULL");
     /* 本文件构造 JSON 时用的版本号是手写镜像 (见各 cJSON_Parse 字面量): 一律等于
      * 当前 schema, 升级时这里会先红。 */
-    CHECK(edc_state_schema_version() == 11, "schema version bumped -> update this file's literals");
+    CHECK(edc_state_schema_version() == 12, "schema version bumped -> update this file's literals");
     CHECK(edc_state_json_version(json) == edc_state_schema_version(), "on-disk version is the current schema");
 
     struct edc_session *s2 = edc_session_new(cfg, "sess-ver", "Ver");
@@ -2021,7 +2021,7 @@ static void test_schema_version_is_current(void)
     edc_scheduler_free(sched3);
 
     /* A version NEWER than this binary also refuses (do not guess a future shape). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(12));
+    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(13));
     struct edc_session *s9 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched9 = edc_scheduler_new(cfg);
     install_resolver(sched9, s9);

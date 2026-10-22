@@ -261,9 +261,11 @@ static void test_cjk_output_is_utf8(void)
     CHECK(strstr(result_text(), "\xE4\xB8\xAD\xE6\x96\x87PS") != NULL, "and so does the UTF-8 line: %.80s",
           result_text());
 #else
-    /* POSIX: no conversion AND no validation -- the bytes come back exactly as written. */
+    /* POSIX: no conversion AND no validation -- the bytes come back exactly as written.
+     * The tool appends its OWN single trailing newline (it sdstrim()s the command's, then
+     * formats "%s\n"), so the expected text is the raw bytes plus that one newline. */
     CHECK(run_shell(&h, "printf '\xE4\xB8\xAD\xE6\x96\x87SH\\n'", 10), "the callback fired");
-    CHECK(strcmp(result_text(), "\xE4\xB8\xAD\xE6\x96\x87SH") == 0,
+    CHECK(strcmp(result_text(), "\xE4\xB8\xAD\xE6\x96\x87SH\n") == 0,
           "the bytes come back untouched: %.80s", result_text());
 #endif
 

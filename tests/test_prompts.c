@@ -71,7 +71,16 @@ static sds expand(const char *body, const char *argline)
     memset(&prompt, 0, sizeof(prompt));
     prompt.body = sdsnew(body);
     int argc = 0;
-    sds *args = edc_argv_from_tail(argline, &argc);
+    sds qerr = NULL;
+    sds *args = edc_argv_from_tail(argline, &argc, &qerr);
+    /* A malformed argument line is an ERROR, never a silently dropped argument (see
+     * edc_argv_from_tail). Without this the split would quietly yield "no arguments" and
+     * the assertion below would blame the substitution for the split's mistake. */
+    if (qerr)
+    {
+        printf("  (cannot split `%s`: %s)\n", argline, qerr);
+        sdsfree(qerr);
+    }
     sds out = edc_prompt_expand(&prompt, args, argc);
     edc_prompt_args_free(args, argc);
     sdsfree(prompt.body);
