@@ -177,10 +177,12 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         chunk_t *c = &g_chunks[i];
         const bool wordish = (c->kind == C_UNQUOTED || c->kind == C_QUOTED);
         /* 开关关闭：sigil/算符/选项**不成为 token**，降级成文本（并记一笔供 note 用）。
-         * C_BADQ 例外：未闭合的引号是词法错误，任何模式下都得成一个 token —— 否则
-         * 命令层取 argv 时它会静默降级成文本，参数就悄悄变了。 */
-        const bool disabled =
-            (mode == EDC_LEX_SHELL_OFF) && !wordish && c->kind != C_WS && c->kind != C_REST && c->kind != C_BADQ;
+         * 两个例外，都不是“开关能管的语法”：
+         *   C_BADQ  未闭合引号是词法错误 —— 降级成文本就是静默丢参；
+         *   C_SLASH 行首 `/` 是派发前缀（命令层），与 shell 开关无关 ——
+         *           它得成 TK_SLASH_CMD，否则命令行进不了文法。 */
+        const bool disabled = (mode == EDC_LEX_SHELL_OFF) && !wordish && c->kind != C_WS &&
+                              c->kind != C_REST && c->kind != C_BADQ && c->kind != C_SLASH;
 
         if (wordish || disabled)
         {

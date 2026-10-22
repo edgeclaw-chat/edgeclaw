@@ -1356,6 +1356,17 @@ cc_test(
 )
 
 cc_test(
+    name = "test_parse_cmd",
+    srcs = ["test_parse_cmd.c"],
+    deps = [
+        "//src/common:common",
+        "//src/shell:lex",
+        "//src/shell:parse",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_lex",
     srcs = ["test_lex.c"],
     deps = [

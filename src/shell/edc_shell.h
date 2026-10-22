@@ -1,6 +1,7 @@
 #ifndef __EDC_SHELL_H__
 #define __EDC_SHELL_H__
 
+#include "edc_ast.h"
 #include "edc_channel_actor.h"
 #include "edc_config.h"
 #include "edc_task_types.h"
@@ -33,8 +34,11 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
                                 struct edc_channel_message *message, const struct edc_msg_payload *payload);
 
 /* Handle a built-in command (/whoami, /model); true = handled. */
-bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
-                              struct edc_channel_message *message);
+/* The line-level builtins that live in the shell layer (`/whoami`, `/model`,
+ * `/sandbox`, `/shell`). |cmd| is the parsed command line: the name plus the
+ * already-unquoted argv (see struct edc_ast_cmd). */
+bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm,
+                              struct edc_reply_to to, const struct edc_ast_cmd *cmd);
 
 /* The predecessor of a chained task (`a | b`, `a ; b`, `a && b`, `a || b`): WHERE to wait and
  * HOW the wait behaves travel together, because a dep type without a predecessor is not a

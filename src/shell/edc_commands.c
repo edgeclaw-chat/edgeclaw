@@ -3702,22 +3702,68 @@ static const struct edc_cmd_entry k_commands[] = {
 
 #define EDC_CMD_COUNT (sizeof(k_commands) / sizeof(k_commands[0]))
 
-/* 把 `/name rest…` 拆成名字 + 剩余，按表派发。false = 这张表里没有它。 */
+/* One lexer + one parser for a `/command` line: the AST's cmd node carries the name
+ * and the already-unquoted argv, so nothing below re-splits the raw text. The lexer
+ * runs with the shell switch OFF -- inside a command line `|`, `&`, `--bg` … are
+ * ordinary arguments, which is what a command line always meant.
+ *
+ * Returns false when it already replied: an unterminated quote (the parser's message
+ * names the column) or a line that does not start with a command name at all. */
+static bool edc_commands_parse_line(struct edc_reply_to to, const char *content, edc_ast *ast)
+{
+    memset(ast, 0, sizeof(*ast));
+
+    edc_lex_out toks;
+    if (!edc_lex(content, EDC_LEX_SHELL_OFF, &toks))
+        return false; /* OOM: leave it to the unknown-command reply */
+
+    bool bad_quote = false;
+    for (int i = 0; i < toks.count; i++)
+        if (toks.toks[i].kind == TK_BAD_QUOTED)
+            bad_quote = true;
+
+    sds err = NULL;
+    const bool ok = edc_parse(&toks, ast, &err);
+    edc_lex_out_free(&toks);
+    if (ok)
+        return true;
+
+    if (bad_quote)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", err ? err : "unterminated quote");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+    }
+    else
+    {
+        /* `/…` that the grammar cannot start a command from (`/@x`): name what the user
+         * typed rather than answering a bare "syntax error". */
+        const char *end = content;
+        while (*end && *end != ' ' && *end != '\t')
+            end++;
+        sds reply = sdscatprintf(sdsempty(), "**Unknown command** — `%.*s`\n\nType `/help` for available commands.",
+                                 (int)(end - content), content);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+    }
+    sdsfree(err);
+    return false;
+}
+
+/* 按名字派发：名字与参数都由文法给出（edc_ast_cmd），这里不再切原文。
+ * false = 这张表里没有它（或它不接受参数而参数不为空）。 */
 static bool edc_commands_dispatch(struct edc_config *cfg, struct edc_session_manager *sm,
                                   struct edc_scheduler *sched, struct edc_reply_to to,
-                                  struct edc_channel_message *message)
+                                  const struct edc_ast_cmd *cmd, struct edc_channel_message *message)
 {
-    const char *p = message->content + 1; /* 跳过 '/' */
-    const size_t n = strcspn(p, " \t\r\n");
-    const char *rest = p + n;
-    while (*rest == ' ' || *rest == '\t')
-        rest++;
-    const bool alone = (*rest == '\0' || *rest == '\r' || *rest == '\n');
+    if (!cmd || !cmd->name)
+        return false;
 
+    const bool alone = (cmd->argc == 0);
     for (size_t i = 0; i < EDC_CMD_COUNT; i++)
     {
         const struct edc_cmd_entry *e = &k_commands[i];
-        if (strlen(e->name) != n || strncmp(e->name, p, n) != 0)
+        if (strcmp(e->name, cmd->name) != 0)
             continue;
         if (e->exact && !alone)
             return false; /* `/reload x` 不是 `/reload` */
@@ -3789,20 +3835,29 @@ bool edc_commands_handler(struct edc_config *cfg, struct edc_session_manager *sm
     if (kind == EDC_IN_LOCALSHELL && edc_local_shell_handle(sm, sched, to, message))
         return true;
 
-    /* / commands: shell builtins first, then shortcuts, then existing handlers */
+    /* / commands: ONE lex + ONE parse, then the AST decides -- the builtins and the
+     * table-driven handlers both read the name and argv from it, so no layer below
+     * splits the raw text again. */
     if (kind == EDC_IN_COMMAND)
     {
-        if (edc_shell_handle_builtin(cfg, sm, to, message))
+        edc_ast ast;
+        if (!edc_commands_parse_line(to, message->content, &ast))
             return true;
 
-        /* 表驱动：名字、匹配方式、入口都在 k_commands[] 里，没有顺序依赖。 */
-        if (edc_commands_dispatch(cfg, sm, sched, to, message))
-            return true;
-
-        sds reply = sdscatprintf(sdsempty(), "**Unknown command** — `%s`\n\nType `/help` for available commands.",
-                                 message->content);
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
+        const struct edc_ast_cmd *cmd = ast.cmd;
+        const bool handled =
+            cmd && cmd->name &&
+            (edc_shell_handle_builtin(cfg, sm, to, cmd) ||
+             edc_commands_dispatch(cfg, sm, sched, to, cmd, message));
+        if (!handled)
+        {
+            sds reply =
+                sdscatprintf(sdsempty(), "**Unknown command** — `%s`\n\nType `/help` for available commands.",
+                             cmd && cmd->name ? cmd->name : message->content);
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+        }
+        edc_ast_free(&ast);
         return true;
     }
 

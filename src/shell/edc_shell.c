@@ -98,11 +98,14 @@ static sds edc_shell_append_provider_models(sds out, const char *pid, const char
 }
 
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
-                              struct edc_channel_message *message)
+                              const struct edc_ast_cmd *cmd)
 {
-    sds content = sdstrim(sdsnew(message->content), " \t\r\n");
+    /* The line was parsed once (edc_ast_cmd): name and every argument are already
+     * unquoted here, so these builtins match on the NAME and never on raw text. */
+    if (!cmd || !cmd->name)
+        return false;
 
-    if (strcmp(content, "/whoami") == 0)
+    if (strcmp(cmd->name, "whoami") == 0)
     {
         struct edc_session *sess = edc_session_manager_get_active(sm);
         struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
@@ -130,14 +133,20 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         }
         edc_commands_reply(to, out);
         sdsfree(out);
-        sdsfree(content);
         return true;
     }
-    if (strcmp(content, "/model") == 0 || strncmp(content, "/model ", 7) == 0)
+    if (strcmp(cmd->name, "model") == 0)
     {
-        const char *arg = strncmp(content, "/model ", 7) == 0 ? content + 7 : "";
-        while (*arg == ' ' || *arg == '\t')
-            arg++;
+        /* The words joined back with single spaces: `/model <id>` and
+         * `/model search <q>` keep reading exactly as they always did. */
+        sds argtext = sdsempty();
+        for (int i = 0; i < cmd->argc; i++)
+        {
+            if (i > 0)
+                argtext = sdscat(argtext, " ");
+            argtext = sdscatsds(argtext, cmd->argv[i]);
+        }
+        const char *arg = argtext;
         const char *cur = cfg->llm_api_conf.model;
 
         if (*arg == '\0')
@@ -210,37 +219,21 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
-        sdsfree(content);
+        sdsfree(argtext);
         return true;
     }
-    if (strcmp(content, "/sandbox") == 0 || strncmp(content, "/sandbox ", 9) == 0)
+    if (strcmp(cmd->name, "sandbox") == 0)
     {
-        sds arg = sdstrim(sdsnew(content + 8), " \t");
-
-        /* Split "<verb> [path]" the way a shell splits it (the lexer): quotes are
-         * syntax, so `/sandbox add-rw 'D:\my repo'` records the directory instead of a
-         * path that happens to start with a quote (which used to land in config.json
-         * verbatim and match nothing). */
-        int nargs = 0;
-        sds *words = NULL;
-        sds aerr = NULL;
-        words = edc_argv_from_tail(arg, &nargs, &aerr);
-        if (!words && aerr)
-        {
-            sds reply = sdscatprintf(sdsempty(), "**Syntax error** \u2014 %s", aerr);
-            edc_commands_reply(to, reply);
-            sdsfree(reply);
-            sdsfree(aerr);
-            sdsfree(arg);
-            sdsfree(content);
-            return true;
-        }
-        sds verb = (nargs > 0) ? sdsdup(words[0]) : sdsempty();
-        sds rest = (nargs > 1) ? sdsdup(words[1]) : sdsempty();
+        /* argv[0] is the verb, argv[1] the path -- the parser already unquoted both, so
+         * `/sandbox add-rw 'D:\my repo'` arrives as ONE path word (the raw-text version
+         * stored the quotes in config.json verbatim). */
+        const char *verb = (cmd->argc > 0) ? cmd->argv[0] : "";
+        const char *rest = (cmd->argc > 1) ? cmd->argv[1] : "";
+        const int nargs = cmd->argc;
 
         struct edc_config *conf = cfg;
 
-        if (sdslen(verb) == 0)
+        if (*verb == '\0')
         {
             /* A platform without a backend is not "off": the switch cannot be turned on
              * at all, and the user should see that instead of hunting for the reason. */
@@ -314,22 +307,17 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                                "Usage: /sandbox [on|off|list] | add-rw|add-ro|add-deny|rm-rw|rm-ro|rm-deny <dir>");
         }
 
-        sdsfree(verb);
-        sdsfree(rest);
-        sdsfreesplitres(words, nargs);
-        sdsfree(arg);
-        sdsfree(content);
         return true;
     }
-    if (strcmp(content, "/shell") == 0 || strncmp(content, "/shell ", 7) == 0)
+    if (strcmp(cmd->name, "shell") == 0)
     {
         /* The ONLY way to flip the shell-like syntax switch (there is deliberately no CLI
          * flag): one statement, and it persists. ON by default -- the operators below are
          * the product's own idiom; `/shell off` is the escape hatch for a workflow that
          * wants every line to be one verbatim task description. */
-        sds arg = sdstrim(sdsnew(content + 6), " \t");
+        const char *arg = (cmd->argc > 0) ? cmd->argv[0] : "";
         sds reply;
-        if (sdslen(arg) == 0)
+        if (*arg == '\0')
         {
             reply = sdscatprintf(sdsempty(),
                                  "## Shell-like syntax `%s`\n\n"
@@ -356,11 +344,8 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         }
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfree(arg);
-        sdsfree(content);
         return true;
     }
-    sdsfree(content);
     return false;
 }
 

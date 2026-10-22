@@ -112,12 +112,44 @@ static void redir_add(const edc_tok *target, const edc_tok *spec)
     *tail = r; /* 同 fd 的 last wins 由解释器按顺序覆盖 */
 }
 
+/* `/cmd arg…`: the grammar owns the node, the command layer reads it. Two actions,
+ * one per half of the rule, so the name comes from the slash token itself (g_cur
+ * always points at the token that was just shifted). */
+static void cmd_begin(const edc_tok *tok)
+{
+    g_ast->kind = EDC_AST_COMMAND;
+    g_ast->cmd = calloc(1, sizeof(*g_ast->cmd));
+    if (!g_ast->cmd)
+        return;
+    g_ast->cmd->name = sdsdup((tok && tok->value) ? tok->value : sdsempty());
+}
+
+static void cmd_add(const edc_tok *tok)
+{
+    if (!g_ast->cmd)
+        return;
+    struct edc_ast_cmd *c = g_ast->cmd;
+    c->argv = realloc(c->argv, sizeof(sds) * (size_t)(c->argc + 1));
+    c->argv[c->argc++] = sdsdup((tok && tok->value) ? tok->value : sdsempty());
+}
+
 %}
-%token T_WORD T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_EOF2
+%token T_WORD T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_SLASH_CMD T_EOF2
 %%
 input
     : stage_head rest
     | T_NEWGROUP stage_head rest        { g_ast->new_group = true; }
+    | cmd_head cmd_words
+    ;
+/* `/cmd arg…`: a command line. Both operands are ordinary shell words (the caller
+ * lexes a command line with the shell switch OFF, so `|`, `&`, `--bg` … are plain
+ * arguments here, exactly as they always were for `/…`). */
+cmd_head
+    : T_SLASH_CMD                       { cmd_begin(g_cur); }
+    ;
+cmd_words
+    : /* empty */
+    | cmd_words T_WORD                  { cmd_add(g_cur); }
     ;
 stage_head
     : T_WORD                            { if (!g_cur->fully_quoted)
@@ -159,7 +191,7 @@ remember
 bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
 {
     memset(out, 0, sizeof(*out));
-    out->kind = EDC_AST_SHELL; /* 文法只产出这一种；MESSAGE 节点由派发层直接构造 */
+    out->kind = EDC_AST_SHELL; /* 文法产出 SHELL 与 COMMAND；MESSAGE 由派发层直接构造 */
     if (err)
         *err = NULL;
 
@@ -209,6 +241,7 @@ int yylex(void)
     switch (g_cur->kind)
     {
     case TK_WORD: return T_WORD;
+    case TK_SLASH_CMD: return T_SLASH_CMD;
     case TK_SIGIL_NEWGROUP: return T_NEWGROUP;
     case TK_PIPE: return T_PIPE;
     case TK_SEQ: return T_SEQ;
@@ -258,6 +291,14 @@ void edc_ast_free(edc_ast *a)
     if (!a)
         return;
     payload_free(&a->message);
+    if (a->cmd)
+    {
+        sdsfree(a->cmd->name);
+        for (int i = 0; i < a->cmd->argc; i++)
+            sdsfree(a->cmd->argv[i]);
+        free(a->cmd->argv);
+        free(a->cmd);
+    }
     struct edc_ast_pipeline *p = a->pipelines;
     while (p)
     {
