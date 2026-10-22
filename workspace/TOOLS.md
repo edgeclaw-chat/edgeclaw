@@ -42,7 +42,9 @@ list_dir(path: str) -> str
 ## Shell Execution
 
 ### exec_shell
-Execute `sh -c '<command>'` and return output.
+Execute a shell command and return its output. POSIX spawns `/bin/sh -c`; Windows spawns
+`powershell.exe` (`-NoProfile -NonInteractive -Command`) with a short encoding prologue in
+front of the command, so a result is always valid UTF-8.
 ```
 exec_shell(command: str, timeout: int = 30) -> str
 ```

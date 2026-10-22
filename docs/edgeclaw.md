@@ -272,7 +272,8 @@ What happens is worth stating exactly, because it is also how the rest of the sy
 sees it: the command becomes **a task of its own** (its own line in the sidebar, its own
 entry in the group's history) whose only job is to issue one `exec_shell` call. So
 
-- the command runs through `sh -c`, in the session's working directory, subject to the
+- the command runs through `sh -c` (on Windows: `powershell.exe -Command`, with an encoding
+  prologue in front of it), in the session's working directory, subject to the
   sandbox setting (`/sandbox`), with the same output cap as the `exec_shell` tool the model
   uses and **no timeout at all** — a command runs until it exits. Bound it yourself when
   you want to: `!timeout 60 make -j8`;
