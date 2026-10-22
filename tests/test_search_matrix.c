@@ -686,6 +686,9 @@ static void test_total_output_is_capped(void)
     sds out = edc_search_run_blocking(root, true, "TODO", NULL, false, false, 10000);
     CHECK(sdslen(out) <= 64 * 1024 + 512, "the result stays near the 64 KiB budget (got %zu)", sdslen(out));
     CHECK(strstr(out, "output capped at 64 KiB") != NULL, "and it says the budget ended the list");
+    /* limit is a match COUNT; raising it cannot help a byte budget. The advice has to name
+     * something that actually works. */
+    CHECK(strstr(out, "narrow the pattern or the path") != NULL, "and the advice fits a byte budget");
     CHECK(strstr(out, "TODO") != NULL, "there is still content to read");
     sdsfree(out);
 

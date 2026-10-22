@@ -459,7 +459,7 @@ static sds search_finish(struct search_job *job)
         result = sdscat(result, "\n[stopped at the timeout; narrow the path or raise the timeout]\n");
     if (job->out_capped)
         result = sdscatprintf(result,
-                              "\n[output capped at %u KiB; narrow the pattern or raise limit]\n",
+                              "\n[output capped at %u KiB; narrow the pattern or the path]\n",
                               (unsigned)(EDC_SEARCH_MAX_OUTPUT / 1024));
     if (sdslen(result) == 0 && !job->error)
     {
