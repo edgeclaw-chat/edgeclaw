@@ -58,6 +58,10 @@ struct fs_job
     sds content;                             /* write_file's body */
     sds old_text;                            /* edit_file */
     sds new_text;
+    /* read_file's line window (1-based offset; 0 limit = the tool's own ceiling). Set on the
+     * runner, read on the pool. */
+    int64_t offset;
+    int64_t limit;
     bool replace_all;
     int64_t occurrence;
     int64_t line_hint;
@@ -117,7 +121,8 @@ static struct fs_job *edc_fs_job_new(struct edc_toolbox_call_ctx *ctx,
 /* Runner half: sandbox check -> enqueue. On failure reply on the runner directly (same path as the old synchronous failure). */
 static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args, const char *tool_name, bool write,
                                   void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *),
-                                  sds (*io)(struct fs_job *, EdcError **))
+                                  sds (*io)(struct fs_job *, EdcError **),
+                                  void (*fill)(struct fs_job *, cJSON *))
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     EdcError *error = NULL;
@@ -128,8 +133,12 @@ static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args,
         callback(ctx, NULL, error);
         return;
     }
-    uv_queue_work(ctx->tb->scheduler->loop, &edc_fs_job_new(ctx, callback, io, tool_name, path, safe)->req,
-                  edc_fs_work_cb, edc_fs_after_cb);
+    struct fs_job *job = edc_fs_job_new(ctx, callback, io, tool_name, path, safe);
+    /* |fill| runs on the runner, before the job is handed to the pool: this is where a tool
+     * copies the rest of its arguments (the pool must never touch `args`, §4.4). */
+    if (fill)
+        fill(job, args);
+    uv_queue_work(ctx->tb->scheduler->loop, &job->req, edc_fs_work_cb, edc_fs_after_cb);
 }
 
 /*
@@ -178,6 +187,103 @@ static sds fs_read_for_tool(const char *path, bool *had_bom, EdcError **error)
     return edc_str_strip_utf8_bom(content);
 }
 
+/* read_file's own ceilings. They exist because the tool has to bound itself: the toolbox's
+ * generic cap (tool_max_output_size, 10 KB by default) cuts from the head with no idea where
+ * the next line starts, so a model that hit it could never ask for the rest. This tool
+ * declares keep_full_output (see edc_tool_create_read_file) and applies these instead, with a
+ * marker that says which lines were returned and how to continue. */
+#define EDC_READ_MAX_LINES ((int64_t)2000)
+#define EDC_READ_MAX_BYTES ((size_t)64 * 1024)
+
+/* Count the lines of |content|. A trailing newline does not open an extra empty line. */
+static int64_t count_lines(const char *p, size_t len)
+{
+    if (len == 0)
+        return 0;
+    int64_t n = 0;
+    const char *q = p;
+    const char *end = p + len;
+    while ((q = memchr(q, '\n', (size_t)(end - q))) != NULL)
+    {
+        n++;
+        q++;
+    }
+    return (p[len - 1] == '\n') ? n : n + 1;
+}
+
+/* Take the requested window out of |content|.
+ *
+ * Two linear passes (count, then locate) rather than a per-line seek: the first version
+ * re-scanned from the start for every line it collected, which is quadratic and would stall
+ * the pool thread on a large file.
+ *
+ * When the window is not the whole file, one line at the HEAD says which lines it holds. The
+ * head is deliberate: a result that is long enough to be cut is cut from the front, so a
+ * trailer would be exactly the part that disappears (the shell tool's notices sit at the head
+ * for the same reason). */
+sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t limit_in)
+{
+    const int64_t total = count_lines(p, len);
+    const int64_t limit = (limit_in > 0) ? limit_in : EDC_READ_MAX_LINES;
+    if (offset < 1)
+        offset = 1;
+
+    if (total == 0 || offset > total)
+        return sdscatprintf(sdsempty(), "[no line %lld: the file has %lld line(s)]\n", (long long)offset,
+                            (long long)total);
+
+    /* One pass to locate [start, stop): from `offset`, take lines while both budgets allow.
+     * Always on a line boundary, so the model never gets half a line to guess at. */
+    size_t pos = 0, start = 0, stop = 0;
+    int64_t lineno = 0, taken = 0;
+    while (pos < len)
+    {
+        size_t nl = pos;
+        while (nl < len && p[nl] != '\n')
+            nl++;
+        const size_t line_end = (nl < len) ? nl + 1 : nl;
+        lineno++;
+
+        if (lineno < offset)
+        {
+            pos = line_end;
+            continue;
+        }
+        if (taken >= limit)
+            break;
+        if (taken == 0)
+            start = pos;
+        else if ((line_end - start) > EDC_READ_MAX_BYTES)
+            break; /* the byte budget ends the window, on a boundary */
+        stop = line_end;
+        taken++;
+        pos = line_end;
+    }
+
+    /* A single line can be longer than the whole budget (a minified bundle, a base64 blob).
+     * Then the window cannot end on a boundary: cut it, and say so -- the alternative is
+     * handing the model a megabyte it never asked for. */
+    size_t body_len = stop - start;
+    const bool line_cut = body_len > EDC_READ_MAX_BYTES;
+    if (line_cut)
+        body_len = EDC_READ_MAX_BYTES;
+
+    const bool whole = (offset == 1) && (taken == total) && (stop == len) && !line_cut;
+    sds out = sdsempty();
+    if (!whole)
+        out = sdscatprintf(out, "[lines %lld-%lld of %lld%s]\n", (long long)offset, (long long)(offset + taken - 1),
+                           (long long)total, line_cut ? ", cut at 64 KiB" : "");
+    out = sdscatlen(out, p + start, body_len);
+
+    /* How to fetch the rest -- worth saying only when something is left. */
+    if (line_cut)
+        out = sdscat(out, "\n[that line is longer than 64 KiB and was cut]\n");
+    else if (!whole && (offset + taken - 1) < total)
+        out = sdscatprintf(out, "\n[more lines follow: pass offset=%lld to continue]\n", (long long)(offset + taken));
+
+    return out;
+}
+
 static sds edc_tool_read_file_io(struct fs_job *job, EdcError **error)
 {
     EdcError *gerror = NULL;
@@ -188,7 +294,10 @@ static sds edc_tool_read_file_io(struct fs_job *job, EdcError **error)
         edc_error_free(gerror);
         return NULL;
     }
-    return content;
+    /* The window is computed from the bytes; |content| stays owned here. */
+    sds window = edc_fs_read_file_window(content, sdslen(content), job->offset > 0 ? job->offset : 1, job->limit);
+    sdsfree(content);
+    return window;
 }
 
 static sds edc_tool_write_file_io(struct fs_job *job, EdcError **error)
@@ -225,11 +334,23 @@ static sds edc_tool_list_dir_io(struct fs_job *job, EdcError **error)
 }
 
 
+/* Runner half: the two window arguments are copied into the job here, because the pool
+ * thread must not read `args` (§4.4). Absent/0 keeps the defaults (offset 1, limit 2000). */
+static void read_file_fill(struct fs_job *job, cJSON *args)
+{
+    cJSON *j = cJSON_GetObjectItemCaseSensitive(args, "offset");
+    if (j && cJSON_IsNumber(j) && j->valuedouble > 0)
+        job->offset = (int64_t)j->valuedouble;
+    j = cJSON_GetObjectItemCaseSensitive(args, "limit");
+    if (j && cJSON_IsNumber(j) && j->valuedouble > 0)
+        job->limit = (int64_t)j->valuedouble;
+}
+
 static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    edc_fs_kick_path_tool(ctx, args, "read_file", false, callback, edc_tool_read_file_io);
+    edc_fs_kick_path_tool(ctx, args, "read_file", false, callback, edc_tool_read_file_io, read_file_fill);
 }
 
 static void edc_tool_create_read_file(struct edc_toolbox *tb)
@@ -238,9 +359,16 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
     const char *desc = "Read the contents of a file at the given path.";
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), true));
+    LL_APPEND(params, edc_tool_param_new("offset", edc_param_int_type("1-based line to start from (default 1)", 1, G_MAXINT64), false));
+    LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("How many lines to read (default 2000)", 1, 100000), false));
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_read_file_async);
     edc_tool_set_snippet(tool, "Read a file (whole, or a line range)");
-    edc_tool_set_guidelines(tool, "Capped at 2000 lines / 64KB per call.");
+    /* Both halves of this are now true: the window really exists (offset/limit), and the tool
+     * really bounds itself at 2000 lines or 64 KiB -- which is why it keeps its output whole
+     * instead of letting the generic cap cut it mid-line with no way to continue. */
+    edc_tool_set_guidelines(tool, "A read returns at most 2000 lines or 64 KiB; when a file is longer the "
+                                  "first line says which lines you got, and offset fetches the rest.");
+    edc_tool_set_keep_full_output(tool, true);
     edc_toolbox_register(tb, tool);
 }
 
@@ -282,7 +410,7 @@ static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struc
                                          void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    edc_fs_kick_path_tool(ctx, args, "list_dir", false, callback, edc_tool_list_dir_io);
+    edc_fs_kick_path_tool(ctx, args, "list_dir", false, callback, edc_tool_list_dir_io, NULL);
 }
 
 static void edc_tool_create_list_dir(struct edc_toolbox *tb)

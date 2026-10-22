@@ -10,6 +10,7 @@
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "edc_task_group.h"
+#include "edc_tools_fs.h"
 #include "edc_tools_search.h"
 
 #include <sys/stat.h>
@@ -749,6 +750,124 @@ static void test_search_walks_a_real_tree(void)
     rmdir(root);
 }
 
+/* ── read_file 的行窗口 ────────────────────────────────────────── */
+
+static sds window_of(const char *text, int64_t offset, int64_t limit)
+{
+    return edc_fs_read_file_window(text, strlen(text), offset, limit);
+}
+
+static void test_read_file_window(void)
+{
+    TEST("read_file: the whole file, a window, and the boundaries between them");
+
+    /* A short file with no window: returned verbatim, no marker. */
+    sds w = window_of("one\ntwo\nthree\n", 1, 0);
+    CHECK(strcmp(w, "one\ntwo\nthree\n") == 0, "a short file comes back whole and unmarked");
+    sdsfree(w);
+
+    /* The last line without a trailing newline still counts as a line. */
+    w = window_of("one\ntwo\nthree", 1, 0);
+    CHECK(strcmp(w, "one\ntwo\nthree") == 0, "a file without a trailing newline is not mangled");
+    sdsfree(w);
+
+    /* A window: the head says which lines, the tail says how to continue. */
+    w = window_of("l1\nl2\nl3\nl4\nl5\n", 2, 2);
+    CHECK(strstr(w, "[lines 2-3 of 5]") != NULL, "the head names the window");
+    CHECK(strstr(w, "l2\nl3\n") != NULL, "and carries exactly those lines");
+    CHECK(strstr(w, "l1") == NULL && strstr(w, "l4") == NULL, "nothing outside the window");
+    CHECK(strstr(w, "offset=4") != NULL, "and says which offset continues");
+    sdsfree(w);
+
+    /* Reaching the end of the file: no "more lines" line, because there are none. */
+    w = window_of("a\nb\nc\n", 3, 10);
+    CHECK(strstr(w, "[lines 3-3 of 3]") != NULL, "a window that ends the file still says where it is");
+    CHECK(strstr(w, "more lines follow") == NULL, "but does not promise more");
+    sdsfree(w);
+
+    /* Past the end: an empty read must say so instead of looking like an empty file. */
+    w = window_of("a\nb\n", 99, 10);
+    CHECK(strstr(w, "no line 99") != NULL, "an offset past the end is reported");
+    CHECK(strstr(w, "2 line(s)") != NULL, "with the real line count");
+    sdsfree(w);
+
+    /* An empty file has no line 1. */
+    w = window_of("", 1, 10);
+    CHECK(strstr(w, "no line 1") != NULL, "an empty file has no first line");
+    sdsfree(w);
+
+    /* CRLF: the '\r' belongs to the line's bytes and is returned as-is (the tool reads bytes,
+     * it does not transcode), but counting must not be confused by it. */
+    w = window_of("a\r\nb\r\n", 2, 1);
+    CHECK(strstr(w, "[lines 2-2 of 2]") != NULL, "CRLF counts as two lines");
+    CHECK(strstr(w, "b\r\n") != NULL, "and the bytes come back untouched");
+    sdsfree(w);
+
+    /* The byte budget ends a window on a line boundary. */
+    {
+        sds big = sdsempty();
+        for (int i = 0; i < 100; i++)
+        {
+            big = sdscatprintf(big, "%03d ", i);
+            for (int j = 0; j < 1000; j++)
+                big = sdscatlen(big, "x", 1);
+            big = sdscatlen(big, "\n", 1);
+        }
+        w = edc_fs_read_file_window(big, sdslen(big), 1, 1000);
+        /* 64 KiB / ~1005 bytes per line -> about 65 lines, and every one of them complete. */
+        CHECK(sdslen(w) < 70 * 1024, "a window stops near the byte budget (got %zu bytes)", sdslen(w));
+        CHECK(strstr(w, "more lines follow") != NULL, "and says the rest is fetchable");
+        CHECK(strstr(w, "[lines 1-") != NULL, "naming the range it did return");
+        sdsfree(w);
+        sdsfree(big);
+    }
+
+    /* One line longer than the whole budget: cut, and marked as a cut LINE (not "more
+     * lines follow", which would be a lie about where the rest is). */
+    {
+        sds oneline = sdsempty();
+        for (int i = 0; i < 100000; i++)
+            oneline = sdscatlen(oneline, "y", 1);
+        w = edc_fs_read_file_window(oneline, sdslen(oneline), 1, 0);
+        CHECK(sdslen(w) < 70 * 1024, "a single huge line is bounded (got %zu)", sdslen(w));
+        CHECK(strstr(w, "cut at 64 KiB") != NULL, "the marker says the line was cut");
+        CHECK(strstr(w, "longer than 64 KiB and was cut") != NULL, "and says so again at the tail");
+        CHECK(strstr(w, "more lines follow") == NULL, "it must not claim later lines are fetchable");
+        sdsfree(w);
+        sdsfree(oneline);
+    }
+
+    /* A big file CAN be read to the end by paging -- the point of offset/limit. */
+    {
+        sds big = sdsempty();
+        for (int i = 1; i <= 5000; i++)
+            big = sdscatprintf(big, "line %d\n", i);
+        int64_t offset = 1;
+        bool saw_last = false;
+        int pages = 0;
+        for (;;)
+        {
+            sds page = edc_fs_read_file_window(big, sdslen(big), offset, 0);
+            if (strstr(page, "line 5000") != NULL)
+                saw_last = true;
+            const char *m = strstr(page, "pass offset=");
+            if (!m)
+            {
+                sdsfree(page);
+                break;
+            }
+            offset = atoll(m + strlen("pass offset="));
+            sdsfree(page);
+            CHECK(++pages < 10, "paging terminates within the expected number of pages");
+            if (pages >= 10)
+                break;
+        }
+        CHECK(saw_last, "paging with offset/limit reaches the end of a 5000-line file");
+        CHECK(pages == 2, "5000 lines is 3 pages of 2000 (got %d)", pages);
+        sdsfree(big);
+    }
+}
+
 int main(void)
 {
     log_info("test_toolset: the declaration set (sorted, scope-filtered, replayable)");
@@ -762,6 +881,7 @@ int main(void)
     test_resolve_always_reflects_the_current_set();
     test_render_prompt_is_terse_and_ruleful();
     test_search_tools_flip_the_search_rule();
+    test_read_file_window();
     test_search_glob_matching();
     test_search_walks_a_real_tree();
     test_note_change_adding_a_direct_tool_rewrites_the_field();
