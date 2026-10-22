@@ -187,9 +187,21 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 |---|---|---|---|---|
 | **R1** | **MCP 接入** —— **⏸ 暂缓（2026-10-21 用户裁定）**，见下方"为什么暂缓 / 重开条件" | 挂一个 server → 工具出现在工具段且可调用；崩溃/超时不拖死 turn；未启用时工具段完全不出现 | L | R2 |
 | **R2** | ✅ **已完成（2026-10-21）**：工具集由注册表派生（`edc_toolset`），组内冻结、散文段生成、执行侧按 scope 判定；实作见 `pi-toolset-plan.zh.md` B0–B3 | 同组连跑 `tools` 字节级相同；禁用后散文段里也不出现（`test_toolset.c` 37 checks） | — | — |
-| **R3** | **headless 双模式**：`--print`（管道 stdin、`@path`）+ `--mode json` | 无 tty 下退出码正确、stdout 只有结果；json 可逐行消费；与 TUI **共用同一 kernel 路径**（不复制 agent 循环） | M | — |
+| **R3** | ✅ **已完成（2026-10-22），但交付的形态与 pi 不同**：`edgeclaw_cli '<你在 TUI 里会输入的那一行>'` —— **输入行直通**，没有第二套命令行词汇；只有输出可选（默认答案 / `--json` / `--silent` + `/task output <id>` 事后取）。独立二进制，只链 app 不链 ftxui（6.5 MB vs 12 MB） | 同一行输入在 TUI 与 CLI 行为一致（实测：消息、`/help`、`/task new`、`+`、`!cmd`、`"a" \| "b"`）；退出码 0/1/2/3；print 模式 stdout 只有答案；`//tests:all` 113（`test_cli.sh` 13 checks） | — | — |
 | **R4** | ✅ **已完成（2026-10-22，纯 C 版）**：`grep` + `find` 在进程内实现（`edc_tools_search.c`），无子进程、无 shell；遍历在 libuv 线程池，路径先过沙箱；POSIX regex（Windows 用 pcre2-posix）；`literal` / `limit` / `glob` / `ignore_case` / `timeout` | 一轮定位；单行 500 字符；默认 100 条命中并说明截断；二进制/CRLF/.git 等跳过；散文规则自动从"用 exec_shell 搜索"切成"优先 grep/find"（单测钉住） | — | — |
 | **R5** | ✅ **已完成（2026-10-21）**：6 段格式 + 迭代更新 + split turn + 精确路径要求 + `max_tokens`（早就有）；`<read-files>`/`<modified-files>` 从 tool call 抽取、跨折叠累积、上限 50、确定性顺序（本次补） | 折叠后能说出改过哪些文件、卡在哪；折叠两次取并集不重复（`test_group_fold.c` 三个用例钉住） | — | — |
+
+> **R3 为什么不是 pi 的 `--print` / `--mode json`（2026-10-22，用户裁定）**
+>
+> pi 的形态是"给 CLI 自己一套旗标"（`-p`、`--mode json`、`--mode rpc`）。我第一版照做了，被否掉，理由成立：
+> 用户得学第二套说法才能表达他已经会说的话，而且这套说法要与 TUI 永远保持同步。
+>
+> **现在的模型是"同一行输入，只是没有屏幕"**：参数就是输入框里那一行，走
+> `edc_app_send_user_message`（TUI 按 Enter 调的那个），passes / 分类 / 命令表 / shell 文法 /
+> session / group 全是同一份代码。留下的可选项只有输出——因为消息在进程决定打印之前就已经存在：
+> 默认给答案、`--json` 给逐行事件、`--silent` 什么都不给（仍记录，事后 `/task output <id>` 取）。
+>
+> 代价与收获：**没有** `--mode rpc` / TS SDK（决策 C 仍然悬着），**也没有** pi 那种"stdin/stdout 被重定向就自动进 print 模式"的隐式切换——我们是显式的另一个二进制。换来的是一条永远不需要同步的规则，以及一个连"误画终端"都做不到的小二进制。
 
 > **R1 为什么暂缓（2026-10-21）**
 >
@@ -267,7 +279,7 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 |---|---|---|---|---|
 | **A** | pi 的可扩展性押在 TS extensions 上；我们已拍板"不做 TS 运行时" | ① 不抄，skills/prompts 覆盖 ② **子进程式扩展**（外部进程 + JSON-RPC，不内嵌 JS） ③ 抄 TS 运行时 | ①0 ②中 ③高 | **②**：拿到 pi 包的形态，不背 Node |
 | **B** | pi 用 `/trust` gate `mcp.json` 与包；我们已拍板"项目级资源默认开" | ① 维持默认开 + 可关开关 ② 抄 `/trust`，**只 gate "能执行代码"的口子** | ①0 ②中 | **先①**；做 A② 或 R10 时**必须**上② |
-| **C** | pi 有 rpc 模式 + SDK | ① 只 `--print` + `--mode json` ② 再加 `--mode rpc` ③ 再加 SDK | ①小 ②中 ③大 | **①先做**；rpc 看是否要喂 device agent |
+| **C** | pi 有 rpc 模式 + SDK | ① 只做输入行直通的 CLI（**已落地**） ② 再加 `--mode rpc` ③ 再加 SDK | ①done ②中 ③大 | ①已完成；②③ 看是否要喂 device agent / 当库用 |
 
 ---
 
