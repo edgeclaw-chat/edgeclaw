@@ -22,6 +22,9 @@ struct edc_sched_input
     const char *session_id; /* owning session label; NULL/empty = active session */
     const char *content;
     edc_channel_type type; /* channel kind; today only adapter (TUI) */
+    /* Start this input in a new group (see edc_channel_message.new_group). Declared by the
+     * frontend: a headless run must not join the group an interactive session is using. */
+    bool new_group;
     void *origin;          /* original channel message, passed through to the command handler */
 };
 

@@ -179,6 +179,15 @@ extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
  * edc_app_request_message_payload() hands the payload back by that id. */
 extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
                                       const char *payload_json, const char *mid);
+
+/* Same, but the task starts in a NEW group of that session rather than the foreground one.
+ *
+ * This is for a non-interactive frontend, and it is not cosmetic: a group's queue is serial,
+ * so an input that joins the foreground group waits for whatever that conversation is doing
+ * -- and if that turn is itself waiting on the headless process, neither can finish. It also
+ * keeps a scripted run out of the user's conversation and out of its transcript. No paste
+ * payload / mid: a scripted prompt has neither. */
+extern void edc_app_send_user_message_new_group(struct edc_app *app, const char *session_id, const char *content);
 /* Ask for the folded-paste payload of the user message named by |mid|. The store belongs
  * to the scheduler thread, so the answer arrives as a MESSAGE_PAYLOAD channel message
  * (header = the mid, content = the payload JSON, "" = no such message). */

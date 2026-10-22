@@ -1,3 +1,4 @@
+#include "edc_headless.h"
 #include "edc_log.h"
 #include "edc_theme.hpp"
 #include "edc_tui_window.hpp"
@@ -99,6 +100,20 @@ int main(int argc, char **argv)
     const int sandbox_override = ParseSandboxFlag(argc, argv);
 
     edc_log_init();
+
+    /* Headless frontend (`--print` / `--mode json`): a different frontend over the same
+     * app, dispatched BEFORE any terminal setup. Doing it here -- rather than after the
+     * theme probe -- is what makes the mode safe under a pipe, in cron, and on a machine
+     * with no tty at all: nothing below this point runs. */
+    {
+        const edc_headless_mode headless = edc_headless_parse(argc, argv);
+        if (headless != EDC_HEADLESS_NONE)
+        {
+            const int code = edc_headless_run(argc, argv, sandbox_override, headless);
+            edc_log_close();
+            return code;
+        }
+    }
 
     // Settle the colour depth first: ftxui::Color::RGB() quantises to whatever
     // depth is in force when the colour is built, and the palettes are built

@@ -99,6 +99,7 @@ cc_binary(
         "main.cpp",
     ],
     deps = [
+        "//src/cli:headless",
         "//src/actor:actors",
         "//src/app:api",
         "//src/app:app",

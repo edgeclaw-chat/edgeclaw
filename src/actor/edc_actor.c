@@ -45,6 +45,7 @@ edc_actor_runner_t *edc_actor_runner_new()
         return NULL;
     uv_loop_init(&runner->loop);
     runner->running = 0;
+    runner->thread_started = 0;
     runner->actors = NULL;
     runner->actor_count = 0;
     runner->actor_capacity = 0;
@@ -79,6 +80,9 @@ void edc_actor_runner_start(edc_actor_runner_t *runner)
     if (!runner)
         return;
     uv_thread_create(&runner->thread, actor_thread_func, runner);
+    /* Before anything can try to stop us: the join must not depend on the thread having
+     * got as far as setting `running`. */
+    runner->thread_started = 1;
 
     for (int i = 0; i < runner->actor_count; ++i)
     {
@@ -89,13 +93,16 @@ void edc_actor_runner_start(edc_actor_runner_t *runner)
 
 void edc_actor_runner_stop(edc_actor_runner_t *runner)
 {
-    if (!runner || !runner->running)
+    /* `thread_started`, not `running`: see the field's comment. Joining a thread that has
+     * already exited is fine and still required (it reaps it). */
+    if (!runner || !runner->thread_started)
         return;
 
     uv_stop(&runner->loop);
     if (runner->actor_count > 0)
         uv_async_send(&runner->actors[0]->wakeup);
     uv_thread_join(&runner->thread);
+    runner->thread_started = 0;
 }
 
 void edc_actor_runner_free(edc_actor_runner_t *runner)
@@ -103,7 +110,7 @@ void edc_actor_runner_free(edc_actor_runner_t *runner)
     if (!runner)
         return;
 
-    if (runner->running)
+    if (runner->thread_started)
     {
         edc_actor_runner_stop(runner);
     }

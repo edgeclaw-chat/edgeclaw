@@ -268,6 +268,12 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+sh_test(
+    name = "test_headless_sh",
+    srcs = ["test_headless.sh"],
+    data = ["//src/tui:edgeclaw"],
+)
+
 cc_test(
     name = "test_tools_search_loop",
     srcs = ["test_tools_search_loop.c"],
