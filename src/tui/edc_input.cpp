@@ -1,5 +1,6 @@
 #include "edc_input.hpp"
 
+#include "edc_style.hpp" /* the palette the self-drawn caret block is painted with */
 #include "edc_token_style.hpp"
 #include "edc_text_util.hpp"
 #include <algorithm>
@@ -471,8 +472,8 @@ int EdcInput::CaretColumn()
     return ColumnAt(*content_, layout, row, lo);
 }
 
-::ftxui::Element EdcInput::RowElement(const Row &row, int caret_at, bool is_focused,
-                                      const ::ftxui::Decorator &caret) const
+::ftxui::Element EdcInput::RowElement(const Row &row, int caret_at, bool is_focused, const ::ftxui::Decorator &caret,
+                                      const ::ftxui::Decorator &caret_paint) const
 {
     // Runs: plain text and chips, in row order. A chip is recognised by its placeholder
     // text, so a placeholder the user edited through simply renders as plain text (the
@@ -547,14 +548,14 @@ int EdcInput::CaretColumn()
             // After this run's last glyph: one caret cell (between two runs, or at the row
             // end), exactly like ftxui::Input at a line end.
             push_text(run.begin, run.end, run.token, run.paste);
-            parts.push_back(::ftxui::text(is_focused ? " " : "") | caret);
+            parts.push_back(::ftxui::text(is_focused ? " " : "") | caret | caret_paint);
             continue;
         }
         // On a glyph: block/bar over it.
         const int len = GlyphLenAt(*content_, caret_pos, run.end);
         push_text(run.begin, caret_pos, run.token, run.paste);
-        parts.push_back(
-            ::ftxui::text(content_->substr(static_cast<size_t>(caret_pos), static_cast<size_t>(len))) | caret);
+        parts.push_back(::ftxui::text(content_->substr(static_cast<size_t>(caret_pos), static_cast<size_t>(len))) |
+                        caret | caret_paint);
         push_text(caret_pos + len, run.end, run.token, run.paste);
     }
     return ::ftxui::hbox(std::move(parts));
@@ -563,17 +564,37 @@ int EdcInput::CaretColumn()
 ::ftxui::Element EdcInput::OnRender()
 {
     const bool is_focused = Focused();
-    const ::ftxui::Decorator caret = (!is_focused && !hovered_)
+    const bool caret_visible = is_focused || hovered_;
+    // Who draws the caret: the terminal (a real cursor, with its own blink) while the
+    // window is idle, or this widget while it animates -- see SetAppDrawnCaret().
+    const bool app_caret = app_drawn_caret_ && caret_visible;
+    const ::ftxui::Decorator caret = !caret_visible ? ::ftxui::Decorator(::ftxui::focus)
+                                     : app_caret
                                          ? ::ftxui::Decorator(::ftxui::focus)
                                          : (insert_mode_ ? ::ftxui::Decorator(::ftxui::focusCursorBarBlinking)
                                                          : ::ftxui::Decorator(::ftxui::focusCursorBlockBlinking));
+    // The block is the caret's "on" phase: the pane's own text colour laid on the
+    // cell and the pane showing through the glyph, i.e. what a terminal block cursor
+    // looks like. A blinking one here would only reintroduce the strobe.
+    const ::ftxui::Decorator caret_paint =
+        app_caret ? (::ftxui::bgcolor(style::palette().text) | ::ftxui::color(style::palette().pane_bg))
+                  : ::ftxui::Decorator([](::ftxui::Element e) { return e; });
 
     if (content_->empty())
     {
-        ::ftxui::Element e = ::ftxui::text(placeholder_) | ::ftxui::dim;
-        if (is_focused || hovered_)
-            e = e | caret;
-        return e | ::ftxui::xflex | ::ftxui::reflect(box_);
+        if (!caret_visible)
+            return ::ftxui::text(placeholder_) | ::ftxui::dim | ::ftxui::xflex | ::ftxui::reflect(box_);
+        if (!app_caret)
+            return ::ftxui::text(placeholder_) | ::ftxui::dim | caret | ::ftxui::xflex | ::ftxui::reflect(box_);
+        // Our own caret covers one cell, so it wraps the hint's first glyph instead of
+        // the whole hint (a lit block across the placeholder would read as a selection).
+        // That cell is not `dim`: the caret block is the brightest thing on the line.
+        const int first_len = GlyphLenAt(placeholder_, 0, static_cast<int>(placeholder_.size()));
+        ::ftxui::Elements parts;
+        parts.push_back(::ftxui::text(placeholder_.substr(0, static_cast<size_t>(first_len))) | caret | caret_paint);
+        if (first_len < static_cast<int>(placeholder_.size()))
+            parts.push_back(::ftxui::text(placeholder_.substr(static_cast<size_t>(first_len))) | ::ftxui::dim);
+        return ::ftxui::hbox(std::move(parts)) | ::ftxui::xflex | ::ftxui::reflect(box_);
     }
 
     const int cols = WrapColumns();
@@ -608,7 +629,7 @@ int EdcInput::CaretColumn()
         const int row_index = scroll_ + i;
         const Row &r = layout.rows[row_index];
         const int caret_at = (row_index == caret_row) ? caret_lo : -1;
-        elements.push_back(RowElement(r, caret_at, is_focused, caret));
+        elements.push_back(RowElement(r, caret_at, is_focused, caret, caret_paint));
     }
 
     return ::ftxui::vbox(std::move(elements)) | ::ftxui::xflex | ::ftxui::reflect(box_);

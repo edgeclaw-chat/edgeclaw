@@ -857,6 +857,53 @@ static void test_input_mode_label()
     CHECK(edc::InputModeLabel(EDC_INPUT_REJECTED) == "syntax error", "a rejected line says syntax error");
 }
 
+/* Who draws the caret. While the window animates (a task runs) FTXUI hides and
+ * re-shows the hardware cursor on every frame, and a terminal caret strobes at that
+ * rate; the window then asks for the input's own caret (SetAppDrawnCaret). This is
+ * the whole contract: no cursor shape the terminal could blink, and a solid block
+ * on the cell the caret sits on -- one cell, even over the placeholder hint. */
+static void test_app_drawn_caret(void)
+{
+    std::printf("  an animating window's caret is painted, not the terminal's\n");
+
+    /* Idle: the terminal's own cursor, in the shape the editor asks for (a bar while
+     * inserting), and the cell under it keeps the pane. */
+    {
+        std::string text = "abc";
+        edc::EdcInput input(&text, "");
+        const auto screen = render_twice(input, 20, 1);
+        CHECK(screen.cursor().shape == ftxui::Screen::Cursor::BarBlinking, "idle caret shape %d",
+              static_cast<int>(screen.cursor().shape));
+        CHECK(screen.CellAt(0, 0).background_color == ftxui::Color::Default,
+              "the idle caret is the terminal's: the cell keeps the pane");
+    }
+
+    /* Animating: nothing for the terminal to blink, and the block is on the glyph. */
+    {
+        std::string text = "abc";
+        edc::EdcInput input(&text, "");
+        input.SetAppDrawnCaret(true);
+        const auto screen = render_twice(input, 20, 1);
+        const auto cell = screen.CellAt(0, 0);
+        CHECK(screen.cursor().shape == ftxui::Screen::Cursor::Hidden, "animating caret shape %d",
+              static_cast<int>(screen.cursor().shape));
+        CHECK(cell.character == "a", "the block covers the glyph under the caret, got '%s'", cell.character.c_str());
+        CHECK(cell.background_color == edc::style::palette().text, "the caret cell is the block");
+        CHECK(cell.foreground_color == edc::style::palette().pane_bg, "the pane shows through the glyph");
+    }
+
+    /* The placeholder keeps its hint: only its first cell is the caret. */
+    {
+        std::string empty;
+        edc::EdcInput input(&empty, "type here");
+        input.SetAppDrawnCaret(true);
+        const auto screen = render_twice(input, 20, 1);
+        CHECK(row_text(screen, 0, 20) == "type here", "got '%s'", row_text(screen, 0, 20).c_str());
+        CHECK(screen.CellAt(0, 0).background_color == edc::style::palette().text, "the hint's first cell is the caret");
+        CHECK(screen.CellAt(1, 0).background_color == ftxui::Color::Default, "the rest of the hint is untouched");
+    }
+}
+
 int main(void)
 {
     test_long_word_wraps();
@@ -889,6 +936,7 @@ int main(void)
     test_recalled_line_matches_typed();
     test_mention_mark_rules();
     test_input_mode_label();
+    test_app_drawn_caret();
 
     if (g_failures)
     {

@@ -969,6 +969,16 @@ void TUIWindow::TickAnimations()
     if (task_widget_)
         task_widget_->SetBreath(breath_ms);
 
+    // The frame that ends a run has to draw the caret with the terminal's own cursor
+    // again (see EdcInput::SetAppDrawnCaret): nothing else would ask for it, so the
+    // self-drawn block would stay up until the next keypress.
+    const bool animating = Animating();
+    if (animating != caret_animating_)
+    {
+        caret_animating_ = animating;
+        screen_->RequestAnimationFrame();
+    }
+
     // The chat log is the other thing that finishes work off the render path: a
     // sidebar drag re-measures only the rows on screen and leaves the rest as
     // estimates (see MessageList). Keep a throttled frame coming until that
@@ -996,6 +1006,11 @@ void TUIWindow::TickAnimations()
 
     last_spinner_frame_ = now;
     screen_->RequestAnimationFrame();
+}
+
+bool TUIWindow::Animating() const
+{
+    return working_ || (task_widget_ && task_widget_->HasProcessingTask());
 }
 
 ::ftxui::Element TUIWindow::InputSeparatorElement()
@@ -1143,6 +1158,12 @@ void TUIWindow::TickAnimations()
     // The old 500ms poll (a background task emits no message, so it was the only
     // way to catch its state changes) is gone: the scheduler now pushes every
     // task's state change, coalesced once per actor message.
+
+    // An animating window asks for a frame every 33ms, and FTXUI hides and re-shows
+    // the hardware cursor on every frame: a terminal caret would strobe at that
+    // rate. The input draws the caret itself for as long as that lasts (see
+    // EdcInput::SetAppDrawnCaret), so the terminal is never asked to blink.
+    input_->SetAppDrawnCaret(Animating());
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
     // The /connect setup wizard is a modal, centered -- its natural place. The backdrop is
