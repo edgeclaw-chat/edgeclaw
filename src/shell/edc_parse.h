@@ -15,10 +15,10 @@
  * 人类可读的原因写进 |*err|（调用方 sdsfree）。 */
 bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err);
 
-/* The ONE wording for "options are only read after a quoted description". The shell
- * parser (an unquoted stage that is followed by options) and `/task new` (the same
- * mistake in command form) both use it verbatim: one mistake, one message. Every
- * stage of a shell line is a task description, so the wording fits both. */
+/* The ONE wording for "options are only read after a quoted description". It now belongs to
+ * the SHELL line only: the grammar owns `-d`/`-g` there, so an unquoted stage followed by an
+ * option is still an error. The command layer no longer uses it -- `/task new` reads its own
+ * options out of argv, where quoting (not this rule) decides what is text. */
 #define EDC_QUOTED_DESC_HINT                                                                                           \
     "a task description with options must be quoted: write `\"<desc>\" --bg`, or drop the options"
 

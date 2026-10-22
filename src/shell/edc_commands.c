@@ -66,29 +66,6 @@ static bool edc_commands_is_command(const char *content, const char *prefix)
     return is;
 }
 
-static bool edc_commands_arg(const char *content, const char *prefix, sds *out)
-{
-    sds cmd = sdsnew(content);
-    cmd = sdstrim(cmd, " \t\r\n");
-    size_t plen = strlen(prefix);
-    if (strncmp(cmd, prefix, plen) != 0)
-    {
-        sdsfree(cmd);
-        return false;
-    }
-    const char *arg = cmd + plen;
-    while (*arg == ' ')
-        arg++;
-    if (*arg == '\0')
-    {
-        sdsfree(cmd);
-        *out = NULL;
-        return false;
-    }
-    *out = sdsnew(arg);
-    sdsfree(cmd);
-    return true;
-}
 
 void edc_commands_reply(struct edc_reply_to to, const char *text)
 {
@@ -108,25 +85,6 @@ void edc_commands_send_history(struct edc_reply_to to, const char *payload)
 }
 
 
-/* Split a command's argument tail with the shared bash-style tokenizer
- * (the lexer): quotes are syntax, so `'D:\my repo'` is ONE path with a
- * space in it, and an unterminated quote is a syntax error instead of a silent
- * fragment. On that error this replies and returns false -- no handler has to know.
- */
-static bool edc_commands_split_args(struct edc_reply_to to, const char *args, sds **out_vec, int *out_count)
-{
-    sds err = NULL;
-    *out_vec = edc_argv_from_tail(args, out_count, &err);
-    if (!*out_vec && err)
-    {
-        sds reply = sdscatprintf(sdsempty(), "**Syntax error** \u2014 %s", err);
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-        sdsfree(err);
-        return false;
-    }
-    return true;
-}
 
 /* ── Task-creation receipt ─────────────────────── */
 
@@ -410,8 +368,10 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "`--bg` runs it in the background (no foreground) · `--new-group` gives it a fresh "
      "conversation · `-g <group>` puts it in an existing group · `-d` / `--with <task>` makes it "
      "wait for that task AND injects its output into this one's context. `+/task new <desc>` says the "
-     "same thing as `--new-group`. Options are recognised only after a quoted description: "
-     "`/task new \"<desc>\" --bg`."},
+     "same thing as `--new-group`.\n\n"
+     "The description does NOT have to be quoted: an option is a whole word, so `/task new 写脚本 -d 1` "
+     "is a task called `写脚本` that waits for task 1, while `/task new '写脚本 -d 1'` is a task called "
+     "`写脚本 -d 1`. Quoting is what decides, exactly as it does everywhere else."},
     {"Task", "/task fork <parent> <desc>",
      "fork: the child leads a group of its own and inherits the parent's context", NULL},
     {"Task", "/task list", "list all groups and tasks", NULL},
@@ -894,9 +854,10 @@ static bool edc_commands_handle_session_status(struct edc_session_manager *sm, s
 /* ── Sub-command arguments ────────────────────────────────────────
  *
  * A sub-command receives the words AFTER its verb: the parser produced them (see
- * edc_ast_cmd), so nobody re-splits text here. `/session` is the first table on this
- * shape; `/group`, `/task` and `/jobs` still take the raw tail (edc_sub_fn) and are
- * migrated one table at a time. */
+ * edc_ast_cmd), so nobody re-splits text here. Every table is on this shape now --
+ * `/session`, `/group`, `/task`, `/jobs` -- and the raw-tail form (edc_sub_fn) with its
+ * splitter is gone. `/session` was migrated first and the rest followed one table at a
+ * time; that order is why two shapes coexisted for a while. */
 struct edc_sub_argv
 {
     sds *argv;
@@ -907,6 +868,17 @@ struct edc_sub_argv
 static bool sub_argv_exactly(struct edc_reply_to to, const struct edc_sub_argv *a, int want, const char *usage)
 {
     if (a->argc == want)
+        return true;
+    edc_commands_reply(to, usage);
+    return false;
+}
+
+/* At most |max| words? Replies |usage| and returns false when there are more. For the
+ * commands whose operand is optional (`/group info [id]`, `/task status [id]`) -- the
+ * bound is what matters, not an exact count. */
+static bool sub_argv_exactly_or_none(struct edc_reply_to to, const struct edc_sub_argv *a, int max, const char *usage)
+{
+    if (a->argc <= max)
         return true;
     edc_commands_reply(to, usage);
     return false;
@@ -923,56 +895,6 @@ static sds sub_argv_tail(const struct edc_sub_argv *a, int from)
         out = sdscatsds(out, a->argv[i]);
     }
     return out;
-}
-
-typedef void (*edc_sub_fn)(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                           struct edc_channel_message *message, sds arg);
-
-struct edc_sub_entry
-{
-    const char *verb;
-    edc_sub_fn fn;
-};
-
-/* 把 `/cmd verb rest…` 拆成 (verb, rest)；rest = NULL 表示动词后面没有东西。
- * false = 这一行只有 `/cmd`（没有动词），由调用方给用法。 */
-static bool edc_commands_sub_split(const char *content, const char *cmd, char *verb, size_t vcap, sds *arg)
-{
-    sds line = sdstrim(sdsnew(content), " \t\r\n");
-    const size_t clen = strlen(cmd);
-    if (strncmp(line, cmd, clen) != 0 || (line[clen] != '\0' && line[clen] != ' '))
-    {
-        sdsfree(line);
-        return false;
-    }
-    const char *p = line + clen;
-    while (*p == ' ')
-        p++;
-    if (*p == '\0')
-    {
-        sdsfree(line);
-        return false; /* 只有 `/cmd` */
-    }
-    const char *sp = strchr(p, ' ');
-    size_t n = sp ? (size_t)(sp - p) : strlen(p);
-    if (n >= vcap)
-        n = vcap - 1;
-    memcpy(verb, p, n);
-    verb[n] = '\0';
-    if (arg)
-    {
-        if (!sp)
-            *arg = NULL;
-        else
-        {
-            const char *r = sp;
-            while (*r == ' ')
-                r++;
-            *arg = (*r) ? sdsnew(r) : NULL;
-        }
-    }
-    sdsfree(line);
-    return true;
 }
 
 /* ── /session 的子命令 ──────────────────────────────────────── */
@@ -1146,36 +1068,109 @@ static struct edc_session *cmd_input_session(struct edc_session_manager *sm, str
     return edc_session_store_resolve_session(sm, msg ? msg->session_id : NULL);
 }
 
+/* `/task new`'s OWN getopt -- the command layer's half of the input pipeline.
+ *
+ * The lexer already split the line, so an option is a whole WORD here: `-d 1` is two words,
+ * `'-d 1'` is one. That single fact is the whole difference between
+ *
+ *     /task new 写脚本 -d 1     -> desc "写脚本", waits for task 1
+ *     /task new '写脚本 -d 1'   -> desc "写脚本 -d 1", waits for nothing
+ *
+ * and it is decided by the user's quoting, not by a rule inside this handler. The old code
+ * required the description to be quoted precisely because the raw text could not say where
+ * the description stopped; now the splitter can, so the restriction is gone.
+ *
+ * The vocabulary (`--bg`, `--new-group`, `-d|--with`, `-g|--group`) is this command's
+ * business, exactly as `-l` is `ls`'s: the splitter must not know it. Separated form only --
+ * `-dt1` stays a word, because the lexer never makes it an option. */
+static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub_argv *args,
+                                    struct edc_cmd_task_opts *opts)
+{
+    memset(opts, 0, sizeof(*opts));
+    sds text = sdsempty(); /* the description: every non-option word, in order */
+    bool any = false;
+
+    for (int i = 0; i < args->argc; i++)
+    {
+        const char *w = args->argv[i];
+
+        if (strcmp(w, "--bg") == 0)
+        {
+            opts->bg = true;
+            continue;
+        }
+        if (strcmp(w, "--new-group") == 0)
+        {
+            opts->new_group = true;
+            continue;
+        }
+
+        const bool is_dep = (strcmp(w, "-d") == 0 || strcmp(w, "--with") == 0);
+        const bool is_group = (strcmp(w, "-g") == 0 || strcmp(w, "--group") == 0);
+        if (is_dep || is_group)
+        {
+            /* The value is the NEXT word -- quoting put it there. A missing one is a usage
+             * error: taking an empty value would silently drop the flag. */
+            if (i + 1 >= args->argc)
+            {
+                sds reply = sdscatprintf(sdsempty(), "**`%s` needs a value** — `/task new <desc> %s <id>`.", w, w);
+                edc_commands_reply(to, reply);
+                sdsfree(reply);
+                sdsfree(text);
+                edc_cmd_task_opts_free(opts);
+                return false;
+            }
+            const char *v = args->argv[++i];
+            if (is_dep)
+            {
+                opts->dep_ids = realloc(opts->dep_ids, sizeof(sds) * (size_t)(opts->dep_count + 1));
+                opts->dep_ids[opts->dep_count++] = sdsnew(v);
+            }
+            else
+            {
+                sdsfree(opts->group_id);
+                opts->group_id = sdsnew(v);
+            }
+            continue;
+        }
+
+        if (w[0] == '-' && w[1] != '\0')
+        {
+            /* Option-shaped and not ours: refuse it. Folding it into the description is how
+             * a typo would silently become part of the task's name. */
+            sds reply = sdscatprintf(sdsempty(),
+                                     "**Not an option** — `/task new` knows `--bg`, `--new-group`, "
+                                     "`-d|--with <id>` and `-g|--group <id>`, not `%s`.\n\n"
+                                     "If it belongs to the description, quote the description: "
+                                     "`/task new '<text with %s>'`.",
+                                     w, w);
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            sdsfree(text);
+            edc_cmd_task_opts_free(opts);
+            return false;
+        }
+
+        if (any)
+            text = sdscat(text, " ");
+        text = sdscat(text, w);
+        any = true;
+    }
+
+    opts->input = text;
+    opts->desc = edc_str_utf8_truncate(opts->input, EDC_TASK_DESC_MAX, true);
+    return true;
+}
+
 static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                         struct edc_reply_to to, struct edc_session *session, sds arg)
+                                         struct edc_reply_to to, struct edc_session *session,
+                                         const struct edc_sub_argv *args)
 {
     if (!session)
         return;
-    /* Same rule as the `@` form: options are only recognised after a quoted
-     * description, so the shape that would silently swallow them into the description
-     * text is rejected rather than quietly creating a task nobody meant. */
-    if (edc_cmd_desc_needs_quotes(arg))
-    {
-        edc_commands_reply(to, "Syntax error — `/task new`: " EDC_QUOTED_DESC_HINT ".");
-        return;
-    }
     struct edc_cmd_task_opts opts;
-    edc_cmd_parse_task_opts(arg, &opts);
-
-    /* The option area takes options. Anything else is refused rather than dropped. */
-    if (opts.unknown_option)
-    {
-        sds reply = sdscatprintf(sdsempty(),
-                                 "**Not an option** — `%s` follows the quoted description, but everything "
-                                 "after the closing quote is the option area (`--bg`, `-d <id>`, "
-                                 "`-g <group>`, `--new-group` …).\n\n"
-                                 "Put the whole text inside the quotes, or drop it.",
-                                 opts.unknown_option);
-        edc_commands_reply(to, reply);
-        sdsfree(reply);
-        edc_cmd_task_opts_free(&opts);
+    if (!cmd_task_opts_from_argv(to, args, &opts))
         return;
-    }
 
     /* A task needs something to run. With no text there is nothing to attach, and a READY
      * task without a turn is never drivable: it just sits in the group forever (and would
@@ -1183,7 +1178,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
      * `{{SELF}}`). Same rule as the shell path. */
     if (!opts.input || sdslen(opts.input) == 0)
     {
-        edc_commands_reply(to, "A task needs an input — write `/task new \"<desc>\"` "
+        edc_commands_reply(to, "A task needs an input — write `/task new <desc>` "
                                "(flags alone do not create a task).");
         edc_cmd_task_opts_free(&opts);
         return;
@@ -1342,12 +1337,12 @@ static void edc_commands_handle_task_list(struct edc_session_manager *sm, struct
 }
 
 static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                          struct edc_reply_to to, sds arg)
+                                          struct edc_reply_to to, const char *id)
 {
     struct edc_session *sess = edc_session_manager_get_active(sm);
     struct edc_task *t = NULL;
 
-    if (!arg || sdslen(arg) == 0)
+    if (!id || !*id)
     {
         /* No id: the one in front. Deliberately not the active task -- that one is the
          * screen focus and may sit on a task that already finished, on which stopping
@@ -1365,10 +1360,10 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
     {
         /* Check the task exists first: otherwise a blind signal reports success for
          * an unknown id. Search spans all loaded sessions. */
-        t = edc_session_store_resolve_task(sm, sched, arg, NULL);
+        t = edc_session_store_resolve_task(sm, sched, id, NULL);
         if (!t)
         {
-            sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", arg);
+            sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id);
             edc_commands_reply(to, reply);
             sdsfree(reply);
             return;
@@ -1434,7 +1429,7 @@ sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was, edc_tas
 }
 
 static void edc_commands_handle_task_resume(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                            struct edc_reply_to to, sds arg)
+                                            struct edc_reply_to to, const char *id)
 {
     struct edc_session *sess = edc_session_manager_get_active(sm);
     struct edc_task *t = NULL;
@@ -1445,18 +1440,18 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
      * were SKIPPED because their source succeeded (their edge is satisfied, so a bulk
      * resume would actually run them). An option-shaped argument is therefore a usage
      * error and never a task id. */
-    if (arg && arg[0] == '-')
+    if (id && id[0] == '-')
     {
         sds reply = sdscatprintf(sdsempty(),
                                  "**Task resume** — unknown option `%s`. Usage: `/task resume [id]`, one task at "
                                  "a time.",
-                                 arg);
+                                 id);
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
     }
 
-    if (!arg || sdslen(arg) == 0)
+    if (!id || !*id)
     {
         /* The id is REQUIRED. There is no "the obvious one": reviving a task is a decision
          * about a specific task, and a derivation here would happily pick a running member
@@ -1467,10 +1462,10 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     }
     else
     {
-        t = edc_session_store_resolve_task(sm, sched, arg, NULL);
+        t = edc_session_store_resolve_task(sm, sched, id, NULL);
         if (!t)
         {
-            sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", arg);
+            sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id);
             edc_commands_reply(to, reply);
             sdsfree(reply);
             return;
@@ -1580,14 +1575,14 @@ static bool edc_commands_task_in_active_session(struct edc_session_manager *sm, 
     return false;
 }
 
-static void edc_commands_handle_task_fg(struct edc_session_manager *sm, struct edc_reply_to to, sds arg)
+static void edc_commands_handle_task_fg(struct edc_session_manager *sm, struct edc_reply_to to, const char *id)
 {
-    if (!arg)
+    if (!id || !*id)
     {
         edc_commands_reply(to, "Usage: `/task fg <id>`");
         return;
     }
-    struct edc_task *t = edc_session_manager_find_task_any(sm, arg, NULL);
+    struct edc_task *t = edc_session_manager_find_task_any(sm, id, NULL);
     if (!t)
     {
         edc_commands_reply(to, "Task not found.");
@@ -1616,11 +1611,11 @@ static void edc_commands_handle_task_fg(struct edc_session_manager *sm, struct e
     sdsfree(reply);
 }
 
-static void edc_commands_handle_task_bg(struct edc_session_manager *sm, struct edc_reply_to to, sds arg)
+static void edc_commands_handle_task_bg(struct edc_session_manager *sm, struct edc_reply_to to, const char *id)
 {
-    if (arg)
+    if (id && *id)
     {
-        struct edc_task *t = edc_session_manager_find_task_any(sm, arg, NULL);
+        struct edc_task *t = edc_session_manager_find_task_any(sm, id, NULL);
         if (!t)
         {
             edc_commands_reply(to, "Task not found.");
@@ -1658,27 +1653,21 @@ static void edc_commands_handle_task_bg(struct edc_session_manager *sm, struct e
 }
 
 static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                          struct edc_reply_to to, struct edc_session *session, sds arg)
+                                          struct edc_reply_to to, struct edc_session *session,
+                                          const struct edc_sub_argv *args)
 {
     if (!session)
         return;
-    /* /task fork <parent_id> <desc> */
-    if (!arg)
+    /* /task fork <parent_id> <desc>: the id is the first word, the description is the rest.
+     * Both were split already (quoting decided the words). */
+    if (args->argc < 2)
     {
         edc_commands_reply(to, "Usage: `/task fork <parent_id> <desc>`");
         return;
     }
-
-    int count = 0;
-    sds *tokens = NULL;
-    if (!edc_commands_split_args(to, arg, &tokens, &count))
-        return;
-    if (count < 2)
-    {
-        edc_commands_reply(to, "Usage: `/task fork <parent_id> <desc>`");
-        sdsfreesplitres(tokens, count);
-        return;
-    }
+    /* Borrowed from the caller's AST -- never freed here. */
+    sds *tokens = args->argv;
+    const int count = args->argc;
 
     /* `session` is a parameter: the session THIS INPUT belongs to (resolved from the
      * message's tag -- no more "ask the active session and assume it is this input's
@@ -1689,24 +1678,13 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
         sds reply = sdscatprintf(sdsempty(), "Parent task not found: `%s`", tokens[0]);
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfreesplitres(tokens, count);
         return;
     }
     if (!edc_commands_task_in_active_session(sm, to, parent))
-    {
-        sdsfreesplitres(tokens, count);
         return;
-    }
 
     /* the rest of the args are the input */
-    sds desc = sdsempty();
-    for (int i = 1; i < count; i++)
-    {
-        if (sdslen(desc) > 0)
-            desc = sdscat(desc, " ");
-        desc = sdscat(desc, tokens[i]);
-    }
-    sdsfreesplitres(tokens, count);
+    sds desc = sub_argv_tail(args, 1);
 
     size_t fork_point = parent->group ? (size_t)cJSON_GetArraySize(parent->group->history) : 0;
     /* The fork point is expressed as a commit-order watermark: the max completion_seq among the parent group's
@@ -1827,14 +1805,14 @@ static void edc_commands_handle_group_list(struct edc_session_manager *sm, struc
 }
 
 static void edc_commands_handle_task_status(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                            struct edc_reply_to to, sds arg)
+                                            struct edc_reply_to to, const char *id)
 {
     struct edc_task *t;
     struct edc_session *owner = NULL;
-    if (arg)
+    if (id && *id)
     {
         /* Global lookup: a task in another session can be inspected too. */
-        t = edc_session_store_resolve_task(sm, sched, arg, &owner);
+        t = edc_session_store_resolve_task(sm, sched, id, &owner);
         if (!t)
         {
             edc_commands_reply(to, "Task not found.");
@@ -1926,14 +1904,14 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
 }
 
 static void edc_commands_handle_task_output(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                            struct edc_reply_to to, sds arg)
+                                            struct edc_reply_to to, const char *id)
 {
-    if (!arg)
+    if (!id || !*id)
     {
         edc_commands_reply(to, "Usage: `/task output <id>`");
         return;
     }
-    struct edc_task *t = edc_session_store_resolve_task(sm, sched, arg, NULL);
+    struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, NULL);
     if (!t)
     {
         edc_commands_reply(to, "Task not found.");
@@ -1950,18 +1928,21 @@ static void edc_commands_handle_task_output(struct edc_session_manager *sm, stru
 /* /task history <id>: the task's message history (its construction input and each
  * turn's messages), from task->turns. Works across sessions. --json prints the raw
  * payload. */
+/* `/group history [--json] <id>` and `/task history [--json] <id>`.
+ *
+ * The operands arrive already split (the lexer owns word boundaries), so `--json` is a word
+ * here rather than a prefix of the raw text. It may stand anywhere among the words: the
+ * splitter cannot know which words are options of which command -- that knowledge is exactly
+ * what used to require a fifth tokenizer in this file. */
 static void edc_commands_handle_history(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                        struct edc_reply_to to, sds arg, bool group)
+                                        struct edc_reply_to to, const char *task_id, bool want_json, bool group)
 {
-    if (!arg)
+    if (!task_id || !*task_id)
     {
         edc_commands_reply(to, group ? "Usage: `/group history <id>`"
                                      : "Usage: `/task history <id>`  (append `--json` for the raw payload)");
         return;
     }
-
-    const bool want_json = strncmp(arg, "--json ", 7) == 0;
-    const char *task_id = want_json ? arg + 7 : arg;
 
     /* The resolver also returns the owning session: a task id is globally unique, so this command can find another
      * session's task. */
@@ -1976,7 +1957,7 @@ static void edc_commands_handle_history(struct edc_session_manager *sm, struct e
     /* A group's id IS its leader's task id (edc_task_group_new), so the same resolver
      * knows groups too; the group payload is chunked by member (each block is that
      * member's own messages). */
-    const char *target_id = group ? (want_json ? arg + 7 : arg) : t->task_id;
+    const char *target_id = group ? task_id : t->task_id;
     char *payload = edc_scheduler_task_history_json(sched, owner, group ? target_id : NULL, group ? NULL : target_id);
     if (!payload)
     {
@@ -2039,18 +2020,15 @@ static void edc_commands_handle_history(struct edc_session_manager *sm, struct e
  * (group id = the group head's task id, possibly cross-session). The remaining text goes
  * verbatim as focus into the summary prompt's "Additional focus:". */
 static void edc_commands_handle_group_fold(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                           struct edc_reply_to to, sds arg)
+                                           struct edc_reply_to to, const char *id, const char *focus)
 {
     struct edc_session *session = NULL;
     struct edc_task_group *group = NULL;
-    const char *focus = NULL;
 
-    if (arg && *arg)
+    if (id && *id)
     {
-        /* The first token = group id; the rest = focus (may contain spaces, kept verbatim). */
-        const char *sp = strchr(arg, ' ');
-        size_t id_len = sp ? (size_t)(sp - arg) : sdslen(arg);
-        sds id = sdsnewlen(arg, id_len);
+        /* `id` is the first word; `focus` is every word after it, joined with single
+         * spaces by the caller (quoting decided where the words broke). */
         struct edc_session *owner = NULL;
         struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, &owner);
         if (!t || !owner || !(group = edc_session_find_group(owner, t->group_id)))
@@ -2059,19 +2037,9 @@ static void edc_commands_handle_group_fold(struct edc_session_manager *sm, struc
                 sdsempty(), "Group `%s` not found — `/group fold [id] [focus]` (no id = the foreground group).", id);
             edc_commands_reply(to, reply);
             sdsfree(reply);
-            sdsfree(id);
             return;
         }
         session = owner;
-        sdsfree(id);
-        if (sp)
-        {
-            focus = sp + 1;
-            while (*focus == ' ')
-                focus++;
-            if (!*focus)
-                focus = NULL;
-        }
     }
     else
     {
@@ -2083,6 +2051,8 @@ static void edc_commands_handle_group_fold(struct edc_session_manager *sm, struc
             return;
         }
     }
+    if (focus && !*focus)
+        focus = NULL;
 
     struct edc_task *fold = edc_scheduler_fold_group_now(sched, session, group, focus);
     if (!fold)
@@ -2146,12 +2116,12 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
 }
 
 static void edc_commands_handle_group_info(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                           struct edc_reply_to to, sds arg)
+                                           struct edc_reply_to to, const char *id)
 {
     struct edc_session *sess = edc_session_manager_get_active(sm);
-    bool named = (arg && sdslen(arg) > 0);
+    bool named = (id && *id);
     struct edc_task_group *g =
-        named ? (sess ? edc_session_find_group(sess, arg) : NULL) : (sess ? edc_scheduler_get_foreground(sess) : NULL);
+        named ? (sess ? edc_session_find_group(sess, id) : NULL) : (sess ? edc_scheduler_get_foreground(sess) : NULL);
     if (!g)
     {
         edc_commands_reply(to, named ? "**Group** — not found (the id is the one on its header)."
@@ -2164,34 +2134,77 @@ static void edc_commands_handle_group_info(struct edc_session_manager *sm, struc
 }
 
 /* ── /group 的子命令 ─────────────────────────────────────────── */
+/* ── /group 的子命令 ─────────────────────────────────────────── */
+/* `/group fold [id] [focus]`: the id is the first word and the focus is the rest, joined
+ * back with single spaces -- quoting already decided where the words broke, so
+ * `/group fold 1 "make it short"` and `/group fold 1 make it short` are the same request
+ * and a quoted phrase stays one word. */
+static void sub_group_fold(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                           struct edc_channel_message *message, const struct edc_sub_argv *args)
+{
+    (void)message;
+    sds focus = sub_argv_tail(args, 1);
+    edc_commands_handle_group_fold(sm, sched, to, args->argc > 0 ? args->argv[0] : NULL, focus);
+    sdsfree(focus);
+}
+
+/* `[--json] <id>`: shared by `/group history` and `/task history`, because both take the
+ * same two operands and the flag may stand anywhere among the words. */
+static bool sub_history_operands(struct edc_reply_to to, const struct edc_sub_argv *args, const char *usage,
+                                 const char **id, bool *want_json)
+{
+    *id = NULL;
+    *want_json = false;
+    for (int i = 0; i < args->argc; i++)
+    {
+        if (strcmp(args->argv[i], "--json") == 0)
+            *want_json = true;
+        else if (!*id)
+            *id = args->argv[i];
+        else
+        {
+            edc_commands_reply(to, usage);
+            return false;
+        }
+    }
+    if (!*id)
+    {
+        edc_commands_reply(to, usage);
+        return false;
+    }
+    return true;
+}
+
 static void sub_group_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                           struct edc_channel_message *message, sds arg)
+                           struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sched;
     (void)message;
-    (void)arg;
+    if (!sub_argv_exactly(to, args, 0, "Usage: `/group list`"))
+        return;
     edc_commands_handle_group_list(sm, to);
 }
 static void sub_group_info(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                           struct edc_channel_message *message, sds arg)
+                           struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_group_info(sm, sched, to, arg); /* NULL = the foreground group */
+    if (!sub_argv_exactly_or_none(to, args, 1, "Usage: `/group info [id]`"))
+        return;
+    edc_commands_handle_group_info(sm, sched, to, args->argc > 0 ? args->argv[0] : NULL); /* NULL = foreground */
 }
 static void sub_group_history(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                              struct edc_channel_message *message, sds arg)
+                              struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_history(sm, sched, to, arg, true); /* NULL -> its own usage line */
-}
-static void sub_group_fold(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                           struct edc_channel_message *message, sds arg)
-{
-    (void)message;
-    edc_commands_handle_group_fold(sm, sched, to, arg);
+    const char *id = NULL;
+    bool want_json = false;
+    if (!sub_history_operands(to, args, "Usage: `/group history <id>` (append `--json` for the raw payload)", &id,
+                              &want_json))
+        return;
+    edc_commands_handle_history(sm, sched, to, id, want_json, true);
 }
 
-static const struct edc_sub_entry k_group_subs[] = {
+static const struct edc_sub_argv_entry k_group_subs[] = {
     {"list", sub_group_list},
     {"info", sub_group_info},
     {"history", sub_group_history},
@@ -2202,25 +2215,25 @@ static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session
                                       struct edc_scheduler *sched, struct edc_reply_to to,
                                       struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
 {
-    (void)cmd;
     (void)cfg;
-    char verb[32];
-    sds arg = NULL;
-    if (edc_commands_sub_split(message->content, "/group", verb, sizeof(verb), &arg))
+    /* The words after `/group` are already split: `cmd->argv[0]` is the verb and the rest
+     * are its operands. Nothing here looks at the raw line. */
+    const struct edc_sub_argv args = {cmd->argv + 1, cmd->argc - 1};
+    if (cmd->argc > 0)
     {
         for (size_t i = 0; i < sizeof(k_group_subs) / sizeof(k_group_subs[0]); i++)
         {
-            if (strcmp(k_group_subs[i].verb, verb) != 0)
+            if (strcmp(k_group_subs[i].verb, cmd->argv[0]) != 0)
                 continue;
-            k_group_subs[i].fn(sm, sched, to, message, arg);
-            if (arg)
-                sdsfree(arg);
+            k_group_subs[i].fn(sm, sched, to, message, &args);
             return true;
         }
-        if (arg)
-            sdsfree(arg);
-        edc_commands_reply(to, "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `history <id>` and "
-                               "`fold [id] [focus]`.");
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `history <id>` and "
+                                 "`fold [id] [focus]`, not `%s`.",
+                                 cmd->argv[0]);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
         return true;
     }
     edc_commands_reply(to, "Usage: `/group list`   (all groups of the session)\n\n"
@@ -2272,23 +2285,24 @@ static sds edc_commands_outstanding_deps(const struct edc_task *t)
 }
 
 static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                         struct edc_reply_to to, sds arg)
+                                         struct edc_reply_to to, const struct edc_sub_argv *args)
 {
-    if (!arg || sdslen(arg) == 0)
+    /* "<id> [--drop [<source>]]" -- three words at most, already split. They are borrowed
+     * from the AST, so nothing here is freed. */
+    if (args->argc == 0)
     {
         edc_commands_reply(to, "**Task dep** — `/task dep <id>` lists the edges, `/task dep <id> --drop "
                                "[<source-id>]` stops waiting for one (or for all of them).");
         return;
     }
-
-    /* "<id> [--drop [<source>]]": ids are opaque, whitespace-free tokens. */
-    char *buf = strdup(arg);
-    if (!buf)
+    if (args->argc > 3)
+    {
+        edc_commands_reply(to, "Usage: `/task dep <id> [--drop [<source-id>]]`");
         return;
-    char *save = NULL;
-    const char *id = strtok_r(buf, " \t", &save);
-    const char *flag = strtok_r(NULL, " \t", &save);
-    const char *src = strtok_r(NULL, " \t", &save);
+    }
+    const char *id = args->argv[0];
+    const char *flag = args->argc > 1 ? args->argv[1] : NULL;
+    const char *src = args->argc > 2 ? args->argv[2] : NULL;
 
     struct edc_task *t = id ? edc_session_store_resolve_task(sm, sched, id, NULL) : NULL;
     if (!t)
@@ -2296,7 +2310,6 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
         sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id ? id : "");
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        free(buf);
         return;
     }
 
@@ -2307,7 +2320,6 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
                                  t->task_id ? t->task_id : "");
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        free(buf);
         return;
     }
 
@@ -2344,7 +2356,6 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
             out = sdscat(out, "_No dependencies._\n");
         edc_commands_reply(to, out);
         sdsfree(out);
-        free(buf);
         return;
     }
 
@@ -2369,7 +2380,6 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
                                  src ? " for `" : "", src ? src : "", src ? "`" : "");
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        free(buf);
         return;
     }
 
@@ -2404,79 +2414,96 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
     reply = sdscat(reply, ".");
     edc_commands_reply(to, reply);
     sdsfree(reply);
-    free(buf);
 }
 
 static void sub_task_dep(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                         struct edc_channel_message *message, sds arg)
+                         struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_task_dep(sm, sched, to, arg);
+    edc_commands_handle_task_dep(sm, sched, to, args);
 }
 static void sub_task_new(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                         struct edc_channel_message *message, sds arg)
+                         struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
-    edc_commands_handle_task_new(sm, sched, to, cmd_input_session(sm, message), arg);
+    edc_commands_handle_task_new(sm, sched, to, cmd_input_session(sm, message), args);
 }
 static void sub_task_fork(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                          struct edc_channel_message *message, sds arg)
+                          struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
-    edc_commands_handle_task_fork(sm, sched, to, cmd_input_session(sm, message), arg);
+    edc_commands_handle_task_fork(sm, sched, to, cmd_input_session(sm, message), args);
 }
 static void sub_task_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                          struct edc_channel_message *message, sds arg)
+                          struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sched;
     (void)message;
-    (void)arg;
+    if (!sub_argv_exactly(to, args, 0, "Usage: `/task list`"))
+        return;
     edc_commands_handle_task_list(sm, to);
 }
 static void sub_task_stop(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                          struct edc_channel_message *message, sds arg)
+                          struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_task_stop(sm, sched, to, arg); /* NULL = the one in front */
+    if (!sub_argv_exactly_or_none(to, args, 1, "Usage: `/task stop [id]`"))
+        return;
+    edc_commands_handle_task_stop(sm, sched, to, args->argc > 0 ? args->argv[0] : NULL); /* NULL = the one in front */
 }
 static void sub_task_resume(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                            struct edc_channel_message *message, sds arg)
+                            struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_task_resume(sm, sched, to, arg);
+    if (!sub_argv_exactly(to, args, 1, "Usage: `/task resume <id>`, one task at a time"))
+        return;
+    edc_commands_handle_task_resume(sm, sched, to, args->argv[0]);
 }
 static void sub_task_status(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                            struct edc_channel_message *message, sds arg)
+                            struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_task_status(sm, sched, to, arg);
+    if (!sub_argv_exactly_or_none(to, args, 1, "Usage: `/task status [id]`"))
+        return;
+    edc_commands_handle_task_status(sm, sched, to, args->argc > 0 ? args->argv[0] : NULL);
 }
 static void sub_task_output(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                            struct edc_channel_message *message, sds arg)
+                            struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_task_output(sm, sched, to, arg);
+    if (!sub_argv_exactly(to, args, 1, "Usage: `/task output <id>`"))
+        return;
+    edc_commands_handle_task_output(sm, sched, to, args->argv[0]);
 }
 static void sub_task_history(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                             struct edc_channel_message *message, sds arg)
+                             struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)message;
-    edc_commands_handle_history(sm, sched, to, arg, false);
+    const char *id = NULL;
+    bool want_json = false;
+    if (!sub_history_operands(to, args, "Usage: `/task history <id>` (append `--json` for the raw payload)", &id,
+                              &want_json))
+        return;
+    edc_commands_handle_history(sm, sched, to, id, want_json, false);
 }
 static void sub_task_fg(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                        struct edc_channel_message *message, sds arg)
+                        struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sched;
     (void)message;
-    edc_commands_handle_task_fg(sm, to, arg);
+    if (!sub_argv_exactly(to, args, 1, "Usage: `/task fg <id>`"))
+        return;
+    edc_commands_handle_task_fg(sm, to, args->argv[0]);
 }
 static void sub_task_bg(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                        struct edc_channel_message *message, sds arg)
+                        struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sched;
     (void)message;
-    edc_commands_handle_task_bg(sm, to, arg); /* NULL = the foreground group */
+    if (!sub_argv_exactly_or_none(to, args, 1, "Usage: `/task bg [id]`"))
+        return;
+    edc_commands_handle_task_bg(sm, to, args->argc > 0 ? args->argv[0] : NULL); /* NULL = the foreground group */
 }
 
-static const struct edc_sub_entry k_task_subs[] = {
+static const struct edc_sub_argv_entry k_task_subs[] = {
     {"new", sub_task_new},       {"fork", sub_task_fork},   {"list", sub_task_list},
     {"dep", sub_task_dep},
     {"stop", sub_task_stop},     {"resume", sub_task_resume}, {"status", sub_task_status},
@@ -2488,11 +2515,10 @@ static bool edc_commands_handle_task(struct edc_config *cfg, struct edc_session_
                                      struct edc_scheduler *sched, struct edc_reply_to to,
                                      struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
 {
-    (void)cmd;
     (void)cfg;
-    char verb[32];
-    sds arg = NULL;
-    if (!edc_commands_sub_split(message->content, "/task", verb, sizeof(verb), &arg))
+    /* The words after `/task`: the first is the verb, the rest are its operands. */
+    const struct edc_sub_argv args = {cmd->argv + 1, cmd->argc - 1};
+    if (cmd->argc == 0)
     {
         /* Bare `/task`: usage, not "unknown" (same shape as /group and /session). */
         edc_commands_reply(to, "Usage: `/task` knows `new <desc>`, `fork <parent> <desc>`, `list`, `status [id]`, "
@@ -2502,15 +2528,11 @@ static bool edc_commands_handle_task(struct edc_config *cfg, struct edc_session_
     }
     for (size_t i = 0; i < sizeof(k_task_subs) / sizeof(k_task_subs[0]); i++)
     {
-        if (strcmp(k_task_subs[i].verb, verb) != 0)
+        if (strcmp(k_task_subs[i].verb, cmd->argv[0]) != 0)
             continue;
-        k_task_subs[i].fn(sm, sched, to, message, arg);
-        if (arg)
-            sdsfree(arg);
+        k_task_subs[i].fn(sm, sched, to, message, &args);
         return true;
     }
-    if (arg)
-        sdsfree(arg);
     edc_commands_reply(to, "Unknown `/task` subcommand. Type `/help /task` for the subcommands.");
     return true;
 }
@@ -2597,15 +2619,18 @@ static bool edc_commands_handle_help_cmd(struct edc_config *cfg, struct edc_sess
                                          struct edc_scheduler *sched, struct edc_reply_to to,
                                          struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
 {
-    (void)cmd;
     (void)cfg;
     (void)sm;
     (void)sched;
-    sds arg = NULL;
-    edc_commands_arg(message->content, "/help", &arg);
-    const bool ret = edc_commands_handle_help(to, arg);
-    sdsfree(arg);
-    return ret;
+    (void)message;
+    /* `/help [command]`: one word after the verb, already split. More than one is a usage
+     * error rather than silently helping about the first. */
+    if (cmd->argc > 1)
+    {
+        edc_commands_reply(to, "Usage: `/help [command]`");
+        return true;
+    }
+    return edc_commands_handle_help(to, cmd->argc == 1 ? cmd->argv[0] : NULL);
 }
 
 /* ── --new-group / --group <id> on a document command ────────────────
@@ -2613,11 +2638,12 @@ static bool edc_commands_handle_help_cmd(struct edc_config *cfg, struct edc_sess
  * /prompt and /skill hand their arguments to the template VERBATIM, so where the
  * placement options may stand has to be unambiguous. The rule (decided 2026-10-18):
  *
- *   - a `--…` token is an option WHEREVER it stands, before or after the template name;
- *   - template arguments therefore may not start with `--` (a single dash is fine:
- *     `/prompt review -strict` passes `-strict` on to the template);
- *   - an unknown `--…` is an ERROR, never a template name or argument -- a typo must not
- *     silently end up inside the prompt text.
+ *   - a `--…` WORD is an option WHEREVER it stands, before or after the template name;
+ *   - a `--…` word that was QUOTED WHOLE (`"--strict"`) is text, so template arguments
+ *     that start with `--` are still expressible -- quoting says "this is a literal word",
+ *     which is exactly what it says everywhere else;
+ *   - an unknown bare `--…` is an ERROR, never a template name or argument -- a typo must
+ *     not silently end up inside the prompt text.
  *
  * Both spellings mean the same thing, so either muscle memory works:
  *
@@ -2631,140 +2657,67 @@ struct cmd_place_flags
     sds group_id;   /* --group <id>: put it in that existing group */
 };
 
-/* One raw token of |s| at/after |i|: [b,e) covering any quotes, |*quoted| set when it
- * opens with one. Deliberately dumb -- it only needs to find whole tokens, the real
- * unquoting/unwrapping stays with the lexer and edc_cmd_unquote. */
-static bool cmd_token_at(const char *s, size_t i, size_t *b, size_t *e, bool *quoted)
+/* ── `--new-group` / `--group <id>` / `--bg`: /prompt and /skill ─────────
+ *
+ * The same getopt rule the rest of the command layer uses -- an option is a WORD, and the
+ * lexer already decided the words. One thing argv alone cannot say is whether a word was
+ * QUOTED, so the AST carries `argv_quoted` alongside:
+ *
+ *     --strict      bare: option-shaped and not ours -> refused (a typo must not become
+ *                   a template argument)
+ *     "--strict"    one closed quoted region: exactly the text the user asked to pass on,
+ *                   so it is an OPERAND, not an option
+ *
+ * Quoting therefore keeps its only job -- it says where a word begins and ends -- and one
+ * extra bit says a word was quoted whole, which is what "this is text, not syntax" means.
+ * |out_vec| borrows from |cmd| (caller frees the array, never the strings). */
+static bool cmd_place_from_argv(struct edc_reply_to to, const char *cmd_name, const struct edc_ast_cmd *cmd,
+                                struct cmd_place_flags *out, sds **out_vec, int *out_count)
 {
-    while (s[i] == ' ' || s[i] == '\t' || s[i] == '\n')
-        i++;
-    if (!s[i])
-        return false;
-    *b = i;
-    *quoted = (s[i] == '"' || s[i] == '\'');
-    while (s[i])
+    *out_vec = NULL;
+    *out_count = 0;
+
+    for (int i = 0; i < cmd->argc; i++)
     {
-        const char c = s[i];
-        if (c == ' ' || c == '\t' || c == '\n')
-            break;
-        if (c == '"' || c == '\'')
+        const char *w = cmd->argv[i];
+        const bool quoted = cmd->argv_quoted && cmd->argv_quoted[i];
+
+        /* A quoted word is text, whatever it looks like. */
+        if (!quoted && strcmp(w, "--bg") == 0)
         {
-            const char q = c;
-            i++;
-            while (s[i] && s[i] != q)
-            {
-                if (q == '"' && s[i] == '\\' && s[i + 1])
-                    i++;
-                i++;
-            }
-            if (s[i] == q)
-                i++;
+            out->bg = true;
             continue;
         }
-        i++;
-    }
-    *e = i;
-    return true;
-}
-
-/* Take the placement options off the RAW tail (before the lexer sees anything).
- *
- * Not done on tokens: with the shell switch off the lexer's option rules swallow the
- * space after `--group`, so `--new-group review` reaches the token layer as one word
- * (`--new-groupreview`). The raw text has no such problem.
- *
- * |*stripped| is a copy of |tail| with every option span blanked out, byte offsets
- * intact -- the caller feeds it to the usual quote-aware argv builder, so a template's
- * arguments keep their quoting. NULL = rejected, |*err| is the reply.
- *
- * Rule: an UNQUOTED word starting with `--` is an option, wherever it stands -- before or
- * after the template name. So a template argument cannot start with `--` unless it is
- * written in quotes: a quoted word is passed to the template as plain text. Any other
- * unquoted `--x` is an error, not a template argument. */
-static sds cmd_strip_place_flags(const char *cmd, const char *tail, struct cmd_place_flags *out, sds *err)
-{
-    sds work = sdsnew(tail ? tail : "");
-    size_t i = 0, b = 0, e = 0;
-    bool quoted = false;
-    while (cmd_token_at(work, i, &b, &e, &quoted))
-    {
-        i = e;
-        if (quoted || e - b < 3 || work[b] != '-' || work[b + 1] != '-')
-            continue;
-
-        sds tok = sdsnewlen(work + b, e - b);
-        if (strcmp(tok, "--new-group") == 0 || strcmp(tok, "--bg") == 0)
+        if (!quoted && strcmp(w, "--new-group") == 0)
         {
-            if (tok[2] == 'b')
-                out->bg = true; /* --bg */
-            else
-                out->new_group = true;
-            memset(work + b, ' ', e - b);
-            sdsfree(tok);
+            out->new_group = true;
             continue;
         }
-        if (strcmp(tok, "--group") == 0 || strncmp(tok, "--group=", 8) == 0)
+        if (!quoted && (strcmp(w, "--group") == 0 || strncmp(w, "--group=", 8) == 0))
         {
-            sds value = NULL;
-            if (tok[7] == '=')
+            const char *value = NULL;
+            if (w[7] == '=')
+                value = w + 8;
+            else if (i + 1 < cmd->argc)
+                value = cmd->argv[++i];
+            if (!value || !*value)
             {
-                value = sdsnew(tok + 8);
-            }
-            else
-            {
-                size_t b2 = 0, e2 = 0;
-                bool quoted2 = false;
-                if (!cmd_token_at(work, e, &b2, &e2, &quoted2))
-                {
-                    *err = sdscatprintf(sdsempty(), "`--group` needs an id: `%s ... --group <id>`.", cmd);
-                    sdsfree(tok);
-                    sdsfree(work);
-                    return NULL;
-                }
-                if (e2 - b2 >= 2 && work[b2] == '-' && work[b2 + 1] == '-')
-                {
-                    *err = sdscatprintf(sdsempty(), "`--group` needs an id: `%s ... --group <id>`.", cmd);
-                    sdsfree(tok);
-                    sdsfree(work);
-                    return NULL;
-                }
-                sds raw = sdsnewlen(work + b2, e2 - b2);
-                /* edc_cmd_unquote() refuses a NULL end_out, and it unquotes the LEADING
-                 * quoted region only -- so take its result only when the quotes span the
-                 * whole token, otherwise keep the raw text (`\"a\"b` is not an id). */
-                const char *qend = NULL;
-                sds unquoted = edc_cmd_unquote(raw, &qend);
-                if (unquoted && qend && *qend == '\0')
-                {
-                    value = unquoted;
-                }
-                else
-                {
-                    if (unquoted)
-                        sdsfree(unquoted);
-                    value = sdsnew(raw);
-                }
-                sdsfree(raw);
-                memset(work + b2, ' ', e2 - b2);
-                i = e2;
-            }
-            if (out->group_id)
                 sdsfree(out->group_id);
-            out->group_id = value;
-            memset(work + b, ' ', e - b);
-            sdsfree(tok);
+                out->group_id = NULL;
+                /* Reported by the caller, which owns the wording for its own command. */
+                return false;
+            }
+            sdsfree(out->group_id);
+            out->group_id = sdsnew(value);
             continue;
         }
+        if (!quoted && w[0] == '-' && w[1] == '-')
+            return false; /* unknown option: the caller names it */
 
-        *err = sdscatprintf(sdsempty(),
-                            "**Unknown option** `%s` — `%s` knows `--new-group`, `--group <id>` and `--bg`.\n\n"
-                            "Quote it (`\"%s\"`) if a template should receive it as an argument.",
-                            tok, cmd, tok);
-        sdsfree(tok);
-        sdsfree(work);
-        return NULL;
+        *out_vec = realloc(*out_vec, sizeof(sds) * (size_t)(*out_count + 1));
+        (*out_vec)[(*out_count)++] = (sds)w; /* borrowed from the AST */
     }
-    return work;
+    return true;
 }
 
 /* Where does this task go? |*out| == NULL means "open a group of its own" (the contract
@@ -2823,52 +2776,27 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
                                        struct edc_scheduler *sched, struct edc_reply_to to,
                                        struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
 {
-    (void)cmd;
-    sds arg = NULL;
-    bool has_arg = edc_commands_arg(message->content, "/prompt", &arg);
-
-    if (!has_arg || sdslen(arg) == 0)
-    {
-        if (arg)
-            sdsfree(arg);
-        sds wd = cmd_session_workdir(sm, message);
-        edc_commands_prompt_list(cfg, wd, to);
-        sdsfree(wd);
-        return true;
-    }
-
+    /* The words after `/prompt`: options are this command's (the place flags), and the
+     * operands are `[name] [template args…]`. All of it arrives already split. */
     struct cmd_place_flags flags = {0};
-    sds flags_err = NULL;
-    sds stripped = cmd_strip_place_flags("/prompt", arg, &flags, &flags_err);
-    if (!stripped)
-    {
-        edc_commands_reply(to, flags_err);
-        sdsfree(flags_err);
-        if (flags.group_id)
-            sdsfree(flags.group_id);
-        sdsfree(arg);
-        return true;
-    }
-
+    sds *args = NULL;
     int argc = 0;
-    sds qerr = NULL;
-    sds *args = edc_argv_from_tail(stripped, &argc, &qerr);
-    sdsfree(stripped);
-    sdsfree(arg);
-    if (!args && qerr)
+    if (!cmd_place_from_argv(to, "/prompt", cmd, &flags, &args, &argc))
     {
-        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", qerr);
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Unknown option** — `/prompt` knows `--new-group`, `--group <id>` and `--bg`.\n\n"
+                                 "Quote it (`\"--x\"`) if a template should receive it as an argument.");
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfree(qerr);
         if (flags.group_id)
             sdsfree(flags.group_id);
+        free(args);
         return true;
     }
 
     if (argc == 0)
     {
-        edc_prompt_args_free(args, argc);
+        free(args);
         if (flags.group_id)
             sdsfree(flags.group_id);
         sds wd = cmd_session_workdir(sm, message);
@@ -2890,7 +2818,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
                                  args[0]);
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        edc_prompt_args_free(args, argc);
+        free(args); /* borrowed words: the AST owns the strings */
         if (flags.group_id)
             sdsfree(flags.group_id);
         return true;
@@ -2898,7 +2826,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
 
     sds expanded = edc_prompt_expand(prompt, args + 1, argc - 1);
     edc_prompt_free(prompt);
-    edc_prompt_args_free(args, argc);
+    free(args);
 
     if (sdslen(expanded) == 0)
     {
@@ -3030,52 +2958,26 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
                                       struct edc_scheduler *sched, struct edc_reply_to to,
                                       struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
 {
-    (void)cmd;
-    sds arg = NULL;
-    bool has_arg = edc_commands_arg(message->content, "/skill", &arg);
-    if (!has_arg || !arg || sdslen(arg) == 0)
-    {
-        if (arg)
-            sdsfree(arg);
-        sds wd = cmd_session_workdir(sm, message);
-        edc_commands_skill_list(cfg, wd, to);
-        sdsfree(wd);
-        return true;
-    }
-
+    /* Same shape as `/prompt`: this command's place options, then `[name] [args…]`. */
     struct cmd_place_flags flags = {0};
-    sds flags_err = NULL;
-    sds stripped = cmd_strip_place_flags("/skill", arg, &flags, &flags_err);
-    if (!stripped)
-    {
-        edc_commands_reply(to, flags_err);
-        sdsfree(flags_err);
-        if (flags.group_id)
-            sdsfree(flags.group_id);
-        sdsfree(arg);
-        return true;
-    }
-
+    sds *args = NULL;
     int argc = 0;
-    sds qerr = NULL;
-    /* the same quoting rules as /prompt */
-    sds *args = edc_argv_from_tail(stripped, &argc, &qerr);
-    sdsfree(stripped);
-    sdsfree(arg);
-    if (!args && qerr)
+    if (!cmd_place_from_argv(to, "/skill", cmd, &flags, &args, &argc))
     {
-        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", qerr);
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Unknown option** — `/skill` knows `--new-group`, `--group <id>` and `--bg`.\n\n"
+                                 "Quote it (`\"--x\"`) if the skill should receive it as an argument.");
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfree(qerr);
         if (flags.group_id)
             sdsfree(flags.group_id);
+        free(args);
         return true;
     }
 
     if (argc == 0)
     {
-        edc_prompt_args_free(args, argc);
+        free(args);
         if (flags.group_id)
             sdsfree(flags.group_id);
         sds wd = cmd_session_workdir(sm, message);
@@ -3115,7 +3017,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         sds reply = sdscatprintf(sdsempty(), "**No skill** named `%s`.\n\nRun `/skill` to list them.", args[0]);
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        edc_prompt_args_free(args, argc);
+        free(args); /* borrowed words: the AST owns the strings */
         if (flags.group_id)
             sdsfree(flags.group_id);
         return true;
@@ -3139,7 +3041,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     sds input = edc_prompt_expand(&shell_body, args + 1, argc - 1);
     sdsfree(wrapped);
     edc_skill_free(found);
-    edc_prompt_args_free(args, argc);
+    free(args);
 
     if (sdslen(input) == 0)
     {
@@ -3273,8 +3175,7 @@ static bool edc_commands_handle_reload(struct edc_config *cfg, struct edc_sessio
  *   - 匹配方式（整行相等 / 前缀 + 空格）写在行里，不用在 is_command 与 is_target 之间挑；
  *   - 表可以被测试直接读到（见 test_commands_help 的防漂移断言）。
  *
- * 子命令也是查表：`/session` 已经吃解析后的词（`struct edc_sub_argv`），`/group` `/task` `/jobs`
- * 仍是原文尾巴（`edc_sub_fn`），按表逐步迁移。 */
+ * 子命令也是查表，且**每张表**都吃解析后的词（`struct edc_sub_argv`）—— 没有第二套签名了。 */
 typedef bool (*edc_cmd_fn)(struct edc_config *cfg, struct edc_session_manager *sm,
                            struct edc_scheduler *sched, struct edc_reply_to to,
                            struct edc_channel_message *message, const struct edc_ast_cmd *cmd);
@@ -3440,11 +3341,12 @@ static sds jobs_short_id(const cJSON *job)
 }
 
 static void sub_jobs_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                          struct edc_channel_message *message, sds arg)
+                          struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sm;
     (void)message;
-    (void)arg;
+    if (!sub_argv_exactly(to, args, 0, "Usage: `/jobs list`"))
+        return;
     struct edc_config *cfg = sched ? sched->config : NULL;
 
     EdcError *error = NULL;
@@ -3490,15 +3392,13 @@ static void sub_jobs_list(struct edc_session_manager *sm, struct edc_scheduler *
 }
 
 static void sub_jobs_run(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                         struct edc_channel_message *message, sds arg)
+                         struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sm;
     struct edc_config *cfg = sched ? sched->config : NULL;
-    if (!arg || !*arg)
-    {
-        edc_commands_reply(to, "Usage: `/jobs run <id>`   (the id is the one `/jobs` prints)");
+    if (!sub_argv_exactly(to, args, 1, "Usage: `/jobs run <id>`   (the id is the one `/jobs` prints)"))
         return;
-    }
+    const char *arg = args->argv[0];
 
     EdcError *error = NULL;
     cJSON *db = jobs_load(cfg, &error);
@@ -3549,16 +3449,14 @@ static void sub_jobs_run(struct edc_session_manager *sm, struct edc_scheduler *s
 }
 
 static void sub_jobs_rm(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
-                        struct edc_channel_message *message, sds arg)
+                        struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
     (void)sm;
     (void)message;
     struct edc_config *cfg = sched ? sched->config : NULL;
-    if (!arg || !*arg)
-    {
-        edc_commands_reply(to, "Usage: `/jobs rm <id>`   (the id is the one `/jobs` prints)");
+    if (!sub_argv_exactly(to, args, 1, "Usage: `/jobs rm <id>`   (the id is the one `/jobs` prints)"))
         return;
-    }
+    const char *arg = args->argv[0];
 
     EdcError *error = NULL;
     cJSON *db = jobs_load(cfg, &error);
@@ -3631,7 +3529,7 @@ static void sub_jobs_rm(struct edc_session_manager *sm, struct edc_scheduler *sc
     cJSON_Delete(db);
 }
 
-static const struct edc_sub_entry k_jobs_subs[] = {
+static const struct edc_sub_argv_entry k_jobs_subs[] = {
     {"list", sub_jobs_list},
     {"run", sub_jobs_run},
     {"rm", sub_jobs_rm},
@@ -3641,29 +3539,28 @@ static bool edc_commands_handle_jobs(struct edc_config *cfg, struct edc_session_
                                      struct edc_scheduler *sched, struct edc_reply_to to,
                                      struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
 {
-    (void)cmd;
     (void)cfg;
-    char verb[32];
-    sds arg = NULL;
-    if (edc_commands_sub_split(message->content, "/jobs", verb, sizeof(verb), &arg))
+    const struct edc_sub_argv args = {cmd->argv + 1, cmd->argc - 1};
+    if (cmd->argc > 0)
     {
         for (size_t i = 0; i < sizeof(k_jobs_subs) / sizeof(k_jobs_subs[0]); i++)
         {
-            if (strcmp(k_jobs_subs[i].verb, verb) != 0)
+            if (strcmp(k_jobs_subs[i].verb, cmd->argv[0]) != 0)
                 continue;
-            k_jobs_subs[i].fn(sm, sched, to, message, arg);
-            if (arg)
-                sdsfree(arg);
+            k_jobs_subs[i].fn(sm, sched, to, message, &args);
             return true;
         }
-        if (arg)
-            sdsfree(arg);
-        edc_commands_reply(to, "**Unknown subcommand** — `/jobs` knows `list`, `run <id>` and `rm <id>`.");
+        sds reply = sdscatprintf(sdsempty(),
+                                 "**Unknown subcommand** — `/jobs` knows `list`, `run <id>` and `rm <id>`, not `%s`.",
+                                 cmd->argv[0]);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
         return true;
     }
 
     /* Bare `/jobs` lists: it is the question people actually have. */
-    sub_jobs_list(sm, sched, to, message, NULL);
+    const struct edc_sub_argv none = {NULL, 0};
+    sub_jobs_list(sm, sched, to, message, &none);
     return true;
 }
 

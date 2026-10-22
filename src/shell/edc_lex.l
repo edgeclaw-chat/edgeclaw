@@ -89,12 +89,24 @@ static void push_unquoted(const char *raw, size_t len)
 ";"                         { push(C_SEQ); }
 "&&"                        { push(C_ANDAND); }
 "&"[ \t]*$                  { push(C_BG); }
-"--bg"([ \t\n]|$)           { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
-"--new-group"([ \t\n]|$)    { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
-"--with"([ \t\n]|$)         { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
-"--group"([ \t\n]|$)        { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
-"-d"[ \t]                   { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
-"-g"[ \t]                   { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
+    /* The trailing space is TRAILING CONTEXT (`/`), not part of the match: it must survive as
+     * a C_WS chunk, because that chunk is what ends the current word. Consuming it here is
+     * how `-d t1` used to arrive as ONE word `-dt1`: the option chunk carries the literal
+     * name "-d", SHELL_OFF folds it into the word being built (options are not syntax there),
+     * and with the space already eaten nothing separated it from `t1`. In SHELL_ON the
+     * behaviour is unchanged -- TK_OPT/TK_OPTARG, and C_WS still emits no token.
+     *
+     * The input always has "\n" appended (see edc_lex), so a trailing `[ \t\n]` also covers
+     * end-of-line; the old `([ \t\n]|$)` needed the `$` alternative only because it consumed
+     * the separator. Values stay separate words -- and that is the whole point of splitting
+     * here: `/task new x -d 1` gives ["x","-d","1"] (the handler's getopt sees the option)
+     * while `/task new 'x -d 1'` gives ["x -d 1"] (one word, the text). */
+"--bg"/[ \t\n]              { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
+"--new-group"/[ \t\n]       { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
+"--with"/[ \t\n]            { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
+"--group"/[ \t\n]           { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
+"-d"/[ \t]                  { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
+"-g"/[ \t]                  { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
 ^"/"[A-Za-z_-]+             { chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
 [ \t\n]+                    { push(C_WS); }
 [^ \t\n|;&<>"' ]+           { push_unquoted(yytext, (size_t)yyleng); }
@@ -233,6 +245,12 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         {
             emit(out, TK_WORD, cur, mode == EDC_LEX_SHELL_ON && nchunks_in_word == 1 && nquoted == 1, refs, 0,
                  false, wb, we);
+            /* `word_quoted` is the same fact WITHOUT the switch: "this word is exactly one
+             * closed quoted region". The command layer needs it (a bare `--strict` is an
+             * option-shaped word, `"--strict"` is text), and unlike `fully_quoted` it does
+             * not mean "quotes are syntax here" -- SHELL_OFF still reports it, because
+             * quoting ALWAYS decides word boundaries. */
+            out->toks[out->count - 1].word_quoted = (nchunks_in_word == 1 && nquoted == 1);
             cur = NULL;
             nchunks_in_word = nquoted = 0;
             refs = false;

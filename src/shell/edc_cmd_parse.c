@@ -414,36 +414,6 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
     }
 }
 
-bool edc_cmd_desc_needs_quotes(const char *arg)
-{
-    if (!arg)
-        return false;
-
-    const char *p = arg;
-    while (*p == ' ' || *p == '\t')
-        p++;
-
-    /* Quote-led: everything after the closing quote is the option area, which is the
-     * only shape where options are recognised (see edc_cmd_parse_task_opts). */
-    if (*p == '"' || *p == '\'')
-        return false;
-
-    /* Walk the tokens; a token that starts with '-' (and is not just "-") is an
-     * option the caller meant to pass, and it has nowhere to go. */
-    while (*p)
-    {
-        while (*p == ' ' || *p == '\t')
-            p++;
-        if (!*p)
-            break;
-        if (p[0] == '-' && p[1] && p[1] != ' ' && p[1] != '\t')
-            return true;
-        while (*p && *p != ' ' && *p != '\t')
-            p++;
-    }
-    return false;
-}
-
 void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
 {
     if (!opts)

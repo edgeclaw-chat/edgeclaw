@@ -199,6 +199,83 @@ int main(void)
         sdsfreesplitres(argv, n);
     }
 
+    /* The whole reason the command layer takes argv at all: an option is an option only
+     * when it is its OWN word, and quoting is what decides that. If the splitter glued an
+     * option to its value (`-dt1`), no handler could tell these two lines apart. */
+    TEST("argv: quoting is what separates an option's value from the description");
+    {
+        int n = 0;
+        sds err = NULL;
+        /* Unquoted: the option and its value are separate words -- the handler's getopt
+         * sees `-d 1`, and the description is the one non-option word. */
+        sds *argv = edc_argv_from_tail("test-x -d 1", &n, &err);
+        CHECK(argv != NULL && n == 3, "three words");
+        CHECK(argv && strcmp(argv[0], "test-x") == 0, "the description");
+        CHECK(argv && strcmp(argv[1], "-d") == 0, "`-d` is its own word");
+        CHECK(argv && strcmp(argv[2], "1") == 0, "and its value is too");
+        sdsfreesplitres(argv, n);
+
+        /* Quoted: ONE word that happens to contain an option-looking text. */
+        argv = edc_argv_from_tail("'test-x -d 1'", &n, &err);
+        CHECK(argv != NULL && n == 1, "one word");
+        CHECK(argv && strcmp(argv[0], "test-x -d 1") == 0, "the whole text is the description");
+        sdsfreesplitres(argv, n);
+    }
+
+    TEST("argv: `-d` / `-g` / `--with` / `--group` never swallow their value");
+    {
+        int n = 0;
+        sds err = NULL;
+        /* Regression: these rules used to match the trailing space as part of the option,
+         * so no C_WS followed and SHELL_OFF folded the option into the word being built --
+         * `-d t1` arrived as ONE word `-dt1`. See edc_lex.l's option rules. */
+        sds *argv = edc_argv_from_tail("x -d t1", &n, &err);
+        CHECK(argv != NULL && n == 3 && strcmp(argv[1], "-d") == 0 && strcmp(argv[2], "t1") == 0,
+              "`-d t1` is two words");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("x -g g1", &n, &err);
+        CHECK(argv != NULL && n == 3 && strcmp(argv[1], "-g") == 0 && strcmp(argv[2], "g1") == 0,
+              "`-g g1` is two words");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("x --with t1", &n, &err);
+        CHECK(argv != NULL && n == 3 && strcmp(argv[1], "--with") == 0 && strcmp(argv[2], "t1") == 0,
+              "`--with t1` is two words");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("x --group g1", &n, &err);
+        CHECK(argv != NULL && n == 3 && strcmp(argv[1], "--group") == 0 && strcmp(argv[2], "g1") == 0,
+              "`--group g1` is two words");
+        sdsfreesplitres(argv, n);
+
+        /* Several in a row, and at the end of the line. */
+        argv = edc_argv_from_tail("x -d t1 --bg -g g1", &n, &err);
+        CHECK(argv != NULL && n == 6, "six words");
+        CHECK(argv && strcmp(argv[1], "-d") == 0 && strcmp(argv[2], "t1") == 0, "first pair");
+        CHECK(argv && strcmp(argv[3], "--bg") == 0 && strcmp(argv[4], "-g") == 0, "then the flags");
+        CHECK(argv && strcmp(argv[5], "g1") == 0, "and the last value");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("x --bg", &n, &err);
+        CHECK(argv != NULL && n == 2 && strcmp(argv[1], "--bg") == 0, "a trailing flag stands alone");
+        sdsfreesplitres(argv, n);
+
+        argv = edc_argv_from_tail("x --new-group", &n, &err);
+        CHECK(argv != NULL && n == 2 && strcmp(argv[1], "--new-group") == 0, "so does --new-group");
+        sdsfreesplitres(argv, n);
+    }
+
+    TEST("argv: `-dfoo` is a word, not an option with a glued value");
+    {
+        int n = 0;
+        sds err = NULL;
+        /* Separated form only: a value must be its own word. */
+        sds *argv = edc_argv_from_tail("x -dt1", &n, &err);
+        CHECK(argv != NULL && n == 2 && strcmp(argv[1], "-dt1") == 0, "one word `-dt1`");
+        sdsfreesplitres(argv, n);
+    }
+
     TEST("argv: an unterminated quote is an ERROR, not a dropped argument");
     {
         int n = 0;

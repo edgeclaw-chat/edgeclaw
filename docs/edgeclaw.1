@@ -197,9 +197,14 @@ SHELL SYNTAX (on by default)
 
      Options on + and /task new
            > +"input text" -d task1 --group dev
-       Options are recognised only after a quoted description (or when the
-       description is the only content); otherwise a token starting with "-"
-       is a syntax error, not a silently-ignored flag.
+       On a SHELL line (the + form) options are recognised only after a quoted
+       description; otherwise a token starting with "-" is a syntax error, not a
+       silently-ignored flag.
+       A / command reads its own options out of its words, so /task new needs no
+       quotes around the description: an option is a whole word, and quoting is
+       what turns it back into text.
+           /task new fix -d 1      a task called "fix", waiting for task 1
+           /task new 'fix -d 1'    a task called "fix -d 1"
        --bg              Run in background (command layer only: a shell line uses `&`).
        --new-group       Open a group of its own (a fresh conversation).
        -d <id>           Wait for this task before executing (repeatable).

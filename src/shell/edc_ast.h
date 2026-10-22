@@ -79,6 +79,10 @@ struct edc_ast_cmd
 {
     sds name;   /* "session" for `/session …` -- the slash is the lexer's delimiter */
     sds *argv;  /* the words after it, already unquoted; NULL when argc == 0 */
+    /* Per-word: was this word exactly ONE closed quoted region? Only the handler needs it,
+     * and only to tell a bare `--strict` (option-shaped) from `"--strict"` (one literal
+     * word). Quoting splits words; it does not otherwise change them. NULL when argc == 0. */
+    bool *argv_quoted;
     int argc;
 };
 

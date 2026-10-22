@@ -157,9 +157,22 @@ The redirect target is a string too — `"say hi" > "out.md"` — and its quotes
 delimiters, not part of the path, which is what makes a filename with a space in it
 expressible.
 
-What follows the closing quote is the **option area** (`-d <id>`, `-g <group>`,
-`2>`, …). Anything else there is refused rather than dropped, so `"hello" and more` is an
-error — not a task quietly called `hello`.
+What follows the closing quote of a **shell line** is the **option area** (`-d <id>`,
+`-g <group>`, `2>`, …). Anything else there is refused rather than dropped, so `"hello" and
+more` is an error — not a task quietly called `hello`.
+
+A `/` command is different: its words are handed to the command, which reads its own
+options out of them (the way `ls` reads `-l`). So there is no "option area" on a command
+line and no rule that the description be quoted — `-d`, `--bg` are options only when they
+are their own word, and quoting is what makes them text:
+
+```
+/task new 写脚本 -d 1      # a task called 写脚本 that waits for task 1
+/task new '写脚本 -d 1'    # a task called 写脚本 -d 1; nothing to wait for
+```
+
+That is the same distinction a shell makes, and it is the whole reason quoting is worth
+having: it says where a word begins and ends, nothing more.
 
 `/` commands are never gated: the command layer is a different thing from the shell layer,
 and `/shell` itself has to stay reachable to turn the switch back on. So `/task new`,
@@ -551,6 +564,11 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
 | `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
 | `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
+
+`<desc>` does not need quotes. Quote it when the description itself contains something
+that looks like an option: `/task new 'fix -d 1'` is a description, `/task new fix -d 1`
+is a task called `fix` waiting for task `1`. The last word wins as the value of `-d`/`-g`,
+and a missing value is a usage error.
 | `/task fork <pid> <desc>` | Fork: a child task that leads a group of its own and takes the foreground, inheriting the parent group's memory and a snapshot of its context |
 
 ### Task Inspection

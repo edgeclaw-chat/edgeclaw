@@ -210,27 +210,6 @@ static void test_expand_vars_out_error(void)
     sdsfree(out);
 }
 
-static void test_desc_needs_quotes(void)
-{
-    /* No options -> any shape is fine. */
-    T_CHECK(edc_cmd_desc_needs_quotes(NULL) == false, "needs_quotes: NULL -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("plain description") == false, "needs_quotes: plain text -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("{\"a\": 1}") == false, "needs_quotes: json-ish text -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("a - b") == false, "needs_quotes: a lone '-' is not an option");
-
-    /* Quote-led -> the option area after it is legal. */
-    T_CHECK(edc_cmd_desc_needs_quotes("\"quoted desc\"") == false, "needs_quotes: quoted -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("'quoted desc'") == false, "needs_quotes: sq quoted -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("\"\"\"multi\"\"\" -d d1") == false, "needs_quotes: quoted + opt -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("  \"spaced\" --bg") == false, "needs_quotes: leading spaces trimmed");
-
-    /* Unquoted but carrying an option -> the description must be quoted. */
-    T_CHECK(edc_cmd_desc_needs_quotes("desc --bg") == true, "needs_quotes: unquoted --bg -> true");
-    T_CHECK(edc_cmd_desc_needs_quotes("desc -d d1") == true, "needs_quotes: unquoted -d -> true");
-    T_CHECK(edc_cmd_desc_needs_quotes("  lead --group g1") == true, "needs_quotes: leading spaces, option");
-    T_CHECK(edc_cmd_desc_needs_quotes("analyze \"find bugs\" --bg") == true,
-             "needs_quotes: option after a bare first word -> true");
-}
 
 static void test_escapes(void)
 {
@@ -266,7 +245,10 @@ int main(void)
     test_plain_unquoted();
     test_flags_after_quotes();
     test_escapes();
-    test_desc_needs_quotes();
+    /* `edc_cmd_desc_needs_quotes` is gone: the rule it enforced ("an unquoted description
+     * may not carry options") existed because raw text could not say where the description
+     * stopped. The lexer now says it, so the distinction is quoting + the handler's own
+     * getopt -- pinned in //tests:test_commands_task_new instead. */
     test_expand_vars_out_error();
     test_expand_task_refs();
 

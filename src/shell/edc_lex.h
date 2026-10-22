@@ -40,7 +40,11 @@ typedef struct
 {
     edc_tok_kind kind;
     sds value;         /* TK_SLASH_CMD / TK_WORD / TK_RAW_REST / TK_OPT：文本（引号已去） */
-    bool fully_quoted; /* TK_WORD：整个 word 恰由一个引号区构成（== 行首是引号） */
+    bool fully_quoted; /* TK_WORD：整个 word 恰由一个引号区构成（== 行首是引号）。仅在
+                        * SHELL_ON 下置位：它同时表示"这里的引号是语法"（分类器依赖这一点）。 */
+    bool word_quoted;  /* TK_WORD：同一个事实**不带开关** —— 这个 word 恰是一个闭合引号区。
+                        * 命令层靠它区分裸 `--strict`（选项形状，拒绝）与 `"--strict"`
+                        * （用户要的就是这段文本）；开关关掉时也要报，因为引号永远决定词边界。 */
     bool has_var_refs; /* TK_WORD：含 {{…}}（只在双引号区里认） */
     int fd;            /* TK_REDIR：0=输入 / 1=stdout / 2=stderr */
     bool append;       /* TK_REDIR：>> 或 2>> */

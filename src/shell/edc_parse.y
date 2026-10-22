@@ -130,7 +130,10 @@ static void cmd_add(const edc_tok *tok)
         return;
     struct edc_ast_cmd *c = g_ast->cmd;
     c->argv = realloc(c->argv, sizeof(sds) * (size_t)(c->argc + 1));
-    c->argv[c->argc++] = sdsdup((tok && tok->value) ? tok->value : sdsempty());
+    c->argv_quoted = realloc(c->argv_quoted, sizeof(bool) * (size_t)(c->argc + 1));
+    c->argv[c->argc] = sdsdup((tok && tok->value) ? tok->value : sdsempty());
+    c->argv_quoted[c->argc] = tok && tok->word_quoted;
+    c->argc++;
 }
 
 %}
@@ -297,6 +300,7 @@ void edc_ast_free(edc_ast *a)
         for (int i = 0; i < a->cmd->argc; i++)
             sdsfree(a->cmd->argv[i]);
         free(a->cmd->argv);
+        free(a->cmd->argv_quoted);
         free(a->cmd);
     }
     struct edc_ast_pipeline *p = a->pipelines;
