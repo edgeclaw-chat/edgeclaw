@@ -1,6 +1,7 @@
 ﻿#include "edc_commands.h"
 #include "edc_crontab_jobs.h"
 #include "edc_interp.h"
+#include "edc_lex.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
 #include "edc_cmd_parse.h"
@@ -106,7 +107,53 @@ void edc_commands_send_history(struct edc_reply_to to, const char *payload)
                                               (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
-/* ── Task-creation receipt ─────────────────────────────────── */
+
+/* Split a command's argument tail with the shared bash-style tokenizer
+ * (the lexer): quotes are syntax, so `'D:\my repo'` is ONE path with a
+ * space in it, and an unterminated quote is a syntax error instead of a silent
+ * fragment. On that error this replies and returns false -- no handler has to know.
+ */
+static bool edc_commands_split_args(struct edc_reply_to to, const char *args, sds **out_vec, int *out_count)
+{
+    sds err = NULL;
+    *out_vec = edc_argv_from_tail(args, out_count, &err);
+    if (!*out_vec && err)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Syntax error** \u2014 %s", err);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(err);
+        return false;
+    }
+    return true;
+}
+
+/* ONE operand, bash-style: quotes stripped, and a tail of two or more words refused
+ * (a name with a space has to be quoted). |required| = it may not be missing.
+ * *out is NULL when the tail was empty and !required. False = already replied.
+ */
+static bool edc_commands_one_operand(struct edc_reply_to to, const char *args, const char *usage, bool required,
+                                     sds *out)
+{
+    *out = NULL;
+    sds *words = NULL;
+    int count = 0;
+    if (!edc_commands_split_args(to, args, &words, &count))
+        return false;
+
+    bool ok = true;
+    if (count == 1)
+        *out = sdsdup(words[0]);
+    else if (count > 1 || required)
+    {
+        edc_commands_reply(to, usage);
+        ok = false;
+    }
+    sdsfreesplitres(words, count);
+    return ok;
+}
+
+/* ── Task-creation receipt ─────────────────────── */
 
 /* The one line a user sees after a task is born: which task, which group, and -- only when
  * it is worth saying -- when it runs. Everything it needs lives on the task itself (the
@@ -359,8 +406,10 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "the task it creates is the one the schedule would have created. The job stays scheduled."},
     {"Scheduling", "/jobs rm <id>", "remove a scheduled job", NULL},
 
-    {"Session", "/session new [name] [dir]",
-     "start a new session (optionally named, optionally with a working directory)", NULL},
+    {"Session", "/session new [name] <dir>",
+     "start a new session bound to <dir> (the name is optional, the directory is not)",
+     "Command arguments are split like a shell splits them, so a value containing spaces has to "
+     "be quoted: `/session new dev 'D:\my repo'`."},
     {"Session", "/session switch <name>", "switch to another session", NULL},
     {"Session", "/session list", "list all sessions", NULL},
     {"Session", "/session info", "show the current session's details (name, id, directory)", NULL},
@@ -622,40 +671,6 @@ static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, str
 
 /* ── /session commands ─────────────────────────────────────── */
 
-/* Split "/session new" args into an optional name and an optional working
- * directory ("<name> [dir]"); the directory may contain spaces. Either may be
- * NULL; callers free both. */
-static void edc_commands_split_name_dir(const char *rest, sds *out_name, sds *out_dir)
-{
-    *out_name = NULL;
-    *out_dir = NULL;
-    if (!rest)
-        return;
-
-    const char *p = rest;
-    while (*p == ' ' || *p == '\t')
-        p++;
-    if (*p == '\0')
-        return;
-
-    const char *name_start = p;
-    while (*p && *p != ' ' && *p != '\t')
-        p++;
-    *out_name = sdsnewlen(name_start, (size_t)(p - name_start));
-
-    while (*p == ' ' || *p == '\t')
-        p++;
-    if (*p == '\0')
-        return;
-
-    const char *dir_start = p;
-    const char *dir_end = p + strlen(p);
-    while (dir_end > dir_start && (dir_end[-1] == ' ' || dir_end[-1] == '\t'))
-        dir_end--;
-    if (dir_end > dir_start)
-        *out_dir = sdsnewlen(dir_start, (size_t)(dir_end - dir_start));
-}
-
 /* The shared tail of switching the active session: tell the frontend which
  * session is now displayed. Since ①b snapshots are pulled, this must be said
  * explicitly. Only sent when the session really changed, after the reply, so the
@@ -673,12 +688,37 @@ static bool edc_commands_handle_session_new(struct edc_session_manager *sm, stru
 {
     /* create() switches active to the new session, so take the old one first. */
     struct edc_session *old = edc_session_manager_get_active(sm);
-    sds name = NULL, dir = NULL;
-    edc_commands_split_name_dir(arg, &name, &dir);
+    /* The tail is split the way a shell splits it (the lexer): `/session new [name]
+     * <dir>`, the directory being required. With ONE word it can only be the directory
+     * -- there is nothing else that word could be. */
+    sds *words = NULL;
+    int nwords = 0;
+    if (!edc_commands_split_args(to, arg, &words, &nwords))
+        return true;
 
-    /* A given working directory is resolved up front against the process cwd and
-     * must exist; otherwise the whole command fails. */
-    if (dir && sdslen(dir) > 0)
+    sds name = NULL, dir = NULL;
+    if (nwords == 1)
+        dir = sdsdup(words[0]);
+    else if (nwords == 2)
+    {
+        name = sdsdup(words[0]);
+        dir = sdsdup(words[1]);
+    }
+    sdsfreesplitres(words, nwords);
+
+    if (!dir || sdslen(dir) == 0)
+    {
+        edc_commands_reply(to, "Usage: `/session new [name] <dir>`\n"
+                               "A session is bound to a working directory: `<dir>` is required and must "
+                               "already exist. A directory that contains spaces has to be quoted: "
+                               "`/session new dev 'D:\\my repo'`.");
+        sdsfree(name);
+        return true;
+    }
+
+    /* The directory is resolved up front against the process cwd. If it does not
+     * resolve to an existing directory the whole command fails and NO session is
+     * created -- never a silently unbound one. */
     {
         EdcError *werr = NULL;
         sds resolved = edc_session_resolve_workdir(NULL, dir, &werr);
@@ -701,8 +741,7 @@ static bool edc_commands_handle_session_new(struct edc_session_manager *sm, stru
     sdsfree(name);
     if (!sess)
     {
-        sds reply = sdscatprintf(sdsempty(), "**Session** — failed to create session%s%s", dir ? " bound to " : "",
-                                 dir ? dir : "");
+        sds reply = sdscatprintf(sdsempty(), "**Session** — failed to create a session bound to `%s`", dir);
         edc_commands_reply(to, reply);
         sdsfree(reply);
         sdsfree(dir);
@@ -838,32 +877,36 @@ static bool edc_commands_handle_session_remove(struct edc_session_manager *sm, s
 
 static bool edc_commands_handle_session_rename(struct edc_session_manager *sm, struct edc_reply_to to, sds arg)
 {
-    if (!arg || sdslen(arg) == 0)
-    {
-        edc_commands_reply(to, "Usage: `/session rename <old_name> <new_name>`");
-        return true;
-    }
+    /* Two words, bash-style (the lexer): a name with a space has to be quoted. */
+    sds *words = NULL;
     int count = 0;
-    sds *tokens = sdssplitlen(arg, sdslen(arg), " ", 1, &count);
-    if (count < 2)
+    if (!edc_commands_split_args(to, arg, &words, &count))
+        return true;
+    if (count != 2)
     {
-        sdsfreesplitres(tokens, count);
-        edc_commands_reply(to, "Usage: `/session rename <old_name> <new_name>`");
+        edc_commands_reply(to, "Usage: `/session rename <old_name> <new_name>` (quote a name that contains "
+                               "spaces)");
+        sdsfreesplitres(words, count);
         return true;
     }
-    bool ok = edc_session_manager_rename(sm, tokens[0], tokens[1]);
-    if (!ok)
+    sds old_name = sdsdup(words[0]);
+    sds new_name = sdsdup(words[1]);
+    sdsfreesplitres(words, count);
+
+    if (!edc_session_manager_rename(sm, old_name, new_name))
     {
-        sds reply = sdscatprintf(sdsempty(), "Session not found: `%s`", tokens[0]);
+        sds reply = sdscatprintf(sdsempty(), "Session not found: `%s`", old_name);
         edc_commands_reply(to, reply);
         sdsfree(reply);
-        sdsfreesplitres(tokens, count);
+        sdsfree(old_name);
+        sdsfree(new_name);
         return true;
     }
-    sds reply = sdscatprintf(sdsempty(), "**Session renamed** — `%s` → `%s`", tokens[0], tokens[1]);
+    sds reply = sdscatprintf(sdsempty(), "**Session renamed** \u2014 `%s` \u2192 `%s`", old_name, new_name);
     edc_commands_reply(to, reply);
     sdsfree(reply);
-    sdsfreesplitres(tokens, count);
+    sdsfree(old_name);
+    sdsfree(new_name);
     return true;
 }
 
@@ -998,8 +1041,14 @@ static void sub_session_switch(struct edc_session_manager *sm, struct edc_schedu
                                struct edc_channel_message *message, sds arg)
 {
     (void)message;
-    (void)edc_commands_handle_session_switch(sm, sched, to, arg);
+    sds target = NULL;
+    if (!edc_commands_one_operand(to, arg, "Usage: `/session switch <name_or_id>` (quote a name that contains spaces)",
+                                   true, &target))
+        return;
+    (void)edc_commands_handle_session_switch(sm, sched, to, target);
+    sdsfree(target);
 }
+
 static void sub_session_list(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                              struct edc_channel_message *message, sds arg)
 {
@@ -1019,10 +1068,16 @@ static void sub_session_info(struct edc_session_manager *sm, struct edc_schedule
 static void sub_session_status(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                                struct edc_channel_message *message, sds arg)
 {
-    (void)sched;
     (void)message;
-    (void)edc_commands_handle_session_status(sm, to, arg);
+    (void)sched;
+    sds target = NULL;
+    if (!edc_commands_one_operand(to, arg, "Usage: `/session status [id]`",
+                                   false, &target))
+        return;
+    (void)edc_commands_handle_session_status(sm, to, target);
+    sdsfree(target);
 }
+
 static void sub_session_save(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                              struct edc_channel_message *message, sds arg)
 {
@@ -1047,8 +1102,14 @@ static void sub_session_remove(struct edc_session_manager *sm, struct edc_schedu
                                struct edc_channel_message *message, sds arg)
 {
     (void)message;
-    (void)edc_commands_handle_session_remove(sm, sched, to, arg);
+    sds target = NULL;
+    if (!edc_commands_one_operand(to, arg, "Usage: `/session remove <name_or_id>` (quote a name that contains spaces)",
+                                   true, &target))
+        return;
+    (void)edc_commands_handle_session_remove(sm, sched, to, target);
+    sdsfree(target);
 }
+
 static void sub_session_rename(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                                struct edc_channel_message *message, sds arg)
 {
@@ -1634,7 +1695,9 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
     }
 
     int count = 0;
-    sds *tokens = sdssplitlen(arg, sdslen(arg), " ", 1, &count);
+    sds *tokens = NULL;
+    if (!edc_commands_split_args(to, arg, &tokens, &count))
+        return;
     if (count < 2)
     {
         edc_commands_reply(to, "Usage: `/task fork <parent_id> <desc>`");
@@ -2809,9 +2872,20 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     }
 
     int argc = 0;
-    sds *args = edc_argv_from_tail(stripped, &argc);
+    sds qerr = NULL;
+    sds *args = edc_argv_from_tail(stripped, &argc, &qerr);
     sdsfree(stripped);
     sdsfree(arg);
+    if (!args && qerr)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", qerr);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(qerr);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
+        return true;
+    }
 
     if (argc == 0)
     {
@@ -3003,9 +3077,21 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     }
 
     int argc = 0;
-    sds *args = edc_argv_from_tail(stripped, &argc); /* the same quoting rules as /prompt */
+    sds qerr = NULL;
+    /* the same quoting rules as /prompt */
+    sds *args = edc_argv_from_tail(stripped, &argc, &qerr);
     sdsfree(stripped);
     sdsfree(arg);
+    if (!args && qerr)
+    {
+        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", qerr);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(qerr);
+        if (flags.group_id)
+            sdsfree(flags.group_id);
+        return true;
+    }
 
     if (argc == 0)
     {

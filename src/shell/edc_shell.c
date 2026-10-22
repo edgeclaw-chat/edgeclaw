@@ -217,10 +217,26 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
     {
         sds arg = sdstrim(sdsnew(content + 8), " \t");
 
-        /* Split "<verb> [path]". */
-        char *sp = strchr(arg, ' ');
-        sds verb = sp ? sdsnewlen(arg, (size_t)(sp - arg)) : sdsdup(arg);
-        sds rest = sp ? sdstrim(sdsnew(sp + 1), " \t") : sdsempty();
+        /* Split "<verb> [path]" the way a shell splits it (the lexer): quotes are
+         * syntax, so `/sandbox add-rw 'D:\my repo'` records the directory instead of a
+         * path that happens to start with a quote (which used to land in config.json
+         * verbatim and match nothing). */
+        int nargs = 0;
+        sds *words = NULL;
+        sds aerr = NULL;
+        words = edc_argv_from_tail(arg, &nargs, &aerr);
+        if (!words && aerr)
+        {
+            sds reply = sdscatprintf(sdsempty(), "**Syntax error** \u2014 %s", aerr);
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            sdsfree(aerr);
+            sdsfree(arg);
+            sdsfree(content);
+            return true;
+        }
+        sds verb = (nargs > 0) ? sdsdup(words[0]) : sdsempty();
+        sds rest = (nargs > 1) ? sdsdup(words[1]) : sdsempty();
 
         struct edc_config *conf = cfg;
 
@@ -269,10 +285,11 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
                                                                : EDC_SANDBOX_PATH_DENY;
             const char *klabel = (kind == EDC_SANDBOX_PATH_RW) ? "rw" : (kind == EDC_SANDBOX_PATH_DENY) ? "deny" : "ro";
             bool add = (strncmp(verb, "add-", 4) == 0);
-            if (sdslen(rest) == 0)
+            if (nargs != 2)
             {
-                edc_commands_reply(to,
-                                   "Usage: /sandbox add-rw|add-ro|add-deny <dir> | rm-rw|rm-ro|rm-deny <dir>");
+                edc_commands_reply(to, "Usage: /sandbox add-rw|add-ro|add-deny <dir> | "
+                                       "rm-rw|rm-ro|rm-deny <dir> (quote a directory that contains "
+                                       "spaces)");
             }
             else
             {
@@ -299,6 +316,7 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 
         sdsfree(verb);
         sdsfree(rest);
+        sdsfreesplitres(words, nargs);
         sdsfree(arg);
         sdsfree(content);
         return true;

@@ -396,6 +396,20 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_session_new",
+    srcs = ["test_commands_session_new.c"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_group_fold",
     srcs = ["test_commands_group_fold.c"],
     deps = [

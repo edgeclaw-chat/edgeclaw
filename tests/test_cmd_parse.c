@@ -234,18 +234,26 @@ static void test_desc_needs_quotes(void)
 
 static void test_escapes(void)
 {
-    /* Python-style escapes, the same in both quote kinds. */
-    check("\"a\\nb\"", "a\nb", 0, 0, "dq: \\n is a newline");
-    check("\"a\\tb\"", "a\tb", 0, 0, "dq: \\t is a tab");
+    /* bash quoting: the plain quotes carry NO escapes. `\n` inside "…" is two
+     * characters, exactly as in bash; the escapes live in the ANSI-C forms --
+     * `$'…'`, and its in-tree alias '''…''' (triple single quotes). */
+    check("\"a\\nb\"", "a\\nb", 0, 0, "dq: \\n is backslash + n, not a newline");
+    check("\"a\\tb\"", "a\\tb", 0, 0, "dq: \\t is backslash + t");
     check("\"a\\\\b\"", "a\\b", 0, 0, "dq: \\\\ is one backslash");
     check("\"a\\\"b\"", "a\"b", 0, 0, "dq: \\\" is a quote, not the closing one");
-    check("\"\\x41B\"", "AB", 0, 0, "dq: \\xHH");
-    check("'a\\'b'", "a'b", 1, 0, "sq: \\' works, and sq stays raw");
-    check("'a\\nb'", "a\nb", 1, 0, "sq: escapes apply, literal still 1");
+    check("\"\\x41B\"", "\\x41B", 0, 0, "dq: no \\xHH -- it stays literal");
+    check("'a\\b'", "a\\b", 1, 0, "sq: raw, the backslash survives");
+    check("'a\\nb'", "a\\nb", 1, 0, "sq: no escapes at all, literal stays 1");
     check("\"a\\db\"", "a\\db", 0, 0, "dq: unknown escape keeps its backslash");
     /* An unterminated region is not one: the whole text stays the input. */
     check("\"abc", "\"abc", 0, 0, "unterminated quote -> whole text verbatim");
-    check("\"\"\"a\\nb\"\"\"", "a\nb", 0, 0, "triple: escapes apply too");
+    /* ANSI-C is where escapes belong. */
+    check("$'a\\nb'", "a\nb", 1, 0, "$'…': \\n is a newline");
+    check("$'a\\tb'", "a\tb", 1, 0, "$'…': \\t is a tab");
+    check("$'\\x41B'", "AB", 1, 0, "$'…': \\xHH");
+    check("$'\\u00e9'", "\xc3\xa9", 1, 0, "$'…': \\uHHHH becomes UTF-8");
+    check("$'a\\qb'", "a\\qb", 1, 0, "$'…': unknown escape keeps its backslash");
+    check("'''a\\nb'''", "a\nb", 1, 0, "'''…''': the in-tree alias of $'…'");
 }
 
 int main(void)

@@ -481,6 +481,24 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 
 ## Command Reference
 
+**Arguments follow bash quoting.** Every `/command` tail is split the way a shell
+splits words, and nothing is expanded (no `$VAR`, globs or backticks):
+
+- unquoted blanks separate arguments;
+- `'...'` is literal, `"..."` is literal except `\"` and `\\`;
+- escapes have a home of their own, as in bash: `$'...'` (ANSI-C) is the only form
+  that decodes `\n`, `\t`, `\xHH`, `\uHHHH` -- that is how a newline or a tab is
+  written now (a real newline inside quotes works too); in-tree alias: `'''...'''`
+  (its ANSI-C semantics took over the old "raw block" spelling);
+- a value containing spaces has to be quoted: `/session new dev 'D:\my repo'`,
+  `/sandbox add-rw 'C:\Program Files\tool'`;
+- an unterminated quote is a syntax error, not a silently truncated argument;
+- one deliberate Windows concession: outside quotes a backslash is a plain byte (bash
+  would eat it), so `D:\github\edgeclaw` needs no quoting; a space therefore has to
+  be quoted, not escaped (`'C:\Program Files\x'`, not `C:\Program\ Files\x`).
+- free-text tails (`/task fork <id> <desc>`, `/group fold [id] [focus]`) take the
+  remaining words joined by single spaces.
+
 ### General
 
 | Command | Description |
@@ -510,7 +528,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 
 | Command | Description |
 |---------|-------------|
-| `/session new [name] [dir]` | Start a new session (optionally named, optionally with a working directory) |
+| `/session new [name] <dir>` | Start a new session bound to `<dir>` (the name is optional, the directory is not: an unusable directory fails the command and creates no session) |
 | `/session switch <name_or_id>` | Switch to another session |
 | `/session list` | List all sessions |
 | `/session info` | Show current session details |
