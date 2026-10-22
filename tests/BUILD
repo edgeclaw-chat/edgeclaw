@@ -283,6 +283,20 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# grep / find 语义矩阵：跳过清单、深度上限、二进制与大小闸门、CRLF、行截断、limit、
+# literal vs regex、glob 表，外加多线程并发走树（走的是 edc_search_run_blocking，不需要
+# 起 actor loop；工具层那半截在 test_tools_search_loop 里）。
+cc_test(
+    name = "test_search_matrix",
+    srcs = ["test_search_matrix.c"],
+    deps = [
+        "//src/toolbox:toolbox",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 cc_test(
     name = "test_local_shell",
     srcs = ["test_local_shell.c"],

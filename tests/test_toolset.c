@@ -720,7 +720,10 @@ static void test_search_walks_a_real_tree(void)
     for (const char *q = r; (q = strstr(q, "TODO")) != NULL; q += 4)
         hits++;
     CHECK(hits == 1, "limit returns exactly one match");
-    CHECK(strstr(r, "stopped at the limit") != NULL, "and says why it stopped");
+    /* 诚实措辞：我们停在计数达到上限的那一刻，并不知道后面还有没有，所以只说"到了上限"，
+     * 不断言"被截断"（那会让模型去缩小一个其实已经完整的检索）。 */
+    CHECK(strstr(r, "reached the limit of 1 matches") != NULL, "and says the limit was reached");
+    CHECK(strstr(r, "there may be more") != NULL, "without claiming that something was dropped");
     sdsfree(r);
 
     /* find：只列文件，不读内容 */

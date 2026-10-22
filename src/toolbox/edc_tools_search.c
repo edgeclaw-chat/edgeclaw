@@ -58,8 +58,11 @@
 #define EDC_SEARCH_MAX_LINE 500        /* characters kept per matching line (pi's value) */
 #define EDC_SEARCH_DEFAULT_LIMIT 100   /* matches, pi's default */
 #define EDC_SEARCH_MAX_FILE_BYTES (8u * 1024u * 1024u)
+/* Total bytes of result text. `limit` bounds the number of matches, not their size: a model
+ * that asks for limit=100000 in /usr produced ~9.8 MB, which would blow up the context it is
+ * meant to inform. 64 KiB is far more than any useful answer and small enough to be safe. */
+#define EDC_SEARCH_MAX_OUTPUT (64u * 1024u)
 #define EDC_SEARCH_MAX_DEPTH 64
-#define EDC_SEARCH_BINARY_PROBE 8192
 
 static const char *const kSkipDirs[] = {
     ".git",      ".hg",           ".svn",   "node_modules", "build", "bazel-out",
@@ -184,6 +187,7 @@ struct search_job
     long long matches;
     bool truncated;   /* stopped because of |limit| */
     bool timed_out;   /* stopped because of the deadline */
+    bool out_capped;  /* stopped because the result text hit EDC_SEARCH_MAX_OUTPUT */
     int files_scanned;
     EdcError *error;
 };
@@ -207,6 +211,8 @@ static void job_free(struct search_job *job)
  * the search promptly instead of after the whole tree. */
 static bool job_stop(struct search_job *job)
 {
+    if (job->out_capped)
+        return true;
     if (job->limit > 0 && job->matches >= job->limit)
     {
         job->truncated = true;
@@ -241,8 +247,6 @@ static sds relative_path(const struct search_job *job, const char *full)
 static void append_hit(struct search_job *job, const char *full, int lineno, const char *line, size_t len)
 {
     sds rel = relative_path(job, full);
-    if (!job->out)
-        job->out = sdsempty();
 
     /* One pathological line must not decide the size of the result. */
     size_t keep = len;
@@ -252,11 +256,25 @@ static void append_hit(struct search_job *job, const char *full, int lineno, con
         keep = EDC_SEARCH_MAX_LINE;
         cut = true;
     }
-    job->out = sdscatprintf(job->out, "%s:%d:", rel, lineno);
-    job->out = sdscatlen(job->out, line, keep);
+
+    sds piece = sdscatprintf(sdsempty(), "%s:%d:", rel, lineno);
+    piece = sdscatlen(piece, line, keep);
     if (cut)
-        job->out = sdscat(job->out, " ... [line truncated]");
-    job->out = sdscat(job->out, "\n");
+        piece = sdscat(piece, " ... [line truncated]");
+    piece = sdscat(piece, "\n");
+
+    /* Checked before appending, so a line is never half-written. */
+    if (job->out && sdslen(job->out) + sdslen(piece) > EDC_SEARCH_MAX_OUTPUT)
+    {
+        job->out_capped = true;
+        sdsfree(piece);
+        sdsfree(rel);
+        return;
+    }
+    if (!job->out)
+        job->out = sdsempty();
+    job->out = sdscatsds(job->out, piece);
+    sdsfree(piece);
     sdsfree(rel);
     job->matches++;
 }
@@ -292,8 +310,10 @@ static void grep_file(struct search_job *job, const char *full, regex_t *re)
     }
     job->files_scanned++;
 
-    const size_t probe = sdslen(content) < EDC_SEARCH_BINARY_PROBE ? sdslen(content) : EDC_SEARCH_BINARY_PROBE;
-    if (memchr(content, '\0', probe) != NULL)
+    /* The whole buffer, not a prefix: `regexec`/`find_literal` stop at a NUL, so a NUL
+     * further in would silently end that line's match candidate -- a false negative with no
+     * trace in the output. Reading the file is already done; this second pass is cheap. */
+    if (memchr(content, '\0', sdslen(content)) != NULL)
     {
         sdsfree(content); /* binary: no useful lines to show */
         return;
@@ -399,12 +419,20 @@ static void on_entry(const char *name, int type, void *ud)
         }
         else if (job->matches < job->limit)
         {
-            /* find: the glob IS the filter, and there is no content to read. */
-            if (!job->out)
-                job->out = sdsempty();
-            job->out = sdscatprintf(job->out, "%s\n", rel);
-            job->matches++;
-            job->files_scanned++;
+            /* find: the glob IS the filter, and there is no content to read. Same total
+             * budget as grep -- a path list can be just as long as a match list. */
+            sds piece = sdscatprintf(sdsempty(), "%s\n", rel);
+            if (job->out && sdslen(job->out) + sdslen(piece) > EDC_SEARCH_MAX_OUTPUT)
+                job->out_capped = true;
+            else
+            {
+                if (!job->out)
+                    job->out = sdsempty();
+                job->out = sdscatsds(job->out, piece);
+                job->matches++;
+                job->files_scanned++;
+            }
+            sdsfree(piece);
         }
     }
     sdsfree(rel);
@@ -418,16 +446,27 @@ static sds search_finish(struct search_job *job)
     sds result = job->out ? job->out : sdsempty();
     job->out = NULL;
 
+    /* "reached", not "stopped ... you missed something": we stop the moment the count is
+     * hit, so we cannot know whether another match exists without scanning on -- and
+     * claiming a truncation that did not happen sends the model off to narrow a search that
+     * was already complete. */
     if (job->truncated)
         result = sdscatprintf(result,
-                              "\n[stopped at the limit of %lld matches; narrow the pattern or raise limit]\n",
+                              "\n[reached the limit of %lld matches -- there may be more; raise limit or "
+                              "narrow the pattern]\n",
                               job->limit);
     else if (job->timed_out)
         result = sdscat(result, "\n[stopped at the timeout; narrow the path or raise the timeout]\n");
+    if (job->out_capped)
+        result = sdscatprintf(result,
+                              "\n[output capped at %u KiB; narrow the pattern or raise limit]\n",
+                              (unsigned)(EDC_SEARCH_MAX_OUTPUT / 1024));
     if (sdslen(result) == 0 && !job->error)
     {
         if (job->is_grep)
-            result = sdscatprintf(result, "(no matches; %d files searched)\n", job->files_scanned);
+            /* "read", not "searched": binary and oversized files are not read at all, so a
+             * count that included them would contradict itself. */
+            result = sdscatprintf(result, "(no matches; %d files read)\n", job->files_scanned);
         else
             result = sdscat(result, "(no files matched)\n");
     }
@@ -663,7 +702,8 @@ void edc_tools_search_register(struct edc_toolbox *tb)
                                              params, edc_tool_exec_find_async);
         edc_tool_set_snippet(tool, "Find files by name glob");
         edc_tool_set_guidelines(tool, "Prefer this over `exec_shell find`: same walk, without the noise.\n"
-                                      "Stops at `limit` paths and says so.");
+                                      "Stops at `limit` paths (default 100) or 64 KiB of output, and says "
+                                      "which one ended it.");
         edc_toolbox_register(tb, tool);
     }
 }
