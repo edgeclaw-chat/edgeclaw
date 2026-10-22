@@ -139,7 +139,10 @@ jobs:
           bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
 
       - name: Collect artifact
-        if: runner.os != 'Windows'
+        # bash on every runner: the packaging names below are bash, and Git for
+        # Windows provides it. Windows used to be excluded here, which is why
+        # its tarball never reached the release.
+        shell: bash
         run: |
           VERSION="${{ github.ref_name }}"
           ARTIFACT="${{ matrix.target }}.tar.gz"
@@ -149,7 +152,6 @@ jobs:
           fi
 
       - name: Upload artifact
-        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}

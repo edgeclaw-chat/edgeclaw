@@ -138,6 +138,12 @@ config_setting(
 )
 
 config_setting(
+    name = "is_amd64_windows",
+    constraint_values = [],
+    values = {"platforms": "//:amd64_windows"},
+)
+
+config_setting(
     name = "is_aarch64_android",
     constraint_values = [],
     values = {"platforms": "//:aarch64_android"},
@@ -162,6 +168,10 @@ FILE_NAME = select({
         ":is_aarch64_linux": "edgeclaw_aarch64_linux",
         ":is_amd64_linux": "edgeclaw_amd64_linux",
         ":is_aarch64_macos": "edgeclaw_aarch64_macos",
+        ":is_amd64_windows": "edgeclaw_amd64_windows",
+        # Fallback for a plain `bazel build //:edgeclaw` on Windows, where no
+        # --platforms is passed and the value-based settings above cannot match.
+        ":windows": "edgeclaw_amd64_windows",
         "//conditions:default": "edgeclaw_unkown",
 })
 
