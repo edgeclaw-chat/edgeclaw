@@ -48,6 +48,12 @@ extern void edc_toolbox_emit_msg_free(void *p);
 extern struct edc_toolbox *edc_toolbox_new(struct edc_config *conf, edc_actor_t *scheduler, edc_actor_t *channel_actor);
 extern void edc_toolbox_free(struct edc_toolbox *tb);
 
+/* Write a capped tool result to a managed file under the workspace and return its absolute
+ * path (NULL when it could not be written). This is what makes "truncated" mean "moved, not
+ * lost": the caller shows a bounded preview plus this path. Caller frees the result. */
+extern sds edc_toolbox_spill_output(struct edc_toolbox *tb, const char *tool_name, const char *session_id,
+                                    const char *content, size_t len);
+
 extern void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool);
 extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
 /* The request-shaped schema entry for one tool ({"type":"function","function":{...}}).

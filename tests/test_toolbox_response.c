@@ -419,10 +419,17 @@ static void test_result_truncated(void)
 
     const char *content = turn_tool_content(t->active_turn, "c1");
     CHECK(content != NULL, "the result still arrives");
-    CHECK(content && strncmp(content, "0123456789", 10) == 0, "kept from the start, up to the cap");
-    CHECK(content && strstr(content, "ABCDEFGHIJ") == NULL, "the tail is really gone");
-    CHECK(content && strstr(content, "[Result truncated to") != NULL, "with the truncation notice");
-    CHECK(content && strstr(content, "total length: 20") != NULL, "that names the original length");
+    /* The notice is at the HEAD, deliberately: a preview is cut from the front, so a notice
+     * appended at the tail is exactly the part that disappears when something else caps the
+     * result again (which is what used to happen to the grep/find caps). */
+    CHECK(content && strstr(content, "[truncated: showing") != NULL, "a truncation notice comes first");
+    CHECK(content && strstr(content, "20 bytes") != NULL, "naming the original size");
+    CHECK(content && strstr(content, "0123456789") != NULL, "the preview keeps the start");
+    CHECK(content && strstr(content, "ABCDEFGHIJ") == NULL, "the tail is not in the message");
+    /* And the whole thing is recoverable: either a path to read, or an explicit statement
+     * that it could not be saved (never silence about where it went). */
+    CHECK(content && (strstr(content, "[full output: ") != NULL || strstr(content, "could not be saved") != NULL),
+          "the message says where the rest is");
 
     edc_task_free(t);
     harness_down(&h);

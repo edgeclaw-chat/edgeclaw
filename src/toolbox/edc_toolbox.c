@@ -2,6 +2,7 @@
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_file_utils.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
 #include "edc_tools_crontab.h"
@@ -259,6 +260,81 @@ static sds edc_toolbox_names_for_scope(const struct edc_toolbox *tb, uint32_t sc
         names = sdscatsds(names, t->name);
     }
     return names;
+}
+
+/* ── Spilling a capped tool result ───────────────────────────────────────────
+ *
+ * A result over the budget used to be cut and the remainder FREED: the model got a note
+ * saying how much it had lost, and no way to see it. Now the whole result is written once
+ * and the message carries a bounded preview plus the path -- the model reads the rest with
+ * read_file (which has offset/limit for exactly this).
+ *
+ * Where: <workspace>/<session>/tool-output/. Two reasons, not one. It is under the workspace,
+ * so the sandbox already allows the model to read it back; and it is per session, so a
+ * session's spilled output is deleted with the session instead of accumulating forever in a
+ * temp directory nobody owns.
+ *
+ * Writes with edc_file_write_safe(): the target lives in a tree the model can write to, so a
+ * planted symlink (tool-output/x.txt -> ~/.edgeclaw/config.json) must not redirect it. */
+#define EDC_SPILL_SEQ_MAX 100000
+
+static unsigned g_spill_seq; /* runner-thread only, so a plain counter (no lock) */
+
+sds edc_toolbox_spill_output(struct edc_toolbox *tb, const char *tool_name, const char *session_id,
+                             const char *content, size_t len)
+{
+    if (!tb || !tb->conf || !tb->conf->workspace || !content)
+        return NULL;
+
+    sds dir = edc_path_join(tb->conf->workspace, session_id && *session_id ? session_id : "no-session",
+                            "tool-output", NULL);
+    EdcError *error = NULL;
+    bool made = edc_dir_create_with_parents(dir, 0755, &error);
+    if (error)
+        edc_error_free(error);
+    if (!made)
+    {
+        sdsfree(dir);
+        return NULL;
+    }
+
+    /* A name that cannot collide within a process run, and that says which tool produced it:
+     * the model (and a human reading the transcript) can tell them apart at a glance. */
+    sds safe_tool = sdsnew(tool_name && *tool_name ? tool_name : "tool");
+    for (size_t i = 0; i < sdslen(safe_tool); i++)
+    {
+        const unsigned char c = (unsigned char)safe_tool[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            safe_tool[i] = '_';
+    }
+
+    sds path = NULL;
+    for (int attempt = 0; attempt < 100; attempt++)
+    {
+        unsigned seq = ++g_spill_seq % EDC_SPILL_SEQ_MAX;
+        sds candidate = sdscatprintf(sdsempty(), "%s/%s-%u.txt", dir, safe_tool, seq);
+        if (!edc_file_exists(candidate))
+        {
+            path = candidate;
+            break;
+        }
+        sdsfree(candidate);
+    }
+    sdsfree(safe_tool);
+    sdsfree(dir);
+    if (!path)
+        return NULL; /* no free name: report no path rather than overwrite someone's file */
+
+    error = NULL;
+    bool ok = edc_file_write_safe(path, content, (ssize_t)len, tb->conf->workspace, &error);
+    if (error)
+        edc_error_free(error);
+    if (!ok)
+    {
+        sdsfree(path);
+        return NULL;
+    }
+    return path;
 }
 
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,

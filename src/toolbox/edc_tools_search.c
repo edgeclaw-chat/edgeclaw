@@ -441,35 +441,40 @@ static void on_entry(const char *name, int type, void *ud)
 
 /* Take the collected output and add the "why it ended" trailer. Shared by the async
  * callback and the blocking entry point so a caller cannot get one without the other. */
+/* Take the collected output and put the "why it ended" notices at the HEAD.
+ *
+ * Head, not tail: a result long enough to be capped is cut from the front by the toolbox (or
+ * by the preview in front of it), so anything appended at the end is exactly the part nobody
+ * sees. This was not theoretical -- the 64 KiB note used to sit at the tail and never reached
+ * the model at all, because the toolbox's 10 KB cap cut it away. */
 static sds search_finish(struct search_job *job)
 {
-    sds result = job->out ? job->out : sdsempty();
+    sds body = job->out ? job->out : sdsempty();
     job->out = NULL;
 
-    /* "reached", not "stopped ... you missed something": we stop the moment the count is
-     * hit, so we cannot know whether another match exists without scanning on -- and
-     * claiming a truncation that did not happen sends the model off to narrow a search that
-     * was already complete. */
+    sds notes = sdsempty();
     if (job->truncated)
-        result = sdscatprintf(result,
-                              "\n[reached the limit of %lld matches -- there may be more; raise limit or "
-                              "narrow the pattern]\n",
-                              job->limit);
+        notes = sdscatprintf(notes,
+                             "[reached the limit of %lld matches -- there may be more; raise limit or narrow "
+                             "the pattern]\n",
+                             job->limit);
     else if (job->timed_out)
-        result = sdscat(result, "\n[stopped at the timeout; narrow the path or raise the timeout]\n");
+        notes = sdscat(notes, "[stopped at the timeout; narrow the path or raise the timeout]\n");
     if (job->out_capped)
-        result = sdscatprintf(result,
-                              "\n[output capped at %u KiB; narrow the pattern or the path]\n",
-                              (unsigned)(EDC_SEARCH_MAX_OUTPUT / 1024));
-    if (sdslen(result) == 0 && !job->error)
+        notes = sdscatprintf(notes, "[output capped at %u KiB; narrow the pattern or the path]\n",
+                             (unsigned)(EDC_SEARCH_MAX_OUTPUT / 1024));
+
+    if (sdslen(body) == 0 && !job->error)
     {
         if (job->is_grep)
-            /* "read", not "searched": binary and oversized files are not read at all, so a
-             * count that included them would contradict itself. */
-            result = sdscatprintf(result, "(no matches; %d files read)\n", job->files_scanned);
+            body = sdscatprintf(body, "(no matches; %d files read)\n", job->files_scanned);
         else
-            result = sdscat(result, "(no files matched)\n");
+            body = sdscat(body, "(no files matched)\n");
     }
+
+    sds result = notes;
+    result = sdscatsds(result, body);
+    sdsfree(body);
     return result;
 }
 

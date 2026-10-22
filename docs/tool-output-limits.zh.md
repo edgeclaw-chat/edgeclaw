@@ -1,6 +1,7 @@
 # 工具输出的上限：一个累加器，三层各有说法
 
-> 状态：设计稿（未实现）
+> 状态：**部分实现（2026-10-22 更新）** —— 第 2 节的目标 1（源头限内存）与 3（如实说明）已落地；
+> 本文第 1 节描述的是**实现前**的现状，保留作为背景。当前行为见 §1b。
 > 目标读者：改 `src/toolbox` 的人
 > 触发：`!cmd` 去掉用户命令的超时之后，`!yes` 这类"永不退出又狂输出"的命令没有兜底了
 
@@ -37,6 +38,40 @@ if (sdslen(result) > conf->tool_max_output_size) {
 
 - `device_shell` / `device_file` 的 `resp_buf`（收包累加）、`device_file` 下载把整个 body 攒在内存里；
 - `read_file` / `edit_file` 把整个文件读进内存（读一个 10 GB 的文件同样 OOM）。
+
+## 1b. 现在的行为（2026-10-22）
+
+工具结果出给调度器时，命中**两个上限之一**就外溢，**不再丢弃**：
+
+- 字节：`tool_max_output_size`（配置，默认 10000）
+- 行：`EDC_TOOL_OUTPUT_MAX_LINES` = 2000
+
+命中后：
+
+1. 完整结果写进 `<workspace>/<session>/tool-output/<tool>-<seq>.txt`
+   （`edc_file_write_safe`，root = workspace —— 模型能写这棵树，不防 symlink 就等于给它一个改写 config 的机会）；
+2. 消息变成「**头部**通知 + 有界预览」：
+
+```
+[truncated: showing 312 of 4000 lines (10000 of 18893 bytes)]
+[full output: /…/workspace/s1/tool-output/exec_shell-1.txt (read it with read_file offset/limit)]
+<前 10000 字节，切在行边界>
+```
+
+**为什么通知在头部**：预览是从头裁的，放尾部的通知正好是被裁掉的那一段。
+`grep`/`find` 的 cap/timeout 提示因此也一并从尾部移到头部 —— 它们原本**永远到不了模型**
+（自身的 64 KiB 预算先收集，随后被 10000 字节的通用上限连通知一起切掉）。
+
+声明的 `keep_full_output` 的工具（`read_file`、7 个 `memory_*`）不受此限：它们自己按行/条目
+封顶，且清楚自己输出的是什么。
+
+**外溢文件的生命周期**：挂在 session 目录下，随 session 删除而消失；不落 `/tmp`（无人拥有、
+永不清理）。文件名带工具名与序号，同一次运行内不覆盖。
+
+**已验证（端到端）**：模型跑 `seq 1 4000` → 收到截断通知与路径 → 用 `read_file offset` 读回
+外溢文件 → 报出最后一行 `4000`。
+
+---
 
 ## 2. 目标
 

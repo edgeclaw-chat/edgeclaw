@@ -3,6 +3,7 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_scheduler.h"
+#include "edc_session.h"
 #include "edc_task.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h" /* struct edc_tool (the abort hook lives on it) */
@@ -106,6 +107,86 @@ static void edc_toolbox_actor_inflight_free(struct edc_toolbox_call_ctx *call)
 static char *_HINT = "\n\n[Analyze the error above and try a different approach.]";
 
 // TODO: fix error handle
+/* Two ceilings, whichever comes first: bytes (tool_max_output_size, configurable) and lines
+ * (EDC_TOOL_OUTPUT_MAX_LINES). Both are needed -- a log of very long lines and a file of
+ * very many short ones hit different ones first, and a single number cannot describe both. */
+#define EDC_TOOL_OUTPUT_MAX_LINES ((size_t)2000)
+
+/* Cut |result| at a line boundary when it has one before |cap| bytes, so the model does not
+ * get half a line it would have to guess at. Returns the byte offset to show. */
+static size_t preview_end(const char *p, size_t len, size_t cap, size_t *out_lines, size_t *out_total_lines)
+{
+    size_t total_lines = 0, shown_lines = 0, last_boundary = 0, pos = 0;
+    while (pos < len)
+    {
+        size_t nl = pos;
+        while (nl < len && p[nl] != '\n')
+            nl++;
+        const size_t line_end = (nl < len) ? nl + 1 : nl;
+        total_lines++;
+        if (line_end <= cap && shown_lines < EDC_TOOL_OUTPUT_MAX_LINES)
+        {
+            shown_lines++;
+            last_boundary = line_end;
+        }
+        pos = line_end;
+    }
+    if (out_lines)
+        *out_lines = shown_lines;
+    if (out_total_lines)
+        *out_total_lines = total_lines;
+    /* No line fits under the cap (one enormous line): fall back to a byte cut, which the
+     * caller marks as such. */
+    return last_boundary > 0 ? last_boundary : cap;
+}
+
+/* Replace an over-budget result with: a head notice, a bounded preview, and the path of the
+ * whole thing. The head, not the tail -- a preview is cut from the front, so a trailer would
+ * be exactly the part that disappears. */
+static sds edc_toolbox_actor_cap_result(edc_toolbox_actor_state_t *state, struct edc_toolbox_call_ctx *tb_ctx,
+                                        struct edc_toolbox_actor_req *req, sds result)
+{
+    const size_t len = sdslen(result);
+    size_t cap = (size_t)state->toolbox->conf->tool_max_output_size;
+    if (cap == 0 || cap > len)
+        cap = len;
+
+    /* Cheap first pass: is it over EITHER ceiling? */
+    size_t lines = 0;
+    for (size_t i = 0; i < len; i++)
+        if (result[i] == '\n')
+            lines++;
+    if (len > 0 && result[len - 1] != '\n')
+        lines++;
+    if (len <= cap && lines <= EDC_TOOL_OUTPUT_MAX_LINES)
+        return result; /* within both: untouched */
+
+    const char *session_id = NULL;
+    if (tb_ctx->task && tb_ctx->task->group && tb_ctx->task->group->session)
+        session_id = tb_ctx->task->group->session->session_id;
+    /* The whole output goes to a file BEFORE anything is cut: this is the difference between
+     * "truncated" and "lost". A failure here still produces a correct (if lossy) message. */
+    sds path = edc_toolbox_spill_output(state->toolbox, req->name, session_id, result, len);
+
+    size_t shown_lines = 0, total_lines = 0;
+    size_t keep = preview_end(result, len, cap, &shown_lines, &total_lines);
+    const bool byte_cut = (keep == cap) && (shown_lines == 0);
+
+    sds out = sdsempty();
+    out = sdscatprintf(out, "[truncated: showing %zu of %zu lines (%zu of %zu bytes)%s]\n", shown_lines,
+                       total_lines > 0 ? total_lines : 1, keep, len, byte_cut ? ", cut mid-line" : "");
+    if (path)
+        out = sdscatprintf(out, "[full output: %s (read it with read_file offset/limit)]\n", path);
+    else
+        out = sdscat(out, "[full output could not be saved; narrow the query to see more]\n");
+    out = sdscatlen(out, result, keep);
+
+    if (path)
+        sdsfree(path);
+    sdsfree(result);
+    return out;
+}
+
 static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds result, EdcError *error)
 {
     if (error)
@@ -149,19 +230,19 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     cJSON_free(args);
 
     req->result = result;
-    /* A tool may declare that its output must reach the model whole (the session memory
-     * tools: their output is knowledge, not bulk, and they bound it themselves). */
+    /* A tool may declare that its output must reach the model whole (read_file and the memory
+     * tools: they bound themselves, in a way that knows what the output MEANS). */
     bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
-    if (!keep_full && (sdslen(result)) > state->toolbox->conf->tool_max_output_size)
+    if (!keep_full)
     {
-        size_t len = sdslen(result);
-        size_t cap = (size_t)state->toolbox->conf->tool_max_output_size;
-        sdsrange(result, 0, cap);
-        /* The number comes from the config, not from a literal: a hardcoded "10000" here
-         * used to contradict any other configured value. */
-        result = sdscatprintf(result, "\n\n[Result truncated to %zu characters, total length: %zu]", cap, len);
+        result = edc_toolbox_actor_cap_result(state, tb_ctx, req, result);
+        /* The cap FREES the original and returns a new string, so req->result must be
+         * repointed -- it was assigned above, before the call. Leaving it stale meant
+         * req_free() freed a block that no longer existed (found by the capping test:
+         * `free(): invalid pointer`). */
         req->result = result;
     }
+
 
     struct edc_toolbox_actor_req *next = req->next;
     edc_actor_send(msg->from, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, actor, msg->request_id, req,
