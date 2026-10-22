@@ -11,6 +11,12 @@
 void edc_file_utils_init(uv_loop_t *loop);
 
 sds edc_file_read(const char *path, EdcError **error);
+
+/* Read a file the model or the user picked, with a byte ceiling checked BEFORE allocating.
+ * A file over |max_bytes| (0 = no ceiling) is refused with its real size in the message, so the
+ * caller can say "too big, use offset/limit". |out_size| (optional) always receives the size
+ * when it could be determined, refused calls included. */
+sds edc_file_read_capped(const char *path, size_t max_bytes, size_t *out_size, EdcError **error);
 bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError **error);
 
 /* Replace |dst| with |src| (both paths), atomically where the platform allows it.

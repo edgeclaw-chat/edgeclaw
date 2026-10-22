@@ -11,6 +11,7 @@
 #include "edc_tools.h"
 #include "edc_task_group.h"
 #include "edc_tools_fs.h"
+#include "edc_file_utils.h"
 #include "edc_tools_search.h"
 
 #include <sys/stat.h>
@@ -868,6 +869,88 @@ static void test_read_file_window(void)
     }
 }
 
+/* ── 带上限的读取：在分配之前就拒绝 ────────────────────────────── */
+
+static void test_read_capped(void)
+{
+    TEST("edc_file_read_capped: the ceiling is checked before anything is allocated");
+
+    char root[] = "/tmp/edc_capped_XXXXXX";
+    if (!mkdtemp(root))
+    {
+        CHECK(false, "mkdtemp failed");
+        return;
+    }
+    sds path = sdscatprintf(sdsempty(), "%s/f.txt", root);
+    FILE *f = fopen(path, "wb");
+    if (f)
+    {
+        fputs("0123456789", f); /* exactly 10 bytes */
+        fclose(f);
+    }
+
+    size_t size = 0;
+    EdcError *err = NULL;
+
+    /* Exactly at the ceiling: allowed ("> max" is the rule, not ">= max"). */
+    sds ok = edc_file_read_capped(path, 10, &size, &err);
+    CHECK(ok && strcmp(ok, "0123456789") == 0, "a file exactly at the limit is read");
+    CHECK(size == 10, "and its size is reported (got %zu)", size);
+    if (ok)
+        sdsfree(ok);
+    if (err)
+        edc_error_free(err);
+
+    /* One byte over: refused, and the message carries the REAL size so a caller can say
+     * "this is 10 bytes, the limit was 9, here is what to do". */
+    err = NULL;
+    size = 0;
+    sds refused = edc_file_read_capped(path, 9, &size, &err);
+    CHECK(refused == NULL, "one byte over the limit is refused");
+    CHECK(size == 10, "the real size is still reported on refusal (got %zu)", size);
+    CHECK(err && err->message && strstr(err->message, "10 bytes") != NULL, "the message names the size");
+    CHECK(err && err->message && strstr(err->message, "9-byte") != NULL, "and the limit it broke");
+    if (err)
+        edc_error_free(err);
+
+    /* Zero means "no ceiling" -- the callers that read their own small state files use it. */
+    err = NULL;
+    sds unlimited = edc_file_read_capped(path, 0, NULL, &err);
+    CHECK(unlimited != NULL, "0 means no ceiling");
+    if (unlimited)
+        sdsfree(unlimited);
+    if (err)
+        edc_error_free(err);
+
+    /* A directory is refused with a reason, not read as bytes. */
+    err = NULL;
+    sds dir = edc_file_read_capped(root, 0, NULL, &err);
+    CHECK(dir == NULL, "a directory is not readable as a file");
+    CHECK(err && err->message && strstr(err->message, "directory") != NULL, "and it says so");
+    if (err)
+        edc_error_free(err);
+
+    /* Empty file: readable, size 0, content empty. */
+    err = NULL;
+    sds empty_path = sdscatprintf(sdsempty(), "%s/empty.txt", root);
+    FILE *ef = fopen(empty_path, "wb");
+    if (ef)
+        fclose(ef);
+    sds empty = edc_file_read_capped(empty_path, 10, &size, &err);
+    CHECK(empty && sdslen(empty) == 0, "an empty file reads as empty");
+    CHECK(size == 0, "with size 0");
+    if (empty)
+        sdsfree(empty);
+    if (err)
+        edc_error_free(err);
+    remove(empty_path);
+    sdsfree(empty_path);
+
+    remove(path);
+    sdsfree(path);
+    rmdir(root);
+}
+
 int main(void)
 {
     log_info("test_toolset: the declaration set (sorted, scope-filtered, replayable)");
@@ -882,6 +965,7 @@ int main(void)
     test_render_prompt_is_terse_and_ruleful();
     test_search_tools_flip_the_search_rule();
     test_read_file_window();
+    test_read_capped();
     test_search_glob_matching();
     test_search_walks_a_real_tree();
     test_note_change_adding_a_direct_tool_rewrites_the_field();

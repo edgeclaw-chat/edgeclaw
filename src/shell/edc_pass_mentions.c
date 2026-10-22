@@ -210,7 +210,10 @@ static sds build_block(struct mention_state *st, const char *display, const char
     else
     {
         EdcError *err = NULL;
-        sds content = edc_file_read(safe, &err);
+        /* A pasted `@path` is user input, so the size is not something this process can
+         * trust: ceiling it before allocating (the mention block has its own, smaller cap
+         * further down anyway -- this one keeps a 10 GB file from being read at all). */
+        sds content = edc_file_read_capped(safe, 8u * 1024u * 1024u, NULL, &err);
         if (!content)
         {
             sds block = failed_block(display, err ? err->message : NULL);

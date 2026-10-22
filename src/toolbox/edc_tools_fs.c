@@ -158,6 +158,14 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
     lctx->result = sdscatprintf(lctx->result, "%s%s\n", prefix, name);
 }
 
+/* The largest file a tool will read AT ALL. Larger than what read_file returns (64 KiB) on
+ * purpose: paging through a big file must work, so the ceiling is on "one read", not on "the
+ * file". Past this, the answer is "use offset/limit" or "this file cannot be edited", never an
+ * allocation the process may not survive. */
+#define EDC_READ_MAX_BYTES_TOTAL ((size_t)8 * 1024 * 1024)
+
+static sds fs_read_for_tool_capped(const char *path, size_t max_bytes, bool *had_bom, EdcError **error);
+
 /* ── A leading UTF-8 BOM: metadata on Windows, content elsewhere ─────────────
  *
  * PowerShell writes UTF-8 WITH a BOM by default (and so do most Windows editors), so a file the
@@ -173,10 +181,20 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
  * bytes it was not asked to change. */
 static sds fs_read_for_tool(const char *path, bool *had_bom, EdcError **error)
 {
+    /* A tool never reads an unbounded file: the path came from the model, so the size is not
+     * something this process gets to trust (a 10 GB file used to be a 10 GB malloc). The
+     * ceiling is checked before the read; read_file can still see any file by paging with
+     * offset, and edit_file refuses and says why. */
+    return fs_read_for_tool_capped(path, EDC_READ_MAX_BYTES_TOTAL, had_bom, error);
+}
+
+static sds fs_read_for_tool_capped(const char *path, size_t max_bytes, bool *had_bom, EdcError **error)
+{
     if (had_bom)
         *had_bom = false;
 
-    sds content = edc_file_read(path, error);
+    size_t size = 0;
+    sds content = edc_file_read_capped(path, max_bytes, &size, error);
     if (!content || !edc_platform_bom_is_metadata())
         return content;
     if (sdslen(content) < 3 || memcmp(content, "\xEF\xBB\xBF", 3) != 0)
@@ -287,10 +305,20 @@ sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t l
 static sds edc_tool_read_file_io(struct fs_job *job, EdcError **error)
 {
     EdcError *gerror = NULL;
-    sds content = fs_read_for_tool(job->safe_path, NULL, &gerror);
+    size_t size = 0;
+    sds content = edc_file_read_capped(job->safe_path, EDC_READ_MAX_BYTES_TOTAL, &size, &gerror);
     if (!content)
     {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+        /* Refused for size, not for I/O: say what to do, not just how big it is. A message
+         * that stops at "8 MB is too big" leaves the model with no next step. */
+        if (size > EDC_READ_MAX_BYTES_TOTAL)
+            edc_error_set(error, EDC_ERR_INVAL,
+                          "Error: '%s' is %zu bytes, over the %zu-byte single-read limit. This tool cannot "
+                          "page a file this large; use exec_shell (e.g. `sed -n '1,200p'`, `head`, `tail`) "
+                          "to read a range.",
+                          job->arg_path ? job->arg_path : "(file)", size, EDC_READ_MAX_BYTES_TOTAL);
+        else
+            edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
         edc_error_free(gerror);
         return NULL;
     }
@@ -703,12 +731,25 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 
     EdcError *gerror = NULL;
     bool had_bom = false;
-    content = fs_read_for_tool(safe_path, &had_bom, &gerror);
-    if (!content)
     {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        edc_error_free(gerror);
-        goto cleanup;
+        size_t size = 0;
+        content = edc_file_read_capped(safe_path, EDC_READ_MAX_BYTES_TOTAL, &size, &gerror);
+        if (!content)
+        {
+            if (size > EDC_READ_MAX_BYTES_TOTAL)
+                /* No paging here on purpose: old_text must be matched against the WHOLE file,
+                 * so a partial read would silently miss (or hit the wrong) region. Refusing is
+                 * the honest answer. */
+                edc_error_set(error, EDC_ERR_INVAL,
+                              "Error: '%s' is %zu bytes, over the %zu-byte limit for an edit. old_text has to "
+                              "be matched against the whole file, so this tool cannot work piecewise; use "
+                              "exec_shell (sed/perl) for a change this size.",
+                              path ? path : "(file)", size, EDC_READ_MAX_BYTES_TOTAL);
+            else
+                edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+            edc_error_free(gerror);
+            goto cleanup;
+        }
     }
     size_t content_len = sdslen(content);
 

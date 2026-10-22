@@ -279,29 +279,17 @@ static void append_hit(struct search_job *job, const char *full, int lineno, con
     job->matches++;
 }
 
-/* Byte size guard: edc_file_read() has no cap of its own, and a 2 GB file in the tree
- * would be allocated whole. */
-static bool file_small_enough(const char *path, size_t limit)
-{
-    uv_fs_t req;
-    int r = (int)uv_fs_stat(NULL, &req, path, NULL);
-    bool ok = false;
-    if (r == 0)
-        ok = (size_t)req.statbuf.st_size <= limit;
-    uv_fs_req_cleanup(&req);
-    return ok;
-}
-
 /* Scan one file for matches. Runs on the pool thread. */
 static void grep_file(struct search_job *job, const char *full, regex_t *re)
 {
     if (job_stop(job))
         return;
-    if (!file_small_enough(full, EDC_SEARCH_MAX_FILE_BYTES))
-        return;
 
+    /* The size ceiling is enforced by the reader itself (before it allocates), so a 2 GB file
+     * in the tree costs one stat instead of 2 GB of memory -- and there is no second place
+     * that has to remember to check. */
     EdcError *gerror = NULL;
-    sds content = edc_file_read(full, &gerror);
+    sds content = edc_file_read_capped(full, EDC_SEARCH_MAX_FILE_BYTES, NULL, &gerror);
     if (!content)
     {
         if (gerror)
