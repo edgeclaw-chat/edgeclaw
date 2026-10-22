@@ -229,6 +229,23 @@ int main(void)
     drive(cfg, sm, sched, "/session rename dev3");
     CHECK(edc_session_manager_find(sm, "dev3") == spaced_name, "name unchanged");
 
+    /* ── ⑨ 参数个数由解析器给，多余/缺失都是 usage ──────────── */
+    TEST("/session switch a b: two words refused");
+    drive(cfg, sm, sched, "/session switch a b");
+    CHECK(edc_session_manager_get_active(sm) == spaced_name, "active session unchanged");
+
+    TEST("/session remove (no word): usage, nothing removed");
+    drive(cfg, sm, sched, "/session remove");
+    CHECK(sm->session_count == base + 6, "session count unchanged");
+
+    TEST("/session stop x: takes no arguments");
+    drive(cfg, sm, sched, "/session stop x");
+    CHECK(sm->session_count == base + 6, "session count unchanged");
+
+    TEST("/session status with a quoted name: found");
+    drive(cfg, sm, sched, "/session status 'dev3'");
+    CHECK(sm->session_count == base + 6, "still just reporting");
+
     /* ── 绑定的目录进了 sandbox 的 rw 集合 ───────────────────── */
     TEST("bound dir granted rw in the sandbox");
     bool granted = false;
