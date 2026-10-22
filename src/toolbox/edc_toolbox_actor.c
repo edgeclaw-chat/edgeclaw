@@ -229,19 +229,18 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, sdslen(result));
     cJSON_free(args);
 
-    req->result = result;
     /* A tool may declare that its output must reach the model whole (read_file and the memory
      * tools: they bound themselves, in a way that knows what the output MEANS). */
-    bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
+    const bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
     if (!keep_full)
-    {
         result = edc_toolbox_actor_cap_result(state, tb_ctx, req, result);
-        /* The cap FREES the original and returns a new string, so req->result must be
-         * repointed -- it was assigned above, before the call. Leaving it stale meant
-         * req_free() freed a block that no longer existed (found by the capping test:
-         * `free(): invalid pointer`). */
-        req->result = result;
-    }
+
+    /* Exactly ONE assignment, after the cap. The cap takes ownership of what it is given
+     * (it frees the original when it cuts) and returns the string to keep, so assigning
+     * req->result BEFORE the call left it pointing at freed memory and req_free() freed it
+     * again -- `free(): invalid pointer`. Re-pointing after the call would work too, but it
+     * relies on remembering to; one assignment leaves no order to get wrong. */
+    req->result = result;
 
 
     struct edc_toolbox_actor_req *next = req->next;
