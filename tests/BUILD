@@ -269,9 +269,9 @@ cc_test(
 )
 
 sh_test(
-    name = "test_headless_sh",
-    srcs = ["test_headless.sh"],
-    data = ["//src/tui:edgeclaw"],
+    name = "test_cli_sh",
+    srcs = ["test_cli.sh"],
+    data = ["//src/cli:edgeclaw_cli"],
 )
 
 cc_test(

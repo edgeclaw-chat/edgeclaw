@@ -1,18 +1,17 @@
-load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
-# Non-interactive frontend: --print / --mode json.
+# The headless frontend: the TUI's input box, without the screen.
 #
-# A frontend, not an engine: it drives the same app the TUI drives
-# (edc_app_new / edc_app_send_user_message / the channel adapter) and has no
-# turn logic of its own. Deliberately does NOT depend on //src/tui, so the
-# headless path cannot pull in ftxui or any terminal handling.
+# Deliberately does NOT depend on //src/tui -- not even transitively. That is what makes
+# `bazel query 'deps(//src/cli:edgeclaw_cli)'` show no ftxui: this binary cannot take over
+# a terminal even by accident, and it is much smaller than the interactive one.
 cc_library(
-    name = "headless",
+    name = "cli",
     srcs = [
-        "edc_headless.c",
+        "edc_cli.c",
     ],
     hdrs = [
-        "edc_headless.h",
+        "edc_cli.h",
     ],
     includes = ["."],
     deps = [
@@ -25,5 +24,27 @@ cc_library(
         "@sds//:sds",
     ],
     linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+LINK_OPTS = select({
+    "//:macos_debug": ["-lresolv"],
+    "//:macos": ["-lresolv"],
+    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
+    "//:valgrind": [],
+    "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
+})
+
+cc_binary(
+    name = "edgeclaw_cli",
+    srcs = ["main_cli.c"],
+    deps = [
+        ":cli",
+        "//src/common:common",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
     visibility = ["//visibility:public"],
 )

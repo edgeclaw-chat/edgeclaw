@@ -50,60 +50,60 @@ matters, by the input line itself). The empty input box's placeholder points at 
 
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
-### Without a terminal (`--print` / `--mode json`)
+### Without a terminal (`edgeclaw_cli`)
 
-The TUI is one frontend; there is a second one for scripts, cron and CI. It drives the
-same app (same kernel, same tools, same sessions) and has no terminal: no alternate
-screen, no colour, and it never reads stdin.
+`edgeclaw_cli` is the same input box without the screen. **The argument is the line you
+would have typed** — there is no second command line to learn:
 
 ```bash
-edgeclaw -p "Summarize this repository"          # the answer alone on stdout
-git diff | edgeclaw -p "Review this change"      # prompt on stdin, answer on stdout
-edgeclaw --mode json "Inspect the code" > events.jsonl
+edgeclaw_cli 'summarize this repository'
+edgeclaw_cli '/task new "write the docs"'
+edgeclaw_cli '+"explore the parser"'
+edgeclaw_cli '"a" | "b"'
+edgeclaw_cli '!make -j8'
 ```
 
-Both spellings select print mode (`-p` / `--print`); `--mode json` emits one JSON object
-per line instead. In print mode **stdout carries the answer and nothing else** — progress,
-tool output and errors go to stderr — so `> answer.md` yields a clean file. In JSON mode
-each message is its own line (`user`, `tool`, `thought`, `sys`, `resp`) and the last line
-is `{"event":"done","state":…,"exit_code":…}`.
+Each of those goes through exactly the path a keystroke does: the same passes, the same
+classification (command / local shell / shell line / plain message), the same command table,
+the same shell grammar, the same sessions and groups. If a line works in the TUI it works
+here; if it does not, it fails with the same message. Unquoted arguments are joined with
+single spaces, so `edgeclaw_cli /task new "abc"` is the same line as the quoted form; `--`
+ends the flags, for a line that starts with a dash.
 
-Exit codes are part of the contract:
+What a caller chooses is only **what to do with the output** — the messages exist before the
+process decides to print them:
 
-| code | meaning |
+| mode | behaviour |
 |---|---|
-| 0 | the task completed |
-| 1 | the task failed (`ERROR` / `CANCELLED` / `INTERRUPTED`) |
-| 2 | usage or configuration problem (no prompt, no provider configured) |
-| 3 | timed out before the task reached a terminal state (`--timeout <seconds>`, default 300) |
+| (default) | the answer alone on stdout |
+| `--json` | every message this run produced, one JSON object per line, ending with `done` |
+| `--silent` | nothing — the run is still recorded, so `/task output <id>` has it later |
 
-A line that is a command (`/help`) answers through the same path and exits 0; a line that
-cannot be parsed (an unterminated quote) exits 2. `--no-sandbox` / `--sandbox` work as in
-the TUI.
+"Where the answer is" depends on what the line was, and the CLI looks in that order: a
+**reply** (a task), a **system message** (a command), a **tool output** (`!cmd` has no reply
+at all). That is why it collects messages first instead of assuming one shape.
 
-Two things to know when running unattended. The **master key** is needed to read the stored
-API key: interactively it is asked for on a terminal, so in cron/CI set `EDGECLAW_MASTER_KEY`
-(or run once interactively first, which is also how a fresh install gets configured). A
-**command** (`-p "/help"`) needs neither a provider nor a key — only a task does.
+Exit codes: `0` the line ran to the end, `1` a task it created failed, `2` usage or
+configuration (no input, the app could not start), `3` timed out (`--timeout`, default 300s).
+stdout carries the answer and nothing else, in every mode, so `> answer.md` is clean;
+progress, tool output and failures go to stderr.
 
-Each run gets its **own group** in the session it uses; it never joins the conversation the
-interactive TUI has in front. That is not cosmetic: a group's queue is serial, so an input
-that joined the foreground group would wait for whatever that conversation is doing — and
-when the caller is itself an agent waiting for this process, neither side can ever finish.
-Because it starts a new group, a run also does not disturb what the TUI has in front.
+```
+$ edgeclaw_cli --silent 'Reply with exactly: SILENT-OK'   # nothing printed
+$ edgeclaw_cli '/task output 24'
+SILENT-OK
+```
 
-`--session <id|name>` sends the run to a named session instead of the active one (the store
-takes either; `--list-sessions` prints them, and needs no provider). The session is otherwise
-still whatever the app has — a run does not create one bound to the current directory, so a
-scripted run shows up in that session's tree. An unknown name means the input is dropped, so
-the run ends as a timeout (exit 3) and says to list the sessions.
+Two things to know unattended. The **master key** is needed to read the stored API key:
+interactively it is asked for on a terminal, so in cron/CI set `EDGECLAW_MASTER_KEY` (running
+`edgeclaw` once interactively is also how a fresh install gets configured). And each task
+joins its session's foreground group exactly as typed input would — a group's queue is
+serial, so a run started from inside a busy session queues like anything else (`+` opens a
+group of its own, as it does in the TUI).
 
-**These flags are not a mirror of `/task new`.** Most of that command's options exist to
-express orchestration in an interactive input — `--bg`, `>`/`2>`, `|`, `;`, `&&`, `||` — and
-in a shell those already have a spelling: use the shell. `-d/--with` is not offered because
-the two meanings conflict (a dependency is "wait for another task", while a headless run is
-"synchronously produce one result"). `--new-group` is what a run always does. What is left —
-where the result goes — is the part a shell cannot express, and that is `--session`.
+`edgeclaw_cli` is a separate binary on purpose: it links the app, **not ftxui**, so a
+container or a cron host ships a frontend that cannot take over a terminal by accident (and
+about half the size). The interactive `edgeclaw` binary contains no headless code.
 
 ---
 
