@@ -34,6 +34,11 @@ enum edc_spawn_mode
     EDC_SPAWN_HIDE = 2,
 };
 
+/* The longest argv prefix any platform needs. The shell tool SIZES its spawn vector from this
+ * instead of a literal, and each platform's table is checked against it at compile time
+ * (edc_platform.c), so "the head grew by one word" can never quietly overflow the vector. */
+#define EDC_SHELL_ARGV_HEAD_MAX 4
+
 struct edc_platform_caps
 {
     /* A kernel filesystem sandbox exists (Landlock/seccomp/BPF, or Seatbelt). Everything
@@ -48,6 +53,21 @@ struct edc_platform_caps
      * whose -Command takes the rest of the line. */
     const char *shell_file;
     const char *const *shell_argv_head; /* NULL-terminated */
+
+    /* Text to put IN FRONT of the command line, or NULL where the shell needs none.
+     *
+     * POSIX: NULL. `sh -c` has no encoding layer of its own -- the bytes a command writes are
+     * the bytes we read, and they are already UTF-8.
+     *
+     * Windows: powershell.exe 5.1 writes its OWN stdout with the console code page (CP936
+     * here), so every Chinese string it prints arrives as GBK and the tool result is
+     * mojibake. The fix is not "set the encoding" but "set it BEFORE the first byte is
+     * written": Console.Out's StreamWriter takes its encoding when it is first USED, so
+     * setting it one statement later changes nothing observable (measured: a probe whose
+     * first statement writes ASCII and only then sets the encoding stays mojibake). chcp is
+     * not a substitute either -- it moves the OS console code page, which the already-pinned
+     * writer ignores. Hence a prologue IN FRONT, not a wrapper around. */
+    const char *shell_prologue;
 };
 
 const struct edc_platform_caps *edc_platform_caps(void);

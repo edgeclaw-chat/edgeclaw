@@ -374,7 +374,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 
     const char *spawn_file = NULL;
     char **spawn_args = NULL;
-    char *plain_args[5] = {0};
+    char *plain_args[EDC_SHELL_ARGV_HEAD_MAX + 2] = {0};
     sds sandbox_helper_file = NULL;
     char **sandbox_helper_args = NULL;
     char **spawn_env = NULL;
@@ -383,11 +383,21 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      * "powershell.exe" "-NonInteractive" "-Command"), and the command line is appended.
      * Keeping it in the table is what stops the three places that care about the shell --
      * this one, the kill above and the tests -- from each knowing their own answer. */
+    /* Windows: the encoding prologue goes IN FRONT of the command line (the "<- why" lives
+     * with the field in edc_platform.h). It is glued to the command rather than passed
+     * separately because the shell takes ONE command line, and `A;B` means "run A, then B" --
+     * the prologue already ends with ';', so no separator is introduced here. POSIX has no
+     * prologue, so on POSIX this is a NULL test and nothing else. */
+    sds full_cmd = NULL;
+    const char *cmd_line = cmd_s;
+    if (caps->shell_prologue)
+        cmd_line = full_cmd = sdscat(sdsnew(caps->shell_prologue), cmd_s);
+
     int argv_n = 0;
     for (const char *const *a = caps->shell_argv_head;
          a && *a && argv_n < (int)G_N_ELEMENTS(plain_args) - 2; a++)
         plain_args[argv_n++] = (char *)*a;
-    plain_args[argv_n++] = (char *)cmd_s;
+    plain_args[argv_n++] = (char *)cmd_line;
     plain_args[argv_n] = NULL;
     spawn_file = caps->shell_file;
     spawn_args = plain_args;
@@ -421,6 +431,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
         sdsfree(sandbox_helper_file);
     free(sandbox_helper_args);
     edc_shell_env_free(spawn_env);
+    sdsfree(full_cmd); /* libuv has built the command line by now */
 
     if (r != 0)
     {
