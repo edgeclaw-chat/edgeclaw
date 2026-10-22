@@ -150,6 +150,11 @@ int main(void)
         write_file(path, "x\n");
     }
 
+    /* A path with a space in it: unquotable before quoting worked, which is why this
+     * fixture exists. */
+    snprintf(path, sizeof(path), "%s/my file.txt", ws);
+    write_file(path, "spaced-alpha\nspaced-bravo\n");
+
     snprintf(path, sizeof(path), "%s/bin.dat", ws);
     {
         FILE *f = fopen(path, "wb");
@@ -209,6 +214,50 @@ int main(void)
     }
 
     /* ── 3. 转义 ───────────────────────────────────────────────── */
+    /* ── 引号：路径里有空格 ─────────────────────────────────────── */
+    TEST("@\"my file.txt\": quoting makes a path with a space expressible");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "看下 @\"my file.txt\" 有什么");
+        CHECK(msg_count(t) == 2, "expanded");
+        CHECK(has(content_at(t, 1), "{\"path\":\"my file.txt\"}"), "the header has the unquoted path");
+        CHECK(has(content_at(t, 1), "spaced-alpha"), "and the body was read");
+        /* The user's own text is untouched: the quotes stay where they typed them. */
+        CHECK(has(content_at(t, 0), "@\"my file.txt\""), "the message text keeps the quotes");
+    }
+
+    TEST("@'my file.txt': single quotes are the same thing");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "看下 @'my file.txt'");
+        CHECK(msg_count(t) == 2, "expanded");
+        CHECK(has(content_at(t, 1), "spaced-bravo"), "the body was read");
+    }
+
+    /* A quoted reference names exactly what is inside the quotes: punctuation included. */
+    TEST("@\"a.txt.\" keeps the full stop -- the user delimited it");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "看下 @\"a.txt.\"");
+        CHECK(msg_count(t) == 2, "it was treated as a reference");
+        CHECK(has(content_at(t, 1), "Read tool failed to read a.txt."), "and the full stop is part of the path");
+    }
+
+    TEST("@\"my file.txt\"#2-3: a quoted path still takes a line range");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "看下 @\"my file.txt\"#2-3");
+        CHECK(msg_count(t) == 2, "expanded");
+        CHECK(has(content_at(t, 1), "\"offset\":2,\"limit\":2"), "the range survived the quotes");
+        CHECK(has(content_at(t, 1), "spaced-bravo"), "line 2 is there");
+        CHECK(!has(content_at(t, 1), "spaced-alpha"), "line 1 is not");
+    }
+
+    /* An unterminated quote is not a reference at all: guessing where it ends would be
+     * worse than leaving the text alone. */
+    TEST("@\"my file.txt is not a reference (unterminated quote)");
+    {
+        struct edc_task *t = run(cfg, sm, sched, sess, "看下 @\"my file.txt");
+        CHECK(msg_count(t) == 1, "nothing attached");
+        CHECK(has(content_at(t, 0), "@\"my file.txt"), "and the text is untouched");
+    }
+
     TEST("\\@a.txt unescapes but does not expand");
     {
         struct edc_task *t = run(cfg, sm, sched, sess, "为什么 \\@a.txt 没展开");

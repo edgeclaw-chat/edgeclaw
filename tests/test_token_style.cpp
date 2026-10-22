@@ -58,6 +58,20 @@ static void test_mentions(void)
     CHECK(TokensOf("[@a.c]") == "", "a bracket in front disqualifies it");
 
     CHECK(TokensOf("@a.c#12-20") == "M:@a.c#12-20", "a line range belongs to the reference");
+
+    /* Quoting: the paint must agree with the pass, which is the point of sharing
+     * edc_mention_parse() instead of keeping two scanners. */
+    CHECK(TokensOf("@\"my file.txt\" 看下") == "M:@\"my file.txt\"",
+          "a quoted path with a space is ONE reference: '%s'", TokensOf("@\"my file.txt\" 看下").c_str());
+    CHECK(TokensOf("@'my file.txt'") == "M:@'my file.txt'", "single quotes too: '%s'",
+          TokensOf("@'my file.txt'").c_str());
+    /* Inside quotes the punctuation is the user's, so it is painted; outside it is not. */
+    CHECK(TokensOf("@\"a.txt.\"") == "M:@\"a.txt.\"", "quoted: the full stop is inside the reference");
+    /* The range suffix may follow the closing quote. */
+    CHECK(TokensOf("@\"my file.txt\"#2-3") == "M:@\"my file.txt\"#2-3", "quoted + range: '%s'",
+          TokensOf("@\"my file.txt\"#2-3").c_str());
+    /* Unterminated: not a reference, so nothing is painted and the text stays ordinary. */
+    CHECK(TokensOf("@\"my file.txt") == "", "an unterminated quote is not a reference");
     CHECK(TokensOf("@ 空空") == "", "a bare '@' is not one");
     CHECK(TokensOf("@a.c 和 @b.c") == "M:@a.c|M:@b.c", "two on one line: '%s'", TokensOf("@a.c 和 @b.c").c_str());
 }
@@ -165,6 +179,9 @@ static void test_bubble_mention_rules(void)
     };
 
     CHECK(mention_is_painted("看下 @src/main.c"), "a sent line ending in a real reference IS painted");
+    /* A closing quote ends the reference by itself, so it needs no trailing whitespace --
+     * that is what edc_mention_parse()'s self_closed reports. */
+    CHECK(mention_is_painted("看下 @\"src/main.c\""), "a quoted reference is closed by its own quote");
     CHECK(!mention_is_painted("看下 @ghost.c"), "a path that does not exist is NOT painted");
     edc::SetMentionPathCheck(nullptr);
 }

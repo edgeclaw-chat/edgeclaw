@@ -1,6 +1,7 @@
 #include "edc_passes.h"
 
 #include "edc_error.h"
+#include "edc_mention.h"
 #include "edc_file_utils.h"
 #include "edc_sandbox.h"
 
@@ -28,10 +29,9 @@ struct mention_state
     size_t cseen;
 };
 
-static bool is_space(char c)
-{
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
-}
+/* Whitespace and the reference grammar itself live in edc_mention.h: the TUI paints
+ * references with the same code, so the two cannot disagree about where one ends. */
+#define is_space edc_mention_is_space
 
 /* JSON 字符串里的最小转义（路径只可能出现 " 与 \ 与个别控制字符）。 */
 static sds json_escape(const char *s)
@@ -377,7 +377,10 @@ static bool expand_payload(const struct edc_pass_ctx *ctx, struct edc_msg_payloa
         st.total += sdslen(payload->parts[i].content);
 
     sds out = sdsempty();
-    const char *p = payload->text;
+    /* |src| stays valid for the whole scan; |out| is built alongside and replaces
+     * payload->text only at the end, so every |p| still points into the original. */
+    const char *src = payload->text;
+    const char *p = src;
     while (*p)
     {
         if (p[0] == '\\' && p[1] == '@')
@@ -387,24 +390,27 @@ static bool expand_payload(const struct edc_pass_ctx *ctx, struct edc_msg_payloa
             continue;
         }
 
-        if (*p == '@' && (p == payload->text || is_space(p[-1])))
+        /* A reference (`@path`, `@"my file.txt"`, …): edc_mention_parse owns where it ends
+         * and what it names -- quotes are delimiters there, exactly as everywhere else.
+         * The TEXT keeps the bytes the user typed (including the quotes and any trailing
+         * punctuation the reference gave back). */
+        if (*p == '@' && (p == src || is_space(p[-1])))
         {
-            const char *tok = p + 1;
-            const char *stop = tok;
-            while (*stop && !is_space(*stop))
-                stop++;
-
-            /* 尾巴上的 ASCII 标点先剥掉再解析（`看下 @a.c.`），但文本保持原样。 */
-            const char *end = stop;
-            while (end > tok && strchr(",.):;!?]}", end[-1]))
-                end--;
-
-            if (end > tok)
-                append_block(&st, render_mention(&st, tok, (size_t)(end - tok)));
-
-            out = sdscatlen(out, p, (size_t)(stop - p));
-            p = stop;
-            continue;
+            sds token = NULL;
+            const size_t mlen = edc_mention_parse(src, (size_t)(p - src), &token, NULL);
+            if (mlen > 0 && token)
+            {
+                /* render_mention takes the token to resolve; it may also carry a `#range`
+                 * suffix, which split_range() understands. */
+                append_block(&st, render_mention(&st, token, sdslen(token)));
+            }
+            sdsfree(token);
+            if (mlen > 0)
+            {
+                out = sdscatlen(out, p, mlen);
+                p += mlen;
+                continue;
+            }
         }
 
         out = sdscatlen(out, p, 1);

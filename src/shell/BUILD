@@ -11,10 +11,12 @@ cc_library(
     name = "shell_parse",
     srcs = [
         "edc_cmd_parse.c",
+        "edc_mention.c",
         "edc_shell_vars.c",
     ],
     hdrs = [
         "edc_cmd_parse.h",
+        "edc_mention.h",
         "edc_shell_vars.h",
     ],
     includes = ["."],

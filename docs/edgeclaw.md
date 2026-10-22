@@ -330,9 +330,14 @@ Rules:
   `@Override` inside pasted code are not references.
 - The path runs to the next whitespace. Trailing ASCII punctuation is ignored when
   resolving (`看下 @a.c.` reads `a.c`), and the text is left exactly as typed.
+- **Quote the path when it contains a space**: `@"my file.txt"` — same quoting rules as
+  everywhere else (`@'…'` and `@$'…'` work too). Quotes are delimiters, and inside them
+  nothing is taken back: `@"a.c."` reads the file literally named `a.c.`, where `@a.c.`
+  reads `a.c`. An unterminated quote is not a reference at all, so the text is left alone
+  rather than read up to the next space.
 - `\@` is the escape: it becomes a literal `@` and attaches nothing.
 - `@path#12` / `@path#12-20` attaches only those lines (1-based, inclusive; `#12-` runs to
-  the end).
+  the end). The range may follow a closing quote: `@"my file.txt"#2-3`.
 - A relative path is resolved against the **session's working directory**, and the read
   goes through the sandbox and symlink checks — the same rules the `read_file` tool obeys.
 - A directory attaches its listing; a binary file is skipped with a note.

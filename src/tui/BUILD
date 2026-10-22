@@ -80,6 +80,9 @@ cc_library(
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",
+        # edc_mention.h: the `@reference` grammar the input line paints is the one the
+        # mention pass expands (see that header on why it is not duplicated here).
+        "//src/shell:shell_parse",
         "@cjson//:cjson",
         "@ftxui//:dom",
         "@ftxui//:ftxui",

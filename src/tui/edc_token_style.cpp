@@ -1,5 +1,7 @@
 #include "edc_token_style.hpp"
 
+#include "edc_mention.h"
+
 #include "edc_payload.h"
 #include "edc_style.hpp"
 #include <cstring>
@@ -8,10 +10,10 @@ namespace edc
 {
 namespace
 {
-// The mention pass's notion of whitespace (edc_pass_mentions.c: is_space).
+// The mention pass's notion of whitespace -- the same function, not a copy of the rule.
 bool IsSpace(char c)
 {
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    return edc_mention_is_space(c);
 }
 
 bool IsDigit(char c)
@@ -28,9 +30,10 @@ std::function<bool(const std::string &)> &mention_path_check_slot()
 }
 
 // Trailing ASCII punctuation is not part of a reference: "看下 @a.c." names a.c.
+// The set is edc_mention.c's (one definition, two consumers).
 bool IsTrailingPunct(char c)
 {
-    return c != '\0' && strchr(",.):;!?]}", c) != nullptr;
+    return edc_mention_is_trailing_punct(c);
 }
 
 // `[Pasted #<n> · <m> line(s)]` starting at |at| (the '['): returns the byte length, or 0
@@ -69,18 +72,13 @@ size_t PasteLabelAt(const std::string &text, size_t at)
     return p + 1 - at;
 }
 
-// An `@reference` starting at |at| (the '@'): returns the byte length up to the next
-// whitespace, minus trailing punctuation. 0 = not a reference (or nothing after the '@').
-size_t MentionAt(const std::string &text, size_t at)
+// An `@reference` starting at |at| (the '@'). The grammar is edc_mention_parse()'s --
+// the same call the pass makes -- so the paint and the expansion cannot disagree:
+// `@"my file.txt"` is ONE reference here exactly as it is one file there.
+size_t MentionAt(const std::string &text, size_t at, bool *self_closed)
 {
-    size_t stop = at;
-    while (stop < text.size() && !IsSpace(text[stop]))
-        stop++;
-    size_t end = stop;
-    while (end > at + 1 && IsTrailingPunct(text[end - 1]))
-        end--;
-    // Just "@" is not a reference (the pass requires something after it).
-    return end > at + 1 ? end - at : 0;
+    const size_t len = edc_mention_parse(text.c_str(), at, nullptr, self_closed);
+    return len;
 }
 } // namespace
 
@@ -120,9 +118,10 @@ std::vector<TokenSpan> ScanTokens(const std::string &text, bool end_closes)
         // `foo@bar.com` and `@Override` stay words.
         if (text[i] == '@' && (i == 0 || IsSpace(text[i - 1])))
         {
-            if (const size_t len = MentionAt(text, i))
+            bool self_closed = false;
+            if (const size_t len = MentionAt(text, i, &self_closed))
             {
-                spans.push_back({i, len, false, ClosedAfter(text, i + len, end_closes)});
+                spans.push_back({i, len, false, ClosedAfter(text, i + len, end_closes || self_closed)});
                 i += len;
                 continue;
             }
@@ -161,28 +160,15 @@ std::string FoldPastedText(std::string text, const std::string &payload_json)
 
 std::string MentionPath(const std::string &token_text)
 {
-    /* "@a.c#12-20" -> "a.c". Same rule as the pass's split_range(): the '#' only opens a
-     * range when what follows is digits or digits-digits, so a name that merely contains a
-     * '#' keeps it. */
-    std::string path = token_text.empty() || token_text[0] != '@' ? token_text : token_text.substr(1);
-    const size_t hash = path.rfind('#');
-    if (hash == std::string::npos || hash + 1 >= path.size())
-        return path;
-
-    size_t i = hash + 1;
-    if (!IsDigit(path[i]))
-        return path;
-    while (i < path.size() && IsDigit(path[i]))
-        i++;
-    if (i < path.size() && path[i] == '-')
-    {
-        i++;
-        while (i < path.size() && IsDigit(path[i]))
-            i++;
-    }
-    if (i != path.size())
-        return path; // not a range: the '#' belongs to the name
-    return path.substr(0, hash);
+    /* What a reference NAMES is edc_mention_name()'s answer: quotes decoded, `#range`
+     * removed (`@"my file.txt"#2-3` is the file `my file.txt`). That is the same code the
+     * pass runs, so the mark can never point at a different path than the expansion. */
+    char *name = edc_mention_name(token_text.c_str(), 0);
+    if (!name)
+        return token_text; /* not a reference shape: hand back what we were given */
+    std::string out(name);
+    free(name);
+    return out;
 }
 
 void SetMentionPathCheck(MentionPathCheck check)
