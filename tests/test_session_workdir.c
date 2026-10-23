@@ -1,4 +1,5 @@
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_channel_actor.h"
@@ -580,6 +581,7 @@ static void test_absolute_workdir_not_anchored(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("== test_session_workdir ==");
 
     test_explicit_workdir();

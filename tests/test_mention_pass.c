@@ -6,6 +6,7 @@
  *
  * 覆盖：识别规则、展开、转义、去重、行范围、失败、二进制、截断、shell 行的 stage。 */
 #include "edc_ast.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -79,14 +80,14 @@ static size_t msg_count(struct edc_task *t)
 {
     if (!t || !t->active_turn)
         return 0;
-    return t->active_turn->messages.tail - t->active_turn->messages.head;
+    return t->active_turn->msg_count;
 }
 
 static cJSON *msg_at(struct edc_task *t, size_t i)
 {
     if (!t || !t->active_turn || i >= msg_count(t))
         return NULL;
-    return t->active_turn->messages.data[t->active_turn->messages.head + i];
+    return edc_turn_msg_at(t->active_turn, (int)i);
 }
 
 static const char *content_at(struct edc_task *t, size_t i)
@@ -130,9 +131,13 @@ static void write_file(const char *path, const char *content)
 
 int main(void)
 {
-    const char *ws = "/tmp/test_mention_pass_ws";
+    edc_test_workspace(); /* disposable store */
+    const char *ws = edc_test_workspace();
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/sub/deep %s/many", ws, ws, ws);
+    /* The state store is open on `ws`: creating the sub-directories is fine, deleting the
+     * directory is not (it would take the database with it and every message written so
+     * far would be gone). */
+    snprintf(cmd, sizeof(cmd), "mkdir -p %s/sub/deep %s/many", ws, ws);
     if (system(cmd) != 0)
         return 1;
 

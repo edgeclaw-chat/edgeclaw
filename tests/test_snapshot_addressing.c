@@ -20,6 +20,7 @@
  * ══════════════════════════════════════════════════════════════ */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -188,7 +189,7 @@ static void test_event_names_the_owner_and_carries_no_tree(void)
     TEST("事件: 带属主 session (不是绑定的那个); 且状态变化一个字节的树都不上路");
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_snapshot_addressing_ws");
+    cfg->workspace = sdsnew(edc_test_workspace());
     g_sess_a = edc_session_new(cfg, "sess-a", "A");
     g_sess_b = edc_session_new(cfg, "sess-b", "B");
 
@@ -250,7 +251,7 @@ static void test_pull_is_addressed(void)
     TEST("拉取: 要 B 给 B, 要 A 给 A (不串、不缓存)");
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_snapshot_addressing_ws");
+    cfg->workspace = sdsnew(edc_test_workspace());
     g_sess_a = edc_session_new(cfg, "sess-a", "A");
     g_sess_b = edc_session_new(cfg, "sess-b", "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -292,7 +293,7 @@ static void test_unknown_tag_yields_no_tree(void)
     TEST("拉取: 标签指向不存在的 session ⇒ 一个字节都不回 (不拿别人的树顶包)");
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_snapshot_addressing_ws");
+    cfg->workspace = sdsnew(edc_test_workspace());
     g_sess_a = edc_session_new(cfg, "sess-a", "A");
     g_sess_b = edc_session_new(cfg, "sess-b", "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -319,6 +320,7 @@ static void test_unknown_tag_yields_no_tree(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== test_snapshot_addressing (P3 ①b 防线) ===");
 
     test_event_names_the_owner_and_carries_no_tree();

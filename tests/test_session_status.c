@@ -1,4 +1,5 @@
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_session.h"
 #include "edc_task.h"
@@ -36,7 +37,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_edc_session_status_ws");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -109,6 +110,7 @@ static void test_background_session_status(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("== test_session_status ==");
     test_current_session_status();
     test_background_session_status();

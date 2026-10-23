@@ -1,4 +1,5 @@
 #include "edc_state_serializer.h"
+#include "test_ws.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
@@ -53,7 +54,7 @@ static int test_passed = 0;
 } while(0)
 #define CHECK_STREQ(a, b, msg) CHECK(strcmp((a)?(a):"", (b)?(b):"") == 0, msg)
 
-#define TEST_WS "/tmp/test_edc_phase3_workspace"
+#define TEST_WS edc_test_workspace()
 
 static struct edc_config *make_config(void)
 {
@@ -64,9 +65,8 @@ static struct edc_config *make_config(void)
 
 static void clean_workspace(void)
 {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* Wipe the rows, not the file: the store is open on this workspace. */
+    edc_test_store_reset();
 }
 
 static void turn_add_user(struct edc_turn *turn, const char *content)
@@ -115,23 +115,22 @@ static void test_turn_owns_messages(void)
     CHECK(edc_session_get_message_count(session) == 0, "empty session count is 0");
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("task-1");
     turn_add_user(turn, "user msg 1");
     turn_add_assistant(turn, "assistant msg 1");
-    CHECK(edc_queue_length(&turn->messages) == 2, "turn has 2 messages");
+    CHECK(turn->msg_count == 2, "turn has 2 messages");
 
     /* commit 到 task: 消息仍留在 turn (P4: 不再 move 到 session) */
     edc_task_add_turn(task, turn);
 
-    CHECK(edc_queue_length(&turn->messages) == 2, "turn retains messages after commit");
+    CHECK(turn->msg_count == 2, "turn retains messages after commit");
 
     /* 计数由 turn 派生 */
     CHECK(edc_session_get_message_count(session) == 2, "session count derived from turn messages");
 
-    cJSON *m0 = (cJSON *)turn->messages.data[turn->messages.head];
+    cJSON *m0 = edc_turn_msg_at(turn, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user", "msg0 role user");
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "user msg 1", "msg0 content");
-    cJSON *m1 = (cJSON *)turn->messages.data[turn->messages.head + 1];
+    cJSON *m1 = edc_turn_msg_at(turn, 1);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m1, "role")), "assistant", "msg1 role assistant");
 
     edc_session_free(session);
@@ -160,7 +159,6 @@ static void test_single_mode_roundtrip(void)
     edc_task_mark_completed(task);
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("task-1");
     turn_add_user(turn, "flush query");
     turn_add_assistant(turn, "flush answer");
     edc_task_add_turn(task, turn);
@@ -176,10 +174,10 @@ static void test_single_mode_roundtrip(void)
     cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
     cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
 
-    CHECK(cJSON_GetObjectItem(turn_j, "messages") != NULL, "turn embeds messages");
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(turn_j, "messages")) == 2, "embedded 2 messages");
-    CHECK(cJSON_GetObjectItem(turn_j, "message_start") == NULL, "no message_start");
-    CHECK(cJSON_GetObjectItem(turn_j, "message_count") == NULL, "no message_count");
+    /* The snapshot carries the turn's SHAPE, not its message bodies: the bodies are rows
+     * in the store and are read on demand (see edc_state_store.h). */
+    CHECK(cJSON_GetObjectItem(turn_j, "messages") == NULL, "the snapshot does not embed messages");
+    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(turn_j, "msg_count")) == 2, "msg_count = 2");
 
     struct edc_session *session2 = edc_session_new(cfg, "sess-cpt2", "Compact2");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
@@ -193,9 +191,9 @@ static void test_single_mode_roundtrip(void)
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages restored in turn");
+    CHECK(rturn->msg_count == 2, "2 messages restored in turn");
 
-    cJSON *rm0 = (cJSON *)rturn->messages.data[rturn->messages.head];
+    cJSON *rm0 = edc_turn_msg_at(rturn, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")),
                 "flush query", "msg0 content correct");
 
@@ -229,27 +227,24 @@ static void test_multi_turns(void)
     edc_task_mark_completed(task);
 
     struct edc_turn *t0 = edc_turn_new();
-    t0->task_id = strdup("task-mt");
     turn_add_user(t0, "turn0-user");
     turn_add_assistant(t0, "turn0-asst1");
     turn_add_assistant(t0, "turn0-asst2");
     edc_task_add_turn(task, t0);
 
     struct edc_turn *t1 = edc_turn_new();
-    t1->task_id = strdup("task-mt");
     turn_add_user(t1, "turn1-user");
     turn_add_assistant(t1, "turn1-asst");
     edc_task_add_turn(task, t1);
 
     struct edc_turn *t2 = edc_turn_new();
-    t2->task_id = strdup("task-mt");
     turn_add_user(t2, "turn2-user");
     turn_add_assistant(t2, "turn2-asst");
     edc_task_add_turn(task, t2);
 
-    CHECK(edc_queue_length(&t0->messages) == 3, "turn0 has 3 msgs");
-    CHECK(edc_queue_length(&t1->messages) == 2, "turn1 has 2 msgs");
-    CHECK(edc_queue_length(&t2->messages) == 2, "turn2 has 2 msgs");
+    CHECK(t0->msg_count == 3, "turn0 has 3 msgs");
+    CHECK(t1->msg_count == 2, "turn1 has 2 msgs");
+    CHECK(t2->msg_count == 2, "turn2 has 2 msgs");
 
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
@@ -266,17 +261,16 @@ static void test_multi_turns(void)
 
     for (int i = 0; i < 3; i++) {
         cJSON *tj = cJSON_GetArrayItem(turns_j, i);
-        CHECK(cJSON_GetObjectItem(tj, "messages") != NULL, "turn embeds messages");
-        CHECK(cJSON_GetObjectItem(tj, "message_start") == NULL, "no message_start");
-        CHECK(cJSON_GetObjectItem(tj, "message_count") == NULL, "no message_count");
+        CHECK(cJSON_GetObjectItem(tj, "messages") == NULL, "the snapshot does not embed messages");
+        CHECK(cJSON_GetObjectItem(tj, "msg_count") != NULL, "msg_count present");
     }
 
     /* 内容直接从 turn 队列读 */
-    cJSON *m = (cJSON *)t0->messages.data[t0->messages.head];
+    cJSON *m = edc_turn_msg_at(t0, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn0-user", "turn0 msg0");
-    m = (cJSON *)t1->messages.data[t1->messages.head];
+    m = edc_turn_msg_at(t1, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn1-user", "turn1 msg0");
-    m = (cJSON *)t2->messages.data[t2->messages.head];
+    m = edc_turn_msg_at(t2, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn2-user", "turn2 msg0");
 
     cJSON_Delete(json);
@@ -306,10 +300,9 @@ static void test_empty_turn(void)
     edc_session_add_group(session, group);
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("task-etf");
     edc_task_add_turn(task, turn);
 
-    CHECK(edc_queue_length(&turn->messages) == 0, "empty turn has 0 messages");
+    CHECK(turn->msg_count == 0, "empty turn has 0 messages");
     CHECK(edc_session_get_message_count(session) == 0, "session count 0");
 
     cJSON *json = edc_state_serialize(session, sched);
@@ -350,7 +343,6 @@ static void test_state_file_roundtrip(void)
     task->output = sdsnew("final output");
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("task-ft");
     turn_add_user(turn, "hello");
     turn_add_assistant(turn, "world");
     edc_task_add_turn(task, turn);
@@ -362,8 +354,8 @@ static void test_state_file_roundtrip(void)
 
     CHECK(edc_session_save_state(s1, sc1), "save_state succeeds");
 
-    sds state_path = edc_path_join(TEST_WS, "sess-full", "session.json", NULL);
-    CHECK(edc_file_exists(state_path), "session.json exists");
+    sds state_path = edc_path_join(TEST_WS, "edgeclaw.db", NULL);
+    CHECK(edc_file_exists(state_path), "the workspace database exists");
     sdsfree(state_path);
 
     edc_session_free(s1);
@@ -382,11 +374,11 @@ static void test_state_file_roundtrip(void)
 
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(edc_queue_length(&rturn->messages) == 2, "2 messages restored in turn");
+    CHECK(rturn->msg_count == 2, "2 messages restored in turn");
 
-    cJSON *rm0 = (cJSON *)rturn->messages.data[rturn->messages.head];
+    cJSON *rm0 = edc_turn_msg_at(rturn, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")), "hello", "msg0: hello");
-    cJSON *rm1 = (cJSON *)rturn->messages.data[rturn->messages.head + 1];
+    cJSON *rm1 = edc_turn_msg_at(rturn, 1);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm1, "content")), "world", "msg1: world");
 
     CHECK(s2->active_task == rt, "active_task restored");
@@ -403,6 +395,7 @@ static void test_state_file_roundtrip(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Turn ownership tests (P4) ===");
     log_info("");
 

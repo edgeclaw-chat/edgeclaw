@@ -83,27 +83,18 @@ static cJSON *turn_to_json(struct edc_turn *turn)
 {
     cJSON *tj = cJSON_CreateObject();
 
-    cJSON *embedded = cJSON_CreateArray();
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
-    {
-        cJSON *msg = (cJSON *)turn->messages.data[i];
-        if (!msg)
-            continue;
-
-        cJSON *copy = cJSON_Duplicate(msg, 1);
-        /* A message round-trips as WHOLE raw JSON (see turn_from_json's
-         * cJSON_Duplicate), not field-by-field like task/group -- unknown keys ride
-         * along. The runtime no longer strips keys for old archives: pre-transcript
-         * leftovers (displayed/header, the system container) are cleaned by the
-         * one-shot v3->v4 migration (tools/migrate_session_v3_to_v4.py); the loader
-         * only accepts the current schema. */
-        cJSON_AddItemToArray(embedded, copy);
-    }
-
-    if (cJSON_GetArraySize(embedded) > 0)
-        cJSON_AddItemToObject(tj, "messages", embedded);
-    else
-        cJSON_Delete(embedded);
+    /* NO message array. Messages are rows (see edc_state_store.h, edc_msg_append): the
+     * snapshot carries the turn's SHAPE -- how many messages it has and where its two
+     * watermarks sit -- and that is all the metadata flush needs to write. Serializing
+     * the bodies here is what used to make one tool boundary cost 164 MB. */
+    cJSON_AddNumberToObject(tj, "msg_count", turn->msg_count);
+    cJSON_AddNumberToObject(tj, "token_count", (double)edc_turn_tokens_from(turn, 0));
+    /* The storage key travels with the turn: the position is data, not something the
+     * reader can safely re-derive (an in-flight turn's ordinal is the queue tail, and the
+     * rows are already written under it). */
+    cJSON_AddNumberToObject(tj, "turn_ord", turn->turn_ord);
+    if (turn->task_id)
+        cJSON_AddStringToObject(tj, "owner_task_id", turn->task_id);
 
     /* Messages already folded into group memory (the L1 fold cut): requests and history start after this. */
     cJSON_AddNumberToObject(tj, "folded_prefix", turn->folded_prefix);
@@ -470,23 +461,21 @@ static struct edc_turn *turn_from_json(cJSON *tj)
     if (memo && cJSON_IsNumber(memo))
         turn->memo_prefix = (int)cJSON_GetNumberValue(memo);
 
-    cJSON *embedded = cJSON_GetObjectItem(tj, "messages");
-    if (embedded && cJSON_IsArray(embedded))
-    {
-        size_t n = cJSON_GetArraySize(embedded);
-        for (size_t i = 0; i < n; i++)
-        {
-            cJSON *msg = cJSON_GetArrayItem(embedded, i);
-            cJSON *copy = cJSON_Duplicate(msg, 1);
-            edc_queue_push(&turn->messages, copy);
-        }
-    }
+    /* The bodies are NOT in the snapshot; they are rows, read on demand. Only the shape
+     * comes back here. */
+    cJSON *cnt = cJSON_GetObjectItem(tj, "msg_count");
+    if (cnt && cJSON_IsNumber(cnt))
+        turn->msg_count = (int)cJSON_GetNumberValue(cnt);
+
+    cJSON *tord = cJSON_GetObjectItem(tj, "turn_ord");
+    if (tord && cJSON_IsNumber(tord))
+        turn->turn_ord = (int)cJSON_GetNumberValue(tord);
 
     /* Normalize: what is folded is in L2 by construction (the fold chain curated it),
      * and neither prefix may exceed the message count. A v7 archive lacks memo_prefix
      * entirely (reads back 0) => it becomes folded_prefix, which is exactly the old
      * binary's implicit assumption. */
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     if (turn->memo_prefix < turn->folded_prefix)
         turn->memo_prefix = turn->folded_prefix;
     if (turn->memo_prefix > (int)len)
@@ -1210,8 +1199,13 @@ static void deser_turns(cJSON *json, struct task_map_entry **id_map)
                 struct edc_turn *turn = turn_from_json(cJSON_GetArrayItem(turns_json, j));
                 if (!turn)
                     continue;
-                free(turn->task_id);
-                turn->task_id = strdup(task->task_id);
+                /* The ordinal in the snapshot IS the storage key the rows were written
+                 * under; falling back to the queue index keeps old snapshots readable. */
+                const int ord = turn->turn_ord >= 0 ? turn->turn_ord : (int)edc_queue_length(&task->turns);
+                const char *owner = cJSON_GetStringValue(cJSON_GetObjectItem(
+                    cJSON_GetArrayItem(turns_json, j), "owner_task_id"));
+                edc_turn_set_key(turn, task->session_id, task->group_id,
+                                 (owner && *owner) ? owner : task->task_id, ord);
                 edc_task_add_turn(task, turn);
             }
         }
@@ -1222,8 +1216,11 @@ static void deser_turns(cJSON *json, struct task_map_entry **id_map)
             struct edc_turn *turn = turn_from_json(at_json);
             if (turn)
             {
-                free(turn->task_id);
-                turn->task_id = strdup(task->task_id);
+                /* Keep the key the turn was stored under (see turn_to_json): the rows are
+                 * already written against it. */
+                const char *owner = cJSON_GetStringValue(cJSON_GetObjectItem(at_json, "owner_task_id"));
+                edc_turn_set_key(turn, task->session_id, task->group_id,
+                                 (owner && *owner) ? owner : task->task_id, turn->turn_ord);
                 task->active_turn = turn;
             }
         }

@@ -11,6 +11,7 @@
  * 末尾自己调 edc_scheduler_schedule (消息边界就是 tick)。没有通道 actor ⇒ 回话
  * 只给类型 (收不到), 所以命令层看**行为**, 文本看 kernel 的纯函数格式化器。 */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_executor.h"
 #include "edc_llm_actor.h"
@@ -112,8 +113,9 @@ static sds seed_entry(struct edc_session *sess, const char *title, const char *s
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_cmd_session_memo");
+    cfg->workspace = sdsnew(edc_test_workspace());
     struct edc_session *sess = edc_session_new(cfg, "sess-memo", "Memo");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -183,9 +185,9 @@ int main(void)
         /* 材料 = 组记忆 + focus + 现有条目索引 */
         struct edc_turn *turn = l2 ? l2->active_turn : NULL;
         const char *material = NULL;
-        if (turn && edc_queue_length(&turn->messages) > 0)
+        if (turn && turn->msg_count > 0)
         {
-            cJSON *m = turn->messages.data[turn->messages.head];
+            cJSON *m = edc_turn_msg_at(turn, 0);
             material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
         }
         CHECK(material && strstr(material, "bazelisk") != NULL, "带上了组记忆");
@@ -227,9 +229,9 @@ int main(void)
     {
         struct edc_turn *turn = ct ? ct->active_turn : NULL;
         const char *material = NULL;
-        if (turn && edc_queue_length(&turn->messages) > 0)
+        if (turn && turn->msg_count > 0)
         {
-            cJSON *m = turn->messages.data[turn->messages.head];
+            cJSON *m = edc_turn_msg_at(turn, 0);
             material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
         }
         CHECK(material && strstr(material, "## Compact the session memory") != NULL, "压缩指令在材料里");
@@ -296,9 +298,9 @@ int main(void)
         }
         CHECK(ct2 != NULL, "起的是压缩任务（memo_kind=COMPACT）");
         const char *material = NULL;
-        if (ct2 && ct2->active_turn && edc_queue_length(&ct2->active_turn->messages) > 0)
+        if (ct2 && ct2->active_turn && ct2->active_turn->msg_count > 0)
         {
-            cJSON *m = ct2->active_turn->messages.data[ct2->active_turn->messages.head];
+            cJSON *m = edc_turn_msg_at(ct2->active_turn, 0);
             material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
         }
         CHECK(material && strstr(material, "## Compact the session memory") != NULL, "材料里是压缩指令");

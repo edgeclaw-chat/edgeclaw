@@ -7,6 +7,7 @@
  * landing clamp, failure/backoff, and the tri-state serialization. */
 
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_executor.h"
@@ -76,7 +77,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_memo_extract_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -84,7 +85,6 @@ static struct edc_config *make_config(void)
 static void give_turn(struct edc_task *t, const char *text, const char *ts, int n)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
     for (int i = 0; i < n; i++)
     {
         cJSON *m = cJSON_CreateObject();
@@ -92,7 +92,7 @@ static void give_turn(struct edc_task *t, const char *text, const char *ts, int 
         cJSON_AddStringToObject(m, "content", text);
         if (ts)
             cJSON_AddStringToObject(m, "ts", ts);
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     edc_task_add_turn(t, turn);
 }
@@ -128,9 +128,9 @@ static struct edc_task *find_extract_task(struct edc_session *session)
 
 static const char *task_input(struct edc_task *t)
 {
-    if (!t || !t->active_turn || edc_queue_length(&t->active_turn->messages) == 0)
+    if (!t || !t->active_turn || t->active_turn->msg_count == 0)
         return NULL;
-    cJSON *m = t->active_turn->messages.data[t->active_turn->messages.head];
+    cJSON *m = edc_turn_msg_at(t->active_turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
 }
 
@@ -279,7 +279,6 @@ static void test_cap_multi_round_and_idempotence(void)
     /* One committed turn with two ~75k-token messages: together over the 131k cap,
      * each comfortably under it => round 1 takes the first, round 2 the second. */
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("g1");
     sds a = sdsnewlen(NULL, 300000);
     memset(a, 'A', 300000);
     a = sdscat(a, " MARK_A");
@@ -293,7 +292,7 @@ static void test_cap_multi_round_and_idempotence(void)
         cJSON_AddStringToObject(m, "role", "user");
         cJSON_AddStringToObject(m, "content", texts[i]);
         cJSON_AddStringToObject(m, "ts", OLD_TS);
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     sdsfree(a);
     sdsfree(b);
@@ -361,9 +360,9 @@ static void test_fold_landing_clamps_memo_prefix(void)
     CHECK(fold != NULL, "a fold started");
     /* The fold corpus is the task's own input; capture it before the reply commits the turn. */
     const char *fold_prompt = NULL;
-    if (fold->active_turn && edc_queue_length(&fold->active_turn->messages) > 0)
+    if (fold->active_turn && fold->active_turn->msg_count > 0)
     {
-        cJSON *m = fold->active_turn->messages.data[fold->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(fold->active_turn, 0);
         fold_prompt = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(fold_prompt && strstr(fold_prompt, OLD_TS) != NULL, "the fold corpus carries each message's timestamp");
@@ -528,7 +527,6 @@ static void test_material_keeps_tool_calls(void)
     edc_session_add_group(session, group);
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("g1");
     edc_turn_add_user_message(turn, "list the dir");
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "cmd", "ls -la");
@@ -536,8 +534,17 @@ static void test_material_keeps_tool_calls(void)
     cJSON_Delete(args);
     edc_turn_add_tool_message(turn, "call_1", "exec_shell", "total 0");
     /* edc_turn_add_* stamps ts = now; force it old so the group is "idle". */
-    for (size_t mi = turn->messages.head; mi < turn->messages.tail; mi++)
-        cJSON_ReplaceItemInObject(turn->messages.data[mi], "ts", cJSON_CreateString(OLD_TS));
+    for (int mi = 0; mi < turn->msg_count; mi++)
+    {
+        /* edc_turn_msg_at hands out a COPY: the edit has to be written back or the row
+         * keeps "now" and the group never looks idle. */
+        cJSON *m = edc_turn_msg_at(turn, mi);
+        if (!m)
+            continue;
+        cJSON_ReplaceItemInObject(m, "ts", cJSON_CreateString(OLD_TS));
+        edc_msg_append(turn->task_id, turn->turn_ord, mi, m, 0);
+        cJSON_Delete(m);
+    }
     edc_task_add_turn(leader, turn);
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
@@ -604,6 +611,7 @@ static void test_prompts_have_recency_rule(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_due_predicate();
     test_material_excludes_group_memory();
     test_cap_multi_round_and_idempotence();

@@ -16,6 +16,7 @@
  * ══════════════════════════════════════════════════════════════ */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -82,7 +83,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_session_routing_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -241,6 +242,7 @@ static void test_tagless_input_uses_the_default(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== test_session_routing (P3 ①a 防线) ===");
 
     test_input_lands_in_the_tagged_session();

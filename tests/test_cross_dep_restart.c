@@ -16,12 +16,14 @@
  */
 
 #include "edc_session_store.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -112,8 +114,8 @@ static void give_input(struct edc_task *t)
 static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, sds *out_bt_id)
 {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    system(cmd);
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(ws);
@@ -150,10 +152,17 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     edc_session_manager_free(sm);
     edc_config_free(cfg);
 
+    /* "B's state is gone" now means "its rows are gone", not "its session.json was
+     * deleted" -- persistence moved to edgeclaw.db, so removing the legacy file would
+     * leave B perfectly restorable and the scenario would test nothing. */
     if (delete_b_state)
     {
-        snprintf(cmd, sizeof(cmd), "rm -f %s/%s/session.json", ws, b_sid);
-        system(cmd);
+        struct edc_config *forget_cfg = g_new0(struct edc_config, 1);
+        forget_cfg->workspace = sdsnew(ws);
+        if (edc_state_store_open(forget_cfg))
+            edc_state_store_forget(b_sid);
+        sdsfree(forget_cfg->workspace);
+        free(forget_cfg);
     }
     sdsfree(b_sid);
 }
@@ -229,8 +238,8 @@ static void scenario_unresolvable(const char *ws)
 static void scenario_multihop(const char *ws)
 {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    system(cmd);
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(ws);
@@ -289,6 +298,7 @@ static void scenario_multihop(const char *ws)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     scenario_restore("/tmp/test_cross_dep_restart_a");
     scenario_unresolvable("/tmp/test_cross_dep_restart_b");
     scenario_multihop("/tmp/test_cross_dep_restart_c");

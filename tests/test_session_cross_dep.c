@@ -16,6 +16,7 @@
  */
 
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -57,7 +58,7 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
-#define TEST_WS "/tmp/test_cross_dep_ws"
+#define TEST_WS edc_test_workspace()
 
 static void send_cmd(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_scheduler *sched,
                      edc_actor_t *channel_actor, const char *content)
@@ -91,6 +92,7 @@ static int count_tasks(struct edc_session *s)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
     system(cmd);

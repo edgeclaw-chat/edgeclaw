@@ -17,6 +17,7 @@
  * emit a real 256 MiB. */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
@@ -81,7 +82,7 @@ static void harness_up(struct harness *h, int capture_max, int kill_max)
 {
     memset(h, 0, sizeof(*h));
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_tool_shell_loop_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->cfg->enable_sandbox = false;
     h->cfg->shell_capture_max = capture_max;
     h->cfg->shell_output_kill_max = kill_max;
@@ -274,6 +275,7 @@ static void test_cjk_output_is_utf8(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== exec_shell on a real loop: output limits ===");
     log_info("");
 

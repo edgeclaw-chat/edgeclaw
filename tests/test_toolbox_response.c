@@ -30,6 +30,7 @@
  * (driving task trees is the scan's subject, not this file's). */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_error.h"
@@ -177,7 +178,7 @@ static void close_handle_cb(uv_handle_t *handle, void *arg)
 static void harness_up(struct harness *h, int max_output)
 {
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_toolbox_response_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->cfg->tool_max_output_size = max_output;
 
     h->sched = edc_scheduler_new(h->cfg);
@@ -264,9 +265,9 @@ static const char *turn_tool_content(struct edc_turn *turn, const char *call_id)
 {
     if (!turn)
         return NULL;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, i);
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
         if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
@@ -281,9 +282,9 @@ static int turn_count_tool_msgs(struct edc_turn *turn)
     int n = 0;
     if (!turn)
         return 0;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, i);
         cJSON *role = cJSON_GetObjectItem(m, "role");
         if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
             n++;
@@ -507,6 +508,7 @@ static void test_started_after_cancel(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== toolbox actor response side tests ===");
     log_info("");
 

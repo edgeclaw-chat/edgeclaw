@@ -5,6 +5,7 @@
 #include "edc_file_utils.h"
 #include "edc_session.h"
 #include "edc_state_serializer.h"
+#include "edc_state_store.h"
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
@@ -381,8 +382,6 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     return sm;
 }
 
-static void sm_task_index_free(struct edc_session_manager *sm);
-
 void edc_session_manager_free(struct edc_session_manager *sm)
 {
     if (!sm)
@@ -394,7 +393,6 @@ void edc_session_manager_free(struct edc_session_manager *sm)
     for (int i = 0; i < sm->session_count; i++)
         edc_session_free(sm->sessions[i]);
 
-    sm_task_index_free(sm);
     free(sm->sessions);
     sdsfree(sm->sessions_dir);
     sdsfree(sm->index_path);
@@ -501,108 +499,43 @@ void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_sessio
  * unloaded sessions"; loaded sessions are covered by the in-memory lookup and new
  * tasks are always in a loaded session, so no write-side sync is needed. */
 
-struct edc_task_index_entry
-{
-    sds task_id;
-    sds session_id;
-    UT_hash_handle hh;
-};
-
-static void sm_task_index_add(struct edc_session_manager *sm, const char *task_id, const char *session_id)
-{
-    if (!sm || !task_id || !task_id[0] || !session_id)
-        return;
-    struct edc_task_index_entry *e = NULL;
-    HASH_FIND(hh, sm->task_index, task_id, strlen(task_id), e);
-    if (e)
-        return; /* task ids are globally unique → first wins */
-    e = g_new0(struct edc_task_index_entry, 1);
-    e->task_id = sdsnew(task_id);
-    e->session_id = sdsnew(session_id);
-    HASH_ADD_KEYPTR(hh, sm->task_index, e->task_id, sdslen(e->task_id), e);
-}
-
-/* Parse session.json once to collect task ids, for locating an unloaded session's owner. */
-static void sm_task_index_ingest_session_json(struct edc_session_manager *sm, struct edc_session *s)
-{
-    sds path = edc_path_join(s->history_dir, "session.json", NULL);
-    if (!edc_file_exists(path))
-    {
-        sdsfree(path);
-        return;
-    }
-    EdcError *err = NULL;
-    sds content = edc_file_read(path, &err);
-    sdsfree(path);
-    if (!content)
-    {
-        if (err)
-            edc_error_free(err);
-        return;
-    }
-    cJSON *json = cJSON_Parse(content);
-    sdsfree(content);
-    if (!json)
-        return;
-
-    cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
-    if (cJSON_IsArray(tasks))
-    {
-        int n = cJSON_GetArraySize(tasks);
-        for (int i = 0; i < n; i++)
-        {
-            const char *tid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(tasks, i), "task_id"));
-            if (tid && tid[0])
-                sm_task_index_add(sm, tid, s->session_id);
-        }
-    }
-    cJSON_Delete(json);
-}
-
-static void sm_task_index_build(struct edc_session_manager *sm)
-{
-    for (int i = 0; i < sm->session_count; i++)
-    {
-        struct edc_session *s = sm->sessions[i];
-        if (!s || s->state_loaded)
-            continue; /* loaded -> memory wins, do not index */
-        sm_task_index_ingest_session_json(sm, s);
-    }
-    sm->task_index_built = true;
-}
-
-static void sm_task_index_free(struct edc_session_manager *sm)
-{
-    struct edc_task_index_entry *e, *tmp;
-    HASH_ITER(hh, sm->task_index, e, tmp)
-    {
-        HASH_DEL(sm->task_index, e);
-        sdsfree(e->task_id);
-        sdsfree(e->session_id);
-        free(e);
-    }
-    sm->task_index = NULL;
-    sm->task_index_built = false;
-}
+/* ── Locating the owner of a task ──────────────────────────────────────────
+ * This used to be a uthash cache filled by parsing every unloaded session's session.json
+ * (sm_task_index_*: ~80 lines). With SQLite there is nothing to cache -- the owner is one
+ * primary-key lookup, and the database is always current, whereas the old index had to be
+ * invalidated by hand after every save. Deleted rather than kept alongside, per the
+ * design doc §6.2. */
 
 void edc_session_manager_reset_task_index(struct edc_session_manager *sm)
 {
-    if (sm)
-        sm_task_index_free(sm);
+    /* Kept as a no-op so call sites (created/saved/loaded) do not all have to change this
+     * round; there is no index left to invalidate. Stage 4 removes it. */
+    (void)sm;
 }
 
 struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id)
 {
-    if (!sm || !task_id)
+    if (!sm || !task_id || !*task_id)
         return NULL;
-    if (!sm->task_index_built)
-        sm_task_index_build(sm);
 
-    struct edc_task_index_entry *e = NULL;
-    HASH_FIND(hh, sm->task_index, task_id, strlen(task_id), e);
-    if (!e)
+    /* An in-memory session wins: it is authoritative and may hold a task that has not
+     * been flushed yet (nothing wrote this run). */
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        struct edc_session *s = sm->sessions[i];
+        if (!s)
+            continue;
+        if (edc_session_find_task(s, task_id))
+            return s;
+    }
+
+    /* Otherwise ask the store: one primary-key lookup. */
+    char *owner = edc_state_store_session_for_task(task_id);
+    if (!owner)
         return NULL;
-    return edc_session_manager_find(sm, e->session_id);
+    struct edc_session *found = edc_session_manager_find(sm, owner);
+    free(owner);
+    return found;
 }
 
 /* ── Operations ────────────────────────────────────────────── */
@@ -710,7 +643,7 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
      * session's state. For an id/name-only shell (never activated in this run)
      * the file on disk is the newer copy, and writing the shell would wipe it. */
     if (to_stop->state_loaded)
-        edc_session_save_state(to_stop, NULL);
+        edc_session_save_state_tagged(to_stop, NULL, "sm:stop");
 
     /* Remove from array */
     int new_count = sm->session_count - 1;
@@ -799,11 +732,13 @@ void edc_session_manager_save_all(struct edc_session_manager *sm)
     if (!sm)
         return;
 
-    /* Save active session's history */
-    struct edc_session *active = edc_session_manager_get_active(sm);
-    if (active)
-
-    /* Save index */
+    /* The index, and only the index. Session state is not written here: this function has
+     * no scheduler, and since the move to the store every per-session save needs one. The
+     * paths that want the tree on disk are edc_session_store_save_all_sessions_state() and
+     * edc_session_store_save_session_state_tagged(), and both call
+     * edc_session_manager_save_loaded_states() after this. (An earlier version carried an
+     * empty `if (active)` branch here with a comment claiming it saved the active session:
+     * a save that silently saved nothing.) */
     edc_sm_save_index(sm);
 }
 
@@ -822,6 +757,6 @@ void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, stru
          * exactly how a session "loses" its workdir after a restart. */
         if (!s || !s->state_loaded)
             continue;
-        edc_session_save_state(s, sched);
+        edc_session_save_state_tagged(s, sched, "sm:save-loaded");
     }
 }

@@ -29,6 +29,7 @@
  * 本测试不依赖 secret/网络/真实 home: 不构造 app, 直接驱动 toolbox 与 task。
  */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -596,7 +597,7 @@ static void test_append_system_part(void)
     /* ── fallback: group 空历史 + conf → 现拼纯净 prompt 经 out_pristine 交还;
      *    写回 group history 属调用方; todo 仍只在队尾 reminder ── */
     struct edc_config *conf = g_new0(struct edc_config, 1);
-    conf->workspace = sdsnew("/tmp/test-session");
+    conf->workspace = sdsnew(edc_test_workspace());
     struct edc_task *t2 = edc_task_new("ap-2", "s", "g", "no list", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(t2);
 
@@ -678,6 +679,7 @@ static void test_append_system_part(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_attach_and_reminder();
     test_no_list_planning_guide();
     test_validation_gate();

@@ -190,8 +190,9 @@ void edc_session_store_save_all_sessions_state(struct edc_session_manager *sm, s
     edc_session_manager_save_loaded_states(sm, sched);
 }
 
-void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                          struct edc_session *session)
+void edc_session_store_save_session_state_tagged(struct edc_session_manager *sm,
+                                                 struct edc_scheduler *sched,
+                                                 struct edc_session *session, const char *tag)
 {
     if (!sm || !sched)
         return;
@@ -201,7 +202,13 @@ void edc_session_store_save_session_state(struct edc_session_manager *sm, struct
 
     struct edc_session *target = session ? session : edc_session_manager_get_active(sm);
     if (target)
-        edc_session_save_state(target, sched);
+        edc_session_save_state_tagged(target, sched, tag);
+}
+
+void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                          struct edc_session *session)
+{
+    edc_session_store_save_session_state_tagged(sm, sched, session, "store:direct");
 }
 
 /* User /stop (/session stop): cancel all non-terminal turns of the current session
@@ -215,7 +222,7 @@ void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc
         return;
     struct edc_session *active = edc_session_manager_get_active(sm);
     edc_scheduler_send_signal_to_all(sched, active, TASK_SIGTERM);
-    edc_session_store_save_session_state(sm, sched, active);
+    edc_session_store_save_session_state_tagged(sm, sched, active, "session:stop");
 }
 
 /* Forget that any request was in flight: the process is going down, so a reply that is

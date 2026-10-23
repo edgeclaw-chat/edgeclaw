@@ -1,4 +1,5 @@
 #include "edc_session.h"
+#include "test_ws.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -24,7 +25,7 @@ static int passed = 0;
 
 static struct edc_config *make_cfg(void) {
     struct edc_config *c = calloc(1, sizeof(*c));
-    c->workspace = sdsnew("/tmp/test-session");
+    c->workspace = sdsnew(edc_test_workspace());
     return c;
 }
 
@@ -341,6 +342,7 @@ static void test_orphan_cleanup(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 4: edc_session 高强度测试 ===");
     log_info("");
 

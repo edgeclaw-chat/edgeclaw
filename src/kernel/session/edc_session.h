@@ -53,6 +53,11 @@ struct edc_session
      * overwritten by on the next exit. */
     bool state_quarantined;
 
+    /* The legacy session.json warning was already emitted for this session. Persistence
+     * moved to <workspace>/edgeclaw.db; an old file is ignored with ONE warn rather than
+     * one per tool boundary. */
+    bool legacy_state_warned;
+
     struct edc_config *config;
 
     /* L2: session-level memory (event table + entry table + digest watermark).
@@ -164,9 +169,16 @@ struct edc_scheduler;
  *  Returns true on success. */
 extern bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched);
 
-/** Load session state from workspace/<session_id>/session.json.
+/** Same as edc_session_save_state(), but records |tag| (the call site) in the
+ *  stage-0 baseline probe (EDGECLAW_STATE_PROBE, see edc_state_probe.h). Exists
+ *  only so the baseline can tell the flush sites apart; behaves identically. */
+extern bool edc_session_save_state_tagged(struct edc_session *session, struct edc_scheduler *sched,
+                                          const char *tag);
+
+/** Load session state from <workspace>/edgeclaw.db (see edc_state_store.h).
  *  Rebuilds all groups, tasks, turns, and dependencies.
- *  Returns true on success, false if file missing or corrupt. */
+ *  Returns true on success, false when the store holds nothing for this session
+ *  (a brand-new session) or when reading failed. */
 extern bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched);
 
 #endif

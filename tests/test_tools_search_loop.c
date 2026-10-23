@@ -10,6 +10,7 @@
  * class of bug visible.) */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
@@ -71,7 +72,7 @@ static void harness_up(struct harness *h, const char *root)
 {
     memset(h, 0, sizeof(*h));
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_tools_search_loop_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->cfg->enable_sandbox = false;
     /* Even with the sandbox off, the ROOT is what a relative "." resolves against --
      * without it the path comes back as given and the walk would use the process cwd. */
@@ -260,6 +261,7 @@ static void test_grep_bad_input_does_not_crash(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("test_tools_search_loop: grep/find through the real toolbox");
     test_grep_through_the_real_tool();
     test_find_through_the_real_tool();

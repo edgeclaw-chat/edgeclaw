@@ -83,7 +83,9 @@ extern bool edc_session_manager_rename(struct edc_session_manager *sm, const cha
 
 extern sds edc_session_manager_list(struct edc_session_manager *sm);
 
-/** Save the index (sessions.json) and then the active session. */
+/** Save the index (sessions.json). Session state is NOT part of this: it needs a
+ *  scheduler, so it is written by edc_session_store_save_all_sessions_state() /
+ *  edc_session_store_save_session_state_tagged() (src/kernel/session/edc_state_store.h). */
 extern void edc_session_manager_save_all(struct edc_session_manager *sm);
 
 /** Persist the state of every session LOADED in this run (exit path). Sessions

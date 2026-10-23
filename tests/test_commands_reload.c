@@ -11,6 +11,7 @@
  *
  * Harness copied from test_commands_prompt.c. */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -82,7 +83,8 @@ static void write_file_at(const char *path, const char *content)
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_reload_ws";
+    edc_test_workspace(); /* open the disposable store before anything writes */
+    const char *ws = edc_test_workspace();
     char cmd[1024];
     /* A workspace with ONE skill at first. */
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/skills/first", ws, ws);

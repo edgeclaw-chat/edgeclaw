@@ -900,8 +900,22 @@ struct extract_piece
     struct edc_turn *turn;
     size_t turn_index; /* index in the member's committed turns queue */
     size_t msg_index;  /* absolute index within that turn */
+    /* The message itself, owned by this piece: messages live in the store now, so the
+     * column holds the copies it was built from and frees them when done. */
+    cJSON *msg;
     long long tokens;
 };
+
+/* Free the column, including the message copies the pieces own. */
+static void extract_free_pieces(struct extract_piece *ps, size_t cnt)
+{
+    if (!ps)
+        return;
+    for (size_t i = 0; i < cnt; i++)
+        if (ps[i].msg)
+            cJSON_Delete(ps[i].msg);
+    free(ps);
+}
 
 /* Flatten one member's committed turns, from each turn's memo_prefix onwards, into the
  * column. Only committed turns are read -- extraction never touches an in-flight turn
@@ -909,12 +923,15 @@ struct extract_piece
 static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, struct edc_task *t, struct edc_turn *turn,
                          size_t turn_index)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t from = (turn->memo_prefix > 0) ? (size_t)turn->memo_prefix : 0;
     if (from > len)
         from = len;
     for (size_t mi = from; mi < len; mi++)
     {
+        cJSON *msg = edc_turn_msg_at(turn, (int)mi);
+        if (!msg)
+            continue;
         if (*cnt == *cap)
         {
             *cap = *cap ? *cap * 2 : 64;
@@ -925,7 +942,8 @@ static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, st
         fp->turn = turn;
         fp->turn_index = turn_index;
         fp->msg_index = mi;
-        fp->tokens = edc_token_estimate_msg(turn->messages.data[turn->messages.head + mi]);
+        fp->msg = msg;
+        fp->tokens = edc_token_estimate_msg(msg);
     }
 }
 
@@ -972,7 +990,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
     if (cnt == 0)
     {
         free(members);
-        free(ps);
+        extract_free_pieces(ps, cnt);
         return NULL;
     }
 
@@ -1015,7 +1033,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
             struct extract_piece *last = &ps[cnt - 1];
             out_cut->task_id = last->task->task_id;
             out_cut->turn = (uint32_t)last->turn_index;
-            out_cut->prefix = (uint32_t)edc_queue_length(&last->turn->messages);
+            out_cut->prefix = (uint32_t)last->turn->msg_count;
         }
     }
 
@@ -1044,7 +1062,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
             cur = tk;
             out = sdscatprintf(out, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
         }
-        cJSON *m = ps[i].turn->messages.data[ps[i].turn->messages.head + ps[i].msg_index];
+        cJSON *m = ps[i].msg;
         if (cJSON_GetStringValue(cJSON_GetObjectItem(m, "role")))
         {
             /* One line, with the message's wall-clock time and (for a tool call) its
@@ -1070,7 +1088,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
                       "   related exists.\n");
 
     free(members);
-    free(ps);
+    extract_free_pieces(ps, cnt);
     return out;
 }
 
@@ -1089,7 +1107,7 @@ size_t edc_task_group_extractable_msg_count(struct edc_task_group *group)
         for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
         {
             struct edc_turn *turn = t->turns.data[qi];
-            size_t len = edc_queue_length(&turn->messages);
+            size_t len = (size_t)turn->msg_count;
             size_t from = (turn->memo_prefix > 0) ? (size_t)turn->memo_prefix : 0;
             if (from < len)
                 total += len - from;
@@ -1131,9 +1149,11 @@ static time_t group_last_activity(struct edc_task_group *group)
         for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
         {
             struct edc_turn *turn = t->turns.data[qi];
-            for (size_t mi = turn->messages.head; mi < turn->messages.tail; mi++)
+            for (int mi = 0; mi < turn->msg_count; mi++)
             {
-                cJSON *m = turn->messages.data[mi];
+                cJSON *m = edc_turn_msg_at(turn, mi);
+                if (!m)
+                    continue;
                 cJSON *ts = cJSON_GetObjectItem(m, "ts");
                 if (ts && cJSON_IsString(ts))
                 {
@@ -1141,6 +1161,7 @@ static time_t group_last_activity(struct edc_task_group *group)
                     if (v > best)
                         best = v;
                 }
+                cJSON_Delete(m);
             }
         }
     }
@@ -1296,14 +1317,14 @@ void edc_session_memory_extract_note_progress(struct edc_task_group *group)
 
 static void extract_turn_whole(struct edc_turn *turn)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     if ((size_t)turn->memo_prefix < len)
         turn->memo_prefix = (int)len;
 }
 
 static void extract_turn_prefix(struct edc_turn *turn, uint32_t prefix)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t want = prefix;
     if (want > len)
         want = len;

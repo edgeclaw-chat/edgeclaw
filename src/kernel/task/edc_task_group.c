@@ -116,12 +116,26 @@ void edc_task_group_history_add_turn(struct edc_task_group *group, struct edc_tu
     if (!group || !turn)
         return;
 
-    size_t len = edc_queue_length(&turn->messages);
-    size_t folded = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
-    if (folded > len)
-        folded = len;
-    for (size_t i = folded; i < len; i++)
-        edc_task_group_history_add_ref(group, turn->messages.data[turn->messages.head + i]);
+    /* The unfolded span, read once from the store. Previously this referenced the turn's
+     * in-memory messages; there is no such array now, so the cost of rebuilding the group
+     * history is a range query -- which is what "rebuilt from turns" already meant. */
+    int folded = (turn->folded_prefix > 0) ? turn->folded_prefix : 0;
+    if (folded > turn->msg_count)
+        folded = turn->msg_count;
+    if (folded >= turn->msg_count)
+        return;
+
+    cJSON *arr = edc_turn_msgs(turn, folded, turn->msg_count);
+    if (!arr)
+        return;
+
+    if (!group->history)
+        group->history = cJSON_CreateArray();
+    /* The history OWNS these now: the turn no longer holds messages, so a reference would
+     * have nothing to point at once the query result is freed. */
+    while (cJSON_GetArraySize(arr) > 0)
+        cJSON_AddItemToArray(group->history, cJSON_DetachItemFromArray(arr, 0));
+    cJSON_Delete(arr);
 }
 
 struct edc_task **edc_task_group_content_order(struct edc_task_group *group, size_t *n)

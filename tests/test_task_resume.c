@@ -17,6 +17,7 @@
  */
 
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
@@ -77,7 +78,7 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
-#define TEST_WS "/tmp/test_edc_task_resume_ws"
+#define TEST_WS edc_test_workspace()
 
 static struct edc_config *make_config(void)
 {
@@ -112,9 +113,9 @@ static bool turn_has_tool_msg(struct edc_turn *turn, const char *call_id)
 {
     if (!turn)
         return false;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, i);
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
         if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
@@ -553,7 +554,7 @@ static void test_resume_error_continues_turn(void)
     CHECK(g_send_llm_calls == 1, "LLM re-dispatched once");
     CHECK(g_redispatch_calls == 0, "nothing redispatched");
     CHECK(t->active_turn != NULL, "active_turn preserved (continue, not restart)");
-    CHECK(t->active_turn && edc_queue_length(&t->active_turn->messages) == 1,
+    CHECK(t->active_turn && t->active_turn->msg_count == 1,
           "half-finished round still intact");
 
     edc_session_free(s);
@@ -643,9 +644,9 @@ static void test_resume_cancelled_dangling_tool(void)
     /* 幂等: 再 resume 一次不会补第二条 */
     edc_scheduler_resume_task(sched, t);
     size_t tool_msgs = 0;
-    for (size_t i = 0; i < t->active_turn->messages.tail; i++)
+    for (size_t i = 0; i < t->active_turn->msg_count; i++)
     {
-        cJSON *m = t->active_turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(t->active_turn, i);
         cJSON *role = cJSON_GetObjectItem(m, "role");
         if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
             tool_msgs++;
@@ -723,6 +724,7 @@ static void test_resume_blocked_clears_the_note(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== task resume / tool ledger tests ===");
     log_info("");
 

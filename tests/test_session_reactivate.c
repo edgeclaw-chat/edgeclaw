@@ -24,6 +24,7 @@
  */
 
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -65,7 +66,7 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
-#define TEST_WS "/tmp/test_edc_reactivate_ws"
+#define TEST_WS edc_test_workspace()
 
 /* Simulate the STOP path of sched_handle_llm_resp for a finished turn:
  * record the turn's messages into group history *by reference*, then commit
@@ -75,7 +76,6 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
                                    const char *assistant)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
     edc_turn_add_user_message(turn, user);
     cJSON *am = cJSON_CreateObject();
     cJSON_AddStringToObject(am, "role", "assistant");
@@ -85,9 +85,9 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
 
     if (task->group && task->active_turn)
     {
-        for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
+        for (int qi = 0; qi < task->active_turn->msg_count; qi++)
         {
-            cJSON *item = task->active_turn->messages.data[qi];
+            cJSON *item = edc_turn_msg_at(task->active_turn, qi);
             edc_task_group_history_add_ref(task->group, item);
         }
     }
@@ -153,18 +153,18 @@ static int count_messages_containing(struct edc_session *s, const char *needle)
                 struct edc_turn *turn = (struct edc_turn *)t->turns.data[i];
                 if (!turn)
                     continue;
-                for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+                for (int j = 0; j < turn->msg_count; j++)
                 {
-                    cJSON *content = cJSON_GetObjectItem((cJSON *)turn->messages.data[j], "content");
+                    cJSON *content = cJSON_GetObjectItem((cJSON *)edc_turn_msg_at(turn, j), "content");
                     if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
                         n++;
                 }
             }
             if (t->active_turn)
             {
-                for (size_t j = t->active_turn->messages.head; j < t->active_turn->messages.tail; j++)
+                for (int j = 0; j < t->active_turn->msg_count; j++)
                 {
-                    cJSON *content = cJSON_GetObjectItem((cJSON *)t->active_turn->messages.data[j], "content");
+                    cJSON *content = cJSON_GetObjectItem((cJSON *)edc_turn_msg_at(t->active_turn, j), "content");
                     if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
                         n++;
                 }
@@ -176,9 +176,9 @@ static int count_messages_containing(struct edc_session *s, const char *needle)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* no rm: the store is open on this workspace */
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", TEST_WS);
     system(cmd);
 
@@ -225,8 +225,7 @@ int main(void)
     edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* no rm: the store is open on this workspace */
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

@@ -66,9 +66,9 @@ static int passed = 0, failed = 0;
 /* The first user message of a turn -- what the model actually receives. */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 

@@ -28,7 +28,7 @@ TUI_TEST_LINK_OPTS = LINK_OPTS + ["-lstdc++"]
 
 cc_test(
     name = "test_containers",
-    srcs = ["test_containers.c"],
+    srcs = ["test_containers.c", "test_ws.h"],
     deps = [
         "//src/common:common",
     ],
@@ -39,7 +39,7 @@ cc_test(
 # EDGECLAW_MASTER_KEY=... bazel test //tests:test_llm_actor --test_output=all
 cc_test(
     name = "test_llm_actor",
-    srcs = ["test_llm_actor.c"],
+    srcs = ["test_llm_actor.c", "test_ws.h"],
     tags = ["manual"],
     deps = [
         "//src/actor:actor",
@@ -51,7 +51,7 @@ cc_test(
 
 cc_test(
     name = "test_lwip_http",
-    srcs = ["test_lwip_http.c"],
+    srcs = ["test_lwip_http.c", "test_ws.h"],
     deps = [
         "//src/device:device",
         "//thirdparty/lwip:sys_arch",
@@ -62,7 +62,7 @@ cc_test(
 
 cc_test(
     name = "test_pppos_http",
-    srcs = ["test_pppos_http.c"],
+    srcs = ["test_pppos_http.c", "test_ws.h"],
     deps = [
         "//thirdparty/lwip:sys_arch",
         "@lwip//:lwip",
@@ -74,7 +74,7 @@ cc_test(
 # 仍可显式跑：bazel test //tests:test_pppos_stress。
 cc_test(
     name = "test_pppos_stress",
-    srcs = ["test_pppos_stress.c"],
+    srcs = ["test_pppos_stress.c", "test_ws.h"],
     tags = ["manual"],
     deps = [
         "//thirdparty/lwip:sys_arch",
@@ -85,7 +85,7 @@ cc_test(
 
 cc_test(
     name = "test_pppos_agent",
-    srcs = ["test_pppos_agent.c"],
+    srcs = ["test_pppos_agent.c", "test_ws.h"],
     deps = [
         "//src/device:device",
         "//thirdparty/lwip:sys_arch",
@@ -98,7 +98,7 @@ cc_test(
 # 仍可显式跑：bazel test //tests:test_pppos_agent_stress。
 cc_test(
     name = "test_pppos_agent_stress",
-    srcs = ["test_pppos_agent_stress.c"],
+    srcs = ["test_pppos_agent_stress.c", "test_ws.h"],
     tags = ["manual"],
     deps = [
         "//src/common:common",
@@ -124,7 +124,7 @@ cc_binary(
 
 cc_test(
     name = "test_strutil",
-    srcs = ["test_strutil.c"],
+    srcs = ["test_strutil.c", "test_ws.h"],
     deps = [
         "//src:edc_string_utils",
     ],
@@ -133,7 +133,7 @@ cc_test(
 
 cc_test(
     name = "test_https_client_get",
-    srcs = ["test_https_client_get.c"],
+    srcs = ["test_https_client_get.c", "test_ws.h"],
     deps = [
         "//src/common:common",
     ],
@@ -142,7 +142,7 @@ cc_test(
 
 cc_test(
     name = "test_group_ctx",
-    srcs = ["test_group_ctx.c"],
+    srcs = ["test_group_ctx.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -154,7 +154,7 @@ cc_test(
 
 cc_test(
     name = "test_tools_memory",
-    srcs = ["test_tools_memory.c"],
+    srcs = ["test_tools_memory.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -167,7 +167,7 @@ cc_test(
 
 cc_test(
     name = "test_session_memory",
-    srcs = ["test_session_memory.c"],
+    srcs = ["test_session_memory.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -178,7 +178,7 @@ cc_test(
 
 cc_test(
     name = "test_context_estimate",
-    srcs = ["test_context_estimate.c"],
+    srcs = ["test_context_estimate.c", "test_ws.h"],
     deps = [
         "//src/kernel:kernel",
         "@cjson//:cjson",
@@ -188,7 +188,7 @@ cc_test(
 
 cc_test(
     name = "test_edc_task",
-    srcs = ["test_edc_task.c"],
+    srcs = ["test_edc_task.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -199,7 +199,7 @@ cc_test(
 
 cc_test(
     name = "test_edc_task_group",
-    srcs = ["test_edc_task_group.c"],
+    srcs = ["test_edc_task_group.c", "test_ws.h"],
     deps = [
         "//src/kernel:kernel",
         "@log.c//:log.c",
@@ -209,7 +209,7 @@ cc_test(
 
 cc_test(
     name = "test_edc_task_stress",
-    srcs = ["test_edc_task_stress.c"],
+    srcs = ["test_edc_task_stress.c", "test_ws.h"],
     deps = [
         "//src/kernel:kernel",
         "@log.c//:log.c",
@@ -219,7 +219,7 @@ cc_test(
 
 cc_test(
     name = "test_edc_scheduler",
-    srcs = ["test_edc_scheduler.c"],
+    srcs = ["test_edc_scheduler.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -232,7 +232,7 @@ cc_test(
 
 cc_test(
     name = "test_toolset",
-    srcs = ["test_toolset.c"],
+    srcs = ["test_toolset.c", "test_ws.h"],
     deps = [
         "//src/toolbox:toolbox",
         "@cjson//:cjson",
@@ -244,7 +244,7 @@ cc_test(
 
 cc_test(
     name = "test_output_buf",
-    srcs = ["test_output_buf.c"],
+    srcs = ["test_output_buf.c", "test_ws.h"],
     deps = [
         "//src/toolbox:toolbox",
         "@log.c//:log.c",
@@ -255,7 +255,7 @@ cc_test(
 
 cc_test(
     name = "test_tool_shell_loop",
-    srcs = ["test_tool_shell_loop.c"],
+    srcs = ["test_tool_shell_loop.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -276,7 +276,7 @@ sh_test(
 
 cc_test(
     name = "test_tools_search_loop",
-    srcs = ["test_tools_search_loop.c"],
+    srcs = ["test_tools_search_loop.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -294,7 +294,7 @@ cc_test(
 # 起 actor loop；工具层那半截在 test_tools_search_loop 里）。
 cc_test(
     name = "test_search_matrix",
-    srcs = ["test_search_matrix.c"],
+    srcs = ["test_search_matrix.c", "test_ws.h"],
     deps = [
         "//src/toolbox:toolbox",
         "@log.c//:log.c",
@@ -305,7 +305,7 @@ cc_test(
 
 cc_test(
     name = "test_local_shell",
-    srcs = ["test_local_shell.c"],
+    srcs = ["test_local_shell.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -319,7 +319,7 @@ cc_test(
 
 cc_test(
     name = "test_edc_session_stress",
-    srcs = ["test_edc_session_stress.c"],
+    srcs = ["test_edc_session_stress.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -330,7 +330,7 @@ cc_test(
 
 cc_test(
     name = "test_group_level",
-    srcs = ["test_group_level.c"],
+    srcs = ["test_group_level.c", "test_ws.h"],
     deps = [
         "//src/kernel:kernel",
         "@log.c//:log.c",
@@ -340,7 +340,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_help",
-    srcs = ["test_commands_help.c"],
+    srcs = ["test_commands_help.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -349,8 +349,9 @@ cc_test(
 
 cc_test(
     name = "test_commands_receipt",
-    srcs = ["test_commands_receipt.c"],
+    srcs = ["test_commands_receipt.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -358,8 +359,9 @@ cc_test(
 
 cc_test(
     name = "test_commands_task_new",
-    srcs = ["test_commands_task_new.c"],
+    srcs = ["test_commands_task_new.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -369,6 +371,7 @@ cc_test(
     name = "test_sandbox_paths",
     srcs = ["test_sandbox_paths.c"],
     deps = [
+        "//src/kernel:kernel",
         "//src/sandbox:sandbox",
     ],
     linkopts = LINK_OPTS,
@@ -376,7 +379,7 @@ cc_test(
 
 cc_test(
     name = "test_file_index",
-    srcs = ["test_file_index.c"],
+    srcs = ["test_file_index.c", "test_ws.h"],
     deps = [
         "//src/common:edc_file_utils",
     ],
@@ -385,7 +388,7 @@ cc_test(
 
 cc_test(
     name = "test_file_rename",
-    srcs = ["test_file_rename.c"],
+    srcs = ["test_file_rename.c", "test_ws.h"],
     deps = [
         "//src/common:edc_file_utils",
     ],
@@ -394,7 +397,7 @@ cc_test(
 
 cc_test(
     name = "test_mention_pass",
-    srcs = ["test_mention_pass.c"],
+    srcs = ["test_mention_pass.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -403,8 +406,9 @@ cc_test(
 
 cc_test(
     name = "test_commands_task_fork",
-    srcs = ["test_commands_task_fork.c"],
+    srcs = ["test_commands_task_fork.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -412,7 +416,7 @@ cc_test(
 
 cc_test(
     name = "test_shell_job_control",
-    srcs = ["test_shell_job_control.c"],
+    srcs = ["test_shell_job_control.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -421,7 +425,7 @@ cc_test(
 
 cc_test(
     name = "test_shell_switch",
-    srcs = ["test_shell_switch.c"],
+    srcs = ["test_shell_switch.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -430,7 +434,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_session_memo",
-    srcs = ["test_commands_session_memo.c"],
+    srcs = ["test_commands_session_memo.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -444,7 +448,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_session_new",
-    srcs = ["test_commands_session_new.c"],
+    srcs = ["test_commands_session_new.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -458,8 +462,9 @@ cc_test(
 
 cc_test(
     name = "test_commands_group_fold",
-    srcs = ["test_commands_group_fold.c"],
+    srcs = ["test_commands_group_fold.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -467,7 +472,7 @@ cc_test(
 
 cc_test(
     name = "test_state_serializer",
-    srcs = ["test_state_serializer.c"],
+    srcs = ["test_state_serializer.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -478,9 +483,126 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# End-to-end cost through the public door (edc_session_save_state/load_state). Manual:
+#   EDGECLAW_STATE_PROBE=/tmp/probe/shell.csv \
+#     bazel run //tests:bench_shell -- <workspace> 40000 3
+cc_binary(
+    name = "bench_shell",
+    srcs = ["bench_shell.c"],
+    tags = ["manual"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# Stage-1 cost ruler for the store (full rewrite on every flush). Manual:
+#   EDGECLAW_STATE_PROBE=/tmp/probe/store.csv \
+#     bazel run //tests:bench_store -- <workspace> 40000 3
+cc_binary(
+    name = "bench_store",
+    srcs = ["bench_store.c"],
+    tags = ["manual"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# STAGE 1 GATE: the SQLite round trip must preserve every field the serializer writes.
+cc_test(
+    name = "test_state_store_differential",
+    srcs = ["test_state_store_differential.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# Per-message identity: assigned once, kept on reload, and never sent to the model.
+cc_test(
+    name = "test_message_id",
+    srcs = ["test_message_id.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# The startup contract of the SQLite state store: PRAGMAs, schema, version refusal,
+# symlink refusal, exclusive workspace lock, checkpoint on close.
+cc_test(
+    name = "test_state_store_open",
+    srcs = ["test_state_store_open.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# Guards the no-patch SQLite configuration: asserts that the compile options injected via
+# .bazelrc --per_file_copt actually reached the library. Without this, a --per_file_copt
+# rule that stops matching would silently yield an unhardened sqlite (see the test file).
+cc_test(
+    name = "test_sqlite_hardening",
+    srcs = ["test_sqlite_hardening.c", "test_ws.h"],
+    deps = [
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# Stage-0 baseline ruler for the SQLite migration.
+# Needs a workspace with real session data, so it is a manual binary, not a test:
+#
+#   EDGECLAW_STATE_PROBE=/tmp/probe/s13.csv \
+#     bazel run //tests:bench_state_io -- <workspace> <session_id> <iterations>
+cc_binary(
+    name = "bench_state_io",
+    srcs = ["bench_state_io.c"],
+    tags = ["manual"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 cc_test(
     name = "test_system_task",
-    srcs = ["test_system_task.c"],
+    srcs = ["test_system_task.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/common:common",
@@ -502,7 +624,7 @@ cc_test(
 
 cc_test(
     name = "test_group_fold",
-    srcs = ["test_group_fold.c"],
+    srcs = ["test_group_fold.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -515,7 +637,7 @@ cc_test(
 
 cc_test(
     name = "test_session_snapshot",
-    srcs = ["test_session_snapshot.c"],
+    srcs = ["test_session_snapshot.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/common:common",
@@ -528,7 +650,7 @@ cc_test(
 
 cc_test(
     name = "test_session_routing",
-    srcs = ["test_session_routing.c"],
+    srcs = ["test_session_routing.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/actor:actors",
@@ -542,7 +664,7 @@ cc_test(
 
 cc_test(
     name = "test_snapshot_addressing",
-    srcs = ["test_snapshot_addressing.c"],
+    srcs = ["test_snapshot_addressing.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/actor:actors",
@@ -554,26 +676,23 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
-cc_test(
-    name = "test_session_state_file",
-    srcs = ["test_session_state_file.c"],
-    deps = [
-        "//src/actor:actors",
-        "//src/common:common",
-        "//src/common:utlist_fix",
-        "//src/kernel:kernel",
-        "@log.c//:log.c",
-    ],
-    linkopts = LINK_OPTS,
-)
+# test_session_state_file was deleted with the session.json file it tested (tmp+rename,
+# schema-version ranges, file permissions). Its surviving contracts are covered elsewhere:
+#   "a new session loads as nothing"        -> test_state_store_differential (absent)
+#   "write then read back"                  -> test_state_store_differential (roundtrip)
+#   "overwrite does not corrupt"            -> test_state_store_differential (idempotent)
+#   "corrupt/unknown state is refused"      -> test_state_store_open (version, quick_check)
+#   "atomic replace"                        -> a transaction; nothing to test at file level
 
 cc_test(
     name = "test_scheduler_open_close",
-    srcs = ["test_scheduler_open_close.c"],
+    srcs = ["test_scheduler_open_close.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
         "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
     ],
     linkopts = LINK_OPTS,
 )
@@ -591,7 +710,7 @@ cc_test(
 
 cc_test(
     name = "test_sandbox_switch",
-    srcs = ["test_sandbox_switch.c"],
+    srcs = ["test_sandbox_switch.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/common:edc_file_utils",
@@ -601,7 +720,7 @@ cc_test(
 )
 cc_test(
     name = "test_sandbox_verify_path",
-    srcs = ["test_sandbox_verify_path.c"],
+    srcs = ["test_sandbox_verify_path.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/sandbox:sandbox",
@@ -611,7 +730,7 @@ cc_test(
 )
 cc_test(
     name = "test_path_contract",
-    srcs = ["test_path_contract.c"],
+    srcs = ["test_path_contract.c", "test_ws.h"],
     deps = [
         "//src/common:edc_compat",
         "//src/common:edc_file_utils",
@@ -621,7 +740,7 @@ cc_test(
 )
 cc_test(
     name = "test_platform_caps",
-    srcs = ["test_platform_caps.c"],
+    srcs = ["test_platform_caps.c", "test_ws.h"],
     deps = [
         "//src/common:edc_platform",
     ],
@@ -630,7 +749,7 @@ cc_test(
 
 cc_test(
     name = "test_utf8_valid",
-    srcs = ["test_utf8_valid.c"],
+    srcs = ["test_utf8_valid.c", "test_ws.h"],
     deps = [
         "//src/common:edc_compat",
     ],
@@ -639,7 +758,7 @@ cc_test(
 
 cc_test(
     name = "test_output_utf8",
-    srcs = ["test_output_utf8.c"],
+    srcs = ["test_output_utf8.c", "test_ws.h"],
     deps = [
         "//src/common:edc_compat",
         "//src/common:edc_platform",
@@ -648,7 +767,7 @@ cc_test(
 )
 cc_test(
     name = "test_session_workdir",
-    srcs = ["test_session_workdir.c"],
+    srcs = ["test_session_workdir.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -661,7 +780,7 @@ cc_test(
 
 cc_test(
     name = "test_session_status",
-    srcs = ["test_session_status.c"],
+    srcs = ["test_session_status.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -672,7 +791,7 @@ cc_test(
 
 cc_test(
     name = "test_turn_history_integration",
-    srcs = ["test_turn_history_integration.c"],
+    srcs = ["test_turn_history_integration.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -685,7 +804,7 @@ cc_test(
 
 cc_test(
     name = "test_lifecycle_integration",
-    srcs = ["test_lifecycle_integration.c"],
+    srcs = ["test_lifecycle_integration.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -698,7 +817,7 @@ cc_test(
 
 cc_test(
     name = "test_toolbox_response",
-    srcs = ["test_toolbox_response.c"],
+    srcs = ["test_toolbox_response.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/common:common",
@@ -713,7 +832,7 @@ cc_test(
 
 cc_test(
     name = "test_llm_request",
-    srcs = ["test_llm_request.c"],
+    srcs = ["test_llm_request.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/actor:actors",
@@ -729,7 +848,7 @@ cc_test(
 
 cc_test(
     name = "test_toolbox_request",
-    srcs = ["test_toolbox_request.c"],
+    srcs = ["test_toolbox_request.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/common:common",
@@ -744,7 +863,7 @@ cc_test(
 
 cc_test(
     name = "test_todo_sysprompt",
-    srcs = ["test_todo_sysprompt.c"],
+    srcs = ["test_todo_sysprompt.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -757,7 +876,7 @@ cc_test(
 
 cc_test(
     name = "test_cmd_parse",
-    srcs = ["test_cmd_parse.c"],
+    srcs = ["test_cmd_parse.c", "test_ws.h"],
     deps = [
         "//src/shell:shell_parse",
     ],
@@ -766,7 +885,7 @@ cc_test(
 
 cc_test(
     name = "test_session_leave_cancel",
-    srcs = ["test_session_leave_cancel.c"],
+    srcs = ["test_session_leave_cancel.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -779,8 +898,9 @@ cc_test(
 
 cc_test(
     name = "test_session_reactivate",
-    srcs = ["test_session_reactivate.c"],
+    srcs = ["test_session_reactivate.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -788,8 +908,9 @@ cc_test(
 
 cc_test(
     name = "test_session_cross_dep",
-    srcs = ["test_session_cross_dep.c"],
+    srcs = ["test_session_cross_dep.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -797,8 +918,9 @@ cc_test(
 
 cc_test(
     name = "test_cross_dep_restart",
-    srcs = ["test_cross_dep_restart.c"],
+    srcs = ["test_cross_dep_restart.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -806,7 +928,7 @@ cc_test(
 
 cc_test(
     name = "test_task_index",
-    srcs = ["test_task_index.c"],
+    srcs = ["test_task_index.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -820,11 +942,13 @@ cc_test(
 
 cc_test(
     name = "test_state_guardrail",
-    srcs = ["test_state_guardrail.c"],    deps = [
+    srcs = ["test_state_guardrail.c", "test_ws.h"],
+    deps = [
         "//src/actor:actors",
         "//src/common:common",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
+        "@cjson//:cjson",
         "@log.c//:log.c",
         "@sds//:sds",
     ],
@@ -845,7 +969,7 @@ cc_test(
 
 cc_test(
     name = "test_task_resume",
-    srcs = ["test_task_resume.c"],
+    srcs = ["test_task_resume.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -858,7 +982,7 @@ cc_test(
 
 cc_test(
     name = "test_bundled_workspace",
-    srcs = ["test_bundled_workspace.c"],
+    srcs = ["test_bundled_workspace.c", "test_ws.h"],
     deps = [
         "//src/common:common",
     ],
@@ -894,7 +1018,7 @@ cc_test(
 
 cc_test(
     name = "test_config_onboarded",
-    srcs = ["test_config_onboarded.c"],
+    srcs = ["test_config_onboarded.c", "test_ws.h"],
     deps = [
         "//src/common:common",
     ],
@@ -903,7 +1027,7 @@ cc_test(
 
 cc_test(
     name = "test_config_shell_syntax",
-    srcs = ["test_config_shell_syntax.c"],
+    srcs = ["test_config_shell_syntax.c", "test_ws.h"],
     deps = [
         "//src/common:common",
     ],
@@ -912,7 +1036,7 @@ cc_test(
 
 cc_test(
     name = "test_sandbox_helper",
-    srcs = ["test_sandbox_helper.c"],
+    srcs = ["test_sandbox_helper.c", "test_ws.h"],
     # Must run OUTSIDE bazel's own sandbox: on macOS the test asserts that the
     # helper applies a Seatbelt profile, and sandbox_init() refuses to nest --
     # under darwin-sandbox it fails with "Operation not permitted" and the helper
@@ -929,7 +1053,7 @@ cc_test(
 
 cc_test(
     name = "test_config_sandbox_defaults",
-    srcs = ["test_config_sandbox_defaults.c"],
+    srcs = ["test_config_sandbox_defaults.c", "test_ws.h"],
     deps = [
         "//src/common:common",
     ],
@@ -938,7 +1062,7 @@ cc_test(
 
 cc_test(
     name = "test_shell_env",
-    srcs = ["test_shell_env.c"],
+    srcs = ["test_shell_env.c", "test_ws.h"],
     deps = [
         "//src/sandbox:sandbox",
     ],
@@ -947,7 +1071,7 @@ cc_test(
 
 cc_test(
     name = "test_connect",
-    srcs = ["test_connect.c"],
+    srcs = ["test_connect.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "@libuv",
@@ -957,7 +1081,7 @@ cc_test(
 
 cc_test(
     name = "test_llm_actor_http_status",
-    srcs = ["test_llm_actor_http_status.c"],
+    srcs = ["test_llm_actor_http_status.c", "test_ws.h"],
     tags = ["manual"],  # 网络 + 真 provider（故意用无效 key 拿 401），同 test_llm_actor
     deps = [
         "//src/actor:actor",
@@ -970,7 +1094,7 @@ cc_test(
 
 cc_test(
     name = "test_llm_actor_config",
-    srcs = ["test_llm_actor_config.c"],
+    srcs = ["test_llm_actor_config.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/actor:actors",
@@ -1301,7 +1425,7 @@ cc_test(
 
 cc_test(
     name = "test_executor_overflow",
-    srcs = ["test_executor_overflow.c"],
+    srcs = ["test_executor_overflow.c", "test_ws.h"],
     deps = [
         "//src/actor:actor",
         "//src/common:common",
@@ -1325,8 +1449,9 @@ cc_test(
 )
 cc_test(
     name = "test_commands_reload",
-    srcs = ["test_commands_reload.c"],
+    srcs = ["test_commands_reload.c", "test_ws.h"],
     deps = [
+        "//src/kernel:kernel",
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
@@ -1345,7 +1470,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_jobs",
-    srcs = ["test_commands_jobs.c"],
+    srcs = ["test_commands_jobs.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -1354,7 +1479,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_prompt",
-    srcs = ["test_commands_prompt.c"],
+    srcs = ["test_commands_prompt.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -1363,7 +1488,7 @@ cc_test(
 
 cc_test(
     name = "test_session_memory_extract",
-    srcs = ["test_session_memory_extract.c"],
+    srcs = ["test_session_memory_extract.c", "test_ws.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -1376,7 +1501,7 @@ cc_test(
 
 cc_test(
     name = "test_service",
-    srcs = ["test_service.c"],
+    srcs = ["test_service.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/common:utlist_fix",
@@ -1399,7 +1524,7 @@ cc_test(
 
 cc_test(
     name = "test_crontab_service",
-    srcs = ["test_crontab_service.c"],
+    srcs = ["test_crontab_service.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -1413,7 +1538,7 @@ cc_test(
 
 cc_test(
     name = "test_parse_cmd",
-    srcs = ["test_parse_cmd.c"],
+    srcs = ["test_parse_cmd.c", "test_ws.h"],
     deps = [
         "//src/common:common",
         "//src/shell:lex",
@@ -1424,7 +1549,7 @@ cc_test(
 
 cc_test(
     name = "test_lex",
-    srcs = ["test_lex.c"],
+    srcs = ["test_lex.c", "test_ws.h"],
     deps = [
         "//src/shell:lex",
     ],

@@ -1,4 +1,5 @@
 #include "edc_task.h"
+#include "test_ws.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "log.h"
@@ -41,9 +42,9 @@ static void test_group_history_accumulation(void)
     edc_turn_add_assistant_message(turn, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"hi\"}"));
 
     /* Sync: copy messages to group history */
-    for (size_t qi = turn->messages.head; qi < turn->messages.tail; qi++)
+    for (int qi = 0; qi < turn->msg_count; qi++)
     {
-        cJSON_AddItemReferenceToArray(g->history, turn->messages.data[qi]);
+        cJSON_AddItemReferenceToArray(g->history, edc_turn_msg_at(turn, qi));
     }
     C(cJSON_GetArraySize(g->history) == 2, "2 messages synced");
 
@@ -52,9 +53,9 @@ static void test_group_history_accumulation(void)
     edc_turn_add_user_message(turn2, "world");
     edc_turn_add_assistant_message(turn2, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"there\"}"));
 
-    for (size_t qi = turn2->messages.head; qi < turn2->messages.tail; qi++)
+    for (int qi = 0; qi < turn2->msg_count; qi++)
     {
-        cJSON_AddItemReferenceToArray(g->history, turn2->messages.data[qi]);
+        cJSON_AddItemReferenceToArray(g->history, edc_turn_msg_at(turn2, qi));
     }
     C(cJSON_GetArraySize(g->history) == 4, "4 messages after second turn");
 
@@ -83,8 +84,8 @@ static void test_group_isolation(void)
     /* Add message to g1 only */
     struct edc_turn *t = edc_turn_new();
     edc_turn_add_user_message(t, "g1 msg");
-    for (size_t qi = t->messages.head; qi < t->messages.tail; qi++)
-        cJSON_AddItemReferenceToArray(g1->history, t->messages.data[qi]);
+    for (int qi = 0; qi < t->msg_count; qi++)
+        cJSON_AddItemReferenceToArray(g1->history, edc_turn_msg_at(t, qi));
 
     C(cJSON_GetArraySize(g1->history) == 1, "g1 has 1 msg");
     C(cJSON_GetArraySize(g2->history) == 0, "g2 remains empty (isolated)");
@@ -233,8 +234,8 @@ static void test_large_group_history(void)
         cJSON_AddStringToObject(amsg, "content", buf);
         edc_turn_add_assistant_message(t, amsg);
 
-        for (size_t qi = t->messages.head; qi < t->messages.tail; qi++)
-            cJSON_AddItemReferenceToArray(g->history, t->messages.data[qi]);
+        for (int qi = 0; qi < t->msg_count; qi++)
+            cJSON_AddItemReferenceToArray(g->history, edc_turn_msg_at(t, qi));
 
         edc_turn_free(t);
     }
@@ -245,6 +246,7 @@ static void test_large_group_history(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Group-level 稳定性测试 ===");
     log_info("");
 

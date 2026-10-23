@@ -670,18 +670,17 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
  * the tail todo reminder (constant-size additions) are omitted; a running member counts
  * only its own turn's increment. */
 
-/* Estimate of a turn from `from` (from scratch when from <= head). */
+/* Estimate of a turn from `from`. This used to walk every message in the queue; the
+ * per-message estimates are stored with the rows now, so it is one indexed SUM. */
 static long long est_turn_from(struct edc_turn *turn, int from)
 {
     if (!turn)
         return 0;
-    size_t begin = (from > 0) ? (size_t)from : turn->messages.head;
-    if (begin < turn->messages.head)
-        begin = turn->messages.head;
-    long long total = 0;
-    for (size_t i = begin; i < turn->messages.tail; i++)
-        total += edc_token_estimate_msg(turn->messages.data[i]);
-    return total;
+    if (from < 0)
+        from = 0;
+    if (from >= turn->msg_count)
+        return 0;
+    return edc_turn_tokens_from(turn, from);
 }
 
 extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)

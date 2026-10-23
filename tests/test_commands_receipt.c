@@ -11,6 +11,7 @@
  *   - a PLAIN foreground creation is silent (the sidebar row and the echoed input say it);
  *   - one input => ONE receipt (a `a | b | c` chain aggregates instead of three lines). */
 #include "edc_commands.h"
+#include "test_ws.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "sds.h"
@@ -48,6 +49,7 @@ static bool eq(const char *got, const char *want)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     printf("=== task-creation receipt tests ===\n\n");
 
     /* #3 leads its own group, which has exactly one member -- the plain `+desc` shape. */

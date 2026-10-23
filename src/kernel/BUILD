@@ -13,6 +13,7 @@ cc_library(
             "session/edc_session.c",
             "session/edc_session_manager.c",
             "session/edc_session_store.c",
+            "session/edc_state_store.c",
             "session/edc_state_serializer.c",
             "context/edc_context.c",
             "context/edc_token_estimate.c",
@@ -37,6 +38,7 @@ cc_library(
             "session/edc_session.h",
             "session/edc_session_manager.h",
             "session/edc_session_store.h",
+            "session/edc_state_store.h",
             "session/edc_state_serializer.h",
             "context/edc_context.h",
             "context/edc_token_estimate.h",
@@ -63,6 +65,7 @@ cc_library(
             "@cjson//:cjson",
             "@log.c//:log.c",
             "@sds//:sds",
+            "@sqlite3//:sqlite3",
             "@uthash//:uthash",
         ] + select({
             # Windows has no system <regex.h>; use PCRE2's POSIX wrapper instead.

@@ -352,25 +352,28 @@ struct edc_payload;
  * nothing happens. */
 extern void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload);
 
-/** The folded-paste map parked on this task's user message with |mid| (borrowed), or NULL.
+/** The folded-paste map parked on this task's user message with |mid|, or NULL.
  *  Read-only scan of the committed turns plus the in-flight one -- what the "payload by
- *  mid" pull answers from. */
+ *  mid" pull answers from. RETURNS A COPY the caller must cJSON_Delete. */
 extern cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid);
 
-/** The folded-paste map of this task's own user message (borrowed), or NULL. Used by the
- *  frontend to show the line the way it was typed: the message text is the expanded one. */
+/** The folded-paste map of this task's own user message, or NULL. Used by the
+ *  frontend to show the line the way it was typed: the message text is the expanded one.
+ *  RETURNS A COPY the caller must cJSON_Delete. */
 extern cJSON *edc_task_user_payload(struct edc_task *task);
 
 extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
-/** Deep-copy all of the task's turn messages into one synthetic snapshot turn.
- *  Handles both flushed and unflushed messages. NULL when the task has none; the
- *  caller frees the turn. Used by fork rule 2 to recover a parent's own turns
- *  after L1 folding. */
-extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
-                                                const char *snapshot_task_id);
+/** Deep-copy all of the task's turn messages into one synthetic turn (turn 0 of the
+ *  destination). Messages are written to the store under (dst_session_id, dst_group_id,
+ *  dst_task_id) with fresh identities, so the source rows are untouched.
+ *  NULL when the task has none; the caller owns the returned turn. Used by fork rule 2 to
+ *  recover a parent's own turns after L1 folding. */
+extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, const char *dst_session_id,
+                                                const char *dst_group_id, const char *dst_task_id,
+                                                int dst_turn_ord);
 
 /* State machine write points, named by intent: the caller says what it wants, and
  * (step, life) is validated. Returns false when the transition is rejected. */

@@ -2,6 +2,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
+#include "edc_state_probe.h"
 #include "log.h"
 #include "sds.h"
 
@@ -99,6 +100,11 @@ void edc_log_check_rotate(void)
  * would lock a destroyed mutex. */
 void edc_log_close(void)
 {
+    /* Stage-0 baseline: emit the state-persistence summary while the log file is
+     * still open, so it lands where a reader will look for it. No-ops unless
+     * EDGECLAW_STATE_PROBE was set. */
+    edc_state_probe_summary();
+
     uv_mutex_lock(&g_log_mutex);
     if (g_log_file)
     {

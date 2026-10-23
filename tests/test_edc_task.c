@@ -1,4 +1,5 @@
 #include "edc_payload.h"
+#include "test_ws.h"
 #include "edc_task.h"
 #include "edc_turn.h"
 #include "edc_config.h"
@@ -1454,7 +1455,7 @@ static void test_user_origin_payload(void)
 
     /* And the fork path copies messages wholesale: the snapshot turn (what a fork replays)
      * carries the field too, because it is inside the message object. */
-    struct edc_turn *snap = edc_task_snapshot_turns(t, NULL, "task-origin-fork");
+    struct edc_turn *snap = edc_task_snapshot_turns(t, "sess-1", "g", "task-origin-fork", 0);
     CHECK(snap != NULL, "the fork snapshot copied the turn");
     if (snap)
     {
@@ -1471,6 +1472,7 @@ static void test_user_origin_payload(void)
 int main(void)
 
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 1: edc_task 模块测试 ===");
     log_info("");
 

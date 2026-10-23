@@ -1,4 +1,5 @@
 #include "edc_scheduler.h"
+#include "test_ws.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_compat.h"
@@ -46,7 +47,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *c = calloc(1, sizeof(struct edc_config));
-    c->workspace = sdsnew("/tmp/test-workspace");
+    c->workspace = sdsnew(edc_test_workspace());
     return c;
 }
 
@@ -1817,6 +1818,7 @@ static void test_pending_dep_drop(void)
 int main(void)
 
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 3: edc_scheduler 模块测试 ===");
     log_info("");
 

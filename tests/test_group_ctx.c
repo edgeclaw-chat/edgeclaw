@@ -1,4 +1,5 @@
 #include "edc_context.h"
+#include "test_ws.h"
 #include "edc_group_fold.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -251,6 +252,7 @@ static void test_empty_group(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== group ctx: anchor + tail estimate ===");
     test_anchor_plus_tail();
     test_anchor_validity();

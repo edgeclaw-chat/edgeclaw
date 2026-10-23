@@ -1,4 +1,5 @@
 #include "edc_task.h"
+#include "test_ws.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "log.h"
@@ -572,6 +573,7 @@ static void test_group_double_free(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 1+2 高强度压力/边界测试 ===");
     log_info("");
 

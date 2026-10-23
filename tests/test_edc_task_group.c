@@ -1,4 +1,5 @@
 #include "edc_task_group.h"
+#include "test_ws.h"
 #include "log.h"
 #include <stdio.h>
 #include <string.h>
@@ -251,6 +252,7 @@ static void test_history_append(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 2: edc_task_group 模块测试 ===");
     log_info("");
 

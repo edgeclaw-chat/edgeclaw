@@ -4,6 +4,7 @@
  * 用 `edc_toolbox_exec()` 按名字调用 —— 覆盖参数解析、属主解析、结果与 error。
  * 捕获回调经 `ctx->priv` 拿状态 (与真链路同一条 ctx)。 */
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_error.h"
 #include "edc_session.h"
@@ -96,8 +97,9 @@ static sds hdr(const char *name, const char *args_json)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_tools_memory");
+    cfg->workspace = sdsnew(edc_test_workspace());
     cfg->tool_max_output_size = 10000;
 
     struct edc_session *session = edc_session_new(cfg, "s1", "S1");

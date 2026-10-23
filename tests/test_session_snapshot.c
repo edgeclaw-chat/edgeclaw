@@ -18,6 +18,7 @@
  * ══════════════════════════════════════════════════════════════ */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
@@ -87,7 +88,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_session_snapshot_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -357,6 +358,7 @@ static void test_group_usage_rollup(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== test_session_snapshot (P3 防线) ===");
 
     test_snapshot_follows_the_session();

@@ -4,6 +4,7 @@
  * (按组) / 落盘往返 / task 出生点采纳。装配 (补丁注入) 与 L2 压缩任务分别在
  * P4b / P4c 两个阶段。 */
 #include "edc_session_memory.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_session.h"
@@ -342,7 +343,7 @@ static void test_adopt(void)
 {
     TEST("出生点: 新 task 的水位是 0 —— 它没有最新条目, 首轮要回填");
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_l2_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     struct edc_session *s = edc_session_new(cfg, "l2", "L2");
     CHECK(s->memo != NULL, "session 构造即带 session 记忆");
 
@@ -422,6 +423,7 @@ static void test_delete_and_trim(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
 
     test_events();
     test_entries();

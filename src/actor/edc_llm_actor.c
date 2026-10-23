@@ -9,12 +9,11 @@
 #include "sds.h"
 #include "utarray.h"
 
-struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn)
+struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools)
 {
     struct edc_llm_actor_req *req = g_new0(struct edc_llm_actor_req, 1);
     req->history = msg_lst;
     req->tools = tools;
-    req->turn = turn;
     return req;
 };
 
@@ -24,6 +23,8 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
         return;
     if (req->history_owned && req->history)
         cJSON_Delete(req->history);
+    if (req->turn_tail)
+        cJSON_Delete(req->turn_tail);
     if (req->tail_parts)
         cJSON_Delete(req->tail_parts);
     if (req->cache_key)
@@ -258,13 +259,10 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         llm_add_wire_message(messages, item);
     }
 
-    if (req->turn)
+    if (req->turn_tail)
     {
-        for (size_t qi = req->turn->head + req->turn_begin; qi < req->turn->tail; qi++)
-        {
-            cJSON *item = req->turn->data[qi];
-            llm_add_wire_message(messages, item);
-        }
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, req->turn_tail) llm_add_wire_message(messages, item);
     }
 
     /* Absolute tail: runtime system reminders (e.g. the latest todo reminder) -- after

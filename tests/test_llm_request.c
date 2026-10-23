@@ -11,6 +11,7 @@
  * test_toolbox_request.c 同一配方)。捕获器把 req 从消息里摘下来自己持有。 */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -111,7 +112,7 @@ static void install_sessions(struct edc_scheduler *sched, struct edc_session *se
 static void harness_up(struct harness *h)
 {
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_llm_request_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->sched = edc_scheduler_new(h->cfg);
     h->sess = edc_session_new(h->cfg, "sess-req", "Req");
     install_sessions(h->sched, h->sess);
@@ -201,7 +202,7 @@ static void test_turn_begin_honours_folded_prefix(void)
     history_add_user(g, "already committed member message");
 
     struct edc_turn *turn = attach_turn(&h, leader, "current input");
-    CHECK(edc_queue_length(&turn->messages) == 3, "当前 turn 有 3 条");
+    CHECK(turn->msg_count == 3, "当前 turn 有 3 条");
 
     /* 折叠切在这个 turn 内部: 前缀 1 条进了组记忆。 */
     turn->folded_prefix = 1;
@@ -211,8 +212,10 @@ static void test_turn_begin_honours_folded_prefix(void)
     CHECK(g_req_msgs == 1, "请求真发出去了");
     if (g_req)
     {
-        CHECK(g_req->turn_begin == 1, "turn_begin = 折叠前缀 (前缀不再重复发送)");
-        CHECK(g_req->turn == &turn->messages, "turn 指向当前 turn 的消息队列");
+        /* The request carries the tail span it loaded (folded prefix already excluded):
+         * the turn has 3 messages and folded_prefix is 1, so 2 go on the wire. */
+        CHECK(cJSON_GetArraySize(g_req->turn_tail) == 2,
+              "turn_tail 只含折叠前缀之后的消息 (前缀不再重复发送)");
     }
     /* 组历史那一条 (未折叠) 必须在, 折掉的那条 turn 消息由 turn_begin 拦。 */
     int found_member_msg = 0;
@@ -253,7 +256,8 @@ static void test_turn_begin_zero_without_prefix(void)
 
     CHECK(g_req_msgs == 1, "请求发出去了");
     if (g_req)
-        CHECK(g_req->turn_begin == 0, "turn_begin = 0 (整条 turn 从头发)");
+        CHECK(cJSON_GetArraySize(g_req->turn_tail) == turn->msg_count,
+              "turn_tail 是整条 turn (没有折叠前缀)");
 
     harness_down(&h);
 }
@@ -442,7 +446,7 @@ static void test_join_injection_shape(void)
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "SOURCE-USER-TEXT");
-        edc_queue_push(&t->messages, um);
+        edc_turn_add_message(t, um);
         edc_task_add_turn(src, t);
     }
     src->output = sdsnew("SOURCE-OUTPUT-TEXT");
@@ -457,7 +461,7 @@ static void test_join_injection_shape(void)
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "FOLD-PROMPT-TEXT");
-        edc_queue_push(&t->messages, um);
+        edc_turn_add_message(t, um);
         edc_task_add_turn(fold_src, t);
     }
     fold_src->output = sdsnew("FOLD-OUTPUT-MEMORY");
@@ -477,9 +481,9 @@ static void test_join_injection_shape(void)
 
     /* 目标自己的输入被就地改写: 原文 + 两段材料 */
     const char *input = NULL;
-    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
     {
-        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
         input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(input && strstr(input, "DEST-OWN-TURN") != NULL, "原输入还在");
@@ -501,9 +505,9 @@ static void test_join_injection_shape(void)
     pump(&h);
     CHECK(g_req_msgs == 1, "第二次请求也出去了");
     const char *input2 = NULL;
-    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
     {
-        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
         input2 = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     int marker_hits = 0;
@@ -673,7 +677,7 @@ static void test_fold_request_is_self_contained(void)
         CHECK(content && strcmp(content, edc_group_fold_system_prompt()) == 0,
               "内容逐字节 = 折叠说明 (不是主提示词)");
         CHECK(content && strstr(content, "# EdgeClaw") == NULL, "没有主提示词 (重启那条污染路径)");
-        CHECK(g_req->turn == &fold->active_turn->messages, "turn 就是折叠任务的 turn (折叠 prompt)");
+        CHECK(g_req->turn_tail != NULL, "turn_tail 就是折叠任务的 turn (折叠 prompt)");
         CHECK(g_req->tail_parts == NULL, "队尾什么都不追加 (摘要不该被插尾)");
         edc_llm_actor_req_free(g_req);
         g_req = NULL;
@@ -787,6 +791,7 @@ static void test_wire_message_keys_are_allowlisted(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_wire_message_keys_are_allowlisted();
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();

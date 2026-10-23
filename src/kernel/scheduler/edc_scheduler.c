@@ -32,8 +32,8 @@ struct edc_sched_task_entry
 /* ── Forward declarations ──────────────────────────────────── */
 
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
-static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
-static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task);
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s, const char *tag);
+static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task, const char *tag);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid);
@@ -298,7 +298,7 @@ static void sched_service_extract_scan(struct edc_service *svc, void *ud)
         return;
     struct edc_session *got = NULL;
     if (edc_session_memory_extract_try(sched, sched->sessions, sched->config, &got) && got)
-        sched_save_session(sched, got);
+        sched_save_session(sched, got, "sm:extract-done");
 }
 
 void edc_scheduler_services_start(struct edc_scheduler *sched)
@@ -663,8 +663,8 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
      * INTERRUPTED, and /task resume undoes it -- that is a phase change, not a flag.) */
     if (spec->input)
     {
-        struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup(task->task_id);
+        struct edc_turn *turn = edc_turn_new_for(task->session_id, task->group_id, task->task_id,
+                                                 (int)edc_queue_length(&task->turns));
         edc_turn_add_user_message(turn, spec->input);
         /* Whatever the passes asked for (an @file's body today, anything tomorrow):
          * one message each, in order. Nothing here knows WHICH pass produced them. */
@@ -694,7 +694,7 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
     /* R8: the task now exists (placed in a group, edges attached, input / seeded call
      * recorded). Persist here, or a kill before it settles leaves nothing on disk to
      * resume -- the task would simply not exist after a restart. */
-    sched_save_progress(sched, task);
+    sched_save_progress(sched, task, "task:create");
 
     return true;
 }
@@ -806,15 +806,16 @@ bool edc_scheduler_attach_input(struct edc_scheduler *sched, struct edc_task *ta
     if (!task || !input)
         return false;
 
-    struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
+    /* The in-flight turn takes the tail position (the committed count); messages are
+     * written to the store under that key as they are added. */
+    struct edc_turn *turn = edc_turn_new_for(task->session_id, task->group_id, task->task_id,
+                                             (int)edc_queue_length(&task->turns));
     /* A bare user message (role/content only); decorations belong to the display path. */
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", "user");
     cJSON_AddStringToObject(msg, "content", input);
-    edc_queue_push(&turn->messages, msg);
     task->active_turn = turn;
-    return true;
+    return edc_turn_add_message(turn, msg);
 }
 
 /* Drive = hand a runnable task to the executor's START and pass the result to the
@@ -842,7 +843,7 @@ static bool sched_task_runnable(struct edc_scheduler *sched, struct edc_task *ta
 }
 
 static void sched_drive_task(struct edc_scheduler *sched, struct edc_task *task);
-static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s, const char *tag);
 
 /* Fold trigger mount point (b): just before a task is ABOUT TO SEND a request, ask
  * once "is its group due to fold?", and if so start the fold -- edc_group_fold_start
@@ -872,7 +873,7 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
     if (!edc_group_fold_due(task->group, sched->config))
         return;
     if (edc_group_fold_start(sched, session, task->group, NULL))
-        sched_save_session(sched, session); /* the fold task and its dep edges must be persistable at once */
+        sched_save_session(sched, session, "fold:auto"); /* the fold task and its dep edges must be persistable at once */
 }
 
 struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struct edc_session *session,
@@ -884,7 +885,7 @@ struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struc
         /* (c) Manual fold = the user asking for one more try: clear the consecutive
          * failure count (the only restart switch once the automatic path hits the cap). */
         edc_group_fold_note_progress(group);
-        sched_save_session(sched, session); /* as on the automatic path: persistable at once */
+        sched_save_session(sched, session, "fold:manual"); /* as on the automatic path: persistable at once */
     }
     return fold;
 }
@@ -1340,7 +1341,7 @@ static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, 
      * registered every call as PENDING in the resume ledger, and nothing has run yet.
      * A kill from here on is recoverable -- the restart sees the calls as PENDING and
      * re-dispatches them (they had no chance to do anything). */
-    sched_save_progress(sched, task);
+    sched_save_progress(sched, task, "r8:pre-dispatch");
     if (sched->dispatch_tools)
         sched->dispatch_tools(sched, task, llm_resp, request_id);
 }
@@ -1366,11 +1367,11 @@ static const struct edc_executor_ops sched_executor_ops = {
 /* ── Cross-container wrap-up ───────────────────────────────── */
 
 /* Intra-package call into the store: persistence is the store's job; this only hands over whom to save (NULL = active). */
-static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s)
+static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s, const char *tag)
 {
     if (!sched || !sched->sessions)
         return;
-    edc_session_store_save_session_state(sched->sessions, sched, s);
+    edc_session_store_save_session_state_tagged(sched->sessions, sched, s, tag);
 }
 
 /* Persist a task's progress WHILE it runs, not only when it settles (R8).
@@ -1390,13 +1391,13 @@ static void sched_save_session(struct edc_scheduler *sched, struct edc_session *
  * Deliberately coarse: per task creation and per tool boundary, never per tool-state
  * change. The serialized unit is a whole session, so the point is to write at the few
  * moments that decide what a restart can recover, not to mirror every field. */
-static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task)
+static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task, const char *tag)
 {
     if (!sched || !task)
         return;
     struct edc_session *own = edc_task_session(task);
     if (own)
-        sched_save_session(sched, own);
+        sched_save_session(sched, own, tag);
 }
 
 /* The "no API key" text points the user at /connect: presentation, not advance. */
@@ -1534,7 +1535,7 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
 
         /* The settlement subscribers: persistence. The fold check itself lives at the
          * tail of edc_scheduler_apply_advance, so every advance asks once (see (a)). */
-        sched_save_session(sched, own);
+        sched_save_session(sched, own, "settle:done");
     }
     else if (edc_task_is_cancelled(task))
     {
@@ -1544,7 +1545,7 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
          * a cancelling loop cannot become a retry loop. */
         if (task->sink == EDC_SINK_SESSION_MEMORY && task->memo_kind == EDC_MEMO_KIND_EXTRACT)
             edc_session_memory_extract_note_failure(task->sink_group);
-        sched_save_session(sched, own);
+        sched_save_session(sched, own, "settle:cancelled");
     }
     else /* ERROR */
     {
@@ -1565,7 +1566,7 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         /* R8: an ERROR is terminal too, but this branch used to only mark the tree dirty,
          * so the failure waited for some other task to finish before reaching the disk.
          * A restart could then show the task as still running. */
-        sched_save_session(sched, own);
+        sched_save_session(sched, own, "settle:error");
     }
 }
 
@@ -1595,7 +1596,7 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
     {
         struct edc_session *folded = NULL;
         if (edc_group_fold_try(sched, sched->sessions, sched->config, &folded) && folded)
-            sched_save_session(sched, folded);
+            sched_save_session(sched, folded, "fold:post-advance");
     }
 
     /* (5b) L2 extraction, asked at the same boundary. A fold has priority: it is
@@ -1607,7 +1608,7 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
     {
         struct edc_session *extracted = NULL;
         if (edc_session_memory_extract_try(sched, sched->sessions, sched->config, &extracted) && extracted)
-            sched_save_session(sched, extracted);
+            sched_save_session(sched, extracted, "sm:extract-post");
     }
 
     /* (6) L2 hygiene, asked at the same boundary: once a session's memory outgrows its entry
@@ -1621,7 +1622,7 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
         {
             struct edc_task *compact = edc_session_memory_start_compact(sched, own);
             if (compact)
-                sched_save_session(sched, own);
+                sched_save_session(sched, own, "memo:compact");
         }
     }
 }
@@ -1657,7 +1658,7 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
 
     /* R8: the result is now in `active_turn` and the call has left the ledger; persist
      * so a kill during the following LLM request does not lose what the tool returned. */
-    sched_save_progress(sched, task);
+    sched_save_progress(sched, task, "tool:result");
 
     /* A held send (a dep is outstanding) parked the task at AWAIT_DEPS without
      * sending: its request is over, so drop the mapping. It is re-driven with a
@@ -1687,7 +1688,7 @@ static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_ac
      * if it reaches the disk BEFORE the tool does its work: on restart an EXECUTING
      * call is NOT re-dispatched (the side effect may already have happened), it gets an
      * "interrupted, outcome unknown" note instead. A PENDING one is re-dispatched. */
-    sched_save_progress(sched, task);
+    sched_save_progress(sched, task, "tool:started");
 }
 
 /* Tool output echo (TOOL message): check the request is still alive via the task
@@ -1820,7 +1821,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
             LL_FOREACH2(g->members, t, group_next)
             {
                 if (t->active_turn)
-                    msg_count += edc_queue_length(&t->active_turn->messages);
+                    msg_count += (size_t)t->active_turn->msg_count;
             }
         }
     }
@@ -1855,7 +1856,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
             LL_FOREACH2(g->members, mt, group_next)
             {
                 if (mt->active_turn)
-                    g_msg_count += edc_queue_length(&mt->active_turn->messages);
+                    g_msg_count += (size_t)mt->active_turn->msg_count;
                 g_tokens_total += mt->tokens_total;
                 g_tokens_prompt += mt->tokens_prompt;
                 g_tokens_completion += mt->tokens_completion;
@@ -1986,8 +1987,13 @@ static void history_append_messages(const struct edc_task *task, cJSON *messages
     for (size_t i = task->turns.head; i < task->turns.tail; i++)
     {
         const struct edc_turn *turn = (const struct edc_turn *)task->turns.data[i];
-        for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
-            cJSON_AddItemToArray(messages, cJSON_Duplicate((cJSON *)turn->messages.data[j], 1));
+        /* A query result, then moved into the output array: the block OWNS them. */
+        cJSON *arr = edc_turn_msgs(turn, 0, turn->msg_count);
+        if (!arr)
+            continue;
+        while (cJSON_GetArraySize(arr) > 0)
+            cJSON_AddItemToArray(messages, cJSON_DetachItemFromArray(arr, 0));
+        cJSON_Delete(arr);
     }
 }
 

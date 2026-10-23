@@ -41,13 +41,17 @@ static void est_count(const char *s, long long *ascii, long long *wide)
 /* Walk all VALUES of a cJSON subtree, accumulating strings. Two things are not
  * counted:
  *   - key names: framing already covered by the per-message overhead;
- *   - `ts` / `render`: metadata we attach (by edc_turn_add_message); the provider's
- *     template does not know them, so counting them would add ~6 tokens per message. */
+ *   - `ts` / `render` / `id`: metadata we attach (by edc_turn_add_message); the provider's
+ *     template does not know them, so counting them would add ~6 tokens per message.
+ *     `id` belongs here for the same reason `ts` does -- it is attached by the same
+ *     function, is stripped before the request is sent (kWireMessageKeys in
+ *     edc_llm_actor.c), and a 16-char id would otherwise add 4 phantom tokens each. */
 static void est_walk_values(const cJSON *node, long long *ascii, long long *wide)
 {
     for (const cJSON *c = node; c; c = c->next)
     {
-        if (c->string && (strcmp(c->string, "ts") == 0 || strcmp(c->string, "render") == 0))
+        if (c->string && (strcmp(c->string, "ts") == 0 || strcmp(c->string, "render") == 0 ||
+                          strcmp(c->string, "id") == 0))
             continue;
         if (cJSON_IsString(c))
             est_count(c->valuestring, ascii, wide);

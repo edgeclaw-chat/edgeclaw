@@ -14,6 +14,7 @@
  * See docs/local-shell-command.zh.md. */
 
 #include "edc_local_shell.h"
+#include "test_ws.h"
 
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
@@ -52,7 +53,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *c = calloc(1, sizeof(struct edc_config));
-    c->workspace = sdsnew("/tmp/test-local-shell-ws");
+    c->workspace = sdsnew(edc_test_workspace());
     return c;
 }
 
@@ -232,10 +233,10 @@ static void test_creation_seeds_the_call(void)
     CHECK(rec && rec->call_id && strncmp(rec->call_id, "call_local_", 11) == 0, "the call id names its owner");
 
     CHECK(t->active_turn != NULL, "a turn was attached");
-    CHECK(t->active_turn && (int)edc_queue_length(&t->active_turn->messages) == 2,
+    CHECK(t->active_turn && (int)t->active_turn->msg_count == 2,
           "turn = user + assistant(tool_calls)");
-    cJSON *u = t->active_turn->messages.data[0];
-    cJSON *a = t->active_turn->messages.data[1];
+    cJSON *u = edc_turn_msg_at(t->active_turn, 0);
+    cJSON *a = edc_turn_msg_at(t->active_turn, 1);
     CHECK(u && msg_role(u) && strcmp(msg_role(u), "user") == 0, "first message is the input");
     CHECK(u && msg_content(u) && strcmp(msg_content(u), "!git status") == 0, "…verbatim, as typed");
     CHECK(a && msg_role(a) && strcmp(msg_role(a), "assistant") == 0, "second is the assistant tool call");
@@ -291,8 +292,8 @@ static void test_drive_dispatches_and_settles_without_llm(void)
 
     CHECK(t->turns.tail == 1, "one committed turn");
     struct edc_turn *turn = t->turns.data[0];
-    CHECK(turn && (int)edc_queue_length(&turn->messages) == 3, "user + assistant(tool_calls) + tool(result)");
-    cJSON *tool_msg = turn ? turn->messages.data[2] : NULL;
+    CHECK(turn && (int)turn->msg_count == 3, "user + assistant(tool_calls) + tool(result)");
+    cJSON *tool_msg = turn ? edc_turn_msg_at(turn, 2) : NULL;
     CHECK(tool_msg && strcmp(msg_role(tool_msg), "tool") == 0, "the third message is the tool result");
     CHECK(tool_msg && strcmp(msg_content(tool_msg), "On branch main\nnothing to commit") == 0,
           "…carrying the output");
@@ -339,7 +340,7 @@ static void test_lost_result_settles_instead_of_calling_llm(void)
     CHECK(!edc_task_has_pending_tool_calls(t), "the ledger was drained by the repair");
     CHECK(t->output && strstr(t->output, "interrupted") != NULL, "the output says the result was lost");
     CHECK(t->turns.tail == 1 &&
-              (int)edc_queue_length(&((struct edc_turn *)t->turns.data[0])->messages) == 3,
+              ((struct edc_turn *)t->turns.data[0])->msg_count == 3,
           "turn = user + assistant(tool_calls) + the repaired tool response");
 
     edc_scheduler_free(sched);
@@ -401,6 +402,7 @@ static void test_bang_entry(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* disposable store for anything that writes state */
     log_info("=== `!cmd` (tool-only task) tests ===");
     log_info("");
 

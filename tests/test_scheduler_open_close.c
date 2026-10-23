@@ -12,11 +12,14 @@
  * its installer (every fixture-based test frees it itself).
  */
 #include "edc_config.h"
+#include "test_ws.h"
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
 #include "edc_session_manager.h"
 #include "edc_session.h"
 #include "log.h"
+#include "sds.h"
+#include "sqlite3.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +28,79 @@
 #include <unistd.h>
 
 volatile sig_atomic_t _run_loop = 1;
+
+
+/* The state used to be one JSON file; it is now rows in <ws>/edgeclaw.db. These two
+ * helpers keep the shape of the original assertions ("is there state?", "does the state
+ * mention X?") without pretending the file is still there. */
+static void state_db_path(char *out, size_t n, const char *ws)
+{
+    snprintf(out, n, "%s/edgeclaw.db", ws);
+}
+
+/* How many task rows the database holds. The database FILE appears as soon as the store
+ * is opened, so "has anything been persisted yet" is a question about ROWS, not files. */
+static int state_task_rows(const char *ws)
+{
+    char path[512];
+    state_db_path(path, sizeof(path), ws);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    {
+        if (db)
+            sqlite3_close(db);
+        return -1;
+    }
+    int n = -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM tasks", -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        n = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return n;
+}
+
+/* Every description and every message body, concatenated: enough for a strstr. */
+static sds read_state_text(const char *ws)
+{
+    char path[512];
+    state_db_path(path, sizeof(path), ws);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
+    {
+        if (db)
+            sqlite3_close(db);
+        return NULL;
+    }
+    sds out = sdsempty();
+    const char *queries[] = {"SELECT ifnull(description,'') FROM tasks",
+                             "SELECT json FROM messages", NULL};
+    for (int q = 0; queries[q]; q++)
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db, queries[q], -1, &st, NULL) == SQLITE_OK)
+        {
+            while (sqlite3_step(st) == SQLITE_ROW)
+            {
+                const unsigned char *t = sqlite3_column_text(st, 0);
+                if (t)
+                {
+                    out = sdscat(out, (const char *)t);
+                    out = sdscat(out, "\n");
+                }
+            }
+        }
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+    if (sdslen(out) == 0)
+    {
+        sdsfree(out);
+        return NULL;
+    }
+    return out;
+}
 
 static int test_failed = 0;
 static int test_passed = 0;
@@ -111,12 +187,10 @@ static void test_close_persists_then_is_idempotent(void)
     const char *sid = active ? active->session_id : NULL;
     CHECK(sid != NULL && *sid, "active session id");
 
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s/session.json", ws, sid ? sid : "");
-    CHECK(access(path, F_OK) != 0, "no state file before close()");
+    CHECK(state_task_rows(ws) == 0, "nothing persisted before close()");
 
     CHECK(edc_scheduler_close(sched), "first close() settles");
-    CHECK(access(path, F_OK) == 0, "close() wrote the session state file");
+    CHECK(state_task_rows(ws) == 0, "close() of an empty session persists no tasks");
 
     /* Idempotent: the second call reports it did nothing. Re-running the save
      * would be harmless but pointless, and the flag is what makes that visible. */
@@ -217,9 +291,7 @@ static void test_running_task_survives_a_kill(void)
     CHECK(sess != NULL, "active session");
     const char *sid = sess ? sess->session_id : "";
 
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s/session.json", ws, sid);
-    CHECK(access(path, F_OK) != 0, "no state file before the first task");
+    CHECK(state_task_rows(ws) == 0, "nothing persisted before the first task");
 
     struct edc_task_spec spec;
     memset(&spec, 0, sizeof(spec));
@@ -230,15 +302,12 @@ static void test_running_task_survives_a_kill(void)
     struct edc_task *t = edc_scheduler_task_create(sched, sess, &spec);
     CHECK(t != NULL, "task created");
 
-    /* The whole point: the file exists NOW, with the task in it, while the task is
-     * still running and nothing has settled. */
-    CHECK(access(path, F_OK) == 0, "the state file exists while the task is still running");
+    /* The whole point: the task is on disk NOW, while it is still running and nothing
+     * has settled. */
+    CHECK(state_task_rows(ws) == 1, "the task is persisted while it is still running");
     {
-        EdcError *err = NULL;
-        sds text = edc_file_read(path, &err);
-        if (err)
-            edc_error_free(err);
-        CHECK(text != NULL, "the state file is readable");
+        sds text = read_state_text(ws);
+        CHECK(text != NULL, "the state is readable");
         CHECK(text && strstr(text, "long job") != NULL, "the task description is in it");
         CHECK(text && strstr(text, "do the long thing") != NULL, "and its input (the unfinished turn)");
         sdsfree(text);
@@ -329,6 +398,7 @@ static void test_borrowed_store_is_left_alone(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* disposable store for anything that writes state */
     log_info("== test_scheduler_open_close ==");
     test_new_is_in_memory_open_is_not();
     test_close_persists_then_is_idempotent();

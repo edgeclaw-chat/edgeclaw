@@ -5,6 +5,7 @@
  * until the fold lands), and that it does not pollute the folded group. */
 
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_executor.h"
@@ -71,7 +72,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_group_fold_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -112,7 +113,7 @@ static void add_foldable_task(struct edc_session *session, struct edc_task_group
         cJSON *m = cJSON_CreateObject();
         cJSON_AddStringToObject(m, "role", "user");
         cJSON_AddStringToObject(m, "content", text);
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     edc_task_add_turn(t, turn);
     edc_task_await_exec(t);
@@ -190,7 +191,7 @@ static void test_prompt_and_due(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
 
     /* 先给这个组一份旧记忆: 它同时是 (a) token 估算的一个来源 —— 让 ctx 有非零值,
@@ -291,7 +292,7 @@ static void test_fold_runs_as_a_system_task(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
 
     for (int i = 2; i <= 4; i++)
@@ -374,7 +375,7 @@ static void test_fold_runs_as_a_system_task(void)
         if (t3 && t3->turns.tail > t3->turns.head)
         {
             struct edc_turn *t3turn = t3->turns.data[t3->turns.head];
-            CHECK(t3turn->folded_prefix == 2 && edc_queue_length(&t3turn->messages) == 4,
+            CHECK(t3turn->folded_prefix == 2 && t3turn->msg_count == 4,
                   "task 3 那个 turn 折了 2 条、留 2 条 (消息级水位, 不是整 turn)");
             CHECK(cJSON_GetArraySize(group->history) == 1 + edc_task_group_unfolded_msg_count(group),
                   "历史里剩下的正好是未折叠段 (半折 turn 的尾巴在)");
@@ -429,7 +430,7 @@ static void test_fold_failure_keeps_memory(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
     add_foldable_task(session, group, "2", 2, 6, "work");
     group->memory = sdsnew("# memory before");
@@ -487,7 +488,7 @@ static void test_fold_task_is_persisted(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
     add_foldable_task(session, group, "2", 2, 6, "work");
 
@@ -611,7 +612,7 @@ static struct edc_task_group *make_foldable_group(struct edc_session *session, c
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", leader_text);
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
     return group;
 }
@@ -1099,7 +1100,7 @@ static void add_big_task(struct edc_session *session, struct edc_task_group *gro
     cJSON_AddStringToObject(m, "role", "user");
     cJSON_AddStringToObject(m, "content", buf);
     free(buf);
-    edc_queue_push(&turn->messages, m);
+    edc_turn_add_message(turn, m);
     edc_task_add_turn(t, turn);
     edc_task_await_exec(t);
     edc_task_mark_completed(t);
@@ -1217,7 +1218,7 @@ static struct edc_task_group *make_inflight_group(struct edc_session *session, s
         cJSON *cm = cJSON_CreateObject();
         cJSON_AddStringToObject(cm, "role", "user");
         cJSON_AddStringToObject(cm, "content", "cancelled committed message");
-        edc_queue_push(&ct->messages, cm);
+        edc_turn_add_message(ct, cm);
         edc_task_add_turn(cancelled, ct);
     }
     edc_scheduler_attach_input(sched, cancelled, "cancelled half turn");
@@ -1260,7 +1261,7 @@ static void test_cut_inside_active_turn(void)
     /* active turn = input + 3 条大消息 = 4 条; 最新那条自己 ≥ 20k ⇒ 只留它, prefix = 3。 */
     CHECK(cut.task_id && strcmp(cut.task_id, "9") == 0 && cut.turn == EDC_FOLD_CUT_ACTIVE_TURN && cut.prefix == 3,
           "切点落在在飞 turn 内部 (留最新那条, 前三条进语料)");
-    CHECK(cut.prefix == edc_queue_length(&running->active_turn->messages) - 1, "留的正好是最新那条");
+    CHECK(cut.prefix == running->active_turn->msg_count - 1, "留的正好是最新那条");
     if (prompt)
     {
         CHECK(strstr(prompt, "TAG0:") && strstr(prompt, "TAG1:") && strstr(prompt, "running input"),
@@ -1283,19 +1284,19 @@ static void test_cut_inside_active_turn(void)
         CHECK(running->active_turn && running->active_turn->folded_prefix == 3,
               "active turn 的前缀 = 3 (这条前缀就是 req->turn_begin 的来源)");
         CHECK(group->fold_epoch == epoch_before + 1, "落地 bump fold_epoch");
-        CHECK(edc_queue_length(&running->active_turn->messages) - running->active_turn->folded_prefix == 1,
+        CHECK(running->active_turn->msg_count - running->active_turn->folded_prefix == 1,
               "在飞 turn 只剩那一条未折叠的细节");
     }
     /* 6 条里"压一半"会切在 prefix 1, 尾巴 token 预算切在 3 ⇒ 能分辨两种策略。 */
     CHECK(cut.prefix != 1, "不是'压最老一半'的结果 (半量会切在 prefix 1)");
     CHECK(older && older->active_turn &&
-              older->active_turn->folded_prefix == (int)edc_queue_length(&older->active_turn->messages),
+              older->active_turn->folded_prefix == (int)older->active_turn->msg_count,
           "整条进语料的在飞成员: active turn 被整折 (不是只折已提交的 turn)");
     CHECK(cancelled && cancelled->active_turn && cancelled->active_turn->folded_prefix == 0,
           "取消成员的半个 turn 没进语料 ⇒ 落地也不折它 (折了就是丢内容)");
     CHECK(cancelled && cancelled->turns.tail > cancelled->turns.head &&
               ((struct edc_turn *)cancelled->turns.data[cancelled->turns.head])->folded_prefix ==
-                  (int)edc_queue_length(&((struct edc_turn *)cancelled->turns.data[cancelled->turns.head])->messages),
+                  ((struct edc_turn *)cancelled->turns.data[cancelled->turns.head])->msg_count,
           "但它的**已提交** turn 照折 (那是组历史的一部分)");
 
     edc_session_free(session);
@@ -1356,7 +1357,7 @@ static struct edc_task *add_completed_member(struct edc_session *session, struct
     cJSON *m = cJSON_CreateObject();
     cJSON_AddStringToObject(m, "role", "user");
     cJSON_AddStringToObject(m, "content", text);
-    edc_queue_push(&turn->messages, m);
+    edc_turn_add_message(turn, m);
     edc_task_add_turn(t, turn);
     return t;
 }
@@ -1703,7 +1704,7 @@ static void test_cut_never_orphans_tool_results(void)
     {
         edc_group_fold_deliver_memory(fold, "# Merged\n- folded");
         CHECK(turn->folded_prefix == 1, "前缀 = 1 (请求从 m1 开始发)");
-        cJSON *first_kept = turn->messages.data[turn->messages.head + turn->folded_prefix];
+        cJSON *first_kept = edc_turn_msg_at(turn, turn->folded_prefix);
         cJSON *role = cJSON_GetObjectItem(first_kept, "role");
         CHECK(role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") != 0,
               "留下的第一条不是工具结果 (不会孤儿)");
@@ -1751,7 +1752,7 @@ static void test_prompt_initial_variant_names_the_sections(void)
     CHECK(fold != NULL, "带着 focus 也能起折");
     if (fold && fold->active_turn)
     {
-        cJSON *m = fold->active_turn->messages.data[fold->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(fold->active_turn, 0);
         cJSON *content = m ? cJSON_GetObjectItem(m, "content") : NULL;
         CHECK(content && cJSON_IsString(content) && strstr(content->valuestring, "\n\nAdditional focus: keep the build flags") != NULL,
               "focus 以 Additional focus: 追加在指令之后");
@@ -2097,6 +2098,7 @@ static void test_fold_failure_cap(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_prompt_and_due();
     test_fold_runs_as_a_system_task();
     test_fold_failure_keeps_memory();

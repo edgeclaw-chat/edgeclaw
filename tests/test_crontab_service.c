@@ -2,6 +2,7 @@
  * schedule advances, all driven by the single service pump (jobs.json format kept). */
 
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
@@ -180,6 +181,7 @@ static void test_future_job_not_disturbed(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* disposable store for anything that writes state */
     test_due_once_job_fires_and_is_removed();
     test_due_every_job_advances();
     test_future_job_not_disturbed();

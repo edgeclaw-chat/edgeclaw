@@ -6,6 +6,31 @@ build --enable_platform_specific_config
 build --conlyopt="-std=gnu99"
 build --@mbedtls//:mbedtls_config=//src:mbedtls_config
 
+# SQLite compile options (session state persistence). The BCR module compiles sqlite3.c with
+# SQLite's stock defaults, which are wrong for us on two counts, so the flags are injected
+# per-file here instead of patching the module:
+#   SQLITE_DQS=0                 stock is 3: a double-quoted string that does not name a
+#                                column silently becomes a string literal, so a typo in our
+#                                hand-written DDL turns into wrong data instead of an error.
+#   SQLITE_OMIT_LOAD_EXTENSION   the workspace is a model-writable directory; extension
+#                                loading must not even be linkable (runtime default is off,
+#                                but the code would still be there to be switched on).
+# Deliberately NOT set:
+#   SQLITE_DEFAULT_MEMSTATUS=0   would drop a global mutex from every sqlite3Malloc(), but
+#                                that cost is unmeasurable next to our real bottleneck (the
+#                                ~90% cJSON print) and it permanently disables
+#                                sqlite3_status()/memory_used()/soft_heap_limit64(), which a
+#                                future `edgeclaw db` diagnostics subcommand would want.
+#                                Stock it is.
+#   SQLITE_THREADSAFE            left at the stock 1: the store is driven from the scheduler
+#                                thread, and a future multi-process/thread reader must not be
+#                                silently unsupported.
+# The regex matches the file name only, so it does not depend on bzlmod's canonical repo
+# name (external/sqlite3+/...). A wrong regex would silently produce an UNHARDENED library,
+# which is why tests/test_sqlite_hardening asserts the options via
+# sqlite3_compileoption_used() -- keep the two in sync.
+build --per_file_copt='sqlite3\.c$@-DSQLITE_DQS=0,-DSQLITE_OMIT_LOAD_EXTENSION'
+
 # Pure C project: override default link_libs to exclude -lstdc++
 build --repo_env=BAZEL_LINKLIBS=-lm
 

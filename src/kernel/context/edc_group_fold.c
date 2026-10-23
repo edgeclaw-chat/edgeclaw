@@ -297,6 +297,10 @@ struct fold_piece
     struct edc_turn *turn;
     size_t turn_index; /* index in the member's turns queue (used to find the same turn at landing) */
     size_t msg_index;  /* absolute index within that turn */
+    /* The message itself, owned by this piece. It used to be dereferenced from the turn's
+     * in-memory queue; with messages in the store the piece holds the copy it was built
+     * from, and the collector frees them all when it is done. */
+    cJSON *msg;
     long long tokens;
 };
 
@@ -306,12 +310,15 @@ struct fold_piece
 static void push_pieces(struct fold_piece **ps, size_t *cnt, size_t *cap, struct edc_task *t, struct edc_turn *turn,
                         size_t turn_index)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t from = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
     if (from > len)
         from = len;
     for (size_t mi = from; mi < len; mi++)
     {
+        cJSON *msg = edc_turn_msg_at(turn, (int)mi);
+        if (!msg)
+            continue;
         if (*cnt == *cap)
         {
             *cap = *cap ? *cap * 2 : 64;
@@ -322,8 +329,20 @@ static void push_pieces(struct fold_piece **ps, size_t *cnt, size_t *cap, struct
         fp->turn = turn;
         fp->turn_index = turn_index;
         fp->msg_index = mi;
-        fp->tokens = edc_token_estimate_msg(turn->messages.data[turn->messages.head + mi]);
+        fp->msg = msg; /* owned by the piece */
+        fp->tokens = edc_token_estimate_msg(msg);
     }
+}
+
+/* Free the column: every piece owns the message copy it was built from. */
+static void free_pieces(struct fold_piece *ps, size_t cnt)
+{
+    if (!ps)
+        return;
+    for (size_t i = 0; i < cnt; i++)
+        if (ps[i].msg)
+            cJSON_Delete(ps[i].msg);
+    free(ps);
 }
 
 /* Whether a piece's role is "tool" (a tool result). pi §4: a cut never lands on a tool
@@ -331,7 +350,7 @@ static void push_pieces(struct fold_piece **ps, size_t *cnt, size_t *cap, struct
  * whole request fails. */
 static bool piece_is_tool_result(const struct fold_piece *fp)
 {
-    cJSON *m = fp->turn->messages.data[fp->turn->messages.head + fp->msg_index];
+    cJSON *m = fp->msg;
     cJSON *role = cJSON_GetObjectItem(m, "role");
     return role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0;
 }
@@ -472,7 +491,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     {
         log_debug("L1 fold: group %s has nothing unfolded to fold", group->group_id);
         free(members);
-        free(ps);
+        free_pieces(ps, cnt);
         return NULL;
     }
 
@@ -533,7 +552,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     if (cut_at == 0)
     {
         free(members);
-        free(ps);
+        free_pieces(ps, cnt);
         return NULL;
     }
 
@@ -568,7 +587,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
             cur = tk;
             prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
         }
-        cJSON *m = ps[i].turn->messages.data[ps[i].turn->messages.head + ps[i].msg_index];
+        cJSON *m = ps[i].msg;
         if (out_files)
             collect_message_files(m, *out_files);
         if (cJSON_GetStringValue(cJSON_GetObjectItem(m, "role")))
@@ -624,7 +643,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     prompt = sdscat(prompt, "\n");
 
     free(members);
-    free(ps);
+    free_pieces(ps, cnt);
     return prompt;
 }
 
@@ -724,7 +743,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
  * the next round retries. */
 static void fold_turn_whole(struct edc_turn *turn, size_t *turns, size_t *msgs)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t cur = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
     if (cur >= len)
         return;
@@ -740,7 +759,7 @@ static void fold_turn_whole(struct edc_turn *turn, size_t *turns, size_t *msgs)
 /* Fold only the first |prefix| messages (the prefix only grows, never regresses). */
 static void fold_turn_prefix(struct edc_turn *turn, uint32_t prefix, size_t *turns, size_t *msgs)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t cur = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
     if ((size_t)prefix <= cur || (size_t)prefix > len)
         return;
@@ -767,17 +786,20 @@ static uint64_t group_memory_covers_to(struct edc_task_group *group)
         for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
         {
             struct edc_turn *turn = t->turns.data[qi];
-            size_t len = edc_queue_length(&turn->messages);
+            size_t len = (size_t)turn->msg_count;
             size_t upto = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
             if (upto > len)
                 upto = len;
             for (size_t mi = 0; mi < upto; mi++)
             {
-                cJSON *m = turn->messages.data[turn->messages.head + mi];
+                cJSON *m = edc_turn_msg_at(turn, (int)mi);
+                if (!m)
+                    continue;
                 const char *ts = cJSON_GetStringValue(cJSON_GetObjectItem(m, "ts"));
                 time_t v;
                 if (ts && edc_datetime_parse(ts, &v) && (uint64_t)v > best)
                     best = (uint64_t)v;
+                cJSON_Delete(m);
             }
         }
     }

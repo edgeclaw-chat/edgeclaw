@@ -10,6 +10,7 @@
  * 调 edc_scheduler_schedule (消息边界就是 tick)。没有通道 actor ⇒ 回话只给类型
  * (收不到), 所以断言看**行为**: 谁被折、prompt 是什么。 */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_executor.h"
 #include "edc_llm_actor.h"
@@ -97,7 +98,7 @@ static struct edc_task_group *make_group(struct edc_session *sess, const char *i
         cJSON *m = cJSON_CreateObject();
         cJSON_AddStringToObject(m, "role", "user");
         cJSON_AddStringToObject(m, "content", "old work");
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     edc_task_add_turn(leader, turn);
     edc_task_await_exec(leader);
@@ -150,17 +151,18 @@ static void finish_fold(struct edc_scheduler *sched, struct edc_task *fold)
 /* 折叠任务 turn 里第一条消息的内容 (折叠 prompt)。 */
 static const char *fold_prompt_of(struct edc_task *fold)
 {
-    if (!fold || !fold->active_turn || edc_queue_length(&fold->active_turn->messages) == 0)
+    if (!fold || !fold->active_turn || fold->active_turn->msg_count == 0)
         return NULL;
-    cJSON *m = fold->active_turn->messages.data[fold->active_turn->messages.head];
+    cJSON *m = edc_turn_msg_at(fold->active_turn, 0);
     cJSON *content = m ? cJSON_GetObjectItem(m, "content") : NULL;
     return (content && cJSON_IsString(content)) ? content->valuestring : NULL;
 }
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_commands_group_fold_ws");
+    cfg->workspace = sdsnew(edc_test_workspace());
     /* 窗口宽到不可能自动折: 这个文件只验手动路径 (due 那条判据由 test_group_fold 覆盖)。 */
     cfg->context_window = 1024 * 1024;
     struct edc_scheduler *sched = edc_scheduler_new(cfg);

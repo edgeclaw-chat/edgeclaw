@@ -17,11 +17,11 @@ typedef struct
 
 struct edc_llm_actor_req
 {
-    EdcQueue *turn;
-    /* This turn's send start (0 = the whole turn): if a fold cut inside the turn, its
-     * prefix is already in the group memory and must not be sent again. The producer
-     * (edc_llm_request) sets it from active_turn->folded_prefix. */
-    size_t turn_begin;
+    /* The in-flight turn's messages that still have to be sent, as an OWNED array: from
+     * its folded_prefix to the end. It used to be (EdcQueue *turn, turn_begin) pointing
+     * into the live turn; messages are rows now, so the producer loads the span and hands
+     * the array over. NULL = nothing to append. */
+    cJSON *turn_tail;
     cJSON *history;
     cJSON *tools;
     /* Stable per-conversation key for the provider's automatic prefix cache (OpenAI's
@@ -54,7 +54,7 @@ void edc_llm_api_conf_update_free(void *ptr);
 
 extern edc_actor_t *edc_llm_actor_new(struct edc_config *config);
 extern void edc_llm_actor_free(edc_actor_t *actor);
-extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn);
+extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools);
 extern void edc_llm_actor_req_free(struct edc_llm_actor_req *req);
 extern struct edc_llm_actor_resp *edc_llm_actor_resp_new();
 extern void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp);

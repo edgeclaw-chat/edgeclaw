@@ -4,6 +4,7 @@
  * (snapshot / /task status show it). */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_group_fold.h"
@@ -68,7 +69,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_system_task_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -99,7 +100,7 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
-    edc_queue_push(&turn->messages, msg);
+    edc_turn_add_message(turn, msg);
 }
 
 /* 给任务装一个 turn (= 它的 input); 此时它停在 (AWAIT_EXEC, ALIVE) —— "已派发,
@@ -628,11 +629,11 @@ static void test_session_memory_chain_and_landing(void)
     /* L2 的请求: 材料**不在 prompt 里**, 而是装配请求时由 JOIN 把它**拼进 L2 自己的输入**
      * (B 方案)。这个夹具没建请求, 所以此刻 turn 里还只有"索引 + 契约"。 */
     struct edc_turn *turn = l2->active_turn;
-    CHECK(turn != NULL && edc_queue_length(&turn->messages) > 0, "L2 有自己的 turn (索引 + 契约)");
+    CHECK(turn != NULL && turn->msg_count > 0, "L2 有自己的 turn (索引 + 契约)");
     const char *material = NULL;
-    if (turn && edc_queue_length(&turn->messages) > 0)
+    if (turn && turn->msg_count > 0)
     {
-        cJSON *m = turn->messages.data[turn->messages.head];
+        cJSON *m = edc_turn_msg_at(turn, 0);
         material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(material && strstr(material, "Existing session entries") != NULL, "turn 里有条目索引与契约");
@@ -719,6 +720,7 @@ static void test_session_memory_join_cascades_failure(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_attributes_default();
     test_spawn_system_task();
     test_session_memory_chain_and_landing();

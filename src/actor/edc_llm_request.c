@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include "edc_session_manager.h"
 #include "edc_session_store.h"
+#include "edc_state_store.h"
+#include "edc_token_estimate.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -35,16 +37,25 @@ static bool append_to_task_input(struct edc_task *task, const char *block)
     if (!task || !task->active_turn || !block || !*block)
         return false;
     struct edc_turn *turn = task->active_turn;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *msg = turn->messages.data[i];
+        cJSON *msg = edc_turn_msg_at(turn, i);
+        if (!msg)
+            continue;
         const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
         if (!role || strcmp(role, "user") != 0)
+        {
+            cJSON_Delete(msg);
             continue;
+        }
         const char *old = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
         sds joined = sdscatprintf(sdsempty(), "%s%s%s", old ? old : "", (old && *old) ? "\n\n" : "", block);
         cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(joined));
         sdsfree(joined);
+        /* The row is the truth: write the edit back at the same position, then drop the
+         * local copy. Skipping this would lose the splice on the next read. */
+        edc_msg_append(turn->task_id, turn->turn_ord, i, msg, edc_token_estimate_msg(msg));
+        cJSON_Delete(msg);
         return true;
     }
     return false;
@@ -275,28 +286,39 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     /* expand deferred {{…}} references in the current turn's user messages */
     if (task->has_deferred_vars && task->active_turn)
     {
-        for (size_t mj = task->active_turn->messages.head; mj < task->active_turn->messages.tail; mj++)
+        for (int mj = 0; mj < task->active_turn->msg_count; mj++)
         {
-            cJSON *msg = task->active_turn->messages.data[mj];
+            cJSON *msg = edc_turn_msg_at(task->active_turn, mj);
+            if (!msg)
+                continue;
             cJSON *role = cJSON_GetObjectItem(msg, "role");
-            if (role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0)
+            if (!(role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0))
             {
-                /* Pass expansions (an @file's body) are not what the user typed: their
-                 * bytes are final. Expanding {{…}} inside them would rewrite the file. */
-                cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
-                if (synthetic && cJSON_IsTrue(synthetic))
-                    continue;
-                cJSON *content = cJSON_GetObjectItem(msg, "content");
-                if (content && cJSON_IsString(content))
+                cJSON_Delete(msg);
+                continue;
+            }
+            /* Pass expansions (an @file's body) are not what the user typed: their
+             * bytes are final. Expanding {{…}} inside them would rewrite the file. */
+            cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
+            if (synthetic && cJSON_IsTrue(synthetic))
+            {
+                cJSON_Delete(msg);
+                continue;
+            }
+            cJSON *content = cJSON_GetObjectItem(msg, "content");
+            if (content && cJSON_IsString(content))
+            {
+                sds expanded = edc_shell_expand_vars(content->valuestring, edc_llm_var_resolver, sched, NULL);
+                if (expanded)
                 {
-                    sds expanded = edc_shell_expand_vars(content->valuestring, edc_llm_var_resolver, sched, NULL);
-                    if (expanded)
-                    {
-                        cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
-                        sdsfree(expanded);
-                    }
+                    cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
+                    sdsfree(expanded);
+                    /* Persist the expansion: the row is the truth, not this copy. */
+                    edc_msg_append(task->active_turn->task_id, task->active_turn->turn_ord, mj, msg,
+                                   edc_token_estimate_msg(msg));
                 }
             }
+            cJSON_Delete(msg);
         }
         task->has_deferred_vars = 0;
     }
@@ -315,8 +337,14 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
          * it loses the provider's cached prefix (docs/pi-toolset-plan.zh.md, I2). The
          * resolver is installed by the assembly root because it needs the registry. */
         tools = g_group_tools ? g_group_tools(g_group_tools_ctx, task) : tool_schemas;
-    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools,
-                                                          task->active_turn ? &task->active_turn->messages : NULL);
+    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools);
+    /* The in-flight turn's messages that still go on the wire: after its folded prefix,
+     * loaded from the store. The request owns the array. */
+    if (task->active_turn)
+    {
+        const int from = task->active_turn->folded_prefix > 0 ? task->active_turn->folded_prefix : 0;
+        req->turn_tail = edc_turn_msgs(task->active_turn, from, task->active_turn->msg_count);
+    }
     /* Stable per-group key for the provider's automatic prefix cache (docs/pi-toolset-plan.zh.md,
      * B0): every request of one conversation then shares a cache shard. Only a normal reply --
      * a fold or curator call is one-shot and would just take space in someone else's shard. */
@@ -328,9 +356,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     if (is_memory_sink)
         req->max_tokens = (task->sink == EDC_SINK_SESSION_MEMORY) ? EDC_SESSION_MEMORY_MAX_TOKENS
                                                                   : EDC_FOLD_SUMMARY_MAX_TOKENS;
-    /* If this turn's prefix is already in memory (a fold cut inside the turn), send from after it. */
-    if (task->active_turn && task->active_turn->folded_prefix > 0)
-        req->turn_begin = (size_t)task->active_turn->folded_prefix;
+    /* The folded prefix is already excluded: edc_turn_msgs above starts after it. */
     req->history_owned = true;
     /* Absolute tail: the todo reminder -- no longer every request (avoids nagging); only
      * generated when EDC_TODO_SYNC_REMIND_GAP requests have passed without a todowrite

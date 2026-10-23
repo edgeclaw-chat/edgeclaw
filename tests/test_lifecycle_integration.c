@@ -1,4 +1,5 @@
 #include "edc_state_serializer.h"
+#include "test_ws.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
@@ -43,7 +44,7 @@ static int test_passed = 0;
 } while(0)
 #define CHECK_STREQ(a, b, msg) CHECK(strcmp((a)?(a):"", (b)?(b):"") == 0, msg)
 
-#define TEST_WS "/tmp/test_edc_phase4_workspace"
+#define TEST_WS edc_test_workspace()
 
 static struct edc_config *make_config(void)
 {
@@ -54,9 +55,8 @@ static struct edc_config *make_config(void)
 
 static void clean_workspace(void)
 {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* Wipe the rows, not the file: the store is open on this workspace. */
+    edc_test_store_reset();
 }
 
 static int count_tasks(struct edc_session *s)
@@ -107,17 +107,16 @@ static void test_exit_save(void)
     t1->output = sdsnew("exit output");
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("task-exit1");
     /* Add messages to turn */
     cJSON *um = cJSON_CreateObject();
     cJSON_AddStringToObject(um, "role", "user");
     cJSON_AddStringToObject(um, "content", "exit query");
-    edc_queue_push(&turn->messages, um);
+    edc_turn_add_message(turn, um);
 
     cJSON *am = cJSON_CreateObject();
     cJSON_AddStringToObject(am, "role", "assistant");
     cJSON_AddStringToObject(am, "content", "exit answer");
-    edc_queue_push(&turn->messages, am);
+    edc_turn_add_message(turn, am);
 
     /* Flush turn to session (simulating real flow) */
     edc_task_add_turn(t1, turn);
@@ -131,9 +130,10 @@ static void test_exit_save(void)
 
     CHECK(edc_session_save_state(session, sched), "save_state succeeds on exit");
 
-    /* Verify files: session.json is the single source of truth */
-    sds sp = edc_path_join(TEST_WS, "sess-exit", "session.json", NULL);
-    CHECK(edc_file_exists(sp), "session.json exists after exit save");
+    /* Verify storage: session state lives in <workspace>/edgeclaw.db now (one database
+     * for the workspace, not one session.json per session). */
+    sds sp = edc_path_join(TEST_WS, "edgeclaw.db", NULL);
+    CHECK(edc_file_exists(sp), "the workspace database exists after the exit save");
     sdsfree(sp);
 
     edc_session_free(session);
@@ -169,11 +169,10 @@ static void test_startup_load(void)
         t1->completion_seq = 99;
 
         struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup("task-start1");
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "startup query");
-        edc_queue_push(&turn->messages, um);
+        edc_turn_add_message(turn, um);
         edc_task_add_turn(t1, turn);
 
         struct edc_task_group *g1 = edc_task_group_new(t1);
@@ -212,8 +211,8 @@ static void test_startup_load(void)
         /* Verify turn messages restored from session.json */
         CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
         struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-        CHECK(edc_queue_length(&rturn->messages) == 1, "1 message in restored turn");
-        cJSON *rm0 = (cJSON *)rturn->messages.data[rturn->messages.head];
+        CHECK(rturn->msg_count == 1, "1 message in restored turn");
+        cJSON *rm0 = edc_turn_msg_at(rturn, 0);
         CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")),
                     "startup query", "message content correct");
 
@@ -476,6 +475,7 @@ static void test_save_empty(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 4: Lifecycle integration tests ===");
     log_info("");
 

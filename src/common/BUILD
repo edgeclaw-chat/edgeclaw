@@ -160,6 +160,7 @@ cc_library(
         "edc_init_env.c",
         "edc_log.c",
         "edc_payload.c",
+        "edc_state_probe.c",
     ],
     hdrs = [
         "edc_bundled_docs.h",
@@ -176,6 +177,7 @@ cc_library(
         "edc_log.h",
         "edc_msg_part.h",
         "edc_payload.h",
+        "edc_state_probe.h",
         "edc_string.h",
     ],
     includes = ["."],

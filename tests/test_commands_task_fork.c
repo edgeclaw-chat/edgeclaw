@@ -12,6 +12,7 @@
  * No channel actor ⇒ replies go nowhere, so assertions look at behaviour.
  */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -101,19 +102,19 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
 /* The first user message the task would send. */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_task_fork_ws";
+    edc_test_workspace(); /* disposable store */
+    const char *ws = edc_test_workspace();
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
-        return 1;
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);

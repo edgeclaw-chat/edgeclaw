@@ -23,6 +23,7 @@
 #include "edc_session_manager.h"
 #include "edc_session_memory.h"
 #include "edc_session_store.h"
+#include "edc_state_store.h"
 #include "edc_shell.h"
 #include "edc_state_serializer.h"
 #include "edc_task.h"
@@ -520,7 +521,7 @@ static bool edc_commands_handle_session_save(struct edc_session_manager *sm, str
         return true;
     }
 
-    edc_session_save_state(active, sched);
+    edc_session_save_state_tagged(active, sched, "cmd:save");
     edc_commands_reply(to, "**Session saved** — history and state persisted.");
     log_info("receive /session save command");
     return true;
@@ -686,7 +687,7 @@ static bool edc_commands_handle_session_switch(struct edc_session_manager *sm, s
      * persist once now, since it will keep progressing. */
     if (old)
     {
-        edc_session_save_state(old, sched);
+        edc_session_save_state_tagged(old, sched, "cmd:switch");
     }
 
     if (!edc_session_manager_switch(sm, arg))
@@ -1751,13 +1752,17 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
             /* Rule 2: the parent's turns were folded by L1, so recover the parent's own
              * full turns to keep the context at the fork point intact. Earlier folded
              * history still relies only on the memory summary. */
-            snap = edc_task_snapshot_turns(parent, session, child->task_id);
+            snap = edc_task_snapshot_turns(parent, child->session_id, child->group_id, child->task_id,
+                                           child->active_turn ? 1 : 0);
         }
         else
         {
-            /* Rule 1: the unfolded span [1+folded_count, fork_point) is the snapshot */
-            snap = edc_turn_new();
-            snap->task_id = strdup(child->task_id);
+            /* Rule 1: the unfolded span [1+folded_count, fork_point) is the snapshot.
+             * appending each message writes it to the store under the child's turn 0. */
+            /* The child's input turn (attached by adopt) already holds ordinal 0; a second
+             * turn on the same ordinal would share its rows. */
+            snap = edc_turn_new_for(child->session_id, child->group_id, child->task_id,
+                                    child->active_turn ? 1 : 0);
             if (snap_begin > fork_point)
                 snap_begin = fork_point;
             for (size_t i = snap_begin; i < fork_point; i++)
@@ -1766,15 +1771,18 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
                 if (!src)
                     break;
                 cJSON *msg = cJSON_Duplicate(src, 1);
-                edc_queue_push(&snap->messages, msg); /* the turn owns it */
+                /* A copy MUST get a fresh identity: messages.id is the primary key, so
+                 * reusing it would replace the parent's row. */
+                cJSON_DeleteItemFromObject(msg, "id");
+                edc_turn_add_message(snap, msg);
             }
         }
 
-        if (snap && edc_queue_length(&snap->messages) > 0)
+        if (snap && snap->msg_count > 0)
         {
-            /* Reference the snapshot messages into the child group history (no double ownership) */
-            for (size_t mj = snap->messages.head; mj < snap->messages.tail; mj++)
-                cJSON_AddItemReferenceToArray(child_group->history, snap->messages.data[mj]);
+            /* The child group's history is the derived view of the turns; rebuild it from
+             * the snapshot the same way every other path does. */
+            edc_task_group_history_add_turn(child_group, snap);
             edc_task_add_turn(child, snap);
         }
         else if (snap)

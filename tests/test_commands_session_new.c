@@ -17,6 +17,7 @@
  * 没有通道 actor ⇒ 回话收不到（edc_actor_send 对 NULL actor 直接返回），所以命令层
  * 只看**行为**：session 数与 edc_session_get_workdir()。 */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -71,6 +72,7 @@ static bool bound_to(struct edc_session *s, const char *dir)
 
 int main(void)
 {
+    edc_test_workspace(); /* disposable store for anything that writes state */
     char ws[256];
     snprintf(ws, sizeof(ws), "%s", "/tmp/edc_cmd_session_new_XXXXXX");
     if (!mkdtemp(ws))

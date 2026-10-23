@@ -24,6 +24,7 @@
  */
 
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_file_utils.h"
@@ -84,7 +85,7 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
-#define TEST_WS "/tmp/test_edc_leave_cancel_ws"
+#define TEST_WS edc_test_workspace()
 
 static struct edc_config *make_config(void)
 {
@@ -95,9 +96,8 @@ static struct edc_config *make_config(void)
 
 static void clean_workspace(void)
 {
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* Wipe the rows, not the file: the store is open on this workspace. */
+    edc_test_store_reset();
 }
 
 static struct edc_task *find_task(struct edc_session *session, const char *task_id)
@@ -342,6 +342,7 @@ static void test_interrupted_restores_cancelled(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== session leave-cancel semantics tests ===");
     log_info("");
 

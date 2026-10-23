@@ -3,6 +3,7 @@
  * handle_task_new is static, so this drives the public edc_commands_handler entry
  * with a spy send_llm to observe whether it actually ran. */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
@@ -109,9 +110,9 @@ static int count_tasks(struct edc_session *sess)
 /* 这条 turn 发给 LLM 的第一条用户消息。 */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
@@ -131,11 +132,11 @@ static struct edc_task *last_member_except(struct edc_task_group *g, struct edc_
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_task_new_ws";
+    edc_test_workspace(); /* open the disposable store before anything writes */
+    const char *ws = edc_test_workspace();
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
-        return 1;
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);

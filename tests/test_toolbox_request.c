@@ -27,6 +27,7 @@
  * different function and is not what this file is about. */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_exec_io.h"
@@ -213,7 +214,7 @@ static void close_handle_cb(uv_handle_t *handle, void *arg)
 static void harness_up(struct harness *h)
 {
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_toolbox_request_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->cfg->tool_max_output_size = 100000;
     h->sched = edc_scheduler_new(h->cfg);
     h->sched->send_reply = record_send_reply;
@@ -563,6 +564,7 @@ static void test_dispatch_no_tool_calls(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== toolbox actor request side tests ===");
     log_info("");
 

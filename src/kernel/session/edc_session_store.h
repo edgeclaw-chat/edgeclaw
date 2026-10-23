@@ -77,6 +77,13 @@ extern void edc_session_store_save_all_sessions_state(struct edc_session_manager
 extern void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                                 struct edc_session *session);
 
+/** As above, but records |tag| as the flush's call site in the stage-0 baseline
+ *  probe (EDGECLAW_STATE_PROBE). Identical behaviour; tag is diagnostic only. */
+extern void edc_session_store_save_session_state_tagged(struct edc_session_manager *sm,
+                                                       struct edc_scheduler *sched,
+                                                       struct edc_session *session,
+                                                       const char *tag);
+
 /** Cancel all non-terminal turns of the session (NULL = active) and persist at
  *  once, so CANCELLED survives a restart (`/session stop`). */
 extern void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);
