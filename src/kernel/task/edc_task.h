@@ -3,6 +3,7 @@
 
 #include "edc_config.h"
 #include "edc_containers.h"
+#include "edc_fold_files.h"
 #include "edc_task_types.h"
 #include "edc_turn.h"
 #include "sds.h"
@@ -305,12 +306,11 @@ struct edc_task
     char *fold_cut_task_id;
     uint32_t fold_cut_turn;
     uint32_t fold_cut_prefix;
-    /* Paths named by the tool calls in THIS fold's corpus, collected while the prompt is
-     * built and merged into the group memory at landing (R5b "file tracking"). A fold drops
+    /* Files named by the tool calls in THIS fold's corpus, collected while the prompt is
+     * built and merged into the group's list at landing (R5b "file tracking"). A fold drops
      * the turns it summarizes, so without this the model keeps a narrative of what happened
-     * but loses the list of files it read and changed. Newline-separated, owned by the task. */
-    sds fold_read_files;
-    sds fold_modified_files;
+     * but loses the list of files it read and changed. Owned by the task. */
+    struct edc_fold_files *fold_files;
 
     /* Where one EXTRACT round's cut went, exactly like the fold cut above: the member
      * it falls in, that member's turn index, and how many leading messages of that

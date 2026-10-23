@@ -9,6 +9,7 @@
 #include "edc_context.h"
 #include "edc_executor.h"
 #include "edc_group_fold.h"
+#include "edc_fold_files.h"
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -1370,7 +1371,7 @@ static size_t count_occurrences(const char *hay, const char *needle)
 
 static void test_fold_tracks_touched_files(void)
 {
-    TEST("R5b: 折叠把 tool call 里的文件路径写进 memory（read-files / modified-files）");
+    TEST("R5b: 折叠把 tool call 里的文件路径收进结构，并渲染成两个块");
 
     struct edc_config *cfg = make_config();
     cfg_win(cfg, 1000000);
@@ -1383,7 +1384,7 @@ static void test_fold_tracks_touched_files(void)
     struct edc_task_group *group = make_foldable_group(session, "sess-files", "leader work");
     struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
     push_tool_call(t, "read_file", "src/a.c");
-    push_tool_call(t, "list_dir", "src/");
+    push_tool_call(t, "list_dir", "src/"); /* 目录：不是"读文件"，不进清单 */
     push_tool_call(t, "edit_file", "src/b.c");
     push_tool_call(t, "write_file", "src/c.c");
     push_tool_call(t, "exec_shell", "not-a-file"); /* 非文件工具：不进清单 */
@@ -1395,16 +1396,26 @@ static void test_fold_tracks_touched_files(void)
     CHECK(fold != NULL, "折叠任务起来了");
     if (fold)
     {
-        CHECK(fold->fold_read_files && strstr(fold->fold_read_files, "src/a.c") != NULL,
-              "语料里的读操作挂到了折叠任务上");
+        CHECK(fold->fold_files && fold->fold_files->read_n == 1, "语料里的读操作挂到了折叠任务上（list_dir 不算）");
+        CHECK(fold->fold_files && fold->fold_files->read_n == 1 &&
+                  strcmp(fold->fold_files->read[0], "src/a.c") == 0,
+              "读的是 src/a.c，目录 src/ 没进来");
         edc_group_fold_deliver_memory(fold, "# Summary\n- work done");
 
-        CHECK(group->memory && strstr(group->memory, "<read-files>\nsrc/a.c\nsrc/\n</read-files>") != NULL,
-              "读过的文件按首次出现顺序成块");
-        CHECK(group->memory && strstr(group->memory, "<modified-files>\nsrc/b.c\nsrc/c.c\n</modified-files>") != NULL,
-              "改过的文件成块，edit 与 write 同桶");
-        CHECK(group->memory && strstr(group->memory, "not-a-file") == NULL, "非文件工具不进清单");
-        CHECK(group->memory && strstr(group->memory, "# Summary") == group->memory, "摘要本体仍在最前面");
+        /* 落地后：结构持有清单，memory 只有正文。 */
+        CHECK(group->fold_files && group->fold_files->modified_n == 2, "改过的文件进了结构（edit 与 write 同桶）");
+        CHECK(group->memory && strstr(group->memory, "<read-files>") == NULL,
+              "memory 里不再存块（块是渲染物，模型改不动数据）");
+        CHECK(group->memory && strcmp(group->memory, "# Summary\n- work done") == 0, "memory 就是摘要正文");
+
+        /* 渲染出来才是模型看到的东西。 */
+        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        CHECK(strstr(rendered, "<read-files>\nsrc/a.c\n</read-files>") != NULL, "读块按首次出现顺序渲染");
+        CHECK(strstr(rendered, "<modified-files>\nsrc/b.c\nsrc/c.c\n</modified-files>") != NULL, "改块渲染出来");
+        CHECK(strstr(rendered, "src/\n") == NULL, "目录没有混进读块");
+        CHECK(strstr(rendered, "not-a-file") == NULL, "非文件工具不进清单");
+        CHECK(strncmp(rendered, "# Summary", 9) == 0, "摘要本体仍在最前面");
+        sdsfree(rendered);
     }
 
     edc_session_free(session);
@@ -1434,24 +1445,26 @@ static void test_fold_files_accumulate_across_folds(void)
     CHECK(fold1 != NULL, "第一次折叠起来了");
     if (fold1)
         edc_group_fold_deliver_memory(fold1, "# Summary 1");
-    CHECK(group->memory && strstr(group->memory, "a.c") != NULL, "第一次折叠记下 a.c");
+    CHECK(group->fold_files && edc_fold_files_count(group->fold_files) == 1, "第一次折叠记下 a.c");
 
     /* 第二次只测"落地时的合并"：抽取侧已由上一个用例覆盖，这里直接给一个带新清单的
-     * 折叠任务 -- 关键是被折掉的那批 turn 已经不在了，a.c 只能从 memory 里带过来。 */
+     * 折叠任务 -- 关键是被折掉的那批 turn 已经不在了，a.c 只能从结构里带过来。 */
     struct edc_task *fold2 = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
     CHECK(fold2 != NULL, "第二个折叠任务");
     if (fold2)
     {
         fold2->sink_group = group;
-        fold2->fold_modified_files = sdsnew("b.c\n");
+        fold2->fold_files = edc_fold_files_new();
+        edc_fold_files_add_modified(fold2->fold_files, "b.c");
         edc_group_fold_deliver_memory(fold2, "# Summary 2");
     }
 
-    CHECK(group->memory && strstr(group->memory, "a.c") != NULL, "第一次折叠的 a.c 还在（从 memory 带过来）");
-    CHECK(group->memory && strstr(group->memory, "b.c") != NULL, "第二次的 b.c 也进来了");
-    CHECK(group->memory && strstr(group->memory, "<modified-files>\na.c\nb.c\n</modified-files>") != NULL,
+    CHECK(group->fold_files && group->fold_files->modified_n == 2, "旧条目还在，新条目并入");
+    sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(strstr(rendered, "<modified-files>\na.c\nb.c\n</modified-files>") != NULL,
           "并集按旧->新顺序，无重复");
-    CHECK(group->memory && count_occurrences(group->memory, "\na.c\n") == 1, "a.c 只出现一次");
+    CHECK(count_occurrences(rendered, "\na.c\n") == 1, "a.c 只出现一次");
+    sdsfree(rendered);
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -1487,18 +1500,25 @@ static void test_fold_files_are_capped_and_idempotent(void)
         edc_group_fold_deliver_memory(fold, "# Summary");
 
     /* 60 条里只留最近 50 条：f00..f09 丢掉，f10 起保留。 */
-    CHECK(group->memory && strstr(group->memory, "src/f00.c") == NULL, "最老的被挤出（上限 50）");
-    CHECK(group->memory && strstr(group->memory, "src/f10.c") != NULL, "第 11 条是保留区间的第一条");
-    CHECK(group->memory && strstr(group->memory, "src/f59.c") != NULL, "最新的在");
-    CHECK(group->memory && count_occurrences(group->memory, ".c\n") == 50, "正好 50 条");
+    CHECK(group->fold_files && group->fold_files->read_n == 50, "正好 50 条");
+    {
+        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        CHECK(strstr(rendered, "src/f00.c") == NULL, "最老的被挤出（上限 50）");
+        CHECK(strstr(rendered, "src/f10.c") != NULL, "第 11 条是保留区间的第一条");
+        CHECK(strstr(rendered, "src/f59.c") != NULL, "最新的在");
+        CHECK(count_occurrences(rendered, ".c\n") == 50, "渲染出来的也是 50 条");
+        sdsfree(rendered);
+    }
 
-    /* 幂等：同一份 content 再落一次，memory 不该变长（块被 stripped 后重贴）。 */
-    sds before = group->memory ? sdsdup(group->memory) : NULL;
+    /* 幂等：同一份 content 再落一次，结构与渲染都不该涨（回显的块被剥掉）。 */
+    sds before = edc_fold_files_render(group->memory, group->fold_files);
     if (fold)
         edc_group_fold_deliver_memory(fold, "# Summary");
-    CHECK(before && group->memory && strcmp(before, group->memory) == 0, "重复落地得到同一份 memory");
-    if (before)
-        sdsfree(before);
+    sds after = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(strcmp(before, after) == 0, "重复落地得到同一份渲染结果");
+    CHECK(group->fold_files && group->fold_files->read_n == 50, "结构也没涨");
+    sdsfree(before);
+    sdsfree(after);
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -1541,7 +1561,8 @@ static void test_fold_echoed_blocks_are_stripped(void)
         return;
     }
     edc_group_fold_deliver_memory(fold1, "# Summary 1");
-    CHECK(group->memory && count_occurrences(group->memory, "<modified-files>") == 1, "第一次落地有一个 modified 块");
+    CHECK(group->fold_files && group->fold_files->read_n == 1 && group->fold_files->modified_n == 1,
+          "第一次落地：读 1 条、改 1 条");
 
     /* 第二次: 摘要把旧 memory 的两个块原样抄回来（模型做的事）。 */
     struct edc_task *fold2 = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
@@ -1553,12 +1574,17 @@ static void test_fold_echoed_blocks_are_stripped(void)
                                               "<modified-files>\nold.c\n</modified-files>\n");
     }
 
-    CHECK(group->memory && strstr(group->memory, "# Summary 2") == group->memory, "新摘要仍在最前面");
-    CHECK(group->memory && count_occurrences(group->memory, "<read-files>") == 1, "回显的 read 块被去掉, 只剩一份");
-    CHECK(group->memory && count_occurrences(group->memory, "<modified-files>") == 1, "回显的 modified 块也只剩一份");
-    CHECK(group->memory && count_occurrences(group->memory, "\nkeep.c\n") == 1, "路径没有被重复");
-    /* 回显的那份正文不该留在摘要里（否则同一批路径出现两次）。 */
-    CHECK(group->memory && strstr(group->memory, "# Summary 1") == NULL, "旧摘要正文没有被抄进来");
+    /* 回显的块进不了 memory：body 只有正文。模型改写块既不能重复条目，也不能新增条目
+     * —— 这是"数据在结构里、块只是投影"最直接的收益。 */
+    CHECK(group->memory && strcmp(group->memory, "# Summary 2") == 0, "落地的 memory 只剩正文");
+    sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(strncmp(rendered, "# Summary 2", 11) == 0, "渲染后新摘要在最前面");
+    CHECK(count_occurrences(rendered, "<read-files>") == 1, "只剩一份 read 块");
+    CHECK(count_occurrences(rendered, "<modified-files>") == 1, "只剩一份 modified 块");
+    CHECK(count_occurrences(rendered, "\nkeep.c\n") == 1, "路径没有被重复");
+    CHECK(count_occurrences(rendered, "\nold.c\n") == 1, "改过的路径也没有被重复");
+    CHECK(strstr(rendered, "# Summary 1") == NULL, "旧摘要正文没有被抄进来");
+    sdsfree(rendered);
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -1602,12 +1628,13 @@ static void test_tracked_files_reader(void)
 
     reads = NULL;
     writes = NULL;
-    CHECK(edc_group_fold_tracked_files(group, &reads, &writes) == 4, "2 读 + 2 改 = 4 条");
-    CHECK(reads && strstr(reads, "src/a.c") && strstr(reads, "src/"), "读清单有两项");
+    CHECK(edc_group_fold_tracked_files(group, &reads, &writes) == 3, "1 读（list_dir 不算）+ 2 改 = 3 条");
+    CHECK(reads && strstr(reads, "src/a.c"), "读清单有 src/a.c");
+    CHECK(reads && strstr(reads, "src/\n") == NULL, "目录不在读清单里");
     CHECK(writes && strstr(writes, "src/b.c") && strstr(writes, "src/c.c"), "改清单有两项");
 
     /* ③ 出参可以为 NULL（只要条数）。 */
-    CHECK(edc_group_fold_tracked_files(group, NULL, NULL) == 4, "两个出参都能省");
+    CHECK(edc_group_fold_tracked_files(group, NULL, NULL) == 3, "两个出参都能省");
     /* ④ NULL 组不崩。 */
     CHECK(edc_group_fold_tracked_files(NULL, NULL, NULL) == 0, "NULL 组 ⇒ 0 条");
 

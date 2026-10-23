@@ -11,6 +11,7 @@
 #include "edc_parse.h"
 #include "edc_file_utils.h"
 #include "edc_path_guard.h"
+#include "edc_fold_files.h"
 #include "edc_group_fold.h"
 #include "edc_local_shell.h"
 #include "edc_prompts.h"
@@ -1727,9 +1728,12 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
 
     if (parent->group)
     {
-        /* inherit the parent group's memory summary */
+        /* inherit the parent group's memory summary (body + tracked-file lists: the child
+         * continues the same work, so it starts from the same knowledge) */
         if (parent->group->memory)
             child_group->memory = sdsdup(parent->group->memory);
+        if (parent->group->fold_files)
+            child_group->fold_files = edc_fold_files_dup(parent->group->fold_files);
 
         /* The system prompt takes history[0] first, so the snapshot's first message is not mistaken for the system
          * prompt by cb_send_llm */

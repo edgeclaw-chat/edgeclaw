@@ -492,6 +492,15 @@ cc_test(
 )
 
 cc_test(
+    name = "test_fold_files",
+    srcs = ["test_fold_files.c"],
+    deps = [
+        "//src/kernel:kernel",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_group_fold",
     srcs = ["test_group_fold.c"],
     deps = [

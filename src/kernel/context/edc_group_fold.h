@@ -152,17 +152,15 @@ extern void edc_group_fold_note_failure(struct edc_task_group *group);
  *  situation, worth retrying). Starting a fold does NOT reset it. */
 extern void edc_group_fold_note_progress(struct edc_task_group *group);
 
-/** The files the group's memory says were read / modified: the `<read-files>` and
- *  `<modified-files>` blocks that fold landing appends (they cover the folded corpus
- *  only -- a snapshot taken when a fold lands, not a live view; `exec_shell` calls are
- *  not tracked at all).
+/** The files the folded work read / modified, as newline-separated text: a projection of
+ *  `group->fold_files` (which is where the data actually lives -- `group->memory` holds the
+ *  summary body only). They cover the folded corpus only: a snapshot taken when a fold
+ *  lands, not a live view, and `exec_shell` calls are not tracked at all.
  *
  *  Either out param may be NULL. Each receives a newline-separated list with a trailing
- *  newline, or NULL when the block is absent. Returns the number of entries found (0
- *  also covers "this group was folded before the lists existed").
+ *  newline, or NULL when that list is empty. Returns the number of entries found.
  *
- *  The ONE reader of those blocks: `/group files` renders this, `/group info` counts
- *  it. When the lists move to structured storage only this function changes. */
+ *  The ONE reader: `/group files` renders this, `/group info` counts it. */
 extern int edc_group_fold_tracked_files(const struct edc_task_group *group, sds *out_reads, sds *out_writes);
 
 #endif

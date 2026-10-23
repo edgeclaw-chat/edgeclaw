@@ -27,6 +27,7 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     group->kind = EDC_GROUP_KIND_USER;
     group->history = cJSON_CreateArray();
     group->memory = NULL;
+    group->fold_files = NULL;
     group->fold_epoch = 0;
 
     leader->is_group_leader = 1;
@@ -58,6 +59,7 @@ void edc_task_group_free(struct edc_task_group *group)
         cJSON_Delete(group->tool_deltas);
     if (group->memory)
         sdsfree(group->memory);
+    edc_fold_files_free(group->fold_files);
     free(group);
 }
 

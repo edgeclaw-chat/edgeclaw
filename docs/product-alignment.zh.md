@@ -57,7 +57,7 @@
 | 工具注册面 | ❌ 静态数组；system prompt 工具清单写死 | ✅ 每轮按激活集重推（静态可见性） | `edc_toolbox.c`、`edc_context.c` / `system-prompt.ts` |
 | 工具输出外溢 | ❌ 超限直接截断 | ✅ 双上限 + 有界预览 | `edc_output_buf.c` / `truncate.ts` |
 | 工具并行 | ❌ 串行 `req->next` | ✅ 嵌套调用 + 写串行队列 | `/` `nested-tool-calls.ts`、`file-mutation-queue.ts` |
-| 先落盘再副作用 | ❌ 只在 settle 落盘 | ✅ | — |
+| 先落盘再副作用 | ✅ 任务创建 / 工具派发前 / EXECUTING / 工具结果 / ERROR 五处落盘（2026-10-23） | ✅ | `edc_scheduler.c` `sched_save_progress` |
 | 运行中输入 steer/followUp | ❌ 输入即建任务，无受理段 | ✅ | `edc_scheduler.c` / `agent-session.ts:320` |
 | 压缩摘要格式 | ✅ 6 段 + 迭代更新 + split turn + `<read-files>`/`<modified-files>` | ✅ 同形 | `edc_group_fold.c:52/84/96` / `docs/compaction.md` |
 | 上下文估算 + 尾部 + token 轴折叠 | ✅ 刚落地（对齐 pi 的 P1/P2） | ✅ | `edc_token_estimate.c` |
@@ -124,6 +124,34 @@ pi 的摘要格式是 6 段：
 有旧摘要时走**迭代更新**而非重写、明令"保留精确路径、函数名、错误原文"。
 这是"长任务不失忆"的真正来源，纯 prompt 工程 + 一点解析。方案在 `docs/pi-alignment.md`。
 
+**2026-10-22 补：清单有了查看出口。** 在那之前这份清单只存在于 `group->memory` 里——
+折叠任务的 output 是模型返回的纯净摘要，**块不含在内**，`/group info` 只说 `memory present`，
+于是"做了但谁都不知道它存在"。现在 `/group files [id]` 渲染它，`/group info` 给条数行；
+两者共用 `edc_group_fold_tracked_files()` 这一个读取口。
+
+**它是什么、不是什么**（输出里无条件带这句免责）：**折叠落地那一刻的快照，不是实时视图**。
+之后的改动不反映；`exec_shell`（`sed -i` / `cat` / `git checkout`）从来不记。
+这不是理论缺口：真实会话里某组 **917 次 `exec_shell` 对 1 次 `read_file`**，
+读清单为空不是因为没读，而是因为读都走了 shell。把它当 `git status` 用就会错，
+而错误从清单本身看不出来——所以免责声明和信息一起发。
+
+与 pi 的差异（2026-10-23 已收敛）：pi 把清单存成结构化 `details.readFiles/modifiedFiles` 数组，
+我们**现在也是结构化的** —— `struct edc_fold_files`（`src/kernel/context/edc_fold_files.h`）挂在
+`group->fold_files`，落盘为 `"fold_files": {"modified":[…],"read":[…]}`；`group->memory` 只存摘要正文，
+两个块在**每次请求时渲染**（`edc_fold_files_render`）。累积不再解析任何文本，模型改写块也污染不了数据。
+开工顺序是"先钉字节再接线"：`render` 与旧实现（把清单拼进 memory 那段）逐字节相同、且确定性
+（同状态同字节），因为这段文本在缓存前缀里，差一个字节就是从 token 0 起全废。
+
+两条顺便对齐的语义：`read-files` 减去 `modified`（读过又被改的不算"只读"）；`list_dir` 移出读桶
+（目录不是文件，pi 的 `ls` 也不记）。
+
+**有意偏离 pi 的一处**：pi 排序、我们不排序（首见序 + 每份清单 cap 50）。排序会让"最近碰过的文件"
+被字典序永久挤出 cap 之外，而 cap 又不能去掉（这段文本每轮都进缓存前缀）。
+
+**不兼容旧档案**（用户 2026-10-23 裁定）：不写迁移、schema 不升。缺 `fold_files` 键读回空清单；
+`group->memory` 是整体替换，旧档案里残留的块会在下一次折叠落地时自然消失（在那之前模型仍能看到
+它们，行为和改动前一致）。
+
 ---
 
 ## 4. P1 论证 —— 决定留不留
@@ -136,13 +164,30 @@ pi：流式输出中发来的消息可选择 `steer`（下个安全边界生效�
 
 ### 4.2 R7 输出双上限 + 外溢
 
-我们现在有上限但**直接截断**（信息丢了）。pi：行/字节先到先得、命中即截断、不返回半行、
-grep 单行 500 字符；配合 managed 文件后"读了大文件还想再查一句"才成立。
+**✅ 已落地（2026-10-22）。** 原先有上限但**直接截断**（信息丢了，只得到一句"你丢了 8893 字节"）。
+现在：两个上限先到先得（行 `EDC_TOOL_OUTPUT_MAX_LINES` = 2000 / 字节 `tool_max_output_size`，默认
+**10000**——文档此前写的"50KB"是错的，配置项在 `edc_config.h:177`、默认值在
+`edc_init_env.h:40`），命中即截断且不返回半行；
+**整份输出先落盘**再算预览，所以"截断"等于"搬家"而不是"丢失"；消息形状是
+`[truncated: showing X of Y lines (A of B bytes)]` + `[full output: <path>]` + 有界预览。
+闭环靠 `read_file` 的 offset/limit（`cad5018`）：预览说剩下在哪，读它的工具也存在。
 
 ### 4.3 R8 先落盘再副作用
 
-tool-call 记录先写 transcript 再执行。`kill -9` 后重启能看到崩溃前跑到哪、哪些工具结果未知。
-纯可靠性，没有产品争议。
+**✅ 已落地（2026-10-23）。** 原先状态只在任务 settle（或干净退出 `edc_scheduler_close`）时落盘，
+所以 `kill -9` 丢的**不是"哪个工具在跑"，而是整个在飞任务**——重启后它不存在，连 `/task resume`
+都没有对象。
+
+调查结论：`kill -9` 的损失点不在"工具状态没单独落盘"，而在**根本没有任何中途保存**。
+恢复机制一直是齐的（ledger 的 PENDING / EXECUTING 两态、`active_turn` 随会话序列化、
+PENDING 重派、EXECUTING 给"结果未知"提示），缺的只是磁盘上那份状态。
+
+因此不需要新机制，只在五个边界各写一次：任务创建、工具派发前（ledger 已 PENDING）、
+TOOL_STARTED（已 EXECUTING）、TOOL_RESULT 到达、ERROR（这个分支原先只标脏不落盘，
+失败状态要等别的任务结束才上盘，重启可能显示成还在跑）。
+
+**刻意不做"每个工具状态变化都落盘"**：序列化的单位是整个会话，要保证的是"重启能恢复什么"，
+不是镜像每个字段。粗粒度已经覆盖全部可恢复事实。
 
 ### 4.4 R9 同轮工具并行
 
@@ -189,7 +234,7 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 | **R2** | ✅ **已完成（2026-10-21）**：工具集由注册表派生（`edc_toolset`），组内冻结、散文段生成、执行侧按 scope 判定；实作见 `pi-toolset-plan.zh.md` B0–B3 | 同组连跑 `tools` 字节级相同；禁用后散文段里也不出现（`test_toolset.c` 37 checks） | — | — |
 | **R3** | ✅ **已完成（2026-10-22），但交付的形态与 pi 不同**：`edgeclaw_cli '<你在 TUI 里会输入的那一行>'` —— **输入行直通**，没有第二套命令行词汇；只有输出可选（默认答案 / `--json` / `--silent` + `/task output <id>` 事后取）。独立二进制，只链 app 不链 ftxui（6.5 MB vs 12 MB） | 同一行输入在 TUI 与 CLI 行为一致（实测：消息、`/help`、`/task new`、`+`、`!cmd`、`"a" \| "b"`）；退出码 0/1/2/3；print 模式 stdout 只有答案；`//tests:all` 113（`test_cli.sh` 13 checks） | — | — |
 | **R4** | ✅ **已完成（2026-10-22，纯 C 版）**：`grep` + `find` 在进程内实现（`edc_tools_search.c`），无子进程、无 shell；遍历在 libuv 线程池，路径先过沙箱；POSIX regex（Windows 用 pcre2-posix）；`literal` / `limit` / `glob` / `ignore_case` / `timeout` | 一轮定位；单行 500 字符；默认 100 条命中并说明截断；二进制/CRLF/.git 等跳过；散文规则自动从"用 exec_shell 搜索"切成"优先 grep/find"（单测钉住） | — | — |
-| **R5** | ✅ **已完成（2026-10-21）**：6 段格式 + 迭代更新 + split turn + 精确路径要求 + `max_tokens`（早就有）；`<read-files>`/`<modified-files>` 从 tool call 抽取、跨折叠累积、上限 50、确定性顺序（本次补） | 折叠后能说出改过哪些文件、卡在哪；折叠两次取并集不重复（`test_group_fold.c` 三个用例钉住） | — | — |
+| **R5** | ✅ **已完成（2026-10-21 / 2026-10-22 / 2026-10-23）**：6 段格式 + 迭代更新 + split turn + 精确路径要求 + `max_tokens`（早就有）；`<read-files>`/`<modified-files>` 从 tool call 抽取、跨折叠累积、上限 50、确定性顺序（2026-10-21）；**查看出口 `/group files [id]`** + `/group info` 条数行 + 修掉 `without_block` 的 use-after-free（2026-10-22，`20d563a`）；**清单升级为结构化数据** `struct edc_fold_files`（2026-10-23）：`group->memory` 只存正文，两个块每请求渲染，累积不再解析文本，`read-files` 减去 `modified`，`list_dir` 移出读桶 | 折叠后能说出改过哪些文件、卡在哪；两次折叠取并集不重复（`test_group_fold.c`）；`render` 与旧实现**逐字节相同** + 确定性 + 变异自检（`test_fold_files.c` 37 checks）；`/group files` 三种状态 + 恒带"非实时快照"免责（`test_commands_group_fold.c`） | — | — |
 
 > **R3 为什么不是 pi 的 `--print` / `--mode json`（2026-10-22，用户裁定）**
 >
@@ -226,8 +271,8 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 | # | 需求 | 判据 | 成本 | 依赖 |
 |---|---|---|---|---|
 | **R6** | **输入受理段：steer / followUp** | 流式中发一句：steer 在安全边界生效、followUp 排队；都不打断已开始的工具 | M | scheduler 受理段 |
-| **R7** | **输出双上限 + 外溢**（行 2000 / 字节 50KB 先到先得；落 managed 文件 + 有界预览 + 路径） | 超大输出后仍能"再查一句"；截断提示带路径与命中哪个上限 | S | — |
-| **R8** | **先落盘再副作用** | `kill -9` 后重启能看到崩溃前记录与未完成标记 | M | — |
+| **R7** | ✅ **已完成（2026-10-22）**：两个上限先到先得（行 `EDC_TOOL_OUTPUT_MAX_LINES` 2000 + 字节 `tool_max_output_size` 默认 10000）、超限先落盘再截断、有界预览 + `[full output: <path>]`、`read_file` 的 offset/limit 闭环（`ddf40b0` 外溢 / `cd8b62f` / `57867c7` / `cad5018`） | 截断提示同时给出命中哪个上限、显示多少行/字节，并带可读路径；`test_toolbox_response.c:403 test_result_truncated` | — | — |
+| **R8** | ✅ **已完成（2026-10-23）**：状态不再只在任务 settle（或干净退出）时落盘。新增 `sched_save_progress()`，在**任务创建**、**工具派发前**（ledger 已是 PENDING）、**TOOL_STARTED**（已是 EXECUTING）、**TOOL_RESULT 到达**、以及**ERROR** 五个边界各写一次。刻意是粗粒度（每任务 / 每工具边界一次），不是"每个工具状态变化都写"——序列化单位是整个会话，要保证的是"重启时能恢复什么"，不是镜像每个字段。恢复机制本来就齐（PENDING 重派、EXECUTING 不重派而是给"结果未知"提示、`active_turn` 随会话落盘），缺的只是磁盘上根本没有那份状态 | `kill -9` 后重启，崩溃前在跑的任务**存在**、带 `INTERRUPTED`、`/task resume` 可用、未完成的 turn 也在（`test_scheduler_open_close.c` 的 `test_running_task_survives_a_kill`，用「free 而不 close」真实模拟被杀；去掉创建时的落盘 ⇒ 8 条断言全红） | M | — |
 | **R9** | **同轮工具并行**（读并发、写串行队列） | 3 个 `read_file` wall time ≈ 1 个；同文件并发写不撕裂 | M | R2 |
 | **R10** | **EdgeClaw 包**（本地目录 + git URL；只承载 skills/prompts/themes） | 装一个包后 `/skill`、`/prompt` 立刻可见；卸载干净 | M | 决策 A |
 | **R11** | **项目信任**（只 gate "能执行代码"的口子） | 未授信项目的 `mcp.json`/包被忽略且**明确告知原因**；不静默兜底 | M | 决策 B、R10 |
@@ -283,7 +328,20 @@ pi 用它 gate `mcp.json`、包声明、资源目录。我们已拍板"项目级
 
 ---
 
-## 9. 维护规则
+## 9. 技术债（不在 R 清单里：能力已对齐，但工程状态有欠账）
+
+这三条**不占 R 编号**——R 编号的语义是"按迁移成本排的优先级"，技术债不是需求，
+混进去会破坏"编号 = 优先级"这个约定。记录在此，修的时候单独立项。
+
+| # | 债 | 后果 | 成本 |
+|---|---|---|---|
+| **T1** | **内置资源安装后冻结** | 提示词类已不再是风险（不再从磁盘读取），但 `skills/*/SKILL.md`、`prompts/review.md` 改好了**老用户拿不到**——安装时复制、之后不跟随更新 | S/M |
+| **T2** | **技能索引为读 frontmatter 而读全文** | 每个 `SKILL.md` 最多读 512KB 只为取 name/description ⇒ 装几十个包时**每次构建提示词**都有固定开销 | S |
+| **T3** | **`/reload` 不重建工具集**（有意为之） | 用户改配置后 `/reload` 不会让工具变化生效，但 `/help` 里没写清楚 ⇒ 会当作 bug 报 | S（文档） |
+
+---
+
+## 10. 维护规则
 
 - 每条能力只有**两种状态**：`已对齐`（给文件/函数证据）或 `缺口`（给判据）。**不写"部分支持"**——
   含糊的状态等于没有状态。

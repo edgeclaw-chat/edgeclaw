@@ -350,7 +350,7 @@ start → 屏障 → prompt → 落地路径。
 | **P2b** | ✅ **已完成（2026-10-09，commit `3b9baf6`）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
 | **P2b 卫生** | ✅ **已完成（2026-10-09，commit `824ebc8`）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
 | **P3** | ✅ **已完成（2026-10-09，分支 `memory`）** 分类器 + 三个检测点 + 一条带数字的提示（**不自动恢复**，裁决 #10）；顺带找回 `context_length_exceeded` 这个一直白丢的信号 | 小 | `executor/edc_llm_error_kind.{c,h}`、`edc_executor.{c,h}`、`edc_scheduler.c`、两个新测试 |
-| **P4（可选）** | ⏸ 文件操作累积追踪（pi 的 `<read-files>`/`<modified-files>`）—— 用户 2026-10-09 裁决**先不做** | 小 | `edc_executor.c`、`edc_llm_request.c` |
+| **P4（可选）** | ~~⏸ 文件操作累积追踪（pi 的 `<read-files>`/`<modified-files>`）—— 用户 2026-10-09 裁决**先不做**~~ **✅ 2026-10-22 更正：已落地**（`b5a8737` 抽取+累积；`20d563a` 查看出口 `/group files` + 修掉 `without_block` 的 UAF），见 `product-alignment.zh.md` R5 | 小 | `edc_group_fold.{c,h}`、`edc_commands.c` |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。
 
@@ -405,7 +405,7 @@ start → 屏障 → prompt → 落地路径。
 
 **11. 死键 `memory_compress_threshold`** —— ✅ **已定 A（清掉）并落地（2026-10-09）**：删 `tools/ab/ab.py` 夹具里那条；`src/` 本来就没读者。你 `config.json` 里那条我改不到（在可写路径外），留着无害 —— 想清就 `python3 -c "import json,pathlib;p=pathlib.Path.home()/'.edgeclaw/config.json';d=json.loads(p.read_text());d.pop('memory_compress_threshold',None);p.write_text(json.dumps(d,indent='\t',ensure_ascii=False))"`。
 
-**12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：**用户 2026-10-09 裁决 A —— 先不做**（P4 候选保留）。
+**12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：~~**用户 2026-10-09 裁决 A —— 先不做**（P4 候选保留）~~ **✅ 2026-10-22 更正：已落地。** 抽取/累积在 `b5a8737`；查看出口 `/group files [id]` + `without_block` 的 use-after-free 修复在 `20d563a`；**2026-10-23 起清单是结构化数据**（`struct edc_fold_files`，`group->memory` 只存正文、两个块每请求渲染），与 pi 的 `details` 数组同一形态。当前状态、语义差异（`read\modified`、`list_dir` 不算读）与排序/cap 的有意偏离见 `product-alignment.zh.md` §3.5 与 R5。
 
 ---
 

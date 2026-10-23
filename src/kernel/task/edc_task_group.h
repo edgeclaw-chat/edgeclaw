@@ -1,6 +1,7 @@
 #ifndef __BC_TASK_GROUP_H__
 #define __BC_TASK_GROUP_H__
 
+#include "edc_fold_files.h"
 #include "edc_task.h"
 #include "sds.h"
 #include <stdbool.h>
@@ -58,8 +59,13 @@ struct edc_task_group
 
     /* L1 fold state: the summarized memory. What has been folded is tracked per
      * turn (edc_turn.folded_prefix) — the history below only ever holds what is
-     * still sent, so no group-level watermark is needed. */
+     * still sent, so no group-level watermark is needed.
+     *
+     * `memory` is the summary BODY only. The `<read-files>`/`<modified-files>` blocks the
+     * model sees are rendered from `fold_files` on every request; keeping them out of the
+     * text is what stops a summary that rewrites a block from corrupting the list. */
     sds memory;
+    struct edc_fold_files *fold_files;
 
     /* Wall-clock about `memory` (epoch seconds; 0 = unknown / never written).
      * `memory_created_at` = first write, `memory_updated_at` = the last write (i.e.

@@ -4,6 +4,7 @@
 #include "edc_compat.h"
 #include "edc_containers.h"
 #include "edc_context.h"
+#include "edc_fold_files.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_task.h"
@@ -322,6 +323,11 @@ static cJSON *group_to_json(struct edc_task_group *group)
     cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(group->kind));
     if (group->memory)
         cJSON_AddStringToObject(gj, "memory", group->memory);
+    /* The tracked-file lists are data, not text in `memory` (see edc_fold_files.h). Older
+     * archives have no such key: they read back as an empty list, which is exactly right --
+     * nothing migrates, because the next fold landing replaces `memory` wholesale. */
+    if (group->fold_files && edc_fold_files_count(group->fold_files) > 0)
+        cJSON_AddItemToObject(gj, "fold_files", edc_fold_files_to_json(group->fold_files));
     cJSON_AddNumberToObject(gj, "fold_epoch", (int)group->fold_epoch);
     /* Wall-clock about `memory` (v9). Optional keys: an old archive reads back 0 = unknown. */
     cJSON_AddNumberToObject(gj, "memory_created_at", (double)group->memory_created_at);
@@ -967,6 +973,13 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             cJSON *mem = cJSON_GetObjectItem(gj, "memory");
             if (mem && cJSON_IsString(mem))
                 group->memory = sdsnew(cJSON_GetStringValue(mem));
+        }
+        {
+            /* The tracked files (see edc_fold_files.h). A pre-existing archive has no key:
+             * empty list, no migration -- the fold landing replaces `memory` wholesale. */
+            cJSON *ff = cJSON_GetObjectItem(gj, "fold_files");
+            if (ff)
+                group->fold_files = edc_fold_files_from_json(ff);
         }
         {
             /* v3: fold watermark (completion_seq). Old archives only had fold_cursor

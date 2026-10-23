@@ -16,6 +16,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_group_fold.h"
+#include "edc_fold_files.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -260,9 +261,12 @@ int main(void)
     CHECK(files && strstr(files, "not a live view"), "空态也带免责声明");
     sdsfree(files);
 
-    /* ② 塞一份带两个块的 memory（就是折叠落地写出来的形状） */
-    gf->memory = sdsnew("# Summary\n\n<read-files>\nsrc/a.c\nsrc/\n</read-files>\n\n"
-                        "<modified-files>\nsrc/b.c\n</modified-files>\n");
+    /* ② 结构里有清单（折叠落地写出来的形状） */
+    gf->memory = sdsnew("# Summary\n- work done");
+    gf->fold_files = edc_fold_files_new();
+    edc_fold_files_add_read(gf->fold_files, "src/a.c");
+    edc_fold_files_add_read(gf->fold_files, "src/");
+    edc_fold_files_add_modified(gf->fold_files, "src/b.c");
     files = edc_commands_group_files_text(gf);
     CHECK(files && strstr(files, "### Modified (1)"), "先列 modified 与其条数");
     CHECK(files && strstr(files, "### Read (2)"), "再列 read 与其条数");
@@ -274,12 +278,15 @@ int main(void)
     CHECK(files && strstr(files, "not a live view") && strstr(files, "exec_shell"), "有内容也带免责声明");
     sdsfree(files);
 
-    /* ③ 有 memory 但没块（旧档案 / 语料没碰文件）：不能说成"没折过" */
-    sdsfree(gf->memory);
-    gf->memory = sdsnew("# Summary\n- only prose\n");
+    /* ③ 有 memory 但结构为空（旧档案 / 语料没碰文件）：不能说成"没折过"；
+     *    同时钉住"文本块不再是数据源"——往 memory 里塞块不会凭空变成清单。 */
+    gf->memory = sdsnew("# Summary\n- only prose <read-files>\nfake.c\n</read-files>\n");
+    edc_fold_files_free(gf->fold_files);
+    gf->fold_files = NULL;
     files = edc_commands_group_files_text(gf);
-    CHECK(files && strstr(files, "No files recorded"), "有 memory 无块 ⇒ 说没记录, 不误报");
+    CHECK(files && strstr(files, "No files recorded"), "有 memory 无结构 ⇒ 说没记录, 不误报");
     CHECK(files && strstr(files, "never been folded") == NULL, "不能说成没折过");
+    CHECK(files && strstr(files, "fake.c") == NULL, "memory 里的文本块不再被当成清单解析");
     sdsfree(files);
     sdsfree(gf->memory);
     gf->memory = NULL;

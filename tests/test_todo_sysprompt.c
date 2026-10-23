@@ -568,7 +568,10 @@ static void test_append_system_part(void)
           strstr(h1, "<system-reminder>") == NULL,
       "no reminder sections/marker anywhere in the head");
     cJSON *mem1 = cJSON_GetArrayItem(msgs, 1);
-    C(mem1 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem1, "content")), "## Group Memory\nMEM-SUMMARY") == 0,
+    /* The stored memory is a summary BODY (no trailing newline) and the tracked-file
+     * blocks are rendered on top of it, so the message always ends with exactly one
+     * newline -- with or without any files tracked. */
+    C(mem1 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem1, "content")), "## Group Memory\nMEM-SUMMARY\n") == 0,
       "group memory comes AFTER the system prompt (mutable part last)");
 
     cJSON *r2 = edc_context_make_todo_reminder(t1);

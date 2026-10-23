@@ -33,6 +33,7 @@ struct edc_sched_task_entry
 
 static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
 static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s);
+static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid);
@@ -690,6 +691,11 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
         sdsfree(call_id);
     }
 
+    /* R8: the task now exists (placed in a group, edges attached, input / seeded call
+     * recorded). Persist here, or a kill before it settles leaves nothing on disk to
+     * resume -- the task would simply not exist after a restart. */
+    sched_save_progress(sched, task);
+
     return true;
 }
 
@@ -1330,6 +1336,11 @@ static bool ex_send_llm(void *ctx, struct edc_task *task, void *request_id)
 static void ex_dispatch_tools(void *ctx, struct edc_task *task, void *llm_resp, void *request_id)
 {
     struct edc_scheduler *sched = ctx;
+    /* R8, the literal "persist before the side effect": by now the executor has
+     * registered every call as PENDING in the resume ledger, and nothing has run yet.
+     * A kill from here on is recoverable -- the restart sees the calls as PENDING and
+     * re-dispatches them (they had no chance to do anything). */
+    sched_save_progress(sched, task);
     if (sched->dispatch_tools)
         sched->dispatch_tools(sched, task, llm_resp, request_id);
 }
@@ -1360,6 +1371,32 @@ static void sched_save_session(struct edc_scheduler *sched, struct edc_session *
     if (!sched || !sched->sessions)
         return;
     edc_session_store_save_session_state(sched->sessions, sched, s);
+}
+
+/* Persist a task's progress WHILE it runs, not only when it settles (R8).
+ *
+ * What a `kill -9` used to lose was not "which tool was running" but the entire
+ * in-flight task: the state file was written only when a task settled (or on a clean
+ * shutdown), so after a restart the task that was running did not exist at all -- no
+ * entry in /task list, nothing for /task resume to pick up.
+ *
+ * The recovery machinery was always there and never had anything to read: the resume
+ * ledger records PENDING vs EXECUTING, `active_turn` (the unfinished turn, tool results
+ * included) is serialized with everything else, a PENDING call is re-dispatched on
+ * resume, and an EXECUTING one whose result never arrived gets an honest "interrupted,
+ * outcome unknown" note. Both facts ride along with the session, so ONE write per
+ * boundary is enough -- there is nothing task-specific to persist separately.
+ *
+ * Deliberately coarse: per task creation and per tool boundary, never per tool-state
+ * change. The serialized unit is a whole session, so the point is to write at the few
+ * moments that decide what a restart can recover, not to mirror every field. */
+static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task)
+{
+    if (!sched || !task)
+        return;
+    struct edc_session *own = edc_task_session(task);
+    if (own)
+        sched_save_session(sched, own);
 }
 
 /* The "no API key" text points the user at /connect: presentation, not advance. */
@@ -1525,6 +1562,10 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
             sched->send_reply(sched, task, copy, EDC_CHANNEL_MESSAGE_SYS_TYPE, req_id);
             sdsfree(copy);
         }
+        /* R8: an ERROR is terminal too, but this branch used to only mark the tree dirty,
+         * so the failure waited for some other task to finish before reaching the disk.
+         * A restart could then show the task as still running. */
+        sched_save_session(sched, own);
     }
 }
 
@@ -1614,6 +1655,10 @@ static void sched_handle_tool_resp(struct edc_scheduler *sched, struct edc_actor
     struct edc_advance_result res = edc_executor_advance_tool_resp(&sched->executor, task, msg->request_id, msg->data);
     edc_scheduler_apply_advance(sched, task, msg->request_id, &res);
 
+    /* R8: the result is now in `active_turn` and the call has left the ledger; persist
+     * so a kill during the following LLM request does not lose what the tool returned. */
+    sched_save_progress(sched, task);
+
     /* A held send (a dep is outstanding) parked the task at AWAIT_DEPS without
      * sending: its request is over, so drop the mapping. It is re-driven with a
      * fresh id when the dep completes. */
@@ -1637,6 +1682,12 @@ static void sched_handle_tool_started(struct edc_scheduler *sched, struct edc_ac
     ev.as.call_id = (const char *)msg->data;
     struct edc_advance_result res = edc_executor_advance(&sched->executor, task, &ev);
     edc_scheduler_apply_advance(sched, task, msg->request_id, &res);
+
+    /* R8: the ledger now says EXECUTING for this call. That distinction only pays off
+     * if it reaches the disk BEFORE the tool does its work: on restart an EXECUTING
+     * call is NOT re-dispatched (the side effect may already have happened), it gets an
+     * "interrupted, outcome unknown" note instead. A PENDING one is re-dispatched. */
+    sched_save_progress(sched, task);
 }
 
 /* Tool output echo (TOOL message): check the request is still alive via the task
