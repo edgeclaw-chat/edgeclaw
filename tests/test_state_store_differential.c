@@ -274,9 +274,8 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     s->next_completion_seq = 9;
     s->active_task = leader;
     s->foreground_group = g1;
-    if (s->last_active)
-        sdsfree(s->last_active);
-    s->last_active = sdsnew("2026-09-18 05:30:04");
+    /* An integer, like every other timestamp now. */
+    s->last_active = 1790000000ULL;
 }
 
 /* ── The round trip ──────────────────────────────────────────────────────── */

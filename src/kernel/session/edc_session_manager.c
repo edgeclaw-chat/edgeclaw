@@ -177,7 +177,7 @@ static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
         cJSON *obj = cJSON_CreateObject();
         cJSON_AddStringToObject(obj, "id", s->session_id);
         cJSON_AddStringToObject(obj, "name", s->name ? s->name : s->session_id);
-        cJSON_AddStringToObject(obj, "created_at", s->created_at ? s->created_at : "");
+        cJSON_AddNumberToObject(obj, "created_at", (double)s->created_at);
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -295,11 +295,16 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
         if (!s)
             continue;
 
-        /* restore timestamps */
-        if (created_j && cJSON_IsString(created_j) && strlen(cJSON_GetStringValue(created_j)) > 0)
+        /* Restore the timestamp. Integer is the format now; a string can only come from an
+         * index written by an older build, and is accepted so the first run after an
+         * upgrade does not silently reset every creation date. */
+        if (created_j && cJSON_IsNumber(created_j))
+            s->created_at = (uint64_t)cJSON_GetNumberValue(created_j);
+        else if (created_j && cJSON_IsString(created_j))
         {
-            sdsfree(s->created_at);
-            s->created_at = sdsnew(cJSON_GetStringValue(created_j));
+            time_t t = 0;
+            if (edc_datetime_parse(cJSON_GetStringValue(created_j), &t))
+                s->created_at = (uint64_t)t;
         }
 
         sm->sessions[i] = s;
@@ -375,8 +380,7 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     struct edc_session *active = edc_session_manager_get_active(sm);
     if (active)
     {
-        sdsfree(active->last_active);
-        active->last_active = edc_datetime_timestamp();
+        active->last_active = (uint64_t)edc_datetime_now();
     }
 
     return sm;
@@ -571,8 +575,7 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
     sm->session_count = new_count;
     sm->active_index = sm->session_count - 1;
 
-    sdsfree(s->last_active);
-    s->last_active = edc_datetime_timestamp();
+    s->last_active = (uint64_t)edc_datetime_now();
 
     edc_sm_save_index(sm);
     log_info("created session: id=%s name=%s", s->session_id, s->name);
@@ -604,16 +607,14 @@ bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name
     struct edc_session *old = edc_session_manager_get_active(sm);
     if (old)
     {
-        sdsfree(old->last_active);
-        old->last_active = edc_datetime_timestamp();
+        old->last_active = (uint64_t)edc_datetime_now();
     }
 
     /* Switch */
     sm->active_index = idx;
     struct edc_session *new_sess = sm->sessions[idx];
 
-    sdsfree(new_sess->last_active);
-    new_sess->last_active = edc_datetime_timestamp();
+    new_sess->last_active = (uint64_t)edc_datetime_now();
 
     edc_sm_save_index(sm);
     log_info("switched to session: id=%s name=%s", new_sess->session_id, new_sess->name);
@@ -673,8 +674,7 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
     struct edc_session *active = edc_session_manager_get_active(sm);
     if (active)
     {
-        sdsfree(active->last_active);
-        active->last_active = edc_datetime_timestamp();
+        active->last_active = (uint64_t)edc_datetime_now();
     }
 
     edc_sm_save_index(sm);
@@ -716,8 +716,13 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
 
         result = sdscatprintf(result, "- `[%s]` **%s**%s\n", s->session_id, s->name ? s->name : "(unnamed)",
                               active ? " · **current**" : "");
-        result = sdscatprintf(result, "  - messages: %zu · created: %s\n", msg_count,
-                              s->created_at ? s->created_at : "unknown");
+        {
+            /* Formatted here, at the presentation edge: the value itself is an integer. */
+            sds created = s->created_at ? edc_datetime_format((time_t)s->created_at) : NULL;
+            result = sdscatprintf(result, "  - messages: %zu · created: %s\n", msg_count,
+                                  created ? created : "unknown");
+            sdsfree(created);
+        }
     }
     if (sm->session_count == 0)
         result = sdscat(result, "_No sessions._\n");

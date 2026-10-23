@@ -75,7 +75,9 @@ static sds read_state_text(const char *ws)
     }
     sds out = sdsempty();
     const char *queries[] = {"SELECT ifnull(description,'') FROM tasks",
-                             "SELECT json FROM messages", NULL};
+                             /* v3 split the message: `body` holds the wire fields, the
+                              * metadata lives in columns. The input text is wire content. */
+                             "SELECT body FROM messages", NULL};
     for (int q = 0; queries[q]; q++)
     {
         sqlite3_stmt *st = NULL;

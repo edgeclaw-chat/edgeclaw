@@ -144,8 +144,8 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
     struct edc_session *session = g_new0(struct edc_session, 1);
     session->session_id = strdup(session_id ? session_id : "sess-1");
     session->name = sdsnew(name && strlen(name) > 0 ? name : session->session_id);
-    session->created_at = edc_datetime_timestamp();
-    session->last_active = edc_datetime_timestamp();
+    session->created_at = (uint64_t)edc_datetime_now();
+    session->last_active = session->created_at;
     session->config = config;
     session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
     session->next_completion_seq = 1;
@@ -189,8 +189,6 @@ void edc_session_free(struct edc_session *session)
     edc_session_memory_free(session->memo);
     free(session->session_id);
     sdsfree(session->name);
-    sdsfree(session->created_at);
-    sdsfree(session->last_active);
     sdsfree(session->history_dir);
     sdsfree(session->workdir);
     sdsfree(session->last_local_cmd);
@@ -388,7 +386,11 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
     }
 
     out = sdscatprintf(out, "- **Messages**: %zu\n", edc_session_get_message_count(session));
-    out = sdscatprintf(out, "- **Last Active**: %s\n", session->last_active ? session->last_active : "unknown");
+    {
+        sds when = edc_datetime_format((time_t)session->last_active);
+        out = sdscatprintf(out, "- **Last Active**: %s\n", when ? when : "unknown");
+        sdsfree(when);
+    }
     return out;
 }
 

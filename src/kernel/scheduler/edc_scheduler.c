@@ -1,5 +1,6 @@
 ﻿#include "edc_scheduler.h"
 #include "edc_cmd_parse.h"
+#include "edc_datetime_utils.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -1826,7 +1827,14 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         }
     }
     cJSON_AddNumberToObject(root, "message_count", (double)msg_count);
-    cJSON_AddStringToObject(root, "created_at", sess->created_at ? sess->created_at : "");
+    {
+        /* A display string on purpose: this JSON is read by the TUI (JsonStr in
+         * edc_task_snapshot.cpp), which does not parse timestamps. The value everywhere
+         * behind this boundary is an integer. */
+        sds created = sess->created_at ? edc_datetime_format((time_t)sess->created_at) : NULL;
+        cJSON_AddStringToObject(root, "created_at", created ? created : "");
+        sdsfree(created);
+    }
     /* The session's bound working directory ("" when unbound). The frontend shows
      * it in the footer and must not reach into the store for it. */
     const char *sess_wd = edc_session_get_workdir(sess);

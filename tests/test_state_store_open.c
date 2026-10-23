@@ -176,9 +176,9 @@ static void test_schema_tables(void)
 {
     printf("\n── schema ──\n");
     const char *path = edc_state_store_path();
-    const char *tables[] = {"meta", "sessions", "groups", "group_fold_files", "tasks",
-                            "task_deps", "task_tool_calls", "turns", "messages",
-                            "memo_entries", "memo_events", NULL};
+    const char *tables[] = {"sessions", "groups", "group_fold_files", "tasks", "task_deps",
+                            "task_tool_calls", "turns", "messages", "memo_entries",
+                            "memo_events", NULL};
 
     for (int i = 0; tables[i]; i++)
     {

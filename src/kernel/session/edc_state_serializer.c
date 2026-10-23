@@ -1,4 +1,5 @@
 #include "edc_state_serializer.h"
+#include "edc_datetime_utils.h"
 #include "edc_session_memory.h"
 #include "edc_config.h"
 #include "edc_compat.h"
@@ -299,12 +300,10 @@ static cJSON *group_to_json(struct edc_task_group *group)
     cJSON *gj = cJSON_CreateObject();
 
     cJSON_AddStringToObject(gj, "group_id", group->group_id ? group->group_id : "");
-    /* leader_task_id: for normal groups use leader->task_id;
-     * for orphaned groups fall back to group_id (original leader's id). */
-    if (group->leader)
-        cJSON_AddStringToObject(gj, "leader_task_id", group->leader->task_id);
-    else if (group->group_id)
-        cJSON_AddStringToObject(gj, "leader_task_id", group->group_id);
+    /* No "leader_task_id": the leader is the task whose id IS group_id (see
+     * edc_task_group_new / set_leader). Writing it out would restate group_id, and the
+     * old fallback branch -- group_id when the leader is gone -- proved it: both branches
+     * produced the same string. */
     cJSON_AddBoolToObject(gj, "is_orphaned", group->is_orphaned);
     /* v12: the kind is a property of the group, decided when it is created (a task
      * adopted with EDC_TASK_PLACE_SYSTEM makes the system group), so it is written
@@ -352,8 +351,10 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     cJSON *sj = cJSON_CreateObject();
     cJSON_AddStringToObject(sj, "session_id", session->session_id ? session->session_id : "");
     cJSON_AddStringToObject(sj, "name", session->name ? session->name : "");
-    cJSON_AddStringToObject(sj, "created_at", session->created_at ? session->created_at : "");
-    cJSON_AddStringToObject(sj, "last_active", session->last_active ? session->last_active : "");
+    /* Integers, like every other timestamp in the store. This tree is internal: it is what
+     * bind_session writes and what the deserializer reads back. */
+    cJSON_AddNumberToObject(sj, "created_at", (double)session->created_at);
+    cJSON_AddNumberToObject(sj, "last_active", (double)session->last_active);
     if (session->workdir)
         cJSON_AddStringToObject(sj, "workdir", session->workdir);
     if (session->active_task)
@@ -634,11 +635,14 @@ static void deser_session_meta(struct edc_session *session, cJSON *sj)
         session->name = sdsnew(cJSON_GetStringValue(name_j));
     }
     cJSON *la_j = cJSON_GetObjectItem(sj, "last_active");
-    if (la_j && cJSON_IsString(la_j))
+    if (la_j && cJSON_IsNumber(la_j))
+        session->last_active = (uint64_t)cJSON_GetNumberValue(la_j);
+    else if (la_j && cJSON_IsString(la_j))
     {
-        if (session->last_active)
-            sdsfree(session->last_active);
-        session->last_active = sdsnew(cJSON_GetStringValue(la_j));
+        /* A snapshot written before the timestamp cleanup. */
+        time_t t = 0;
+        if (edc_datetime_parse(cJSON_GetStringValue(la_j), &t))
+            session->last_active = (uint64_t)t;
     }
     cJSON *ncs_j = cJSON_GetObjectItem(sj, "next_completion_seq");
     if (ncs_j && cJSON_IsNumber(ncs_j))
@@ -920,7 +924,10 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
     {
         cJSON *gj = cJSON_GetArrayItem(groups_json, i);
         const char *group_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "group_id"));
-        const char *leader_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id"));
+        /* The leader IS the task whose id equals group_id -- there is no separate
+         * leader_task_id field any more. `is_orphaned` says whether that task is still
+         * the leader: an orphaned group kept the id but lost the leader. */
+        const char *leader_id = group_id;
         cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
         bool is_orph = orph && cJSON_IsTrue(orph);
 
@@ -945,6 +952,25 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         struct edc_task_group *group = edc_task_group_new(leader);
         if (!group)
             continue;
+        /* The STORED group_id is the group's identity, and the leader is derived from it
+         * (the leader is the task whose id IS group_id). edc_task_group_new() derives the
+         * id from whatever task it was handed, which is only correct when that task is the
+         * leader -- for an orphaned group it is not: the ex-leader belongs to no group any
+         * more, so it is not serialized, so `leader` above fell back to a member and the
+         * id would silently change to that member's task id. Every message row keyed on
+         * the old id would then point at a group that no longer answers to it. */
+        if (group_id && *group_id && (!group->group_id || strcmp(group->group_id, group_id) != 0))
+        {
+            free(group->group_id);
+            group->group_id = strdup(group_id);
+            /* Members carry their group's id too (denormalized); keep them in step. */
+            struct edc_task *m;
+            LL_FOREACH2(group->members, m, group_next)
+            {
+                free(m->group_id);
+                m->group_id = strdup(group_id);
+            }
+        }
         if (is_orph)
             group->is_orphaned = true;
         /* The kind travels with the group (v12): only its creator knows it, and an L2

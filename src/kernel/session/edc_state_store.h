@@ -36,8 +36,16 @@ struct edc_scheduler;
  *
  * v2: turns.msg_count / turns.token_count and messages.tokens. The message rows became
  *     the runtime's only copy of a conversation (the in-memory turn queue is gone), so
- *     the counts they need to answer without reading rows became columns. */
-#define EDC_DB_VERSION 2
+ *     the counts they need to answer without reading rows became columns.
+ *
+ * v3: messages was split in two. Its JSON column held the whole message INCLUDING the
+ *     metadata that is also stored as columns (ts appeared both as an integer column and
+ *     as a "YYYY-MM-DD HH:MM:SS" string inside the JSON), so every read and write
+ *     converted between the two. The columns now hold all the metadata, `body` holds only
+ *     what goes on the wire, and session_id/group_id are denormalized so a group's
+ *     messages can be read without joining tasks. Every timestamp in this file is an
+ *     INTEGER unix second -- there is exactly one representation. */
+#define EDC_DB_VERSION 3
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

@@ -25,9 +25,12 @@ struct edc_task_group;
 struct edc_session
 {
     char *session_id;
-    char *name;      /* user-friendly display name */
-    sds created_at;  /* ISO 8601 creation timestamp */
-    sds last_active; /* ISO 8601 last-active timestamp */
+    char *name; /* user-friendly display name */
+    /* Unix seconds, the one representation used everywhere (DB columns, sessions.json and
+     * in memory). 0 = unknown. These used to be ISO strings, which meant save/load
+     * converted back and forth and the same instant existed in two formats. */
+    uint64_t created_at;
+    uint64_t last_active;
 
     /* The single representation of task state (v3 on): groups/tasks. The old
      * session->messages track and v2 read compatibility are gone. */

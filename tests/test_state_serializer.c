@@ -1209,11 +1209,11 @@ static void test_malformed_inputs(void)
         "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
-        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
+        "    {\"group_id\":\"t1\","
         "     \"member_task_ids\":[\"t1\"],\"is_orphaned\":false}"
         "  ],"
         "  \"tasks\":["
-        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "    {\"task_id\":\"t1\",\"group_id\":\"t1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
@@ -1234,11 +1234,11 @@ static void test_malformed_inputs(void)
         "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
-        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
+        "    {\"group_id\":\"t1\","
         "     \"member_task_ids\":[\"t1\",\"NOBODY\"],\"is_orphaned\":false}"
         "  ],"
         "  \"tasks\":["
-        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "    {\"task_id\":\"t1\",\"group_id\":\"t1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
@@ -1257,11 +1257,11 @@ static void test_malformed_inputs(void)
         "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
-        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\","
+        "    {\"group_id\":\"t1\","
         "     \"member_task_ids\":[\"t1\"],\"is_orphaned\":false}"
         "  ],"
         "  \"tasks\":["
-        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "    {\"task_id\":\"t1\",\"group_id\":\"t1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\","
         "     \"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,"
@@ -1282,17 +1282,17 @@ static void test_malformed_inputs(void)
         "  \"version\":7,"
         "  \"session\":{},"
         "  \"groups\":["
-        "    {\"group_id\":\"g1\",\"leader_task_id\":\"t1\",\"member_task_ids\":[\"t1\",\"t2\"],"
+        "    {\"group_id\":\"t1\",\"member_task_ids\":[\"t1\",\"t2\"],"
         "     \"is_orphaned\":false},"
-        "    {\"group_id\":\"g2\",\"leader_task_id\":\"t2\",\"member_task_ids\":[\"t2\"],"
+        "    {\"group_id\":\"t2\",\"member_task_ids\":[\"t2\"],"
         "     \"is_orphaned\":false}"
         "  ],"
         "  \"tasks\":["
-        "    {\"task_id\":\"t1\",\"group_id\":\"g1\",\"session_id\":\"sess-mal\","
+        "    {\"task_id\":\"t1\",\"group_id\":\"t1\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 1\",\"state\":\"COMPLETED\",\"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,\"redirect_append\":false,"
         "     \"deps\":[],\"turns\":[]},"
-        "    {\"task_id\":\"t2\",\"group_id\":\"g2\",\"session_id\":\"sess-mal\","
+        "    {\"task_id\":\"t2\",\"group_id\":\"t2\",\"session_id\":\"sess-mal\","
         "     \"description\":\"task 2\",\"state\":\"COMPLETED\",\"is_group_leader\":true,"
         "     \"fork_point_completion_seq\":0,\"completion_seq\":0,\"redirect_append\":false,"
         "     \"deps\":[],\"turns\":[]}"
@@ -1526,8 +1526,12 @@ static void test_orphaned_group(void)
     CHECK(cJSON_GetArraySize(groups_j) == 1, "1 group serialized");
     cJSON *gj = cJSON_GetArrayItem(groups_j, 0);
     CHECK(cJSON_IsTrue(cJSON_GetObjectItem(gj, "is_orphaned")), "is_orphaned=true in JSON");
-    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(gj, "leader_task_id")),
-                "t-leader", "leader_task_id preserved as group_id");
+    /* No "leader_task_id": the leader is the task whose id IS group_id, so the only thing
+     * worth asserting is that the group kept the leader's id. */
+    CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(gj, "group_id")),
+                "t-leader", "group_id is the leader's task id");
+    CHECK(cJSON_GetObjectItem(gj, "leader_task_id") == NULL,
+          "no separate leader_task_id (it would only restate group_id)");
 
     cJSON *members_j = cJSON_GetObjectItem(gj, "member_task_ids");
     CHECK(cJSON_GetArraySize(members_j) == 2, "2 member ids");
@@ -1545,6 +1549,10 @@ static void test_orphaned_group(void)
     CHECK(rg != NULL, "group found");
     CHECK(rg->is_orphaned, "group is still orphaned after deserialize");
     CHECK(rg->member_count == 2, "2 members in restored group");
+    /* group_id is now the ONLY place the original leader's identity lives (the
+     * leader_task_id column is gone), so a round trip that mangled it would lose the
+     * group's identity for good. */
+    CHECK_STREQ(rg->group_id, "t-leader", "group_id survives the round trip");
 
     /* Verify members exist */
     struct edc_task *rm1 = find_task(session2, "t-m1");

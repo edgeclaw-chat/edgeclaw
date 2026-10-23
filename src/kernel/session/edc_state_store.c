@@ -76,31 +76,29 @@ static unsigned long long g_db_ino;
  * Transcribed from design doc §4. Three rules the DDL follows:
  *   1. every structure in the old session.json has a column (no whole-subtree blobs),
  *      otherwise neither queries nor incremental writes are possible;
- *   2. messages store the message's own JSON verbatim (`json` is the truth) with three
- *      extracted columns for lookup only -- splitting a message into columns would give
- *      the message schema two sources of truth;
+ *   2. messages keep the wire fields in one `body` JSON and everything the runtime asks
+ *      about in columns (see kStoreOnlyMsgKeys). The split has exactly one source of truth
+ *      per value: a field is either a column or in `body`, never both -- storing a value in
+ *      two places is what let `ts` drift between an integer column and a display string in
+ *      v2;
  *   3. ordering is explicit (`ord`), never rowid: groups are a linked list and turns are
  *      a utarray, so insertion order is not something SQLite can infer.
  *
- * `end_state` is not called `end`: SQL keyword. `extra` on the two big tables is the
- * escape hatch for fields added later without a DDL change.
+ * `end_state` is not called `end`: SQL keyword. There is no `extra` escape hatch: an
+ * unused TEXT column is not a plan for the future, it is a place for data to accumulate
+ * that nothing reads (both were dropped in the v3 review).
  *
  * EVERY timestamp column is INTEGER: seconds since the Unix epoch. That is the one
  * convention the in-memory code already uses (edc_datetime_now() is time(NULL)), so the
  * database does not invent a second one. Two conversions happen at the edges and nowhere
  * else:
- *   - sessions.created_at / last_active are held in memory as the local-time display
- *     string ("%Y-%m-%d %H:%M:%S"); they are parsed with edc_datetime_parse() on write and
- *     formatted back with edc_datetime_format() on read.
- *   - messages.ts is extracted from the message JSON's own "ts" string the same way. The
- *     JSON keeps the string: it is what the transcript shows and what the model sees, and
- *     an integer would lose the local-time rendering.
+ * In memory the timestamps are integers too (struct edc_session holds uint64_t), so a save
+ * or a load never converts anything. Formatting happens only where a human reads it: the
+ * CLI replies and the status JSON the TUI consumes.
  * Columns holding 0 mean "unknown" (the same sentinel the C structs use), never 1970. */
 static const char *const EDC_SCHEMA_SQL =
-    "CREATE TABLE IF NOT EXISTS meta ("
-    "  key   TEXT PRIMARY KEY,"
-    "  value TEXT NOT NULL"
-    ");"
+    /* No `meta` key/value table: it was declared in v1 and never written to. A table that
+     * nothing reads is a table that will quietly disagree with the real state. */
 
     "CREATE TABLE IF NOT EXISTS sessions ("
     "  session_id            TEXT PRIMARY KEY,"
@@ -111,8 +109,9 @@ static const char *const EDC_SCHEMA_SQL =
     "  active_task_id        TEXT,"
     "  foreground_group_id   TEXT,"
     "  next_completion_seq   INTEGER NOT NULL DEFAULT 1,"
-    "  archived              INTEGER NOT NULL DEFAULT 0,"
-    "  broken                INTEGER NOT NULL DEFAULT 0,"
+    /* `archived` and `broken` were forward-looking placeholders with no reader and no
+     * writer (the load guard uses the in-memory state_quarantined flag). Declared columns
+     * with no owner are how a schema rots. */
     "  memo_next_seq         INTEGER NOT NULL DEFAULT 0,"
     "  memo_next_entry_id    INTEGER NOT NULL DEFAULT 0,"
     "  memo_pruned_before    INTEGER NOT NULL DEFAULT 0,"
@@ -121,8 +120,12 @@ static const char *const EDC_SCHEMA_SQL =
 
     "CREATE TABLE IF NOT EXISTS groups ("
     "  session_id         TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,"
+    /* No `leader_task_id`: the leader IS the task whose id equals `group_id`
+     * (edc_task_group_new / set_leader both set group_id from the leader's task_id), so a
+     * separate column could only ever hold the same string. Its `is_orphaned` twin stays:
+     * a group whose leader left keeps its id but has no leader any more, and that is not
+     * recoverable from the remaining rows. */
     "  group_id           TEXT NOT NULL,"
-    "  leader_task_id     TEXT,"
     "  is_orphaned        INTEGER NOT NULL DEFAULT 0,"
     "  kind               TEXT NOT NULL DEFAULT 'user',"
     "  memory             TEXT,"
@@ -131,7 +134,6 @@ static const char *const EDC_SCHEMA_SQL =
     "  memory_updated_at  INTEGER NOT NULL DEFAULT 0,"
     "  memory_covers_to   INTEGER NOT NULL DEFAULT 0,"
     "  ord                INTEGER NOT NULL DEFAULT 0,"
-    "  extra              TEXT,"
     "  PRIMARY KEY (session_id, group_id)"
     ");"
     "CREATE INDEX IF NOT EXISTS groups_by_session ON groups(session_id, ord);"
@@ -191,7 +193,6 @@ static const char *const EDC_SCHEMA_SQL =
     "  redirect_stderr_append    INTEGER NOT NULL DEFAULT 0,"
     "  todos                     TEXT,"
     "  todo_sync_gap             INTEGER NOT NULL DEFAULT 0,"
-    "  extra                     TEXT,"
     "  updated_at                INTEGER NOT NULL"
     ");"
     "CREATE INDEX IF NOT EXISTS tasks_by_group ON tasks(session_id, group_id, ord);"
@@ -233,18 +234,37 @@ static const char *const EDC_SCHEMA_SQL =
     ");"
 
     "CREATE TABLE IF NOT EXISTS messages ("
-    "  id       TEXT NOT NULL PRIMARY KEY,"
-    "  task_id  TEXT NOT NULL,"
-    "  turn_ord INTEGER NOT NULL,"
-    "  msg_ord  INTEGER NOT NULL,"
-    "  role     TEXT,"
-    "  mid      TEXT,"
-    "  ts       INTEGER,"
-    "  json     TEXT NOT NULL,"
+    "  id         TEXT NOT NULL PRIMARY KEY,"
+    /* Denormalized on purpose: nearly every read asks for one session's or one group's
+     * messages, and carrying the two keys here saves a join to tasks every time.
+     *
+     * These CAN drift -- they did: edc_msg_turn_move() re-keyed a turn without touching
+     * them, so a moved message kept claiming its old group. Every statement that changes
+     * task_id here has to re-derive them (see edc_msg_turn_move). They are correct by
+     * discipline, not by construction, which is the price of the join they save. */
+    "  session_id TEXT NOT NULL,"
+    "  group_id   TEXT NOT NULL,"
+    "  task_id    TEXT NOT NULL,"
+    "  turn_ord   INTEGER NOT NULL,"
+    "  msg_ord    INTEGER NOT NULL,"
+    /* Metadata the model never sees. Each of these used to live INSIDE the message JSON
+     * next to the wire fields, which meant the same value existed twice (a `ts` column and
+     * a "ts" string inside the JSON) and had to be converted back and forth. They are
+     * columns now, and the JSON holds only what goes on the wire. */
+    "  role       TEXT,"
+    "  mid        TEXT,"
+    "  ts         INTEGER NOT NULL DEFAULT 0,"
+    "  render     TEXT,"
+    "  synthetic  INTEGER NOT NULL DEFAULT 0,"
+    "  payload    TEXT,"
     /* Token estimate, computed once when the message is appended. Token accounting is
-     * then a SUM over an index range instead of re-estimating every message on every
-     * request. */
-    "  tokens   INTEGER NOT NULL DEFAULT 0,"
+     * then a SUM over an index range instead of re-estimating every message per request. */
+    "  tokens     INTEGER NOT NULL DEFAULT 0,"
+    /* THE WIRE BODY: the message minus the store-only fields above. Deliberately kept as
+     * one JSON document rather than exploded into content/tool_calls/... columns: the
+     * runtime passes a message through almost verbatim, and unknown provider fields
+     * (reasoning_content, refusals, future additions) must ride along untouched. */
+    "  body       TEXT NOT NULL,"
     "  FOREIGN KEY (task_id, turn_ord) REFERENCES turns(task_id, turn_ord) ON DELETE CASCADE"
     ");"
     /* The positional key still needs its own index: with `id` as the primary key, the
@@ -256,6 +276,9 @@ static const char *const EDC_SCHEMA_SQL =
      * 0.0310 ms) and nothing on the load. */
     "CREATE UNIQUE INDEX IF NOT EXISTS messages_natural ON messages(task_id, turn_ord, msg_ord);"
     "CREATE INDEX IF NOT EXISTS messages_by_mid ON messages(mid) WHERE mid IS NOT NULL;"
+    /* One group's messages in storage order: what request assembly reads. session_id leads
+     * so a session-wide scan (the recall/search paths) uses the same index. */
+    "CREATE INDEX IF NOT EXISTS messages_by_group ON messages(session_id, group_id, task_id, turn_ord, msg_ord);"
     /* DELIBERATELY a rowid table (no WITHOUT ROWID) -- measured, not assumed.
      *
      * The obvious design is WITHOUT ROWID: the PK is (task_id, turn_ord, msg_ord) and the
@@ -317,8 +340,8 @@ static const char *const EDC_SCHEMA_SQL =
 /* The tables a healthy database must contain. Used by the post-DDL sanity check so a
  * half-applied schema fails here rather than as a mysterious SQL error later. */
 static const char *const EDC_EXPECTED_TABLES[] = {
-    "meta", "sessions", "groups", "group_fold_files", "tasks", "task_deps",
-    "task_tool_calls", "turns", "messages", "memo_entries", "memo_events", NULL};
+    "sessions", "groups", "group_fold_files", "tasks", "task_deps", "task_tool_calls",
+    "turns", "messages", "memo_entries", "memo_events", NULL};
 
 /* ── Small SQL helpers ─────────────────────────────────────────────────────── */
 
@@ -978,6 +1001,16 @@ static sds ts_to_display(sqlite3_int64 t)
     return edc_datetime_format((time_t)t);
 }
 
+/* Message JSON <-> columns. Defined next to the message read/write path further down; the
+ * snapshot loader earlier in the file needs them too. */
+static char *msg_body_text(const cJSON *msg);
+static char *msg_payload_text(const cJSON *msg);
+static cJSON *msg_from_row(sqlite3_stmt *st, int base);
+
+/* The message columns, in the order msg_from_row() expects them. One list so the readers
+ * cannot drift. Declared here because the snapshot loader below uses it too. */
+#define MSG_SELECT_COLS "body,id,role,ts,render,synthetic,payload,mid"
+
 /* Prepare, run to completion, finalize. On error the SQLite message is logged with the
  * statement's name so a failure names the table it happened in. */
 static bool run_stmt(sqlite3 *db, const char *sql, const char *what,
@@ -1027,8 +1060,8 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
     const cJSON *sj = b->sj;
     bind_str(st, 1, b->session_id);
     bind_str(st, 2, js_str(sj, "name") ? js_str(sj, "name") : "");
-    sqlite3_bind_int64(st, 3, ts_from_display(js_str(sj, "created_at")));
-    sqlite3_bind_int64(st, 4, ts_from_display(js_str(sj, "last_active")));
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)js_num(sj, "created_at"));
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)js_num(sj, "last_active"));
     bind_str(st, 5, js_str(sj, "workdir"));
     bind_str(st, 6, js_str(sj, "active_task_id"));
     bind_str(st, 7, js_str(sj, "foreground_group_id"));
@@ -1037,11 +1070,11 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
 }
 
 static const char *INSERT_GROUP =
-    "INSERT INTO groups(session_id,group_id,leader_task_id,is_orphaned,kind,memory,fold_epoch,"
+    "INSERT INTO groups(session_id,group_id,is_orphaned,kind,memory,fold_epoch,"
     "memory_created_at,memory_updated_at,memory_covers_to,ord) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
-    "ON CONFLICT(session_id,group_id) DO UPDATE SET leader_task_id=excluded.leader_task_id,"
-    "is_orphaned=excluded.is_orphaned,kind=excluded.kind,memory=excluded.memory,"
+    "VALUES(?,?,?,?,?,?,?,?,?,?) "
+    "ON CONFLICT(session_id,group_id) DO UPDATE SET is_orphaned=excluded.is_orphaned,"
+    "kind=excluded.kind,memory=excluded.memory,"
     "fold_epoch=excluded.fold_epoch,memory_created_at=excluded.memory_created_at,"
     "memory_updated_at=excluded.memory_updated_at,memory_covers_to=excluded.memory_covers_to,"
     "ord=excluded.ord";
@@ -1059,15 +1092,14 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     const cJSON *g = b->gj;
     bind_str(st, 1, b->session_id);
     bind_str(st, 2, js_str(g, "group_id"));
-    bind_str(st, 3, js_str(g, "leader_task_id"));
-    sqlite3_bind_int(st, 4, js_bool(g, "is_orphaned"));
-    bind_str(st, 5, js_str(g, "kind") ? js_str(g, "kind") : "user");
-    bind_str(st, 6, js_str(g, "memory"));
-    bind_num(st, 7, js_num(g, "fold_epoch"));
-    bind_num(st, 8, js_num(g, "memory_created_at"));
-    bind_num(st, 9, js_num(g, "memory_updated_at"));
-    bind_num(st, 10, js_num(g, "memory_covers_to"));
-    sqlite3_bind_int(st, 11, b->ord);
+    sqlite3_bind_int(st, 3, js_bool(g, "is_orphaned"));
+    bind_str(st, 4, js_str(g, "kind") ? js_str(g, "kind") : "user");
+    bind_str(st, 5, js_str(g, "memory"));
+    bind_num(st, 6, js_num(g, "fold_epoch"));
+    bind_num(st, 7, js_num(g, "memory_created_at"));
+    bind_num(st, 8, js_num(g, "memory_updated_at"));
+    bind_num(st, 9, js_num(g, "memory_covers_to"));
+    sqlite3_bind_int(st, 10, b->ord);
 }
 
 static const char *INSERT_TASK =
@@ -1263,8 +1295,12 @@ static void bind_turn(sqlite3_stmt *st, void *ctx)
 }
 
 static const char *INSERT_MESSAGE =
-    "INSERT OR REPLACE INTO messages(id,task_id,turn_ord,msg_ord,role,mid,ts,json,tokens) "
-    "VALUES(?,?,?,?,?,?,?,?,?)";
+    "INSERT OR REPLACE INTO messages(id,session_id,group_id,task_id,turn_ord,msg_ord,"
+    "role,mid,ts,render,synthetic,payload,tokens,body) "
+    "VALUES(?1,"
+    " (SELECT session_id FROM tasks WHERE task_id=?2),"
+    " (SELECT group_id   FROM tasks WHERE task_id=?2),"
+    " ?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)";
 
 struct message_bind
 {
@@ -1297,12 +1333,21 @@ static void bind_message(sqlite3_stmt *st, void *ctx)
     bind_str(st, 5, js_str(b->mj, "role"));
     bind_str(st, 6, js_str(b->mj, "mid"));
     sqlite3_bind_int64(st, 7, ts_from_display(js_str(b->mj, "ts")));
+    bind_str(st, 8, js_str(b->mj, "render"));
+    sqlite3_bind_int(st, 9, js_bool(b->mj, "synthetic"));
     {
-        char *txt = cJSON_PrintUnformatted((cJSON *)b->mj);
-        bind_str(st, 8, txt);
-        cJSON_free(txt);
+        char *p = msg_payload_text(b->mj);
+        bind_str(st, 10, p);
+        if (p)
+            cJSON_free(p);
     }
-    sqlite3_bind_int64(st, 9, edc_token_estimate_msg(b->mj));
+    sqlite3_bind_int64(st, 11, edc_token_estimate_msg(b->mj));
+    {
+        char *body = msg_body_text(b->mj);
+        bind_str(st, 12, body);
+        if (body)
+            cJSON_free(body);
+    }
 }
 
 /* ── flush bookkeeping ──────────────────────────────────────────────────────
@@ -1777,18 +1822,18 @@ static void add_num_or_omit(cJSON *o, const char *key, sqlite3_stmt *st, int i)
 static cJSON *load_turn_messages(const char *task_id, int turn_ord)
 {
     cJSON *arr = cJSON_CreateArray();
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT " MSG_SELECT_COLS
+             " FROM messages WHERE task_id=? AND turn_ord=? ORDER BY msg_ord");
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(g_db, "SELECT json FROM messages WHERE task_id=? AND turn_ord=? "
-                                 "ORDER BY msg_ord", -1, &st, NULL) != SQLITE_OK)
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
         return arr;
     sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(st, 2, turn_ord);
     while (sqlite3_step(st) == SQLITE_ROW)
     {
-        const char *json = col_str(st, 0);
-        if (!json)
-            continue;
-        cJSON *msg = cJSON_Parse(json);
+        cJSON *msg = msg_from_row(st, 0);
         if (msg)
             cJSON_AddItemToArray(arr, msg);
     }
@@ -2014,8 +2059,10 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
         cJSON *sj = cJSON_CreateObject();
         add_str(sj, "session_id", col_str(st, 0));
         add_str(sj, "name", col_str(st, 1));
-        add_display_ts(sj, "created_at", st, 2);
-        add_display_ts(sj, "last_active", st, 3);
+        /* Integers all the way through: the deserializer reads numbers now, so there is no
+         * display-string round trip in the middle of a load. */
+        cJSON_AddNumberToObject(sj, "created_at", (double)sqlite3_column_int64(st, 2));
+        cJSON_AddNumberToObject(sj, "last_active", (double)sqlite3_column_int64(st, 3));
         add_str(sj, "workdir", col_str(st, 4));
         add_str(sj, "active_task_id", col_str(st, 5));
         add_str(sj, "foreground_group_id", col_str(st, 6));
@@ -2035,7 +2082,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     {
         cJSON *groups = cJSON_CreateArray();
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT group_id,leader_task_id,is_orphaned,kind,memory,"
+        if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,"
                                      "fold_epoch,memory_created_at,memory_updated_at,"
                                      "memory_covers_to FROM groups WHERE session_id=? ORDER BY ord",
                                -1, &st, NULL) == SQLITE_OK)
@@ -2046,14 +2093,14 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                 cJSON *gj = cJSON_CreateObject();
                 const char *group_id = col_str(st, 0);
                 add_str(gj, "group_id", group_id);
-                add_str(gj, "leader_task_id", col_str(st, 1));
-                cJSON_AddBoolToObject(gj, "is_orphaned", sqlite3_column_int(st, 2) != 0);
-                add_str(gj, "kind", col_str(st, 3));
-                add_str(gj, "memory", col_str(st, 4));
-                cJSON_AddNumberToObject(gj, "fold_epoch", (double)sqlite3_column_int64(st, 5));
-                cJSON_AddNumberToObject(gj, "memory_created_at", (double)sqlite3_column_int64(st, 6));
-                cJSON_AddNumberToObject(gj, "memory_updated_at", (double)sqlite3_column_int64(st, 7));
-                cJSON_AddNumberToObject(gj, "memory_covers_to", (double)sqlite3_column_int64(st, 8));
+                /* The leader is the task whose id equals group_id -- no column for it. */
+                cJSON_AddBoolToObject(gj, "is_orphaned", sqlite3_column_int(st, 1) != 0);
+                add_str(gj, "kind", col_str(st, 2));
+                add_str(gj, "memory", col_str(st, 3));
+                cJSON_AddNumberToObject(gj, "fold_epoch", (double)sqlite3_column_int64(st, 4));
+                cJSON_AddNumberToObject(gj, "memory_created_at", (double)sqlite3_column_int64(st, 5));
+                cJSON_AddNumberToObject(gj, "memory_updated_at", (double)sqlite3_column_int64(st, 6));
+                cJSON_AddNumberToObject(gj, "memory_covers_to", (double)sqlite3_column_int64(st, 7));
 
                 /* fold file list */
                 {
@@ -2199,6 +2246,139 @@ bool edc_state_store_has_session(const char *session_id)
     return session_exists(session_id);
 }
 
+/* ── message JSON <-> columns ────────────────────────────────────────────────
+ *
+ * A message in the C world is ONE cJSON object with everything in it: wire fields plus the
+ * metadata the store keeps separately (id, ts, render, mid, payload, synthetic). In the
+ * database those metadata fields are columns and `body` holds the rest, so every write
+ * splits the object and every read merges it back.
+ *
+ * The split is defined by a NAME LIST, not by a wire allowlist: anything the store does not
+ * know stays in `body` and therefore survives a round trip untouched. That is what lets a
+ * provider field we have never heard of (reasoning_content today, something else tomorrow)
+ * ride along without a schema change.
+ *
+ * `role` is on the list even though it IS a wire field: it also has a column (queries filter
+ * on it), and a value stored in two places is a value that will eventually disagree. The
+ * column wins on read, so keeping the copy inside `body` would buy nothing but a chance for
+ * the two to drift -- exactly the mistake v3 exists to undo.
+ */
+static const char *const kStoreOnlyMsgKeys[] = {"id",     "ts",    "render", "mid",
+                                                "payload", "synthetic", "role", NULL};
+
+static bool msg_key_is_store_only(const char *k)
+{
+    if (!k)
+        return false;
+    for (int i = 0; kStoreOnlyMsgKeys[i]; i++)
+        if (strcmp(k, kStoreOnlyMsgKeys[i]) == 0)
+            return true;
+    return false;
+}
+
+/* Serialize the message WITHOUT its store-only keys. Caller frees with cJSON_free. */
+static char *msg_body_text(const cJSON *msg)
+{
+    cJSON *copy = cJSON_Duplicate((cJSON *)msg, 1);
+    if (!copy)
+        return NULL;
+    /* Collect first, delete after: mutating the list while iterating it skips children. */
+    sds drop = sdsempty();
+    const cJSON *child = NULL;
+    cJSON_ArrayForEach(child, copy)
+    {
+        if (msg_key_is_store_only(child->string))
+            drop = sdscatprintf(drop, "%s\n", child->string);
+    }
+    int n = 0;
+    char **names = sdssplitlen(drop, (ssize_t)sdslen(drop), "\n", 1, &n);
+    for (int i = 0; i < n; i++)
+        if (names[i] && *names[i])
+            cJSON_DeleteItemFromObject(copy, names[i]);
+    sdsfreesplitres(names, n);
+    sdsfree(drop);
+
+    char *txt = cJSON_PrintUnformatted(copy);
+    cJSON_Delete(copy);
+    return txt;
+}
+
+/* The payload map as text (NULL when absent). */
+static char *msg_payload_text(const cJSON *msg)
+{
+    cJSON *p = cJSON_GetObjectItem((cJSON *)msg, "payload");
+    if (!p)
+        return NULL;
+    return cJSON_PrintUnformatted(p);
+}
+
+/* Rebuild the full message object from a row: body first, then the metadata columns, which
+ * take precedence (they are the ones the runtime reads back). */
+static cJSON *msg_from_columns(const char *body, const char *id, const char *role, long long ts,
+                               const char *render, long long synthetic, const char *payload,
+                               const char *mid){
+    cJSON *msg = body ? cJSON_Parse(body) : NULL;
+    if (!msg || !cJSON_IsObject(msg))
+    {
+        if (msg)
+            cJSON_Delete(msg);
+        msg = cJSON_CreateObject();
+    }
+
+    if (id && *id)
+    {
+        cJSON_DeleteItemFromObject(msg, "id");
+        cJSON_AddStringToObject(msg, "id", id);
+    }
+    if (role && *role)
+    {
+        cJSON_DeleteItemFromObject(msg, "role");
+        cJSON_AddStringToObject(msg, "role", role);
+    }
+    if (ts > 0)
+    {
+        cJSON_DeleteItemFromObject(msg, "ts");
+        sds disp = ts_to_display(ts);
+        cJSON_AddStringToObject(msg, "ts", disp ? disp : "");
+        sdsfree(disp);
+    }
+    if (render && *render)
+    {
+        cJSON_DeleteItemFromObject(msg, "render");
+        cJSON_AddStringToObject(msg, "render", render);
+    }
+    if (synthetic)
+    {
+        cJSON_DeleteItemFromObject(msg, "synthetic");
+        cJSON_AddTrueToObject(msg, "synthetic");
+    }
+    if (mid && *mid)
+    {
+        cJSON_DeleteItemFromObject(msg, "mid");
+        cJSON_AddStringToObject(msg, "mid", mid);
+    }
+    if (payload && *payload)
+    {
+        cJSON *p = cJSON_Parse(payload);
+        if (p)
+        {
+            cJSON_DeleteItemFromObject(msg, "payload");
+            cJSON_AddItemToObject(msg, "payload", p);
+        }
+    }
+    return msg;
+}
+
+/* Build one message from the row the statement is positioned on (column order: see
+ * MSG_SELECT_COLS). */
+static cJSON *msg_from_row(sqlite3_stmt *st, int base)
+{
+    return msg_from_columns(col_str(st, base + 0), col_str(st, base + 1), col_str(st, base + 2),
+                            sqlite3_column_int64(st, base + 3), col_str(st, base + 4),
+                            sqlite3_column_int64(st, base + 5), col_str(st, base + 6),
+                            col_str(st, base + 7));
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
  *  Message rows: the runtime read/write path
  *
@@ -2280,20 +2460,35 @@ bool edc_msg_append(const char *task_id, int turn_ord, int msg_ord, const struct
     if (!g_db || !task_id || !*task_id || !msg || msg_ord < 0)
         return false;
 
-    char *txt = cJSON_PrintUnformatted((cJSON *)msg);
-    if (!txt)
+    /* body = the message minus the metadata that lives in columns (see kStoreOnlyMsgKeys).
+     * Splitting here is what keeps the two representations from drifting: a read merges the
+     * columns back, so there is exactly one place a value is stored. */
+    char *body = msg_body_text(msg);
+    if (!body)
         return false;
+    char *payload = msg_payload_text(msg);
 
     const cJSON *role = cJSON_GetObjectItem((cJSON *)msg, "role");
     const cJSON *mid = cJSON_GetObjectItem((cJSON *)msg, "id");
     const cJSON *ts = cJSON_GetObjectItem((cJSON *)msg, "ts");
+    const cJSON *render = cJSON_GetObjectItem((cJSON *)msg, "render");
+    const cJSON *synthetic = cJSON_GetObjectItem((cJSON *)msg, "synthetic");
+    const cJSON *midf = cJSON_GetObjectItem((cJSON *)msg, "mid");
 
     sqlite3_stmt *st = NULL;
     /* OR REPLACE on the natural key: re-appending the same position (a replayed event, a
      * retry) overwrites rather than duplicating. The row's `id` primary key is rewritten
-     * too, so a changed message cannot leave two identities for one position. */
-    const char *sql = "INSERT OR REPLACE INTO messages(id,task_id,turn_ord,msg_ord,role,mid,ts,json,tokens) "
-                      "VALUES(?,?,?,?,?,?,?,?,?)";
+     * too, so a changed message cannot leave two identities for one position.
+     *
+     * session_id / group_id come from the task row (edc_state_ensure_turn made sure it is
+     * there), so this function needs only the task key. */
+    const char *sql =
+        "INSERT OR REPLACE INTO messages(id,session_id,group_id,task_id,turn_ord,msg_ord,"
+        "role,mid,ts,render,synthetic,payload,tokens,body) "
+        "VALUES(?,"
+        " (SELECT session_id FROM tasks WHERE task_id=?2),"
+        " (SELECT group_id   FROM tasks WHERE task_id=?2),"
+        " ?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)";
     bool ok = false;
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
     {
@@ -2311,16 +2506,21 @@ bool edc_msg_append(const char *task_id, int turn_ord, int msg_ord, const struct
         sqlite3_bind_int(st, 3, turn_ord);
         sqlite3_bind_int(st, 4, msg_ord);
         bind_str(st, 5, cJSON_GetStringValue((cJSON *)role));
-        bind_str(st, 6, cJSON_GetStringValue((cJSON *)mid));
-        bind_num(st, 7, ts ? strtod(cJSON_GetStringValue((cJSON *)ts), NULL) : 0);
-        sqlite3_bind_text(st, 8, txt, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(st, 9, (sqlite3_int64)tokens);
+        bind_str(st, 6, cJSON_GetStringValue((cJSON *)midf));
+        sqlite3_bind_int64(st, 7, ts_from_display(cJSON_GetStringValue((cJSON *)ts)));
+        bind_str(st, 8, cJSON_GetStringValue((cJSON *)render));
+        sqlite3_bind_int(st, 9, (synthetic && cJSON_IsTrue((cJSON *)synthetic)) ? 1 : 0);
+        bind_str(st, 10, payload);
+        sqlite3_bind_int64(st, 11, (sqlite3_int64)tokens);
+        sqlite3_bind_text(st, 12, body, -1, SQLITE_TRANSIENT);
         ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
         if (fallback)
             sdsfree(fallback);
     }
-    cJSON_free(txt);
+    cJSON_free(body);
+    if (payload)
+        cJSON_free(payload);
     if (ok)
         turn_recount(task_id, turn_ord);
     return ok;
@@ -2333,20 +2533,19 @@ struct cJSON *edc_msg_get(const char *task_id, int turn_ord, int msg_ord)
     if (!g_db || !task_id || !*task_id || msg_ord < 0)
         return NULL;
 
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT " MSG_SELECT_COLS
+             " FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord=?");
     sqlite3_stmt *st = NULL;
     struct cJSON *out = NULL;
-    if (sqlite3_prepare_v2(g_db, "SELECT json FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord=?",
-                           -1, &st, NULL) == SQLITE_OK)
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
     {
         sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(st, 2, turn_ord);
         sqlite3_bind_int(st, 3, msg_ord);
         if (sqlite3_step(st) == SQLITE_ROW)
-        {
-            const char *json = col_str(st, 0);
-            if (json)
-                out = cJSON_Parse(json);
-        }
+            out = msg_from_row(st, 0);
         sqlite3_finalize(st);
     }
     return out;
@@ -2461,12 +2660,19 @@ bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_sessio
     }
 
     /* Messages FIRST: while they still point at the old turn row, changing the turns key
-     * would violate messages' foreign key. */
+     * would violate messages' foreign key.
+     *
+     * session_id / group_id are re-derived from the DESTINATION task in the same statement.
+     * They are denormalized copies of that task's owner, so leaving them alone would make
+     * the row claim the old group while sitting under the new one -- silently, and only
+     * for the reads that filter on those columns. */
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db,
-                               "UPDATE OR REPLACE messages SET task_id=?, turn_ord=? "
-                               "WHERE task_id=? AND turn_ord=?",
+                               "UPDATE OR REPLACE messages SET task_id=?1, turn_ord=?2, "
+                               "  session_id=(SELECT session_id FROM tasks WHERE task_id=?1), "
+                               "  group_id=(SELECT group_id FROM tasks WHERE task_id=?1) "
+                               "WHERE task_id=?3 AND turn_ord=?4",
                                -1, &st, NULL) != SQLITE_OK)
             return false;
         sqlite3_bind_text(st, 1, new_task, -1, SQLITE_TRANSIENT);
@@ -2506,12 +2712,14 @@ bool edc_msg_span_load(const char *task_id, int turn_ord, int from, int to, stru
     if (from < 0)
         from = 0;
 
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             (to < 0) ? "SELECT msg_ord," MSG_SELECT_COLS
+                        " FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=? ORDER BY msg_ord"
+                      : "SELECT msg_ord," MSG_SELECT_COLS
+                        " FROM messages WHERE task_id=? AND turn_ord=? "
+                        "AND msg_ord>=? AND msg_ord<? ORDER BY msg_ord");
     sqlite3_stmt *st = NULL;
-    const char *sql = (to < 0)
-                          ? "SELECT msg_ord,json FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=? "
-                            "ORDER BY msg_ord"
-                          : "SELECT msg_ord,json FROM messages WHERE task_id=? AND turn_ord=? "
-                            "AND msg_ord>=? AND msg_ord<? ORDER BY msg_ord";
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
 
@@ -2540,8 +2748,8 @@ bool edc_msg_span_load(const char *task_id, int turn_ord, int from, int to, stru
             out->items = grown;
             cap = ncap;
         }
-        const char *json = col_str(st, 1);
-        out->items[want - 1] = json ? cJSON_Parse(json) : NULL;
+        const char *body = col_str(st, 1);
+        out->items[want - 1] = body ? msg_from_row(st, 1) : NULL;
         if (want > n)
             n = want;
     }

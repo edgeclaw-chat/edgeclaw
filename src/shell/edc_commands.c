@@ -1,5 +1,6 @@
 ﻿#include "edc_commands.h"
 #include "edc_crontab_jobs.h"
+#include "edc_datetime_utils.h"
 #include "edc_interp.h"
 #include "edc_lex.h"
 #include "edc_actor.h"
@@ -793,6 +794,9 @@ static bool edc_commands_handle_session_info(struct edc_session_manager *sm, str
         edc_commands_reply(to, "**Session** — no active session.");
         return true;
     }
+    /* The timestamps are integers; this is the presentation edge, so format them here. */
+    sds created = sess->created_at ? edc_datetime_format((time_t)sess->created_at) : NULL;
+    sds active = sess->last_active ? edc_datetime_format((time_t)sess->last_active) : NULL;
     sds info =
         sdscatprintf(sdsempty(),
                      "## Current Session\n\n"
@@ -803,12 +807,14 @@ static bool edc_commands_handle_session_info(struct edc_session_manager *sm, str
                      "- **Messages**: %zu\n"
                      "- **Directory**: %s\n"
                      "- **Working Directory**: %s\n",
-                     sess->session_id, edc_session_get_name(sess), sess->created_at ? sess->created_at : "unknown",
-                     sess->last_active ? sess->last_active : "unknown", edc_session_get_message_count(sess),
+                     sess->session_id, edc_session_get_name(sess), created ? created : "unknown",
+                     active ? active : "unknown", edc_session_get_message_count(sess),
                      sess->history_dir ? sess->history_dir : "",
                      edc_session_get_workdir(sess) ? edc_session_get_workdir(sess) : "(default)");
     edc_commands_reply(to, info);
     sdsfree(info);
+    sdsfree(created);
+    sdsfree(active);
     return true;
 }
 
