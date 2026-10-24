@@ -979,8 +979,7 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
          * turn (exec_done appends the assistant message after this call), so it
          * describes the request as it was sent. */
         task->last_fold_epoch = task->group ? task->group->fold_epoch : 0;
-        task->last_hist_len =
-            (task->group && task->group->history) ? cJSON_GetArraySize(task->group->history) : 0;
+        task->last_hist_len = edc_task_group_history_count(task->group);
         task->last_turn_len = task->active_turn ? task->active_turn->msg_count : 0;
     }
 }

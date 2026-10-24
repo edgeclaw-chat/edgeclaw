@@ -38,7 +38,23 @@ struct edc_task_group
 
     bool is_orphaned; /* set once the leader exits */
 
-    cJSON *history; /* shared message history */
+    /* ── The group's shared history: IDS, not copies ──────────────────────
+     *
+     * This used to be a cJSON array holding a COPY of every unfolded message, which for a
+     * 40k-message session meant 164 MiB resident for a conversation that is already on
+     * disk. It is now a slot list: a message is either an id (read on demand) or an object
+     * that has no row at all (the system prompt in slot 0, the tool-change notice at the
+     * tail). Order is the array order -- that IS the request order.
+     *
+     * The whole point is that a request pays for the window it sends, not for the history
+     * it has. */
+    struct edc_history_slot *history;
+    int history_count;
+    int history_cap;
+    /* Scratch for edc_task_group_history_role(): the role string of the last slot asked
+     * about. A buffer here instead of an allocation because that lookup runs on every
+     * request to decide where its window starts. */
+    char role_buf[32];
 
     /* The declaration set this group's requests send -- WHICH tools the model is told about
      * (docs/pi-toolset-plan.zh.md, I2 "组内冻结"). Resolved once on first use from the
@@ -104,13 +120,59 @@ extern void edc_task_group_add_task(struct edc_task_group *group, struct edc_tas
 extern void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *task);
 extern struct edc_task *edc_task_group_find_task(struct edc_task_group *group, const char *task_id);
 
-/* Append a message to the group's shared history; every write must go through
- * these. `_owned` takes ownership, `_ref` stores a borrowed reference. */
+/* ── Group history: a slot list, not a copy of the conversation ───────────────
+ *
+ * Each slot is either a message ID (the row lives in the store and is read on demand) or
+ * an object kept in memory because it has no row at all: the system prompt in slot 0, and
+ * the tool-change notice at the tail. The array order is the request order.
+ *
+ * Readers get what they need without materializing the whole history:
+ *   count     -> edc_task_group_history_count()
+ *   one msg   -> edc_task_group_history_at()      (caller owns)
+ *   a range   -> edc_task_group_history_msgs()    (one query for the range)
+ *   a total   -> edc_task_group_history_tokens()  (SUM over the rows)
+ */
+struct edc_history_slot
+{
+    sds msg_id;   /* non-NULL: a message row, loaded on demand */
+    cJSON *owned; /* non-NULL: an in-memory message (system prompt / tool notice) */
+};
+
+/* Append a message the caller owns and that has no row (the system prompt, a
+ * tool-change notice). */
 extern void edc_task_group_history_add_owned(struct edc_task_group *group, cJSON *msg);
-extern void edc_task_group_history_add_ref(struct edc_task_group *group, cJSON *msg);
-/* Append a committed turn's *unfolded* messages (turn->folded_prefix onwards).
- * The history exists to say what will be sent, so folded messages never enter. */
+/* Append a committed turn's *unfolded* messages (turn->folded_prefix onwards). Only their
+ * ids are stored; the history exists to say what will be sent, so folded messages never
+ * enter. */
 extern void edc_task_group_history_add_turn(struct edc_task_group *group, struct edc_turn *turn);
+
+/* Drop every slot. The history is DERIVED (rebuilt from the turns), so this is what a
+ * restart leaves behind before rebuild_history runs; a caller that wants the content back
+ * must rebuild. */
+extern void edc_task_group_history_reset(struct edc_task_group *group);
+
+/* The OWNED object at slot |i|, borrowed (NULL when the slot is a DB-backed id or past the
+ * end). Exists for in-place mutation of an in-memory message -- /reload rewrites the
+ * system prompt's content on the SAME node, because requests hold references to it and a
+ * replaced node would strand them. Everywhere else, use history_at() and own the copy. */
+extern cJSON *edc_task_group_history_owned_at(struct edc_task_group *group, int i);
+
+/* How many messages the history holds (in-memory slots included). */
+extern int edc_task_group_history_count(struct edc_task_group *group);
+/* Message |i| as a fresh object the CALLER owns (cJSON_Delete it), or NULL past the end. */
+extern cJSON *edc_task_group_history_at(struct edc_task_group *group, int i);
+/* [from, to) as a fresh array the caller owns; |to| < 0 means "to the end". One query for
+ * the whole range -- this is the request assembly path. */
+extern cJSON *edc_task_group_history_msgs(struct edc_task_group *group, int from, int to);
+/* Sum of the token estimates of [from, to); |to| < 0 means "to the end". */
+extern long long edc_task_group_history_tokens(struct edc_task_group *group, int from, int to);
+
+/* The ROLE of message |i| ("user" / "assistant" / "tool" / "system"), or NULL.
+ * A borrowed pointer that stays valid until the slot changes. Exists so the request
+ * builder can ask "is this a tool result?" while deciding where a window starts without
+ * paying for the whole message -- that check runs on every request. */
+extern const char *edc_task_group_history_role(struct edc_task_group *group, int i);
+
 /* Rebuild the history the one canonical way: system prompt + every member's
  * committed turns in completion_seq order, minus their folded prefixes. Used by
  * the fold landing and by load, so the array can never drift from the turns. */

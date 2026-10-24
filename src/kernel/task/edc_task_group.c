@@ -2,11 +2,17 @@
 #include "edc_compat.h"
 #include "edc_context.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
+#include "edc_token_estimate.h"
 #include "edc_turn.h"
 #include "utlist_fix.h"
 #include <stdlib.h>
 #include <string.h>
+
+/* The history slot array's only bulk operation; defined with the history section below
+ * and needed by edc_task_group_free() at the top. */
+static void history_clear(struct edc_task_group *group);
 
 /* ── Lifetime ──────────────────────────────────────────────── */
 
@@ -25,7 +31,7 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     /* User group is the default; a system group is only named explicitly by a
      * system task's creator (see edc_group_kind in task_group.h). */
     group->kind = EDC_GROUP_KIND_USER;
-    group->history = cJSON_CreateArray();
+    group->history = NULL; /* slots are added as the history is built */
     group->memory = NULL;
     group->fold_files = NULL;
     group->fold_epoch = 0;
@@ -51,8 +57,7 @@ void edc_task_group_free(struct edc_task_group *group)
     }
 
     free(group->group_id);
-    if (group->history)
-        cJSON_Delete(group->history);
+    history_clear(group);
     if (group->tools_decl)
         cJSON_Delete(group->tools_decl);
     if (group->tool_deltas)
@@ -93,22 +98,65 @@ bool edc_task_group_is_system(const struct edc_task_group *group)
 
 /* ── Group history ─────────────────────────────────────────── */
 
+/* Append a slot, growing the array. */
+static struct edc_history_slot *history_slot_new(struct edc_task_group *group)
+{
+    if (!group)
+        return NULL;
+    if (group->history_count == group->history_cap)
+    {
+        const int ncap = group->history_cap ? group->history_cap * 2 : 16;
+        struct edc_history_slot *grown =
+            realloc(group->history, (size_t)ncap * sizeof(*grown));
+        if (!grown)
+            return NULL;
+        group->history = grown;
+        group->history_cap = ncap;
+    }
+    struct edc_history_slot *slot = &group->history[group->history_count++];
+    slot->msg_id = NULL;
+    slot->owned = NULL;
+    return slot;
+}
+
+static void history_add_id(struct edc_task_group *group, const char *msg_id)
+{
+    if (!group || !msg_id || !*msg_id)
+        return;
+    struct edc_history_slot *slot = history_slot_new(group);
+    if (!slot)
+        return;
+    slot->msg_id = sdsnew(msg_id);
+}
+
+static void history_clear(struct edc_task_group *group)
+{
+    if (!group || !group->history)
+        return;
+    for (int i = 0; i < group->history_count; i++)
+    {
+        if (group->history[i].msg_id)
+            sdsfree(group->history[i].msg_id);
+        if (group->history[i].owned)
+            cJSON_Delete(group->history[i].owned);
+    }
+    free(group->history);
+    group->history = NULL;
+    group->history_count = 0;
+    group->history_cap = 0;
+}
+
 void edc_task_group_history_add_owned(struct edc_task_group *group, cJSON *msg)
 {
     if (!group || !msg)
         return;
-    if (!group->history)
-        group->history = cJSON_CreateArray();
-    cJSON_AddItemToArray(group->history, msg);
-}
-
-void edc_task_group_history_add_ref(struct edc_task_group *group, cJSON *msg)
-{
-    if (!group || !msg)
+    struct edc_history_slot *slot = history_slot_new(group);
+    if (!slot)
+    {
+        cJSON_Delete(msg); /* the caller handed ownership over */
         return;
-    if (!group->history)
-        group->history = cJSON_CreateArray();
-    cJSON_AddItemReferenceToArray(group->history, msg);
+    }
+    slot->owned = msg;
 }
 
 void edc_task_group_history_add_turn(struct edc_task_group *group, struct edc_turn *turn)
@@ -116,27 +164,194 @@ void edc_task_group_history_add_turn(struct edc_task_group *group, struct edc_tu
     if (!group || !turn)
         return;
 
-    /* The unfolded span, read once from the store. Previously this referenced the turn's
-     * in-memory messages; there is no such array now, so the cost of rebuilding the group
-     * history is a range query -- which is what "rebuilt from turns" already meant. */
+    /* Only the ids: the rows stay in the store and are read when a request actually
+     * sends them. This is the difference between a history that costs a pointer per
+     * message and one that costs the message. */
     int folded = (turn->folded_prefix > 0) ? turn->folded_prefix : 0;
     if (folded > turn->msg_count)
         folded = turn->msg_count;
     if (folded >= turn->msg_count)
         return;
 
-    cJSON *arr = edc_turn_msgs(turn, folded, turn->msg_count);
-    if (!arr)
+    struct edc_msg_ids ids;
+    if (!edc_msg_ids_for_turn(turn->task_id, turn->turn_ord, folded, turn->msg_count, &ids))
         return;
-
-    if (!group->history)
-        group->history = cJSON_CreateArray();
-    /* The history OWNS these now: the turn no longer holds messages, so a reference would
-     * have nothing to point at once the query result is freed. */
-    while (cJSON_GetArraySize(arr) > 0)
-        cJSON_AddItemToArray(group->history, cJSON_DetachItemFromArray(arr, 0));
-    cJSON_Delete(arr);
+    for (int i = 0; i < ids.n; i++)
+        history_add_id(group, ids.ids[i]);
+    edc_msg_ids_free(&ids);
 }
+
+int edc_task_group_history_count(struct edc_task_group *group)
+{
+    return group ? group->history_count : 0;
+}
+
+void edc_task_group_history_reset(struct edc_task_group *group)
+{
+    history_clear(group);
+}
+
+cJSON *edc_task_group_history_owned_at(struct edc_task_group *group, int i)
+{
+    if (!group || i < 0 || i >= group->history_count)
+        return NULL;
+    return group->history[i].owned;
+}
+
+cJSON *edc_task_group_history_at(struct edc_task_group *group, int i)
+{
+    if (!group || i < 0 || i >= group->history_count)
+        return NULL;
+    struct edc_history_slot *slot = &group->history[i];
+    if (slot->owned)
+        return cJSON_Duplicate(slot->owned, 1);
+    if (slot->msg_id)
+        return edc_msg_get_by_id(slot->msg_id);
+    return NULL;
+}
+
+cJSON *edc_task_group_history_msgs(struct edc_task_group *group, int from, int to)
+{
+    if (!group)
+        return NULL;
+    if (to < 0 || to > group->history_count)
+        to = group->history_count;
+    if (from < 0)
+        from = 0;
+    if (to <= from)
+        return NULL;
+
+    /* Two passes so the DB-backed slots are fetched in ONE query: with a group whose
+     * history is 40k messages, one lookup per slot is 40k round trips. */
+    const int n = to - from;
+    const char **ids = malloc((size_t)n * sizeof(*ids));
+    int *slot_of = malloc((size_t)n * sizeof(*slot_of));
+    if (!ids || !slot_of)
+    {
+        free(ids);
+        free(slot_of);
+        return NULL;
+    }
+    int n_ids = 0;
+    for (int i = from; i < to; i++)
+    {
+        if (group->history[i].msg_id)
+        {
+            ids[n_ids] = group->history[i].msg_id;
+            slot_of[n_ids] = i;
+            n_ids++;
+        }
+    }
+
+    cJSON *loaded = n_ids > 0 ? edc_msg_load_by_ids(ids, n_ids) : NULL;
+    free(ids);
+    free(slot_of);
+
+    /* Alignment guard: `loaded` skips ids whose row vanished between collecting them and
+     * this query, and the walk below cannot tell WHICH slot is missing -- it would hand
+     * slot i the row that belongs to slot i+1 and every message after it would be off by
+     * one. Rare (a row disappears only through truncate/clear, which rebuild the history),
+     * but silently shifting a conversation is exactly the failure this whole refactor is
+     * trying to make impossible. When the counts disagree, fall back to per-slot lookups. */
+    const int n_loaded = loaded ? cJSON_GetArraySize(loaded) : 0;
+    if (n_ids > 0 && n_loaded != n_ids)
+    {
+        if (loaded)
+            cJSON_Delete(loaded);
+        loaded = NULL;
+        cJSON *out_fallback = cJSON_CreateArray();
+        for (int i = from; i < to; i++)
+        {
+            cJSON *msg = edc_task_group_history_at(group, i);
+            if (msg)
+                cJSON_AddItemToArray(out_fallback, msg);
+        }
+        if (cJSON_GetArraySize(out_fallback) == 0)
+        {
+            cJSON_Delete(out_fallback);
+            return NULL;
+        }
+        return out_fallback;
+    }
+
+    /* Walk the slots in order, taking from |loaded| only the rows it actually returned
+     * (a missing id is skipped rather than leaving a hole in the request). Detaching
+     * always takes index 0: detaching from the front shifts everything after it, so a
+     * running index would skip every other message. */
+    cJSON *out = cJSON_CreateArray();
+    for (int i = from; i < to; i++)
+    {
+        struct edc_history_slot *slot = &group->history[i];
+        if (slot->owned)
+        {
+            cJSON_AddItemToArray(out, cJSON_Duplicate(slot->owned, 1));
+            continue;
+        }
+        if (slot->msg_id && loaded && cJSON_GetArraySize(loaded) > 0)
+        {
+            cJSON *msg = cJSON_DetachItemFromArray(loaded, 0);
+            if (msg)
+                cJSON_AddItemToArray(out, msg);
+        }
+    }
+    if (loaded)
+        cJSON_Delete(loaded);
+
+    if (cJSON_GetArraySize(out) == 0)
+    {
+        cJSON_Delete(out);
+        return NULL;
+    }
+    return out;
+}
+
+const char *edc_task_group_history_role(struct edc_task_group *group, int i)
+{
+    if (!group || i < 0 || i >= group->history_count)
+        return NULL;
+    struct edc_history_slot *slot = &group->history[i];
+    if (slot->owned)
+        return cJSON_GetStringValue(cJSON_GetObjectItem(slot->owned, "role"));
+    if (slot->msg_id)
+    {
+        /* Only the role column is read, and the buffer belongs to the group: the caller
+         * (the request builder's window start) compares it and drops it immediately. */
+        edc_msg_role_by_id(slot->msg_id, group->role_buf, sizeof(group->role_buf));
+        return group->role_buf;
+    }
+    return NULL;
+}
+
+long long edc_task_group_history_tokens(struct edc_task_group *group, int from, int to){
+    if (!group)
+        return 0;
+    if (to < 0 || to > group->history_count)
+        to = group->history_count;
+    if (from < 0)
+        from = 0;
+    if (to <= from)
+        return 0;
+
+    const int n = to - from;
+    const char **ids = malloc((size_t)n * sizeof(*ids));
+    if (!ids)
+        return 0;
+    int n_ids = 0;
+    long long owned_tokens = 0;
+    for (int i = from; i < to; i++)
+    {
+        if (group->history[i].msg_id)
+            ids[n_ids++] = group->history[i].msg_id;
+        else if (group->history[i].owned)
+            owned_tokens += edc_token_estimate_msg(group->history[i].owned);
+    }
+    long long db_tokens = n_ids > 0 ? edc_msg_tokens_by_ids(ids, n_ids) : 0;
+    free(ids);
+    if (db_tokens < 0)
+        db_tokens = 0;
+    return db_tokens + owned_tokens;
+}
+
 
 struct edc_task **edc_task_group_content_order(struct edc_task_group *group, size_t *n)
 {
@@ -186,23 +401,37 @@ void edc_task_group_rebuild_history(struct edc_task_group *group)
     if (!group)
         return;
 
-    /* Keep the existing system prompt object: requests add history[0] by
-     * reference, so replacing the object would strand the ones in flight.
-     * A tool-set notice is the one thing that must NOT be kept: it can sit at index 0 (a
-     * group whose prompt was never built) and keeping it here would duplicate it, because
-     * the notices are re-appended below. `toolset_reason` is the marker that identifies one. */
+    /* Keep the existing system prompt object: requests used to reference history[0]
+     * directly, and other code still holds the pointer it got from
+     * edc_context_append_system_part. A tool-set notice is the one thing that must NOT be
+     * kept: it can sit at index 0 (a group whose prompt was never built) and keeping it
+     * here would duplicate it, because the notices are re-appended below.
+     * `toolset_reason` is the marker that identifies one. */
     cJSON *sys0 = NULL;
-    if (group->history && cJSON_GetArraySize(group->history) > 0)
+    if (group->history_count > 0)
     {
-        cJSON *first = cJSON_GetArrayItem(group->history, 0);
-        if (first && !cJSON_HasObjectItem(first, "toolset_reason"))
-            sys0 = cJSON_DetachItemFromArray(group->history, 0);
-        cJSON_Delete(group->history);
+        struct edc_history_slot *first = &group->history[0];
+        if (first->owned && !cJSON_HasObjectItem(first->owned, "toolset_reason"))
+            sys0 = first->owned; /* detached below by taking ownership */
     }
-    group->history = cJSON_CreateArray();
+    /* Drop every slot, but do not delete |sys0|: it is about to be re-added. */
+    if (group->history)
+    {
+        for (int i = 0; i < group->history_count; i++)
+        {
+            if (group->history[i].msg_id)
+                sdsfree(group->history[i].msg_id);
+            if (group->history[i].owned && group->history[i].owned != sys0)
+                cJSON_Delete(group->history[i].owned);
+        }
+        free(group->history);
+        group->history = NULL;
+        group->history_count = 0;
+        group->history_cap = 0;
+    }
     if (sys0)
     {
-        cJSON_AddItemToArray(group->history, sys0);
+        edc_task_group_history_add_owned(group, sys0);
     }
     /* A system group carries no system prompt: it holds only one-shot fold calls,
      * whose requests bring their own instruction (edc_llm_request); nothing reads

@@ -268,7 +268,16 @@ bool edc_toolset_note_change(struct edc_toolbox *tb, struct edc_task_group *grou
     char *before = group->tools_decl ? cJSON_PrintUnformatted(group->tools_decl) : NULL;
     edc_task_group_history_add_owned(group, msg);
     cJSON_Delete(group->tools_decl);
-    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    {
+        /* The replay has to see the transcript, and the history is ids now, so this loads
+         * it. Acceptable because it is NOT the per-request path: a group resolves its
+         * toolset once, and recomputes only when a change is non-additive (a removal or a
+         * redefinition). The request path never comes through here. */
+        cJSON *hist = edc_task_group_history_msgs(group, 0, -1);
+        group->tools_decl = edc_toolset_resolve(tb, hist, EDC_TOOL_SCOPE_NORMAL);
+        if (hist)
+            cJSON_Delete(hist);
+    }
     char *after = group->tools_decl ? cJSON_PrintUnformatted(group->tools_decl) : NULL;
 
     /* The system prompt's tool section was frozen into history[0] when the group started and

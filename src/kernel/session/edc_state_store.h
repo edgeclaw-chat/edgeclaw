@@ -19,7 +19,7 @@
  */
 
 #include <stdbool.h>
-
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C"
 {
@@ -200,6 +200,48 @@ struct edc_msg_span
 bool edc_msg_span_load(const char *task_id, int turn_ord, int from, int to,
                        struct edc_msg_span *out);
 void edc_msg_span_free(struct edc_msg_span *span);
+
+/* ── Addressing messages by id ──────────────────────────────────────────────
+ *
+ * The group history holds message IDS, not copies (a copy of every unfolded message was
+ * 164 MiB for a 40k-message session). So the runtime has to be able to read messages by
+ * id, and to do it in bulk: one query per message would be a round trip per message.
+ */
+
+/* The ids of one turn's messages [from, to), in msg_ord order. |to| < 0 means "to the
+ * end". Used to append a turn to the group history without touching the rows themselves. */
+struct edc_msg_ids
+{
+    char **ids;
+    int n;
+};
+bool edc_msg_ids_for_turn(const char *task_id, int turn_ord, int from, int to,
+                          struct edc_msg_ids *out);
+void edc_msg_ids_free(struct edc_msg_ids *s);
+
+/* One message by id: a fresh object the CALLER owns, or NULL. */
+struct cJSON *edc_msg_get_by_id(const char *id);
+
+/* Load |n| messages by id, IN THE ORDER GIVEN, as one JSON array the caller owns.
+ *
+ * Uses a temp table and a join rather than `WHERE id IN (...)`: IN returns rows in id
+ * order, which is not the caller's order, and re-sorting 40k messages in C is work SQLite
+ * can do while it streams. Missing ids are SKIPPED (not NULL-padded) -- this feeds a
+ * request or a transcript, where a gap has no meaning.
+ */
+struct cJSON *edc_msg_load_by_ids(const char *const *ids, int n);
+
+/* Sum of the token estimates of the messages' stored estimates, by id. -1 when the store
+ * is closed. */
+long long edc_msg_tokens_by_ids(const char *const *ids, int n);
+
+/* The role column of one message, copied into |buf| ("user" / "assistant" / "tool" /
+ * "system"; "" when the column is empty). Returns false when the row does not exist.
+ *
+ * Separate from edc_msg_get_by_id because the request builder asks this on every request
+ * to decide where a window starts, and paying for a full message parse to answer
+ * "is it a tool result?" would defeat the point of keeping the history as ids. */
+bool edc_msg_role_by_id(const char *id, char *buf, size_t n);
 
 /* Which session owns a task: one primary-key lookup, replacing the old
  * parse-every-session.json index. Returns a malloc'd copy (caller frees) or NULL. */

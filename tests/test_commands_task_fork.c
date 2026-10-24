@@ -138,11 +138,11 @@ int main(void)
     /* Give the parent group a memory and a transcript to snapshot: history[0] is the
      * system prompt, history[1] the first message. */
     parent->group->memory = sdsnew("PARENT-MEMORY");
-    cJSON_AddItemToArray(parent->group->history, cJSON_CreateObject());
+    edc_task_group_history_add_owned(parent->group, cJSON_CreateObject());
     cJSON *m1 = cJSON_CreateObject();
     cJSON_AddStringToObject(m1, "role", "user");
     cJSON_AddStringToObject(m1, "content", "PARENT-MESSAGE");
-    cJSON_AddItemToArray(parent->group->history, m1);
+    edc_task_group_history_add_owned(parent->group, m1);
 
     /* ── ① 落位: 新组 + 前台 + active ───────────────────────────── */
 
@@ -168,7 +168,7 @@ int main(void)
 
         CHECK(child->group && child->group->memory && strcmp(child->group->memory, "PARENT-MEMORY") == 0,
               "inherits the parent group's memory");
-        CHECK(child->group && (size_t)cJSON_GetArraySize(child->group->history) == 2,
+        CHECK(child->group && (size_t)edc_task_group_history_count(child->group) == 2,
               "inherits the system prompt + the snapshot message");
         CHECK(child->turns.tail - child->turns.head == 1, "the snapshot turn is attached to the child");
         CHECK(child->forked_from == parent, "it remembers the parent");

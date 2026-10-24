@@ -126,20 +126,18 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
  * errors with "Messages with role 'tool' must be a response to a preceding message with
  * 'tool_calls'". Move the start back to the first non-tool message (its assistant),
  * keeping the sequence whole. */
-static size_t edc_llm_history_safe_start(cJSON *history, size_t start, size_t lower_bound)
+static size_t edc_llm_history_safe_start(struct edc_task_group *group, size_t start,
+                                         size_t lower_bound)
 {
     while (start > lower_bound)
     {
-        cJSON *m = cJSON_GetArrayItem(history, start);
-        cJSON *role = cJSON_GetObjectItem(m, "role");
-        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
-        {
+        /* A role lookup, not a load: the whole point of the slot list is that deciding
+         * where to start must not cost a copy of the message. */
+        const char *role = edc_task_group_history_role(group, (int)start);
+        if (role && strcmp(role, "tool") == 0)
             start--;
-        }
         else
-        {
             break;
-        }
     }
     return start;
 }
@@ -210,29 +208,36 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         sdsfree(pristine);
     }
 
-    if (!is_memory_sink && task->group && cJSON_GetArraySize(task->group->history) > 0)
+    if (!is_memory_sink && task->group && edc_task_group_history_count(task->group) > 0)
     {
-        size_t total = cJSON_GetArraySize(task->group->history);
-        size_t end = total;
+        const int total = edc_task_group_history_count(task->group);
+        const int end = total;
 
-        /* Unfolded-history start: skip the system prompt (history[0]). Folded messages
+        /* Unfolded-history start: skip the system prompt (slot 0). Folded messages
          * are not in history -- they are pruned at fold landing (see
          * edc_task_group_rebuild_history) -- so no watermark arithmetic is needed here. */
         size_t hist_begin = 1;
-        if (hist_begin > end)
-            hist_begin = end;
+        if (hist_begin > (size_t)end)
+            hist_begin = (size_t)end;
         /* A watermark boundary can also land on a tool message; move back to a safe start */
-        hist_begin = edc_llm_history_safe_start(task->group->history, hist_begin, 1);
+        hist_begin = edc_llm_history_safe_start(task->group, hist_begin, 1);
 
         /* Inject the whole unfolded history [hist_begin, end): the fold uses a
          * "half" strategy (see edc_group_fold's L1 fold) and compresses only the oldest
          * half when triggered, so the remaining unfolded messages are exactly the recent
          * detail the model should see -- inject them all, no truncation. The request
          * size ceiling comes from config's context_window (fold trigger = window -
-         * reserve; triggering compresses it back). */
-        for (size_t i = hist_begin; i < end; i++)
+         * reserve; triggering compresses it back).
+         *
+         * ONE query for the range, and the array it returns is moved into `msgs`: this is
+         * the only place the history is ever materialized, and it lives exactly as long as
+         * the request. */
+        cJSON *hist = edc_task_group_history_msgs(task->group, (int)hist_begin, end);
+        if (hist)
         {
-            cJSON_AddItemReferenceToArray(msgs, cJSON_GetArrayItem(task->group->history, i));
+            while (cJSON_GetArraySize(hist) > 0)
+                cJSON_AddItemToArray(msgs, cJSON_DetachItemFromArray(hist, 0));
+            cJSON_Delete(hist);
         }
     }
 

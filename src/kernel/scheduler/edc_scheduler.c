@@ -1851,8 +1851,8 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
         cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
         cJSON_AddBoolToObject(gj, "fg", sched_foreground(session) == g);
-        /* Committed history (minus history[0]) + its tasks' in-flight turns. */
-        size_t g_msg_count = g->history ? (size_t)cJSON_GetArraySize(g->history) : 0;
+        /* Committed history (minus the system prompt slot) + its tasks' in-flight turns. */
+        size_t g_msg_count = (size_t)edc_task_group_history_count(g);
         if (g_msg_count > 0)
             g_msg_count -= 1;
         long long g_tokens_total = 0;

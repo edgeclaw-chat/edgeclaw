@@ -220,32 +220,34 @@ static cJSON *mk_msg(const char *role, const char *content)
 
 static void test_history_append(void)
 {
-    TEST("history append (_owned / _ref)");
+    TEST("history append (owned messages, no borrowed references)");
     struct edc_task *leader = edc_task_new("task-HL", "sess-8", "task-HL", "hist leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
 
-    /* _owned: 接管所有权 (新构造的消息) */
+    /* The history holds either a message ID (a row, read on demand) or an owned object
+     * (the system prompt, a tool notice). There is no "borrowed reference" any more: the
+     * old _ref existed only because the turn owned the message, and a turn has no message
+     * array to own. */
     edc_task_group_history_add_owned(g, mk_msg("system", "group prompt"));
     edc_task_group_history_add_owned(g, mk_msg("user", "hi"));
+    edc_task_group_history_add_owned(g, mk_msg("assistant", "hello"));
+    edc_task_group_history_add_owned(g, mk_msg("user", "second"));
 
-    /* _ref: 只存引用 (消息归 turn 所有) */
-    cJSON *borrowed = mk_msg("assistant", "hello");
-    edc_task_group_history_add_ref(g, borrowed);
+    CHECK(edc_task_group_history_count(g) == 4, "history has 4 entries");
 
-    cJSON *borrowed2 = mk_msg("user", "second");
-    edc_task_group_history_add_ref(g, borrowed2);
-
-    CHECK(cJSON_GetArraySize(g->history) == 4, "history has 4 entries");
+    /* Read back through the slot API: an owned slot hands out a copy the caller owns. */
+    cJSON *first = edc_task_group_history_at(g, 0);
+    CHECK(first != NULL, "slot 0 reads back");
+    CHECK(first && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(first, "content")), "group prompt") == 0,
+          "slot 0 content");
+    cJSON_Delete(first);
 
     TEST("history survives growth past initial capacity");
     for (int i = 0; i < 40; i++)
         edc_task_group_history_add_owned(g, mk_msg("user", "x"));
-    CHECK(cJSON_GetArraySize(g->history) == 44, "history grew to 44 entries");
+    CHECK(edc_task_group_history_count(g) == 44, "history grew to 44 entries");
 
-    /* borrowed 消息不被 group 释放, 单独回收 */
     edc_task_group_free(g);
-    cJSON_Delete(borrowed);
-    cJSON_Delete(borrowed2);
 }
 
 /* ── main ──────────────────────────────────────────────────── */

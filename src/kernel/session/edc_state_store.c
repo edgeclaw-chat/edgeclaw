@@ -2770,6 +2770,190 @@ void edc_msg_span_free(struct edc_msg_span *span)
     span->n = 0;
 }
 
+/* ── Addressing messages by id ─────────────────────────────────────────────── */
+
+bool edc_msg_ids_for_turn(const char *task_id, int turn_ord, int from, int to,
+                          struct edc_msg_ids *out)
+{
+    if (!out)
+        return false;
+    out->ids = NULL;
+    out->n = 0;
+    if (!g_db || !task_id || !*task_id)
+        return false;
+    if (from < 0)
+        from = 0;
+
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             (to < 0) ? "SELECT id FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=? "
+                        "ORDER BY msg_ord"
+                      : "SELECT id FROM messages WHERE task_id=? AND turn_ord=? "
+                        "AND msg_ord>=? AND msg_ord<? ORDER BY msg_ord");
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 2, turn_ord);
+    sqlite3_bind_int(st, 3, from);
+    if (to >= 0)
+        sqlite3_bind_int(st, 4, to);
+
+    int cap = 0;
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        const char *id = col_str(st, 0);
+        if (!id || !*id)
+            continue;
+        if (out->n == cap)
+        {
+            const int ncap = cap ? cap * 2 : 16;
+            char **grown = realloc(out->ids, (size_t)ncap * sizeof(*grown));
+            if (!grown)
+                break;
+            out->ids = grown;
+            cap = ncap;
+        }
+        out->ids[out->n++] = strdup(id);
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+void edc_msg_ids_free(struct edc_msg_ids *s)
+{
+    if (!s || !s->ids)
+        return;
+    for (int i = 0; i < s->n; i++)
+        free(s->ids[i]);
+    free(s->ids);
+    s->ids = NULL;
+    s->n = 0;
+}
+
+struct cJSON *edc_msg_get_by_id(const char *id)
+{
+    if (!g_db || !id || !*id)
+        return NULL;
+
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT " MSG_SELECT_COLS " FROM messages WHERE id=?");
+    sqlite3_stmt *st = NULL;
+    struct cJSON *out = NULL;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
+    {
+        sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW)
+            out = msg_from_row(st, 0);
+        sqlite3_finalize(st);
+    }
+    return out;
+}
+
+/* Stage the ids in a temp table so SQLite can do the ordering. Caller holds no lock: this
+ * runs on the scheduler thread like every other store call. */
+static bool msg_ids_stage(const char *const *ids, int n)
+{
+    if (!exec_sql(g_db,
+                  "CREATE TEMP TABLE IF NOT EXISTS want_msg(pos INTEGER PRIMARY KEY, msg_id TEXT);"
+                  "DELETE FROM want_msg;",
+                  "want_msg stage"))
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO want_msg(pos,msg_id) VALUES(?,?)", -1, &st, NULL) !=
+        SQLITE_OK)
+        return false;
+    for (int i = 0; i < n; i++)
+    {
+        if (!ids[i] || !*ids[i])
+            continue;
+        sqlite3_reset(st);
+        sqlite3_bind_int(st, 1, i);
+        sqlite3_bind_text(st, 2, ids[i], -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) != SQLITE_DONE)
+        {
+            sqlite3_finalize(st);
+            return false;
+        }
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+struct cJSON *edc_msg_load_by_ids(const char *const *ids, int n)
+{
+    if (!g_db || !ids || n <= 0)
+        return NULL;
+    if (!msg_ids_stage(ids, n))
+        return NULL;
+
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+             "SELECT " MSG_SELECT_COLS
+             " FROM want_msg w JOIN messages m ON m.id=w.msg_id ORDER BY w.pos");
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+
+    cJSON *arr = cJSON_CreateArray();
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        cJSON *msg = msg_from_row(st, 0);
+        if (msg)
+            cJSON_AddItemToArray(arr, msg);
+    }
+    sqlite3_finalize(st);
+    return arr;
+}
+
+bool edc_msg_role_by_id(const char *id, char *buf, size_t n)
+{
+    if (buf && n)
+        buf[0] = '\0';
+    if (!g_db || !id || !*id || !buf || n == 0)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    bool found = false;
+    if (sqlite3_prepare_v2(g_db, "SELECT role FROM messages WHERE id=?", -1, &st, NULL) == SQLITE_OK)
+    {
+        sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(st) == SQLITE_ROW)
+        {
+            const char *role = col_str(st, 0);
+            snprintf(buf, n, "%s", role ? role : "");
+            found = true;
+        }
+        sqlite3_finalize(st);
+    }
+    return found;
+}
+
+long long edc_msg_tokens_by_ids(const char *const *ids, int n)
+{
+    if (!g_db)
+        return -1;
+    if (!ids || n <= 0)
+        return 0;
+    if (!msg_ids_stage(ids, n))
+        return -1;
+
+    sqlite3_stmt *st = NULL;
+    long long total = 0;
+    if (sqlite3_prepare_v2(g_db,
+                           "SELECT coalesce(sum(m.tokens),0) FROM want_msg w "
+                           "JOIN messages m ON m.id=w.msg_id",
+                           -1, &st, NULL) == SQLITE_OK)
+    {
+        if (sqlite3_step(st) == SQLITE_ROW)
+            total = sqlite3_column_int64(st, 0);
+        sqlite3_finalize(st);
+    }
+    return total;
+}
+
 bool edc_state_store_forget(const char *session_id)
 {
     if (!g_db || !session_id || !*session_id)

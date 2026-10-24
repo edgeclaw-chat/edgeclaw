@@ -299,7 +299,7 @@ static void test_drive_dispatches_and_settles_without_llm(void)
           "…carrying the output");
 
     /* "自动进入 group 历史": the very same messages are what the next request reads. */
-    CHECK(t->group && cJSON_GetArraySize(t->group->history) >= 3, "the turn landed in the group history");
+    CHECK(t->group && edc_task_group_history_count(t->group) >= 3, "the turn landed in the group history");
 
     /* No RESP reply: the tool already echoed the output through its own TOOL_EMIT, and a
      * second copy would be rendered as Markdown. */

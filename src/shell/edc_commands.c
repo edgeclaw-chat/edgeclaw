@@ -1695,7 +1695,7 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
     /* the rest of the args are the input */
     sds desc = sub_argv_tail(args, 1);
 
-    size_t fork_point = parent->group ? (size_t)cJSON_GetArraySize(parent->group->history) : 0;
+    size_t fork_point = parent->group ? (size_t)edc_task_group_history_count(parent->group) : 0;
     /* The fork point is expressed as a commit-order watermark: the max completion_seq among the parent group's
      * committed members. */
     uint32_t fork_point_seq = 0;
@@ -1744,9 +1744,10 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
 
         /* The system prompt takes history[0] first, so the snapshot's first message is not mistaken for the system
          * prompt by cb_send_llm */
-        cJSON *sys = cJSON_GetArrayItem(parent->group->history, 0);
+        /* The slot API hands out an owned copy, so it is moved straight into the child. */
+        cJSON *sys = edc_task_group_history_at(parent->group, 0);
         if (sys)
-            cJSON_AddItemToArray(child_group->history, cJSON_Duplicate(sys, 1));
+            edc_task_group_history_add_owned(child_group, sys);
 
         /* Synthesize a turn: deep-copy the parent group's unfolded messages
          * [1 .. fork_point) -- folded messages are not in history (pruned at landing). */
@@ -1773,10 +1774,9 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
                 snap_begin = fork_point;
             for (size_t i = snap_begin; i < fork_point; i++)
             {
-                cJSON *src = cJSON_GetArrayItem(parent->group->history, i);
-                if (!src)
+                cJSON *msg = edc_task_group_history_at(parent->group, (int)i);
+                if (!msg)
                     break;
-                cJSON *msg = cJSON_Duplicate(src, 1);
                 /* A copy MUST get a fresh identity: messages.id is the primary key, so
                  * reusing it would replace the parent's row. */
                 cJSON_DeleteItemFromObject(msg, "id");
@@ -3275,10 +3275,13 @@ static bool edc_commands_handle_reload(struct edc_config *cfg, struct edc_sessio
     {
         /* A system group carries no system prompt (see edc_task_group.c), and a group
          * that never built one has nothing to replace. */
-        if (g->kind == EDC_GROUP_KIND_SYSTEM || cJSON_GetArraySize(g->history) == 0)
+        if (g->kind == EDC_GROUP_KIND_SYSTEM || edc_task_group_history_count(g) == 0)
             continue;
 
-        cJSON *slot = cJSON_GetArrayItem(g->history, 0);
+        /* Slot 0 is the system prompt: an in-memory message, so this is the borrowed node
+         * itself. /reload rewrites its content IN PLACE -- requests hold a reference to
+         * this node, and replacing it would leave them pointing at the old prompt. */
+        cJSON *slot = edc_task_group_history_owned_at(g, 0);
         cJSON *content = slot ? cJSON_GetObjectItem(slot, "content") : NULL;
         if (!slot || !content || !cJSON_IsString(content))
             continue;

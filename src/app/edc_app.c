@@ -54,7 +54,12 @@ static cJSON *app_group_tools(void *ctx, struct edc_task *task)
 
     if (!group->tools_decl)
     {
-        group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+        /* Once per group (then cached in tools_decl), so a full history load here is fine:
+         * the per-request path never recomputes the tool set. */
+        cJSON *hist = edc_task_group_history_msgs(group, 0, -1);
+        group->tools_decl = edc_toolset_resolve(tb, hist, EDC_TOOL_SCOPE_NORMAL);
+        if (hist)
+            cJSON_Delete(hist);
         group->toolset_epoch++;
         log_info("toolset: group %s declares %d tools (epoch %u)", group->group_id,
                  group->tools_decl ? cJSON_GetArraySize(group->tools_decl) : 0, group->toolset_epoch);

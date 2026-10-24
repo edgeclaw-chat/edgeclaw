@@ -608,15 +608,20 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         *out_pristine = NULL;
 
     /* 1. system prompt (pristine, no todo injection)
-     * - group has history: attach history[0] by reference (no copy);
+     * - group has history: attach its first slot (the system prompt);
      * - no history / group NULL: build a pristine prompt and return it via out_pristine
      *   (the caller decides whether to write it back to group history; after that,
-     *   later requests take the reference branch). */
-    if (group && cJSON_GetArraySize(group->history) > 0)
+     *   later requests take the first branch).
+     * The slot hands out an owned copy now, so this moves it into |msgs| rather than
+     * referencing it. */
+    if (group && edc_task_group_history_count(group) > 0)
     {
-        cJSON *sys0 = cJSON_GetArrayItem(group->history, 0);
-        cJSON_AddItemReferenceToArray(msgs, sys0);
-        appended++;
+        cJSON *sys0 = edc_task_group_history_at(group, 0);
+        if (sys0)
+        {
+            cJSON_AddItemToArray(msgs, sys0);
+            appended++;
+        }
     }
     else if (conf)
     {
@@ -705,12 +710,11 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
             continue; /* the anchor recorded the pre-fold prefix */
 
         long long tail = 0;
-        if (group->history)
         {
-            size_t n = (size_t)cJSON_GetArraySize(group->history);
-            size_t from = (size_t)t->last_hist_len;
+            const int n = edc_task_group_history_count(group);
+            const int from = t->last_hist_len;
             if (from < n)
-                tail += edc_token_estimate_msgs(group->history, from, n);
+                tail += edc_task_group_history_tokens(group, from, n);
         }
         tail += est_turn_from(t->active_turn, t->last_turn_len);
 
@@ -735,16 +739,12 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     /* The blocks are rendered on top of the body at request time; leaving them out here
      * would make the estimate low by exactly the part the model is told about. */
     est += edc_fold_files_token_estimate(group->fold_files);
-    if (group->history)
+    if (edc_task_group_history_count(group) > 0)
     {
-        size_t n = (size_t)cJSON_GetArraySize(group->history);
-        if (n > 0)
-            est += edc_token_estimate_msg(cJSON_GetArrayItem(group->history, 0)); /* system prompt */
-        /* The history only holds what is still sent (folded messages are pruned
-         * at landing), so the tail starts right after the system prompt. */
-        size_t from = 1;
-        if (from < n)
-            est += edc_token_estimate_msgs(group->history, from, n);
+        /* The history only holds what is still sent (folded messages are pruned at
+         * landing), so the tail starts right after the system prompt. Token accounting is
+         * a SUM over the stored estimates -- never a walk that parses the messages. */
+        est += edc_task_group_history_tokens(group, 0, -1);
     }
     /* A running member carries its own turn; a fresh task does not -- take the widest,
      * consistent with "group = its widest conversation". */

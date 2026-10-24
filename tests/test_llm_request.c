@@ -210,6 +210,7 @@ static void test_turn_begin_honours_folded_prefix(void)
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求真发出去了");
+
     if (g_req)
     {
         /* The request carries the tail span it loaded (folded prefix already excluded):
@@ -642,13 +643,13 @@ static void test_fold_request_is_self_contained(void)
      * 拿到一条主提示词。 */
     if (sys)
     {
-        cJSON_Delete(sys->history);
-        sys->history = cJSON_CreateArray();
+        /* The history is derived: dropping it is what a restart leaves behind. */
+        edc_task_group_history_reset(sys);
         edc_task_group_rebuild_history(sys);
         /* 显式摆出**修复前重启后**的真形状: 那个槽位里躺着主提示词 (当时的加载期
          * 就是这么填的, 实测确认过)。修复后折叠请求不读这个槽位, 所以下面那几条
          * 断言与它无关; 一旦有人把折叠请求改回走组上下文, 这个夹具立刻变红。 */
-        if (cJSON_GetArraySize(sys->history) == 0)
+        if (edc_task_group_history_count(sys) == 0)
         {
             sds mainp = edc_context_build_system_prompt(h.cfg, NULL);
             cJSON *m = cJSON_CreateObject();
@@ -657,9 +658,11 @@ static void test_fold_request_is_self_contained(void)
             edc_task_group_history_add_owned(sys, m);
             sdsfree(mainp);
         }
-        cJSON *h0 = cJSON_GetArrayItem(sys->history, 0);
+        cJSON *h0 = edc_task_group_history_at(sys, 0);
         const char *c0 = h0 ? cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")) : NULL;
         log_info("  (前置: 系统组 history[0] 里躺着 = %.24s)", c0 ? c0 : "(空)");
+        if (h0)
+            cJSON_Delete(h0);
     }
 
     edc_scheduler_attach_input(h.sched, fold, "SUMMARIZE-BODY");
@@ -707,10 +710,10 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     struct edc_task *leader = NULL;
     struct edc_task_group *g = make_group(&h, &leader, "sess-req");
 
-    /* The completed `!cmd` task's turn. Not freed on purpose: history_add_turn stores
-     * BORROWED references (in production the turn lives in task->turns). */
-    struct edc_turn *done = edc_turn_new();
-    done->task_id = strdup("2");
+    /* The completed `!cmd` task's turn. The key is bound at CREATION: messages are rows
+     * written under it, so assigning task_id afterwards would leave them under the
+     * constructor's placeholder and history_add_turn would find nothing. */
+    struct edc_turn *done = edc_turn_new_for("sess-req", "2", "2", 0);
     edc_turn_add_user_message(done, "!pwd");
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "command", "pwd");
@@ -725,7 +728,6 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求真发出去了");
-
     char order[4] = {0};
     int n = 0;
     bool cmd_seen = false, output_seen = false;

@@ -503,11 +503,11 @@ static void test_append_system_part(void)
     cJSON *sys0 = cJSON_CreateObject();
     cJSON_AddStringToObject(sys0, "role", "system");
     cJSON_AddStringToObject(sys0, "content", "SYS0_BASE");
-    cJSON_AddItemToArray(g1->history, sys0);
+    edc_task_group_history_add_owned(g1, sys0);
     cJSON *usr = cJSON_CreateObject();
     cJSON_AddStringToObject(usr, "role", "user");
     cJSON_AddStringToObject(usr, "content", "hi");
-    cJSON_AddItemToArray(g1->history, usr);
+    edc_task_group_history_add_owned(g1, usr);
 
     cJSON *msgs = cJSON_CreateArray();
     sds pristine = NULL;
@@ -515,8 +515,10 @@ static void test_append_system_part(void)
     C(n == 1, "head = base reference only (no planning guide in head anymore)");
     C(pristine == NULL, "no pristine in history branch");
     cJSON *m0 = cJSON_GetArrayItem(msgs, 0);
-    C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == sys0->child,
-      "history[0] attached by REFERENCE (aliases role/content), not deep copy");
+    /* The head is an OWNED copy now: the history keeps ids (or, for the system prompt, an
+     * in-memory node) and hands out copies, so a request cannot alias -- or free -- the
+     * group's node. The prompt is a few KB, so the copy costs nothing measurable. */
+    C(m0 != NULL && !(m0->type & cJSON_IsReference), "head message is owned by the request");
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "SYS0_BASE") == 0,
       "referenced content readable through array");
     C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "CURRENT TASK SYSTEM STATE") == NULL &&
@@ -524,9 +526,13 @@ static void test_append_system_part(void)
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "<system-reminder>") == NULL,
       "head message stays pure (no reminder sections/marker)");
     cJSON_Delete(msgs);
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g1->history, 0), "content")), "SYS0_BASE") ==
-          0,
-      "history[0] survives msgs delete (reference did not transfer/copy)");
+    {
+        cJSON *h0 = edc_task_group_history_at(g1, 0);
+        C(h0 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")), "SYS0_BASE") == 0,
+          "history[0] survives msgs delete");
+        if (h0)
+            cJSON_Delete(h0);
+    }
 
     /* todo 引导独立于头部: no-list task 的 reminder = 规划引导 (owned), 模拟
      * app 把它作为队尾消息塞进请求数组 → 落在 base 引用之后 */
@@ -561,8 +567,10 @@ static void test_append_system_part(void)
     /* 顺序: 常量 (system prompt) 在前, 易变的 (group memory) 在后 —— 折叠落地只作废后者
      * 之后的内容, 前缀 (系统提示词) 仍命中 cache。 */
     cJSON *m0b = cJSON_GetArrayItem(msgs, 0);
-    C(m0b != NULL && (m0b->type & cJSON_IsReference) && m0b->child == sys0->child,
-      "base attached by reference and comes FIRST (it is the constant part)");
+    /* The head is an OWNED copy of the history's first slot (requests never alias the
+     * group's node), and the ORDERING is what this pins: constant part first. */
+    C(m0b != NULL && !(m0b->type & cJSON_IsReference),
+      "base is owned by the request and comes FIRST (it is the constant part)");
     const char *h1 = cJSON_GetStringValue(cJSON_GetObjectItem(m0b, "content"));
     C(h1 && strcmp(h1, "SYS0_BASE") == 0, "head base stays PURE even when task has a todo list");
     C(strstr(h1, "CURRENT TASK SYSTEM STATE") == NULL && strstr(h1, "INSTRUCTIONS FOR THIS TURN") == NULL &&
@@ -611,7 +619,7 @@ static void test_append_system_part(void)
     const char *f0 = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
     C(f0 && strcmp(f0, pristine) == 0, "fallback request content == pristine");
     C(head_has_no_reminder(f0), "pure prompt has no todo section or reminder marker at all");
-    C(cJSON_GetArraySize(g2->history) == 0, "context does NOT write group history (caller's job)");
+    C(edc_task_group_history_count(g2) == 0, "context does NOT write group history (caller's job)");
 
     /* fallback + 无清单: 队尾 reminder = 规划引导 */
     cJSON *pg = edc_context_make_todo_reminder(t2);
@@ -643,12 +651,16 @@ static void test_append_system_part(void)
         cJSON *sys_hist = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_hist, "role", "system");
         cJSON_AddStringToObject(sys_hist, "content", pristine);
-        cJSON_AddItemToArray(g2->history, sys_hist);
+        edc_task_group_history_add_owned(g2, sys_hist);
     }
-    C(cJSON_GetArraySize(g2->history) == 1 &&
-          strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g2->history, 0), "content")), pristine) ==
-              0,
-      "caller-side write-back keeps shared history pure");
+    {
+        cJSON *h0 = edc_task_group_history_at(g2, 0);
+        C(edc_task_group_history_count(g2) == 1 && h0 &&
+          strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")), pristine) == 0,
+          "caller-side write-back keeps shared history pure");
+        if (h0)
+            cJSON_Delete(h0);
+    }
 
     cJSON *tm = edc_context_make_todo_reminder(t2);
     C(tm != NULL && is_todo_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content"))),
@@ -660,16 +672,15 @@ static void test_append_system_part(void)
       "tail reminder carries fresh list state + per-turn sync instruction");
     cJSON_Delete(tm);
 
-    /* 写回后再次组装 → 走引用分支 (history[0] 纯净), 且仍无 todo 混入头部 */
+    /* 写回后再次组装 → 走 history 分支 (history[0] 纯净), 且仍无 todo 混入头部 */
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, conf, g2, NULL, &pristine);
-    C(n == 1 && pristine == NULL, "after write-back: head = reference, no pristine");
+    C(n == 1 && pristine == NULL, "after write-back: head from history, no pristine");
     m0 = cJSON_GetArrayItem(msgs, 0);
-    C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == cJSON_GetArrayItem(g2->history, 0)->child,
-      "post-write-back request references history[0]");
+    C(m0 != NULL && !(m0->type & cJSON_IsReference), "post-write-back head is owned by the request");
     const char *pw = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
-    C(head_has_no_reminder(pw), "referenced history[0] is pure (todo only at tail)");
+    C(head_has_no_reminder(pw), "history[0] is pure (todo only at tail)");
     cJSON_Delete(msgs);
     sdsfree(pristine);
     edc_task_group_free(g2); /* 连带释放 t2 / todos */

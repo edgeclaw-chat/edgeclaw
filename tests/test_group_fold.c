@@ -301,7 +301,7 @@ static void test_fold_runs_as_a_system_task(void)
         snprintf(id, sizeof(id), "%d", i);
         add_foldable_task(session, group, id, (uint32_t)i, 4, "foldable work");
     }
-    size_t group_hist_before = cJSON_GetArraySize(group->history);
+    size_t group_hist_before = (size_t)edc_task_group_history_count(group);
     size_t group_msgs_before = edc_task_group_unfolded_msg_count(group);
     uint32_t epoch_before = group->fold_epoch;
 
@@ -326,7 +326,7 @@ static void test_fold_runs_as_a_system_task(void)
      * edc_group_fold_system_prompt() 现拼, 见 tests/test_llm_request.c 的
      * "折叠请求是自足的")。从前它住这个组的 history[0], 而那个槽位不落盘 ——
      * 重启后加载期会把它填成主提示词, 摘要调用就背上了 EdgeClaw 的人设。 */
-    CHECK(cJSON_GetArraySize(sg->history) == 0, "系统组没有共享 header (折叠说明随请求走)");
+    CHECK(edc_task_group_history_count(sg) == 0, "系统组没有共享 header (折叠说明随请求走)");
 
     /* 该 session 已有折叠在飞: 不再起第二次 (免得两次折叠看见半成品记忆)。 */
     CHECK(edc_scheduler_has_pending_system_task(session), "有折叠在飞");
@@ -361,7 +361,7 @@ static void test_fold_runs_as_a_system_task(void)
     /* history 现在由 turns 派生 (折叠落地时重建): system prompt + 未折叠消息。
      * 旧断言 "== group_hist_before" 在这个夹具里是空转的 —— add_foldable_task
      * 从不往 history 里写, 两边都是 0。 */
-    CHECK(cJSON_GetArraySize(group->history) == 1 + edc_task_group_unfolded_msg_count(group),
+    CHECK(edc_task_group_history_count(group) == 1 + edc_task_group_unfolded_msg_count(group),
           "history = system prompt + 未折叠消息 (被折的 5 条已剪掉; 折叠任务的消息也不进来)");
     CHECK(group->member_count == 4, "折叠任务不在被折叠的组里 (它在系统组)");
     CHECK(edc_task_group_unfolded_msg_count(group) == group_msgs_before - 7,
@@ -377,7 +377,7 @@ static void test_fold_runs_as_a_system_task(void)
             struct edc_turn *t3turn = t3->turns.data[t3->turns.head];
             CHECK(t3turn->folded_prefix == 2 && t3turn->msg_count == 4,
                   "task 3 那个 turn 折了 2 条、留 2 条 (消息级水位, 不是整 turn)");
-            CHECK(cJSON_GetArraySize(group->history) == 1 + edc_task_group_unfolded_msg_count(group),
+            CHECK(edc_task_group_history_count(group) == 1 + edc_task_group_unfolded_msg_count(group),
                   "历史里剩下的正好是未折叠段 (半折 turn 的尾巴在)");
         }
     }

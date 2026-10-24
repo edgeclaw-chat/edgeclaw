@@ -393,8 +393,9 @@ static void test_note_change_adding_a_direct_tool_rewrites_the_field(void)
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
     group->group_id = strdup("g1");
-    group->history = cJSON_CreateArray();
-    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    /* The group is built by hand, so it has no session: the history starts empty and the
+     * tool set is resolved against nothing (same as a fresh group). */
+    group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
     char *before = cJSON_PrintUnformatted(group->tools_decl);
     const uint32_t epoch_before = group->toolset_epoch;
 
@@ -407,11 +408,20 @@ static void test_note_change_adding_a_direct_tool_rewrites_the_field(void)
     CHECK(strcmp(before, after) != 0, "the field now carries the new tool");
     CHECK(group->toolset_epoch == epoch_before + 1, "a declared-set change is one cache reset");
     CHECK(group->tool_deltas && cJSON_GetArraySize(group->tool_deltas) == 1, "notice kept for rebuilds");
-    CHECK(cJSON_GetArraySize(group->history) == 1, "the next request already sees the notice");
-    char *printed = cJSON_PrintUnformatted(group->history);
-    CHECK(strstr(printed, "Tool set changed") != NULL, "the model is told, in prose");
-    CHECK(strstr(printed, "test:added") != NULL, "the reason is in the notice");
-    cJSON_free(printed);
+    CHECK(edc_task_group_history_count(group) == 1, "the next request already sees the notice");
+    {
+        /* The notice lives in the history as an in-memory slot; read it back the way a
+         * request would. */
+        cJSON *notice = edc_task_group_history_at(group, 0);
+        char *printed = notice ? cJSON_PrintUnformatted(notice) : NULL;
+        CHECK(printed != NULL, "the notice is readable from the history");
+        CHECK(printed && strstr(printed, "Tool set changed") != NULL, "the model is told, in prose");
+        CHECK(printed && strstr(printed, "test:added") != NULL, "the reason is in the notice");
+        if (printed)
+            cJSON_free(printed);
+        if (notice)
+            cJSON_Delete(notice);
+    }
 
     cJSON_free(before);
     cJSON_free(after);
@@ -428,8 +438,8 @@ static void test_note_change_adding_a_deferred_tool_keeps_the_bytes(void)
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
     group->group_id = strdup("g1b");
-    group->history = cJSON_CreateArray();
-    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    /* Hand-built group with no session: the history starts empty. */
+    group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
     char *before = cJSON_PrintUnformatted(group->tools_decl);
     const uint32_t epoch_before = group->toolset_epoch;
 
@@ -458,8 +468,8 @@ static void test_note_change_removal_rewrites_the_field(void)
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
     group->group_id = strdup("g2");
-    group->history = cJSON_CreateArray();
-    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    /* Hand-built group with no session: the history starts empty. */
+    group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
     const uint32_t epoch_before = group->toolset_epoch;
 
     const char *removed[] = {"beta"};
@@ -469,9 +479,15 @@ static void test_note_change_removal_rewrites_the_field(void)
     CHECK(strcmp(names, "alpha") == 0, "the field no longer declares beta, got %s", names);
     sdsfree(names);
     CHECK(group->toolset_epoch == epoch_before + 1, "a removal is a real change -> one cache reset");
-    char *printed = cJSON_PrintUnformatted(group->history);
-    CHECK(strstr(printed, "no longer callable") != NULL, "the notice says what is gone");
-    cJSON_free(printed);
+    {
+        cJSON *notice = edc_task_group_history_at(group, 0);
+        char *printed = notice ? cJSON_PrintUnformatted(notice) : NULL;
+        CHECK(printed && strstr(printed, "no longer callable") != NULL, "the notice says what is gone");
+        if (printed)
+            cJSON_free(printed);
+        if (notice)
+            cJSON_Delete(notice);
+    }
 
     edc_task_group_free(group);
     edc_toolbox_free(tb);
@@ -485,27 +501,33 @@ static void test_notices_survive_a_history_rebuild(void)
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(struct edc_task_group));
     group->group_id = strdup("g3");
-    group->history = cJSON_CreateArray();
     const char *removed[] = {"ghost"};
     edc_toolset_note_change(tb, group, NULL, removed, 1, "test:rebuild");
 
     /* history is derived: a rebuild (fold landing / restart) recreates it from the turns. */
     edc_task_group_rebuild_history(group);
-    char *printed = cJSON_PrintUnformatted(group->history);
-    CHECK(strstr(printed, "Tool set changed") != NULL, "the notice is re-appended, not lost");
+    {
+        cJSON *notice = edc_task_group_history_at(group, edc_task_group_history_count(group) - 1);
+        char *printed = notice ? cJSON_PrintUnformatted(notice) : NULL;
+        CHECK(printed && strstr(printed, "Tool set changed") != NULL, "the notice is re-appended, not lost");
+        if (printed)
+            cJSON_free(printed);
+        if (notice)
+            cJSON_Delete(notice);
+    }
 
     /* A second rebuild must not accumulate copies. */
     edc_task_group_rebuild_history(group);
     int notices = 0;
-    cJSON *msg = NULL;
-    cJSON_ArrayForEach(msg, group->history)
+    for (int i = 0; i < edc_task_group_history_count(group); i++)
     {
-        cJSON *c = cJSON_GetObjectItem(msg, "toolset_reason");
-        if (c)
+        cJSON *msg = edc_task_group_history_at(group, i);
+        if (msg && cJSON_GetObjectItem(msg, "toolset_reason"))
             notices++;
+        if (msg)
+            cJSON_Delete(msg);
     }
     CHECK(notices == 1, "exactly one notice after two rebuilds, got %d", notices);
-    cJSON_free(printed);
 
     edc_task_group_free(group);
     edc_toolbox_free(tb);
@@ -525,25 +547,29 @@ static void test_note_change_appends_the_current_section(void)
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
     group->group_id = strdup("g-head");
-    group->history = cJSON_CreateArray();
     /* 模拟已经冻结的 system prompt：note_change 不许碰它。 */
     cJSON *head = cJSON_CreateObject();
     cJSON_AddStringToObject(head, "role", "system");
     cJSON_AddStringToObject(head, "content", "HEAD-SENTINEL");
     edc_task_group_history_add_owned(group, head);
-    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    {
+        cJSON *hist = edc_task_group_history_msgs(group, 0, -1);
+        group->tools_decl = edc_toolset_resolve(tb, hist, EDC_TOOL_SCOPE_NORMAL);
+        if (hist)
+            cJSON_Delete(hist);
+    }
 
     const char *removed[] = {"beta"};
     CHECK(edc_toolset_note_change(tb, group, NULL, removed, 1, "tools:off:beta"), "records the change");
 
     /* head 一个字节都没动。 */
-    cJSON *head_now = cJSON_GetArrayItem(group->history, 0);
+    cJSON *head_now = edc_task_group_history_at(group, 0);
     CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(head_now, "content")), "HEAD-SENTINEL") == 0,
           "history[0] is never rewritten");
 
     /* 追加的那条带着新的段：alpha 在，beta 不在。 */
-    int n = cJSON_GetArraySize(group->history);
-    cJSON *notice = cJSON_GetArrayItem(group->history, n - 1);
+    int n = edc_task_group_history_count(group);
+    cJSON *notice = edc_task_group_history_at(group, n - 1);
     const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(notice, "content"));
     CHECK(content && strstr(content, "out of date") != NULL, "it says the earlier section is stale");
     CHECK(content && strstr(content, "<tools>") != NULL, "and carries a fresh tagged section");
@@ -568,8 +594,8 @@ static void test_rebuild_keeps_only_the_latest_notice(void)
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
     group->group_id = strdup("g-rebuild");
-    group->history = cJSON_CreateArray();
-    group->tools_decl = edc_toolset_resolve(tb, group->history, EDC_TOOL_SCOPE_NORMAL);
+    /* Hand-built group with no session: the history starts empty. */
+    group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
 
     /* 两次变更：先移除 beta，再加入 gamma。 */
     const char *removed[] = {"beta"};
@@ -580,22 +606,33 @@ static void test_rebuild_keeps_only_the_latest_notice(void)
     cJSON_Delete(added);
 
     int notices = 0;
-    cJSON *m = NULL;
-    cJSON_ArrayForEach(m, group->history) if (cJSON_HasObjectItem(m, "toolset_reason")) notices++;
+    for (int i = 0; i < edc_task_group_history_count(group); i++)
+    {
+        cJSON *m = edc_task_group_history_at(group, i);
+        if (m && cJSON_HasObjectItem(m, "toolset_reason"))
+            notices++;
+        if (m)
+            cJSON_Delete(m);
+    }
     CHECK(notices == 2, "both notices are in history before a rebuild, got %d", notices);
 
     /* rebuild = 折叠落地 / 重启那条路：history 从 turns 重建，通知只补最后一条。 */
     edc_task_group_rebuild_history(group);
 
     notices = 0;
-    const char *content = NULL;
-    cJSON_ArrayForEach(m, group->history)
+    sds content = NULL;
+    for (int i = 0; i < edc_task_group_history_count(group); i++)
     {
-        if (cJSON_HasObjectItem(m, "toolset_reason"))
+        cJSON *m = edc_task_group_history_at(group, i);
+        if (m && cJSON_HasObjectItem(m, "toolset_reason"))
         {
             notices++;
-            content = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+            if (content)
+                sdsfree(content);
+            content = sdsnew(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")));
         }
+        if (m)
+            cJSON_Delete(m);
     }
     CHECK(notices == 1, "exactly one notice after the rebuild, got %d", notices);
     CHECK(content && strstr(content, "r2-add-gamma") != NULL, "the survivor is the newest one");

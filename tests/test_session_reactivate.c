@@ -85,11 +85,9 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
 
     if (task->group && task->active_turn)
     {
-        for (int qi = 0; qi < task->active_turn->msg_count; qi++)
-        {
-            cJSON *item = edc_turn_msg_at(task->active_turn, qi);
-            edc_task_group_history_add_ref(task->group, item);
-        }
+        /* The history takes the turn's messages as ids; nothing is borrowed any more,
+         * which is precisely what removed the use-after-free this test was written for. */
+        edc_task_group_history_add_turn(task->group, task->active_turn);
     }
     edc_task_commit_active_turn(task);
 }
@@ -114,14 +112,17 @@ static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_s
 static int touch_group_history(struct edc_task_group *g)
 {
     int seen = 0;
-    size_t total = g->history ? cJSON_GetArraySize(g->history) : 0;
-    for (size_t i = 0; i < total; i++)
+    const int total = edc_task_group_history_count(g);
+    for (int i = 0; i < total; i++)
     {
-        cJSON *m = cJSON_GetArrayItem(g->history, i);
+        cJSON *m = edc_task_group_history_at(g, i);
+        if (!m)
+            continue;
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *content = cJSON_GetObjectItem(m, "content");
         if (role && cJSON_IsString(role) && content && cJSON_IsString(content))
             seen++;
+        cJSON_Delete(m);
     }
     return seen;
 }

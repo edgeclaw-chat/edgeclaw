@@ -1601,39 +1601,41 @@ static void test_fork_new_group_snapshot(void)
     cJSON *sys = cJSON_CreateObject();
     cJSON_AddStringToObject(sys, "role", "system");
     cJSON_AddStringToObject(sys, "content", "You are EdgeClaw.");
-    cJSON_AddItemToArray(pg->history, sys);
+    edc_task_group_history_add_owned(pg, sys);
 
     struct edc_turn *pt = edc_turn_new();
     turn_add_msg(pt, "user", "hello");
     turn_add_msg(pt, "assistant", "hi there");
     edc_task_add_turn(parent, pt);
-    for (size_t m = 0; m < pt->msg_count; m++)
-        cJSON_AddItemReferenceToArray(pg->history, edc_turn_msg_at(pt, m)); /* STOP sync */
+    edc_task_group_history_add_turn(pg, pt); /* STOP sync: ids only */
 
     /* ── fork (mirror edc_commands_handle_task_fork) ── */
-    size_t fork_point = (size_t)cJSON_GetArraySize(pg->history);
+    size_t fork_point = (size_t)edc_task_group_history_count(pg);
     struct edc_task *child = edc_task_fork(parent, "task-child", "child", fork_point, edc_channel_adapter);
     struct edc_task_group *cg = edc_scheduler_create_group(sched, session, child);
 
     if (pg->memory)
         cg->memory = sdsdup(pg->memory);
-    cJSON *psys = cJSON_GetArrayItem(pg->history, 0);
+    cJSON *psys = edc_task_group_history_at(pg, 0);
     if (psys)
-        cJSON_AddItemToArray(cg->history, cJSON_Duplicate(psys, 1));
+        edc_task_group_history_add_owned(cg, psys);
 
     size_t snap_begin = 1; /* 已折消息不在 history 里 (折叠落地即剪枝) */
     struct edc_turn *snap = edc_turn_new();
     for (size_t i = snap_begin; i < fork_point; i++)
     {
-        cJSON *src = cJSON_GetArrayItem(pg->history, i);
-        if (!src)
+        cJSON *msg = edc_task_group_history_at(pg, (int)i);
+        if (!msg)
             break;
-        cJSON *msg = cJSON_Duplicate(src, 1);
-        edc_turn_add_message(snap, msg);
-        cJSON_AddItemReferenceToArray(cg->history, msg);
+        edc_turn_add_message(snap, msg); /* consumes msg; the row carries it now */
     }
     if (snap->msg_count > 0)
+    {
+        /* Same two steps as the real fork: attach the turn (which binds its final
+         * storage key), THEN record its messages in the child group's history. */
         edc_task_add_turn(child, snap);
+        edc_task_group_history_add_turn(cg, snap);
+    }
     else
         edc_turn_free(snap);
 
@@ -1651,9 +1653,9 @@ static void test_fork_new_group_snapshot(void)
     CHECK(child->group != pg, "child not in parent group");
     CHECK(child->is_group_leader == 1, "child is group leader");
     CHECK_STREQ(child->group_id, "task-child", "child group_id is its own id");
-    CHECK(cJSON_GetArraySize(cg->history) == 3, "child group history = system + 2 snapshot msgs");
-    CHECK(cJSON_GetArraySize(pg->history) == 3, "parent group history unchanged");
-    cJSON *csys = cJSON_GetArrayItem(cg->history, 0);
+    CHECK(edc_task_group_history_count(cg) == 3, "child group history = system + 2 snapshot msgs");
+    CHECK(edc_task_group_history_count(pg) == 3, "parent group history unchanged");
+    cJSON *csys = edc_task_group_history_at(cg, 0);
     CHECK(csys && cJSON_GetObjectItem(csys, "role") &&
               strcmp(cJSON_GetObjectItem(csys, "role")->valuestring, "system") == 0,
           "child history[0] is system");
@@ -1679,8 +1681,7 @@ static void test_fork_new_group_snapshot(void)
         CHECK(rc->group != rp->group, "child group distinct from parent group");
         CHECK_STREQ(rc->group->group_id, "task-child", "child restored in own group");
         CHECK(rc->forked_from == rp, "forked_from preserved");
-        CHECK(rc->group->history != NULL, "child group history rebuilt");
-        CHECK(cJSON_GetArraySize(rc->group->history) == 3, "child group history rebuilt to 3 msgs");
+        CHECK(edc_task_group_history_count(rc->group) == 3, "child group history rebuilt to 3 msgs");
     }
 
     cJSON_Delete(json);
@@ -1906,7 +1907,7 @@ static void test_fold_watermark(void)
                       rt->last_fold_epoch == 7,
                   "the context anchor (size + position + epoch) survives the round trip");
         }
-        CHECK(cJSON_GetArraySize(g2->history) == 2, "已折的 2 条不在 history 里 (sys + 剩 1 条)");
+        CHECK(edc_task_group_history_count(g2) == 2, "已折的 2 条不在 history 里 (sys + 剩 1 条)");
         CHECK(edc_task_group_unfolded_msg_count(g2) == 1, "unfolded = 1 msg");
     }
 
@@ -1934,7 +1935,7 @@ static void test_fold_watermark(void)
     if (g3)
     {
         CHECK(edc_task_group_unfolded_msg_count(g3) == 3, "no key -> nothing folded, all 3 msgs unfolded");
-        CHECK(cJSON_GetArraySize(g3->history) == 4, "…and the history still carries them (sys + 3)");
+        CHECK(edc_task_group_history_count(g3) == 4, "…and the history still carries them (sys + 3)");
     }
 
     cJSON_Delete(json);

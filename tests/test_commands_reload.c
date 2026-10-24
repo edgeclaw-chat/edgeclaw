@@ -125,8 +125,8 @@ int main(void)
     sdsfree(prompt0);
 
     TEST("the group cached it as history[0]");
-    CHECK(cJSON_GetArraySize(g->history) >= 1, "history has a first slot");
-    cJSON *slot0 = cJSON_GetArrayItem(g->history, 0);
+    CHECK(edc_task_group_history_count(g) >= 1, "history has a first slot");
+    cJSON *slot0 = edc_task_group_history_owned_at(g, 0);
     cJSON *content0 = cJSON_GetObjectItem(slot0, "content");
     CHECK(content0 && cJSON_IsString(content0) && strstr(content0->valuestring, "first") != NULL,
           "the slot holds the prompt");
@@ -144,7 +144,7 @@ int main(void)
     drive_command(cfg, sm, sched, "/reload");
 
     TEST("/reload re-derives history[0] from disk, keeping the node");
-    cJSON *slot1 = cJSON_GetArrayItem(g->history, 0);
+    cJSON *slot1 = edc_task_group_history_owned_at(g, 0);
     CHECK(slot1 == slot0, "the very same node (references cannot dangle)");
     cJSON *content1 = cJSON_GetObjectItem(slot1, "content");
     CHECK(content1 && cJSON_IsString(content1), "content is still a string");
@@ -154,7 +154,7 @@ int main(void)
     TEST("/reload again is a no-op");
     sds after_first = sdsnew(content1->valuestring);
     drive_command(cfg, sm, sched, "/reload");
-    cJSON *content2 = cJSON_GetObjectItem(cJSON_GetArrayItem(g->history, 0), "content");
+    cJSON *content2 = cJSON_GetObjectItem(edc_task_group_history_owned_at(g, 0), "content");
     CHECK(content2 && strcmp(content2->valuestring, after_first) == 0, "the bytes did not move");
     sdsfree(after_first);
 
