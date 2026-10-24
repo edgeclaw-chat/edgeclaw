@@ -152,7 +152,9 @@ static void sched_drain_dirty(struct edc_scheduler *sched)
     {
         struct edc_session *session = sched->dirty[i].session;
         const char *reason = sched->dirty[i].reason;
-        const char *sid = (session && session->session_id) ? session->session_id : NULL;
+        /* The callbacks take a TEXT label (they are the UI's boundary), the id is a
+         * number: render it once here. */
+        const char *sid = (session && session->session_id > 0) ? edc_session_id_str(session->session_id) : NULL;
         sched_trace_notify(reason, sid);
         if (sched->snapshot_changed && sid)
             sched->snapshot_changed(sched, sid, reason);
@@ -419,7 +421,7 @@ struct edc_task *edc_scheduler_task_new(struct edc_scheduler *sched, struct edc_
         return NULL;
 
     /* Owned by the passed session; no session -> reject rather than guess. */
-    const char *sid = session->session_id ? session->session_id : "sess-1";
+    const int64_t sid = session->session_id;
     struct edc_task_group *fg = sched_foreground(session);
 
     /* The row comes FIRST, because that is what allocates the id. group_id 0 means "this
@@ -1191,7 +1193,7 @@ static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg
     struct edc_session *session = sched_resolve_session(sched, input->session_id);
     if (!session)
     {
-        log_warn("input dropped: no session for tag '%s'", input->session_id ? input->session_id : "(none)");
+        log_warn("input dropped: no session for tag '%s'", input->session_id);
         return;
     }
 
@@ -1674,7 +1676,7 @@ static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *
     struct edc_session *session = sched_resolve_session(sched, session_id);
     if (!session)
     {
-        log_warn("snapshot request dropped: no session for tag '%s'", session_id ? session_id : "(none)");
+        log_warn("snapshot request dropped: no session for tag '%s'", session_id);
         return;
     }
     sched_handle_task_snapshot(sched, session, "pull");
@@ -1729,7 +1731,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
 
     cJSON *root = cJSON_CreateObject();
     struct edc_session *sess = session;
-    cJSON_AddStringToObject(root, "session_id", sess->session_id ? sess->session_id : "");
+    cJSON_AddStringToObject(root, "session_id", edc_session_id_str(sess->session_id));
     cJSON_AddStringToObject(root, "session_name", edc_session_get_name(sess));
     /* session messages + every task's in-flight turn messages. */
     size_t msg_count = edc_session_get_message_count(sess);

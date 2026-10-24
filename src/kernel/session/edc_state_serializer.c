@@ -119,7 +119,7 @@ static cJSON *task_to_json(struct edc_task *task)
     /* ── identity ── */
     cJSON_AddNumberToObject(tj, "task_id", (double)task->task_id);
     cJSON_AddNumberToObject(tj, "group_id", (double)task->group_id);
-    cJSON_AddStringToObject(tj, "session_id", task->session_id ? task->session_id : "");
+    cJSON_AddStringToObject(tj, "session_id", edc_id_str(task->session_id));
 
     /* ── description & state ── */
     cJSON_AddStringToObject(tj, "description", task->description ? task->description : "");
@@ -349,7 +349,7 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
 
     /* ── session block ── */
     cJSON *sj = cJSON_CreateObject();
-    cJSON_AddStringToObject(sj, "session_id", session->session_id ? session->session_id : "");
+    cJSON_AddStringToObject(sj, "session_id", edc_id_str(session->session_id));
     cJSON_AddStringToObject(sj, "name", session->name ? session->name : "");
     /* Integers, like every other timestamp in the store. This tree is internal: it is what
      * bind_session writes and what the deserializer reads back. */
@@ -692,7 +692,7 @@ static void deser_session_meta(struct edc_session *session, cJSON *sj)
         EdcError *werr = NULL;
         if (!edc_session_set_workdir(session, cJSON_GetStringValue(wd_j), &werr) && werr)
         {
-            log_warn("session %s: cannot restore working directory '%s': %s", session->session_id,
+            log_warn("session %s: cannot restore working directory '%s': %s", edc_id_str(session->session_id),
                      cJSON_GetStringValue(wd_j), werr->message);
             edc_error_free(werr);
         }
@@ -718,7 +718,7 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         /* The on-disk "channel" key is a compatibility artifact (the only channel = adapter); the reader ignores its value. */
 
         struct edc_task *task =
-            edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
+            edc_task_new(task_id, js_id(tj, "session_id"),
                          js_id(tj, "group_id"),
                          cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "",
                          edc_channel_adapter);

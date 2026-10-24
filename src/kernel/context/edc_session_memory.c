@@ -616,7 +616,7 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
     /* Remember the size we tried at, so a round that cannot shrink below the cap does not
      * start another one until the memory grows again. */
     session->memo->compact_at_entries = session->memo->entry_count;
-    log_info("L2 memo compact start: session=%s task=%s entries=%zu", session->session_id, edc_id_str(task->task_id),
+    log_info("L2 memo compact start: session=%s task=%s entries=%zu", edc_id_str(session->session_id), edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -783,7 +783,7 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
         }
     }
 
-    log_info("L2 memo start: session=%s from group=%s task=%s entries=%zu", session->session_id,
+    log_info("L2 memo start: session=%s from group=%s task=%s entries=%zu", edc_id_str(session->session_id),
              edc_id_str(folded_group ? folded_group->group_id : 0), edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
@@ -817,7 +817,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
         return NULL;
     }
     sdsfree(prompt);
-    log_info("L2 memo start (manual): session=%s task=%s entries=%zu", session->session_id, edc_id_str(task->task_id),
+    log_info("L2 memo start (manual): session=%s task=%s entries=%zu", edc_id_str(session->session_id), edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -1247,7 +1247,7 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
         return NULL;
     }
     sdsfree(prompt);
-    log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", session->session_id,
+    log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", edc_id_str(session->session_id),
              edc_id_str(group->group_id), edc_id_str(task->task_id), edc_id_str(task->memo_cut_task_id),
              task->memo_cut_turn, task->memo_cut_prefix);
     return task;

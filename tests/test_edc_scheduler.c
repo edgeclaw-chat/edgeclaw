@@ -55,6 +55,7 @@ static struct edc_session *make_session(struct edc_config *config)
 {
     /* 直接分配 session 结构，跳过 edc_session_new 的初始化 */
     struct edc_session *s = calloc(1, sizeof(struct edc_session));
+    s->session_id = edc_test_session_id("sched-fixture");
     s->config = config;
     return s;
 }
@@ -836,7 +837,7 @@ static void drive_input(struct edc_scheduler *sched, const char *content, long r
     /* 标签 = 该 scheduler 的读口指向的那棵树 (ctx 就是它)。 */
     struct edc_session *owner = sched->ctx;
     if (owner && owner->session_id)
-        cm->session_id = sdsnew(owner->session_id);
+        cm->session_id = sdsnew(edc_id_str(owner->session_id));
     edc_actor_msg_t *msg =
         edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, edc_channel_input_new(cm),
                           (edc_actor_data_free_fn)edc_channel_input_free);
@@ -853,7 +854,7 @@ static void pump_message(struct edc_scheduler *sched)
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_session *owner = sched->ctx;
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, NULL, NULL,
-                                             owner && owner->session_id ? sdsnew(owner->session_id) : NULL,
+                                             owner && owner->session_id ? sdsnew(edc_id_str(owner->session_id)) : NULL,
                                              (edc_actor_data_free_fn)sdsfree);
     actor->handler(actor, msg);
 }
@@ -1485,7 +1486,7 @@ static void drive_snapshot(struct edc_scheduler *sched, struct edc_session *sess
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     edc_actor_msg_t *msg = edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TASK_SNAPSHOT, 0, NULL, NULL,
-                                                      sdsnew(session ? session->session_id : ""),
+                                                      sdsnew(session ? edc_id_str(session->session_id) : ""),
                                                       (edc_actor_data_free_fn)sdsfree);
     actor->handler(actor, msg); /* dispatches + frees msg */
 }
@@ -1701,7 +1702,7 @@ static void test_pending_dep_drop(void)
     install_resolver(sched, sess);
 
     TEST("a pending (unresolvable) dependency holds, is listed, and can be dropped");
-    struct edc_task *probe = edc_task_new(edc_test_id("pend-t"), "sess-pd", edc_test_id("g"), "probe", edc_channel_adapter);
+    struct edc_task *probe = edc_task_new(edc_test_id("pend-t"), edc_test_session_id("sess-pd"), edc_test_id("g"), "probe", edc_channel_adapter);
     edc_scheduler_add_pending_dep(sched, edc_test_id("pend-t"), edc_test_id("gone-src"), TASK_DEP_SEQUENCE, false, false, false);
     CHECK(edc_scheduler_first_unresolved_dep(sched, probe) != NULL, "the task is held");
     {

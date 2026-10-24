@@ -87,7 +87,7 @@ static struct edc_task_group *add_task(struct edc_session *s, const char *task_i
 static sds load_descriptions(const char *session_id)
 {
     struct edc_config *cfg = make_config();
-    struct edc_session *r = edc_session_new(cfg, session_id, "Probe");
+    struct edc_session *r = edc_session_new(cfg, edc_test_session_id(session_id), "Probe");
     struct edc_scheduler *rsched = edc_scheduler_new(cfg);
     install_sessions(rsched, r);
     sds out = sdsempty();
@@ -127,7 +127,7 @@ int main(void)
     }
 
     /* ── Establish real state ─────────────────────────────────────────────── */
-    struct edc_session *s = edc_session_new(cfg, "s-guard", "Guard");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-guard"), "Guard");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
     add_task(s, "g-1-task", "the real task");
@@ -162,7 +162,7 @@ int main(void)
     /* ── 3. the refusal is per session, not global ───────────────────────── */
     TEST("a healthy session still saves while another is quarantined");
     {
-        struct edc_session *other = edc_session_new(cfg, "s-healthy", "Healthy");
+        struct edc_session *other = edc_session_new(cfg, edc_test_session_id("s-healthy"), "Healthy");
         struct edc_scheduler *osched = edc_scheduler_new(cfg);
         install_sessions(osched, other);
         add_task(other, "h-1-task", "a healthy task");

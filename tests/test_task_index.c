@@ -113,7 +113,7 @@ int main(void)
     struct edc_session *sa = edc_session_manager_get_active(sm);
     sa->state_loaded = true;
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -176,8 +176,8 @@ int main(void)
 
     TEST("forgetting a session makes its tasks unresolvable (no stale cache)");
     {
-        sds b_sid = sdsnew(sb->session_id);
-        CHECK(edc_state_store_forget(b_sid), "forget B");
+        sds b_sid = sdsnew(edc_id_str(sb->session_id));
+        CHECK(edc_state_store_forget(bt->session_id), "forget B");
 
         struct edc_config *c = make_config();
         struct edc_session_manager *m = open_sm(c);

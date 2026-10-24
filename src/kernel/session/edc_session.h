@@ -24,7 +24,10 @@ struct edc_task_group;
 
 struct edc_session
 {
-    char *session_id;
+    /* The sessions table key, assigned by the database (INTEGER PRIMARY KEY
+     * AUTOINCREMENT) -- like task_id. 0 = not assigned yet. It used to be the TEXT "s<N>"
+     * handed out by a counter whose high-water mark lived in <ws>/.session_seq. */
+    int64_t session_id;
     char *name; /* user-friendly display name */
     /* Unix seconds, the one representation used everywhere (DB columns, sessions.json and
      * in memory). 0 = unknown. These used to be ISO strings, which meant save/load
@@ -86,14 +89,32 @@ struct edc_session
 /* ── Lifetime ──────────────────────────────────────────────── */
 
 /** Create a session with a specific id and display name. */
-extern struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name);
+extern struct edc_session *edc_session_new(struct edc_config *config, int64_t session_id, const char *name);
 
 /** Create a session bound to a working directory. |workdir| is resolved with
  *  realpath() and must name an existing directory; NULL/empty keeps the
  *  default (the launch directory). If |workdir| is given but unusable, creation
  *  FAILS (returns NULL) rather than silently binding the default. */
-extern struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id,
+extern struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id,
                                                         const char *name, const char *workdir);
+
+/* The session's directory name, WITHOUT the workspace prefix: "s<id>".
+ *
+ * Deliberately historical: the directories on disk are s7, s13, s15..., each holding a
+ * chat.jsonl with real transcripts the TUI reads and appends. The id is a number now, but
+ * renaming those directories would be a data migration in exchange for a cosmetic change,
+ * so the prefix lives here and nowhere else. Caller frees with sdsfree. */
+extern sds edc_session_dir_name(int64_t session_id);
+
+/* The TEXT form of a session id: "s<id>".
+ *
+ * This is the spelling everything outside the database uses: the directory name, the UI's
+ * label for a session, the label in a snapshot event, and what a user types. edc_id_str()
+ * is NOT this -- it renders task/group ids, which are bare numbers.
+ *
+ * Borrowed pointer into a small rotating buffer: intended for a printf argument or a
+ * comparison, not for storing. Use edc_session_dir_name() when you need to keep it. */
+extern const char *edc_session_id_str(int64_t session_id);
 
 /** The session's bound working directory as an absolute realpath, or NULL when
  *  the session is unbound (callers then fall back to the launch directory,

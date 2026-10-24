@@ -286,7 +286,7 @@ sds edc_toolbox_spill_output(struct edc_toolbox *tb, const char *tool_name, cons
     if (!tb || !tb->conf || !tb->conf->workspace || !content)
         return NULL;
 
-    sds dir = edc_path_join(tb->conf->workspace, session_id && *session_id ? session_id : "no-session",
+    sds dir = edc_path_join(tb->conf->workspace, session_id && *session_id,
                             "tool-output", NULL);
     EdcError *error = NULL;
     bool made = edc_dir_create_with_parents(dir, 0755, &error);

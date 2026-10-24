@@ -59,7 +59,17 @@ struct edc_scheduler;
  *     INSERT allocates now, in one transaction with the group_id fill-in, so the counter
  *     and its file are gone. group_id follows task_id because a group's id IS its leader's
  *     task id. */
-#define EDC_DB_VERSION 5
+/* v6: session_id is an INTEGER PRIMARY KEY AUTOINCREMENT, assigned by the INSERT -- the
+ *     same change v5 made for task_id, for the same reason. The counter and
+ *     <ws>/.session_seq are gone; AUTOINCREMENT guarantees an id is never reused, which is
+ *     what stops a new session from landing on a removed one's directory and replaying its
+ *     chat.jsonl. Every table that references a session (groups, group_fold_files, tasks,
+ *     messages, memo_entries, memo_events) follows.
+ *
+ *     The on-disk DIRECTORY still says "s<id>" (edc_session_dir_name): those directories
+ *     hold live chat.jsonl transcripts, and renaming them would be a data migration for a
+ *     formatting decision. */
+#define EDC_DB_VERSION 6
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
@@ -142,7 +152,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
 
 /* Delete every row belonging to a session (`/session remove`). Cascades handle the
  * children. Returns false only on a SQL error. */
-bool edc_state_store_forget(const char *session_id);
+bool edc_state_store_forget(int64_t session_id);
 
 /* ── Message rows: the store IS where messages live ──────────────────────────
  *
@@ -168,7 +178,13 @@ bool edc_state_store_forget(const char *session_id);
  * metadata flush overwrites them with the real values.
  *
  * INSERT OR IGNORE throughout: an existing row is never modified by this call. */
-bool edc_state_ensure_turn(const char *session_id, int64_t group_id, int64_t task_id,
+/* A session id reserved for a turn built without a real session (tests, and any caller
+ * that only carries a task id): the FK chain still needs an ancestor row. Negative because
+ * AUTOINCREMENT only ever produces positive ids, so it can never collide with a real
+ * session. */
+#define EDC_SESSION_ID_PLACEHOLDER (-1)
+
+bool edc_state_ensure_turn(int64_t session_id, int64_t group_id, int64_t task_id,
                            int turn_ord);
 
 /* Append one message at |msg_ord|. |tokens| is the estimate computed once at append
@@ -199,7 +215,7 @@ bool edc_msg_turn_clear(int64_t task_id, int turn_ord);
  * Needed because the storage key is POSITIONAL and a turn can be built before its final
  * position is known (a fork snapshot, a test that builds turns directly). Production
  * binds the key at creation, so for it this is a no-op. The watermarks come along. */
-bool edc_msg_turn_move(int64_t old_task, int old_ord, const char *new_session,
+bool edc_msg_turn_move(int64_t old_task, int old_ord, int64_t new_session,
                        int64_t new_group, int64_t new_task, int new_ord);
 
 /* A range of messages loaded in one query: the query RESULT, not a cache. The caller
@@ -278,7 +294,7 @@ char *edc_state_store_session_for_task(int64_t task_id);
  */
 struct edc_session_row
 {
-    char *session_id;
+    int64_t session_id;
     char *name;
     uint64_t created_at;
     uint64_t last_active;
@@ -292,17 +308,17 @@ void edc_session_rows_free(struct edc_session_row *rows, int n);
 
 /* Make |session_id| the active one and clear every other. One statement pair inside one
  * transaction: the partial unique index would reject a half-applied switch. */
-bool edc_state_store_set_active_session(const char *session_id);
+bool edc_state_store_set_active_session(int64_t session_id);
 
 /* Which session was active in the previous process, or NULL. */
 char *edc_state_store_active_session(void);
 
 /* Insert a session row if it does not exist yet (creation path, before any state is
  * flushed for it). */
-bool edc_state_store_ensure_session(const char *session_id, const char *name, uint64_t created_at);
+bool edc_state_store_ensure_session(int64_t session_id, const char *name, uint64_t created_at);
 
 /* Delete a session row. Cascades take its groups/tasks/turns/messages. */
-bool edc_state_store_delete_session(const char *session_id);
+bool edc_state_store_delete_session(int64_t session_id);
 
 /* Create a task row and return the id the database assigned.
  *
@@ -316,9 +332,16 @@ bool edc_state_store_delete_session(const char *session_id);
  * nothing would ever repair it. The caller then builds the struct around the id.
  *
  * |group_id| 0 = "this task leads its own group": the group id becomes the task id. */
-bool edc_state_store_insert_task_new(const char *session_id, int64_t group_id, int64_t *out_task_id);
+bool edc_state_store_insert_task_new(int64_t session_id, int64_t group_id, int64_t *out_task_id);
 
-bool edc_state_store_has_session(const char *session_id);
+/* Create a session row and return the id the database assigned.
+ *
+ * Same shape as insert_task_new: sessions.session_id is an INTEGER PRIMARY KEY
+ * AUTOINCREMENT, so the INSERT allocates it and the database guarantees the id is never
+ * reused -- the invariant <ws>/.session_seq used to be responsible for. */
+bool edc_state_store_insert_session_new(const char *name, int64_t *out_session_id);
+
+bool edc_state_store_has_session(int64_t session_id);
 
 /* ── Introspection on the store's OWN connection ──────────────────────────────
  * Several of the settings the store relies on are PER-CONNECTION: `synchronous`,

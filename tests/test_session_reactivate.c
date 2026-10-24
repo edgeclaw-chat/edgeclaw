@@ -196,7 +196,7 @@ int main(void)
     /* Second session; create_ex makes it active, so put A back in front. */
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
     CHECK(sb != NULL, "second session created");
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -207,12 +207,12 @@ int main(void)
     CHECK(touch_group_history(ga) == 2, "A's group history readable before switching");
 
     /* Switch A -> B, run a task, then switch back B -> A. */
-    switch_to(cfg, sm, sched, channel_actor, sb->session_id);
+    switch_to(cfg, sm, sched, channel_actor, edc_id_str(sb->session_id));
     CHECK(edc_session_manager_get_active(sm) == sb, "B is the active session after switch");
     struct edc_task_group *gb = run_task(sched, sb, "task-b-1");
     CHECK(touch_group_history(gb) == 2, "B's group history readable");
 
-    switch_to(cfg, sm, sched, channel_actor, sa->session_id);
+    switch_to(cfg, sm, sched, channel_actor, edc_id_str(sa->session_id));
     CHECK(edc_session_manager_get_active(sm) == sa, "A is the active session again");
     CHECK(sa->state_loaded, "A still flagged loaded (in-memory authoritative)");
     CHECK(count_messages_containing(sa, "task-a-1") == 1, "A->messages survived re-activation");

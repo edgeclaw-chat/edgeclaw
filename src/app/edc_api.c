@@ -612,7 +612,7 @@ void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
     if (!state || !state->observer)
         return;
 
-    sds tag = sdsnew(session_id ? session_id : "");
+    sds tag = sdsnew(session_id);
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, channel, NULL, tag,
                                              (edc_actor_data_free_fn)sdsfree);
     edc_actor_send(state->observer, msg);

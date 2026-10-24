@@ -190,7 +190,7 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
         reply->task_id = sdscatprintf(sdsempty(), "%lld", (long long)task->task_id);
     /* And with its owning session, so a background session's output lands in
      * that session's transcript rather than the one on screen. */
-    reply->session_id = sdsnew(own->session_id);
+    reply->session_id = sdsnew(edc_id_str(own->session_id));
     /* Declare the fact: is this its session's active task (the frontend's display gate)? */
     reply->from_active_task = edc_session_get_active_task(own) == task;
     /* The sender explicitly declares the render preference; the renderer (CLI/TUI) no
@@ -220,7 +220,7 @@ void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task 
     {
         struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
         if (own && own->session_id)
-            reply->session_id = sdsnew(own->session_id);
+            reply->session_id = sdsnew(edc_id_str(own->session_id));
         reply->from_active_task = own && edc_session_get_active_task(own) == task;
     }
     if (header && *header)

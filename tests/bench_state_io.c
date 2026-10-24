@@ -26,6 +26,7 @@
  * this binary prints the coarse table and the stage split. */
 
 #include "cJSON.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_log.h"
@@ -95,7 +96,11 @@ int main(int argc, char **argv)
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(ws);
 
-    struct edc_session *s = edc_session_new(cfg, sid, sid);
+    /* |sid| is the session to measure, named the way the UI and the directories spell it:
+     * "s15". The database keys on the number, so the prefix is stripped here -- the bench
+     * must open the REAL session, not a fixture id. */
+    const char *sid_num_text = (sid[0] == 's' && sid[1] >= '0' && sid[1] <= '9') ? sid + 1 : sid;
+    struct edc_session *s = edc_session_new(cfg, (int64_t)strtoll(sid_num_text, NULL, 10), sid);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
 

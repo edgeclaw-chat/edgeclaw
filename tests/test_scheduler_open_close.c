@@ -165,7 +165,7 @@ static void test_new_is_in_memory_open_is_not(void)
      * Read through the manager here (same package): the scheduler no longer
      * exposes an active-session accessor for the frontend to borrow. */
     struct edc_session *active = edc_session_manager_get_active(sched->sessions);
-    CHECK(active != NULL && active->session_id && *active->session_id,
+    CHECK(active != NULL && active->session_id > 0,
           "an active session is resolved after open()");
 
     edc_scheduler_free(sched);
@@ -186,7 +186,7 @@ static void test_close_persists_then_is_idempotent(void)
     CHECK(edc_scheduler_open(sched), "open()");
 
     struct edc_session *active = edc_session_manager_get_active(sched->sessions);
-    const char *sid = active ? active->session_id : NULL;
+    const char *sid = active ? edc_id_str(active->session_id) : NULL;
     CHECK(sid != NULL && *sid, "active session id");
 
     CHECK(state_task_rows(ws) == 0, "nothing persisted before close()");
@@ -291,7 +291,7 @@ static void test_running_task_survives_a_kill(void)
     CHECK(edc_scheduler_open(sched), "open()");
     struct edc_session *sess = edc_session_manager_get_active(sched->sessions);
     CHECK(sess != NULL, "active session");
-    const char *sid = sess ? sess->session_id : "";
+    const char *sid = sess ? edc_id_str(sess->session_id) : "";
 
     CHECK(state_task_rows(ws) == 0, "nothing persisted before the first task");
 
@@ -373,6 +373,7 @@ static void test_borrowed_store_is_left_alone(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
 
     struct edc_session *fixture = calloc(1, sizeof(struct edc_session));
+    fixture->session_id = edc_test_session_id("open-close");
     fixture->config = cfg;
     struct edc_session_manager *sm = calloc(1, sizeof(struct edc_session_manager));
     sm->sessions = calloc(1, sizeof(struct edc_session *));

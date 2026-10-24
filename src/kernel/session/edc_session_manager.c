@@ -32,120 +32,11 @@
  * archives and orphaned directories.
  * Pure stdio, no uv file loop (session manager unit tests do not init file utils). */
 
-static sds edc_sm_session_seq_path(struct edc_session_manager *sm)
-{
-    if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
-        return NULL;
-    return edc_path_join(sm->config->workspace, ".session_seq", NULL);
-}
-
-static void edc_sm_persist_session_seq(struct edc_session_manager *sm)
-{
-    sds path = edc_sm_session_seq_path(sm);
-    if (!path)
-        return;
-
-    sds tmp = sdscatprintf(sdsempty(), "%s.tmp", path);
-    FILE *f = fopen(tmp, "w");
-    if (!f && errno == ENOENT && sm->config && sm->config->workspace)
-    {
-        /* On a fresh environment the workspace dir may not exist yet: create it and retry. */
-        mkdir(sm->config->workspace, 0755);
-        f = fopen(tmp, "w");
-    }
-    if (!f)
-    {
-        log_debug("session_seq: open %s for write failed: %s", tmp, strerror(errno));
-    }
-    else
-    {
-        if (fprintf(f, "%lld\n", sm->next_session_id) < 0)
-            log_debug("session_seq: write %s failed: %s", tmp, strerror(errno));
-        fclose(f);
-        EdcError *rerr = NULL;
-        if (!edc_file_rename_replace(tmp, path, &rerr))
-        {
-            log_warn("session_seq: %s", rerr ? rerr->message : "rename failed");
-            if (rerr)
-                edc_error_free(rerr);
-        }
-    }
-    sdsfree(tmp);
-    sdsfree(path);
-}
-
-static void edc_sm_load_session_seq(struct edc_session_manager *sm)
-{
-    sds path = edc_sm_session_seq_path(sm);
-    if (!path)
-        return;
-
-    FILE *f = fopen(path, "r");
-    sdsfree(path);
-    if (!f)
-        return; /* first run / missing file: keep the in-memory initial value */
-
-    long long v = 0;
-    if (fscanf(f, "%lld", &v) == 1 && v > sm->next_session_id)
-        sm->next_session_id = v;
-    fclose(f);
-}
-
-/* Observe a known number (an id in the index, or a leftover session dir name on
- * disk) into the high-water mark. Only the decimal tail of "s<N>" / "sess-<N>" is
- * recognized, matching the issuing format. */
-static void edc_sm_observe_session_id(struct edc_session_manager *sm, const char *id)
-{
-    if (!sm || !id || !*id)
-        return;
-
-    const char *num = NULL;
-    if (strncmp(id, "sess-", 5) == 0)
-        num = id + 5;
-    else if (id[0] == 's')
-        num = id + 1;
-    if (!num || num[0] < '0' || num[0] > '9')
-        return;
-
-    char *end = NULL;
-    long long n = strtoll(num, &end, 10);
-    if (end == num || (end && *end != '\0'))
-        return;
-
-    if (n >= sm->next_session_id)
-    {
-        sm->next_session_id = n + 1;
-        edc_sm_persist_session_seq(sm);
-    }
-}
-
-/* Also observe existing session dirs under workspace: /session remove only takes a
- * session out of the index and leaves the directory, so a max-number session deleted
- * before this change is "not in the index, directory still there". */
-static void edc_sm_observe_session_dirs(struct edc_session_manager *sm)
-{
-    if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
-        return;
-
-    DIR *d = opendir(sm->config->workspace);
-    if (!d)
-        return;
-
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL)
-        edc_sm_observe_session_id(sm, e->d_name);
-    closedir(d);
-}
-
-static sds edc_sm_gen_session_id(struct edc_session_manager *sm)
-{
-    long long id = sm->next_session_id > 0 ? sm->next_session_id : 1;
-    sm->next_session_id = id + 1;
-    /* Persist the high-water mark on allocation: even if the session is later
-     * /session remove'd, the same number is not issued again after a restart. */
-    edc_sm_persist_session_seq(sm);
-    return sdscatprintf(sdsempty(), "s%lld", id);
-}
+/* The session id is allocated by the database now (sessions.session_id is an INTEGER
+ * PRIMARY KEY AUTOINCREMENT), so there is no counter, no <ws>/.session_seq, and no
+ * "observe the directories to recover the high-water mark" pass. The invariant that file
+ * existed for -- an id is NEVER reused, because a new session would otherwise land on a
+ * removed session's directory and replay its chat.jsonl -- is what AUTOINCREMENT provides. */
 
 static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
 {
@@ -180,7 +71,7 @@ static void edc_sm_persist_active(struct edc_session_manager *sm)
     if (!sm || sm->active_index < 0 || sm->active_index >= sm->session_count)
         return;
     struct edc_session *s = sm->sessions[sm->active_index];
-    if (!s || !s->session_id)
+    if (!s || s->session_id <= 0)
         return;
     if (!edc_state_store_open(sm->config))
         return; /* no store (a hand-built test manager): memory only, as before */
@@ -231,9 +122,10 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     int active_idx = -1;
     for (int i = 0; i < n; i++)
     {
+        char idbuf[32];
+        snprintf(idbuf, sizeof(idbuf), "s%lld", (long long)rows[i].session_id);
         struct edc_session *s = edc_session_new(sm->config, rows[i].session_id,
-                                                rows[i].name && *rows[i].name ? rows[i].name
-                                                                              : rows[i].session_id);
+                                                rows[i].name && *rows[i].name ? rows[i].name : idbuf);
         if (!s)
         {
             edc_session_rows_free(rows, n);
@@ -254,10 +146,6 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     sm->active_index = active_idx;
     edc_sm_persist_active(sm);
 
-    /* Every id this run may allocate must exceed every id already used. */
-    for (int i = 0; i < n; i++)
-        edc_sm_observe_session_id(sm, sm->sessions[i]->session_id);
-
     return true;
 }
 
@@ -269,14 +157,9 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     sm->config = config;
     sm->active_index = -1;
     sm->sessions_dir = sdsnew(config->workspace);
-    sm->next_session_id = 1;
 
-    /* Restore the previous run's high-water mark, load the index (which also feeds
-     * the numbers it lists), then observe leftover session dirs -- the order ensures
-     * next_session_id exceeds every used number before any create. */
-    edc_sm_load_session_seq(sm);
-    edc_sm_observe_session_dirs(sm);
-
+    /* No high-water mark to restore and no directory scan to recover it: the database
+     * allocates session ids and never reuses one. */
     if (!edc_session_manager_load(sm))
     {
         edc_session_manager_free(sm);
@@ -318,6 +201,27 @@ struct edc_session *edc_session_manager_get_active(struct edc_session_manager *s
     return sm->sessions[sm->active_index];
 }
 
+/* Does the TEXT the user typed name the session with this id?
+ *
+ * The id is a number now, while a command line carries text. Both spellings are accepted on
+ * purpose: "13" (the id) and "s13" (what the directories are still called, and what has been
+ * typed for months). Anything else is a name, handled by the caller. */
+static bool edc_sm_id_matches(int64_t session_id, const char *typed)
+{
+    if (!typed || !*typed || session_id <= 0)
+        return false;
+    const char *num = typed;
+    if (typed[0] == 's' && typed[1] >= '0' && typed[1] <= '9')
+        num = typed + 1;
+    else if (strncmp(typed, "sess-", 5) == 0 && typed[5] >= '0' && typed[5] <= '9')
+        num = typed + 5;
+    if (num[0] < '0' || num[0] > '9')
+        return false;
+    char *end = NULL;
+    const long long v = strtoll(num, &end, 10);
+    return end && *end == '\0' && v == session_id;
+}
+
 struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, const char *name_or_id)
 {
     if (!sm || !name_or_id)
@@ -325,7 +229,7 @@ struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, con
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        if (strcmp(s->session_id, name_or_id) == 0)
+        if (edc_sm_id_matches(s->session_id, name_or_id))
             return s;
         if (s->name && strcmp(s->name, name_or_id) == 0)
             return s;
@@ -340,7 +244,7 @@ int edc_session_manager_index_of(struct edc_session_manager *sm, const char *nam
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        if (strcmp(s->session_id, name_or_id) == 0)
+        if (edc_sm_id_matches(s->session_id, name_or_id))
             return i;
         if (s->name && strcmp(s->name, name_or_id) == 0)
             return i;
@@ -460,11 +364,52 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
     if (!sm)
         return NULL;
 
-    sds id = edc_sm_gen_session_id(sm);
     sds sname = (name && strlen(name) > 0) ? sdsnew(name) : edc_sm_gen_session_name(sm);
 
+    /* The row comes first: that is what allocates the id. */
+    /* Allocate an id, then check that its directory is FREE.
+     *
+     * /session remove takes the session out of the index and the database but leaves its
+     * directory behind (it holds chat.jsonl, which the TUI reads). A fresh id landing on
+     * such a directory would hand a new session the removed one's transcript. The old
+     * design avoided this with a <ws>/.session_seq high-water mark plus a directory scan;
+     * the database allocates now, so the check happens here instead: take an id, and if
+     * "s<id>" already exists, drop the row and take the next one. AUTOINCREMENT never
+     * reuses a number, so the loop always terminates at a free directory.
+     */
+    int64_t id = 0;
+    bool allocated = false;
+    for (int attempt = 0; attempt < 1024 && !allocated; attempt++)
+    {
+        if (!edc_state_store_insert_session_new(sname, &id))
+        {
+            log_error("session create: the store could not allocate a session id");
+            sdsfree(sname);
+            return NULL;
+        }
+        sds dir = edc_session_dir_name(id);
+        sds path = edc_path_join(sm->config->workspace, dir, NULL);
+        const bool taken = edc_file_exists(path);
+        sdsfree(path);
+        sdsfree(dir);
+        if (!taken)
+        {
+            allocated = true;
+            break;
+        }
+        /* Taken by a removed session's leftovers: give this id back and ask for the next. */
+        edc_state_store_delete_session(id);
+        log_info("session create: id %lld is taken by an existing directory, trying the next",
+                 (long long)id);
+    }
+    if (!allocated)
+    {
+        log_error("session create: could not find a free session id");
+        sdsfree(sname);
+        return NULL;
+    }
+
     struct edc_session *s = edc_session_new_with_workdir(sm->config, id, sname, workdir);
-    sdsfree(id);
     sdsfree(sname);
 
     if (!s)
@@ -484,9 +429,9 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
     s->last_active = (uint64_t)edc_datetime_now();
 
     /* One row, not a rewritten list: creation is a database write now. */
-    edc_state_store_ensure_session(s->session_id, s->name ? s->name : s->session_id, s->created_at);
+    edc_state_store_ensure_session(s->session_id, s->name, s->created_at);
     edc_sm_persist_active(sm);
-    log_info("created session: id=%s name=%s", s->session_id, s->name);
+    log_info("created session: id=%s name=%s", edc_id_str(s->session_id), s->name);
     return s;
 }
 
@@ -525,7 +470,7 @@ bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name
     new_sess->last_active = (uint64_t)edc_datetime_now();
 
     edc_sm_persist_active(sm);
-    log_info("switched to session: id=%s name=%s", new_sess->session_id, new_sess->name);
+    log_info("switched to session: id=%s name=%s", edc_id_str(new_sess->session_id), new_sess->name);
     return true;
 }
 
@@ -575,7 +520,7 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
     if (sm->active_index >= sm->session_count)
         sm->active_index = sm->session_count - 1;
 
-    log_info("stopped session: id=%s name=%s", to_stop->session_id, to_stop->name);
+    log_info("stopped session: id=%s name=%s", edc_id_str(to_stop->session_id), to_stop->name);
     edc_session_free(to_stop);
 
     /* Update active session's last_active */
@@ -605,7 +550,7 @@ bool edc_session_manager_rename(struct edc_session_manager *sm, const char *name
     s->name = sdsnew(new_name);
 
     edc_state_store_ensure_session(s->session_id, s->name, s->created_at);
-    log_info("renamed session %s to %s", s->session_id, new_name);
+    log_info("renamed session %s to %s", edc_id_str(s->session_id), new_name);
     return true;
 }
 
@@ -622,7 +567,7 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
         size_t msg_count = edc_session_get_message_count(s);
         bool active = (i == sm->active_index);
 
-        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", s->session_id, s->name ? s->name : "(unnamed)",
+        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", edc_id_str(s->session_id), s->name ? s->name : "(unnamed)",
                               active ? " · **current**" : "");
         {
             /* Formatted here, at the presentation edge: the value itself is an integer. */

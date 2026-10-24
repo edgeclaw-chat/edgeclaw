@@ -60,6 +60,7 @@ static struct edc_config *make_config(void)
 static struct edc_session *make_session(struct edc_config *config)
 {
     struct edc_session *s = calloc(1, sizeof(struct edc_session));
+    s->session_id = edc_test_session_id("local-shell");
     s->config = config;
     return s;
 }
@@ -145,7 +146,7 @@ static void pump_message(struct edc_scheduler *sched)
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_session *owner = sched->ctx;
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, NULL, NULL,
-                                             owner && owner->session_id ? sdsnew(owner->session_id) : NULL,
+                                             owner && owner->session_id ? sdsnew(edc_id_str(owner->session_id)) : NULL,
                                              (edc_actor_data_free_fn)sdsfree);
     actor->handler(actor, msg);
 }

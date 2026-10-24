@@ -500,12 +500,12 @@ void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_lif
 
 /* ── Lifetime ──────────────────────────────────────────────── */
 
-struct edc_task *edc_task_new(int64_t task_id, const char *session_id, int64_t group_id, const char *desc,
+struct edc_task *edc_task_new(int64_t task_id, int64_t session_id, int64_t group_id, const char *desc,
                               edc_channel_type channel_type)
 {
     struct edc_task *task = g_new0(struct edc_task, 1);
     task->task_id = task_id;
-    task->session_id = strdup(session_id);
+    task->session_id = session_id;
     task->group_id = group_id;
     task->description = strdup(desc ? desc : "");
     /* A new task is "parked with input, waiting to be dispatched" -- there is no
@@ -671,7 +671,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, int64_t task_id, const c
 
 /* ── fork snapshot ────────────────────────────────────────── */
 
-struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, const char *dst_session_id,
+struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, int64_t dst_session_id,
                                          int64_t dst_group_id, int64_t dst_task_id,
                                          int dst_turn_ord)
 {
@@ -802,7 +802,6 @@ void edc_task_free(struct edc_task *task)
      * only mattered to a still-live host. */
     edc_task_drain_moves(task, NULL, NULL);
 
-    free(task->session_id);
     free(task->description);
 
     if (task->raw_input)

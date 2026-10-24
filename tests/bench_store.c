@@ -76,7 +76,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    struct edc_session *s = edc_session_new(cfg, "bench", "Bench");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("bench"), "Bench");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
 
@@ -127,7 +127,7 @@ int main(int argc, char **argv)
     }
 
     {
-        struct edc_session *r = edc_session_new(cfg, "bench", "Bench");
+        struct edc_session *r = edc_session_new(cfg, edc_test_session_id("bench"), "Bench");
         struct edc_scheduler *rsched = edc_scheduler_new(cfg);
         install_sessions(rsched, r);
         const double t0 = now_ms();

@@ -183,7 +183,7 @@ int main(void)
     /* 窗口宽到不可能自动折: 这个文件只验手动路径 (due 那条判据由 test_group_fold 覆盖)。 */
     cfg->context_window = 1024 * 1024;
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
-    struct edc_session *sess = edc_session_new(cfg, "sess-foldcmd", "FoldCmd");
+    struct edc_session *sess = edc_session_new(cfg, edc_test_session_id("sess-foldcmd"), "FoldCmd");
     install_resolver(sched, sess);
     sched->send_llm = mock_send_llm;
 

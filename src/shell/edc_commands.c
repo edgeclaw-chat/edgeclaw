@@ -614,7 +614,8 @@ static void cmd_notify_if_active_session_changed(struct edc_session_manager *sm,
     struct edc_session *now = edc_session_manager_get_active(sm);
     if (now == before)
         return;
-    edc_channel_notify_active_session(channel_actor, now ? now->session_id : NULL);
+    edc_channel_notify_active_session(channel_actor,
+                                      now ? edc_id_str(now->session_id) : NULL);
 }
 
 static bool edc_commands_handle_session_new(struct edc_session_manager *sm, struct edc_scheduler *sched,
@@ -655,7 +656,7 @@ static bool edc_commands_handle_session_new(struct edc_session_manager *sm, stru
     /* A fresh session: memory is authoritative, marked loaded so a later switch cannot overwrite it from disk. */
     sess->state_loaded = true;
 
-    sds reply = sdscatprintf(sdsempty(), "**Session created** — `[%s]` %s  ·  workdir: `%s`", sess->session_id,
+    sds reply = sdscatprintf(sdsempty(), "**Session created** — `[%s]` %s  ·  workdir: `%s`", edc_id_str(sess->session_id),
                              edc_session_get_name(sess), bound ? bound : "default");
     edc_commands_reply(to, reply);
     sdsfree(reply);
@@ -686,7 +687,7 @@ static bool edc_commands_handle_session_switch(struct edc_session_manager *sm, s
     if (old == new_sess)
     {
         sds reply =
-            sdscatprintf(sdsempty(), "Already on `[%s]` %s", new_sess->session_id, edc_session_get_name(new_sess));
+            sdscatprintf(sdsempty(), "Already on `[%s]` %s", edc_id_str(new_sess->session_id), edc_session_get_name(new_sess));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return true;
@@ -711,7 +712,7 @@ static bool edc_commands_handle_session_switch(struct edc_session_manager *sm, s
     if (!new_sess->state_loaded)
         edc_session_store_load_session(sm, sched, new_sess);
     sds reply =
-        sdscatprintf(sdsempty(), "**Switched** — `[%s]` %s", new_sess->session_id, edc_session_get_name(new_sess));
+        sdscatprintf(sdsempty(), "**Switched** — `[%s]` %s", edc_id_str(new_sess->session_id), edc_session_get_name(new_sess));
     edc_commands_reply(to, reply);
     sdsfree(reply);
     cmd_notify_if_active_session_changed(sm, to.channel_actor, old);
@@ -752,7 +753,7 @@ static bool edc_commands_handle_session_remove(struct edc_session_manager *sm, s
 
     /* remove() may adjust active_index; note who was displayed first, then notify the frontend if it changed. */
     struct edc_session *active_before = edc_session_manager_get_active(sm);
-    sds stopped_id = sdsnew(target->session_id);
+    sds stopped_id = sdsnew(edc_id_str(target->session_id));
     sds stopped_name = sdsnew(edc_session_get_name(target));
 
     /* /session remove = the user wants this tab gone: cancel every non-terminal
@@ -1389,7 +1390,7 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
     edc_scheduler_send_signal_to_task_ptr(sched, t, TASK_SIGTERM);
     sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — stop signal sent.", edc_id_str(t->task_id));
     if (t->group && t->group->session && t->group->session != sess)
-        reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
+        reply = sdscatprintf(reply, " (session `[%s]`)", edc_id_str(t->group->session->session_id));
     edc_commands_reply(to, reply);
     sdsfree(reply);
 }
@@ -1559,7 +1560,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
                                  "(`/task resume <id>`); this task runs once its dependency produces.",
                                  edc_id_str(t->task_id), sdslen(waiting) ? waiting : "an unfinished dependency");
         if (t->group && t->group->session && t->group->session != sess)
-            reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
+            reply = sdscatprintf(reply, " (session `[%s]`)", edc_id_str(t->group->session->session_id));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         sdsfree(waiting);
@@ -1569,7 +1570,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     /* What it was, now that it is being driven again (the move to ALIVE cleared `end`). */
     sds reply = edc_commands_resume_text(t, was_end, was_fail);
     if (t->group && t->group->session && t->group->session != sess)
-        reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
+        reply = sdscatprintf(reply, " (session `[%s]`)", edc_id_str(t->group->session->session_id));
     edc_commands_reply(to, reply);
     sdsfree(reply);
 }
@@ -1586,7 +1587,7 @@ static bool edc_commands_task_in_active_session(struct edc_session_manager *sm, 
         return true;
     sds reply =
         sdscatprintf(sdsempty(), "Task `%s` belongs to session `[%s]` — switch to it first (`/session switch %s`).",
-                     edc_id_str(t->task_id), owner->session_id, owner->session_id);
+                     edc_id_str(t->task_id), edc_id_str(owner->session_id), edc_id_str(owner->session_id));
     edc_commands_reply(to, reply);
     sdsfree(reply);
     return false;
@@ -1891,7 +1892,7 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
     {
         struct edc_session *active = edc_session_manager_get_active(sm);
         if (owner && owner != active)
-            out = sdscatprintf(out, "- **session**: `[%s]`\n", owner->session_id);
+            out = sdscatprintf(out, "- **session**: `[%s]`\n", edc_id_str(owner->session_id));
     }
 
     /* Unresolved cross-session dependency: the task is "stuck" and resume is refused by the gate. */

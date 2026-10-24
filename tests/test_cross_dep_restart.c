@@ -123,8 +123,11 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     struct edc_session *sa = edc_session_manager_get_active(sm);
     sa->state_loaded = true;
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
-    sds b_sid = sdsnew(sb->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
+    /* Kept by VALUE: the manager (and with it `sb`) is freed below, and this id is used
+     * after that. Reading it through the freed session was a use-after-free that happened
+     * to work while ids were strings. */
+    const int64_t b_id = sb->session_id;
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -160,11 +163,10 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
         struct edc_config *forget_cfg = g_new0(struct edc_config, 1);
         forget_cfg->workspace = sdsnew(ws);
         if (edc_state_store_open(forget_cfg))
-            edc_state_store_forget(b_sid);
+            edc_state_store_forget(b_id);
         sdsfree(forget_cfg->workspace);
         free(forget_cfg);
     }
-    sdsfree(b_sid);
 }
 
 static void scenario_restore(const char *ws)
@@ -248,7 +250,7 @@ static void scenario_multihop(const char *ws)
     sa->state_loaded = true;
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
     struct edc_session *sc = edc_session_manager_create_ex(sm, "C", NULL);
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -297,9 +299,25 @@ static void scenario_multihop(const char *ws)
     sdsfree(ct_id);
 }
 
+/* These scenarios each need their own workspace, and they are named paths rather than
+ * mkdtemp ones -- so a previous run (possibly written by a build with a different schema
+ * version) is still sitting there. Wipe before use: a stale database makes the run fail on
+ * a version mismatch that has nothing to do with what is being tested. */
+static void wipe(const char *ws)
+{
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "rm -rf '%s'; mkdir -p '%s'", ws, ws);
+    if (system(cmd) != 0)
+        fprintf(stderr, "warning: could not reset %s\n", ws);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
+    wipe("/tmp/test_cross_dep_restart_a");
+    wipe("/tmp/test_cross_dep_restart_b");
+    wipe("/tmp/test_cross_dep_restart_c");
     scenario_restore("/tmp/test_cross_dep_restart_a");
     scenario_unresolvable("/tmp/test_cross_dep_restart_b");
     scenario_multihop("/tmp/test_cross_dep_restart_c");

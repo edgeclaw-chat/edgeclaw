@@ -94,11 +94,11 @@ static void test_exit_save(void)
     struct edc_config *cfg = make_config();
 
     /* Simulate a session with tasks and turns */
-    struct edc_session *session = edc_session_new(cfg, "sess-exit", "ExitTest");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-exit"), "ExitTest");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *t1 = edc_task_new(edc_test_id("task-exit1"), "sess-exit", edc_test_id("task-exit1"),
+    struct edc_task *t1 = edc_task_new(edc_test_id("task-exit1"), edc_test_session_id("sess-exit"), edc_test_id("task-exit1"),
                                         "exit task 1", edc_channel_adapter);
     t1->is_group_leader = 1;
     edc_task_mark_ready(t1);
@@ -155,11 +155,11 @@ static void test_startup_load(void)
 
     /* Step 1: Create and save state */
     {
-        struct edc_session *s1 = edc_session_new(cfg, "sess-start", "StartTest");
+        struct edc_session *s1 = edc_session_new(cfg, edc_test_session_id("sess-start"), "StartTest");
         struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
         install_resolver(sc1, s1);
 
-        struct edc_task *t1 = edc_task_new(edc_test_id("task-start1"), "sess-start", edc_test_id("task-start1"),
+        struct edc_task *t1 = edc_task_new(edc_test_id("task-start1"), edc_test_session_id("sess-start"), edc_test_id("task-start1"),
                                             "startup task", edc_channel_adapter);
         t1->is_group_leader = 1;
         edc_task_mark_ready(t1);
@@ -189,7 +189,7 @@ static void test_startup_load(void)
 
     /* Step 2: Simulate restart — create new session and load */
     {
-        struct edc_session *s2 = edc_session_new(cfg, "sess-start", "StartTest");
+        struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-start"), "StartTest");
         struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
         install_resolver(sc2, s2);
 
@@ -236,11 +236,11 @@ static void test_switch_save(void)
     struct edc_config *cfg = make_config();
 
     /* Create session A with state */
-    struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
+    struct edc_session *sA = edc_session_new(cfg, edc_test_session_id("sess-A"), "SessionA");
     struct edc_scheduler *scA = edc_scheduler_new(cfg);
     install_resolver(scA, sA);
 
-    struct edc_task *tA = edc_task_new(edc_test_id("task-A"), "sess-A", edc_test_id("task-A"),
+    struct edc_task *tA = edc_task_new(edc_test_id("task-A"), edc_test_session_id("sess-A"), edc_test_id("task-A"),
                                         "task in A", edc_channel_adapter);
     tA->is_group_leader = 1;
     edc_task_mark_ready(tA);
@@ -257,11 +257,11 @@ static void test_switch_save(void)
     edc_session_save_state(sA, scA);
 
     /* Create session B (simulating switch) */
-    struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
+    struct edc_session *sB = edc_session_new(cfg, edc_test_session_id("sess-B"), "SessionB");
     struct edc_scheduler *scB = edc_scheduler_new(cfg);
     install_resolver(scB, sB);
 
-    struct edc_task *tB = edc_task_new(edc_test_id("task-B"), "sess-B", edc_test_id("task-B"),
+    struct edc_task *tB = edc_task_new(edc_test_id("task-B"), edc_test_session_id("sess-B"), edc_test_id("task-B"),
                                         "task in B", edc_channel_adapter);
     tB->is_group_leader = 1;
     edc_task_mark_ready(tB);
@@ -275,7 +275,7 @@ static void test_switch_save(void)
     edc_session_save_state(sB, scB);
 
     /* Verify session A's file still has correct data */
-    struct edc_session *sA2 = edc_session_new(cfg, "sess-A", "SessionA");
+    struct edc_session *sA2 = edc_session_new(cfg, edc_test_session_id("sess-A"), "SessionA");
     struct edc_scheduler *scA2 = edc_scheduler_new(cfg);
     install_resolver(scA2, sA2);
     CHECK(edc_session_load_state(sA2, scA2), "session A state loads correctly");
@@ -300,7 +300,7 @@ static void test_switch_save(void)
         edc_task_free(fresh);
 
     /* Verify session B's file has correct data */
-    struct edc_session *sB2 = edc_session_new(cfg, "sess-B", "SessionB");
+    struct edc_session *sB2 = edc_session_new(cfg, edc_test_session_id("sess-B"), "SessionB");
     struct edc_scheduler *scB2 = edc_scheduler_new(cfg);
     install_resolver(scB2, sB2);
     CHECK(edc_session_load_state(sB2, scB2), "session B state loads correctly");
@@ -332,10 +332,10 @@ static void test_switch_keeps_background_running(void)
     struct edc_config *cfg = make_config();
 
     /* Session A with a running task + a foreground group. */
-    struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
+    struct edc_session *sA = edc_session_new(cfg, edc_test_session_id("sess-A"), "SessionA");
     struct edc_scheduler *sc = edc_scheduler_new(cfg);
     install_resolver(sc, sA);
-    struct edc_task *tA = edc_task_new(edc_test_id("task-A"), "sess-A", edc_test_id("task-A"), "task in A", edc_channel_adapter);
+    struct edc_task *tA = edc_task_new(edc_test_id("task-A"), edc_test_session_id("sess-A"), edc_test_id("task-A"), "task in A", edc_channel_adapter);
     edc_task_await_exec(tA);
     struct edc_task_group *gA = edc_scheduler_create_group(sc, sA, tA);
     edc_scheduler_set_foreground(sA, gA);
@@ -344,7 +344,7 @@ static void test_switch_keeps_background_running(void)
     CHECK(gA->session == sA, "group records its owning session");
     CHECK(sA->foreground_group == gA, "set_foreground stores on the owning session");
 
-    struct edc_session *sB = edc_session_new(cfg, "sess-B", "SessionB");
+    struct edc_session *sB = edc_session_new(cfg, edc_test_session_id("sess-B"), "SessionB");
     /* P3 ③: 前台组是 **session 的属性** —— 这里直接问各自的 session, 不再经过
      * "scheduler 当前绑定谁" (那份副本已经不存在了)。 */
     CHECK(edc_task_awaits_exec(tA), "outgoing session's running task is NOT cancelled");
@@ -377,7 +377,7 @@ static void test_repeated_cycle(void)
 
     for (int cycle = 0; cycle < 3; cycle++) {
         /* Create session, add state, save, free */
-        struct edc_session *s = edc_session_new(cfg, "sess-cycle", "Cycle");
+        struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-cycle"), "Cycle");
         struct edc_scheduler *sc = edc_scheduler_new(cfg);
         install_resolver(sc, s);
 
@@ -391,7 +391,7 @@ static void test_repeated_cycle(void)
         snprintf(tid, sizeof(tid), "task-cycle%d", cycle);
         snprintf(tdesc, sizeof(tdesc), "cycle %d task", cycle);
 
-        struct edc_task *t = edc_task_new(edc_test_id(tid), "sess-cycle",
+        struct edc_task *t = edc_task_new(edc_test_id(tid), edc_test_session_id("sess-cycle"),
                                            edc_test_id(cycle == 0 ? tid : "task-cycle0"),
                                            tdesc, edc_channel_adapter);
         if (cycle == 0) t->is_group_leader = 1;
@@ -422,7 +422,7 @@ static void test_repeated_cycle(void)
     }
 
     /* Final load: should have 3 tasks */
-    struct edc_session *sf = edc_session_new(cfg, "sess-cycle", "Cycle");
+    struct edc_session *sf = edc_session_new(cfg, edc_test_session_id("sess-cycle"), "Cycle");
     struct edc_scheduler *scf = edc_scheduler_new(cfg);
     install_resolver(scf, sf);
     CHECK(edc_session_load_state(sf, scf), "final load succeeds");
@@ -449,7 +449,7 @@ static void test_save_empty(void)
     clean_workspace();
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-empty2", "Empty2");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-empty2"), "Empty2");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -457,7 +457,7 @@ static void test_save_empty(void)
     CHECK(edc_session_save_state(session, sched), "save_state on empty session succeeds");
 
     /* Load back */
-    struct edc_session *s2 = edc_session_new(cfg, "sess-empty2", "Empty2");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-empty2"), "Empty2");
     struct edc_scheduler *sc2 = edc_scheduler_new(cfg);
     install_resolver(sc2, s2);
     CHECK(edc_session_load_state(s2, sc2), "load_state on empty session succeeds");

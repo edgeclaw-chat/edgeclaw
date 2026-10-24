@@ -347,7 +347,7 @@ bool edc_session_unload(struct edc_session_manager *sm, struct edc_scheduler *sc
     if (session_referenced_elsewhere(sm, session))
     {
         log_info("session_unload: %s stays resident (another session depends on its tasks)",
-                 session->session_id);
+                 edc_id_str(session->session_id));
         return false;
     }
 
@@ -364,7 +364,7 @@ bool edc_session_unload(struct edc_session_manager *sm, struct edc_scheduler *sc
      * here edc_session_store_load_session() brings it back on demand. */
     session->state_loaded = false;
 
-    log_info("session_unload: %s released (its state is in the database)", session->session_id);
+    log_info("session_unload: %s released (its state is in the database)", edc_id_str(session->session_id));
     return true;
 }
 

@@ -469,7 +469,7 @@ int main(void)
 
     TEST("resume reply names what the task was, and repeats the last error when it had failed");
     {
-        struct edc_task *r = edc_task_new(edc_test_id("rr-1"), "sess-reply", edc_test_id("rr-1"), "r", edc_channel_adapter);
+        struct edc_task *r = edc_task_new(edc_test_id("rr-1"), edc_test_session_id("sess-reply"), edc_test_id("rr-1"), "r", edc_channel_adapter);
         edc_task_await_exec(r);
 
         sds txt = edc_commands_resume_text(r, EDC_END_INTERRUPTED, EDC_FAIL_NONE);

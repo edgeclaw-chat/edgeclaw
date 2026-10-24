@@ -179,7 +179,7 @@ static int stub_redispatch(struct edc_scheduler *sched, struct edc_task *task, v
 static void test_ledger_ops(void)
 {
     TEST("ledger: add/find/mark-executing/remove/clear (call_id 精准置位)");
-    struct edc_task *t = edc_task_new(edc_test_id("t1"), "s", edc_test_id("g"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("t1"), edc_test_session_id("s"), edc_test_id("g"), "task", edc_channel_adapter);
 
     edc_task_tool_call_add(t, "call-a", "shell", NULL);
     edc_task_tool_call_add(t, "call-b", "read_file", NULL);
@@ -217,11 +217,11 @@ static void test_ledger_serialize(void)
 {
     TEST("ledger persists (status+args); TOOL_CALLING -> SUSPENDED on load");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-l", "L");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-l"), "L");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
 
-    struct edc_task *t = edc_task_new(edc_test_id("lt"), "sess-l", edc_test_id("lt"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("lt"), edc_test_session_id("sess-l"), edc_test_id("lt"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
 
@@ -238,7 +238,7 @@ static void test_ledger_serialize(void)
     cJSON *json = edc_state_serialize(s, sched);
     CHECK(json != NULL, "serialize ok");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-l", "L");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-l"), "L");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, s2);
     CHECK(edc_state_deserialize(json, s2, sched2), "deserialize ok");
@@ -278,11 +278,11 @@ static void test_resume_waiting_input(void)
 {
     TEST("resume: no deps/tools/turn -> WAITING_INPUT");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r1", "R1");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r1"), "R1");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
 
-    struct edc_task *t = edc_task_new(edc_test_id("r1"), "sess-r1", edc_test_id("r1"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r1"), edc_test_session_id("sess-r1"), edc_test_id("r1"), "task", edc_channel_adapter);
     force_interrupted(t);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
@@ -307,12 +307,12 @@ static void test_resume_waiting_deps(void)
 {
     TEST("resume: unsatisfied dep -> WAITING_DEPS");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r2", "R2");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r2"), "R2");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
 
-    struct edc_task *t = edc_task_new(edc_test_id("r2"), "sess-r2", edc_test_id("r2"), "dependent", edc_channel_adapter);
-    struct edc_task *src = edc_task_new(edc_test_id("r2src"), "sess-r2", edc_test_id("r2"), "source", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r2"), edc_test_session_id("sess-r2"), edc_test_id("r2"), "dependent", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("r2src"), edc_test_session_id("sess-r2"), edc_test_id("r2"), "source", edc_channel_adapter);
     edc_task_add_dependency(t, src, TASK_DEP_JOIN);
     CHECK(edc_task_awaits_deps(t), "waits on dep");
     force_interrupted(t);
@@ -338,12 +338,12 @@ static void test_resume_executing_synthesizes(void)
 {
     TEST("resume: EXECUTING tool -> synthesized interrupted response + resume LLM");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r3", "R3");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r3"), "R3");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task *t = edc_task_new(edc_test_id("r3"), "sess-r3", edc_test_id("r3"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r3"), edc_test_session_id("sess-r3"), edc_test_id("r3"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
@@ -378,12 +378,12 @@ static void test_resume_pending_redispatches(void)
 {
     TEST("resume: PENDING tool -> TOOL_CALLING + redispatch");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r4", "R4");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r4"), "R4");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->redispatch_tools = stub_redispatch;
 
-    struct edc_task *t = edc_task_new(edc_test_id("r4"), "sess-r4", edc_test_id("r4"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r4"), edc_test_session_id("sess-r4"), edc_test_id("r4"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
@@ -425,12 +425,12 @@ static void test_resume_migrated_task_with_pending_tool(void)
 {
     TEST("resume: migrated task (step=READY) with a PENDING tool still redispatches");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-m1", "M1");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-m1"), "M1");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->redispatch_tools = stub_redispatch;
 
-    struct edc_task *t = edc_task_new(edc_test_id("m1"), "sess-m1", edc_test_id("m1"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("m1"), edc_test_session_id("sess-m1"), edc_test_id("m1"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
@@ -460,12 +460,12 @@ static void test_resume_migrated_task_with_turn(void)
 {
     TEST("resume: migrated task (step=READY) with an open turn still resumes the LLM");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-m2", "M2");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-m2"), "M2");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task *t = edc_task_new(edc_test_id("m2"), "sess-m2", edc_test_id("m2"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("m2"), edc_test_session_id("sess-m2"), edc_test_id("m2"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     seed_tool_turn(t, "c9", "shell"); /* 有 turn, 但账本里没有待办 */
     force_interrupted(t);
@@ -499,11 +499,11 @@ static void test_resume_nothing_left_is_ready(void)
 {
     TEST("resume: nothing to continue -> READY (there is no 'waiting for input' phase)");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-n1", "N1");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-n1"), "N1");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
 
-    struct edc_task *t = edc_task_new(edc_test_id("n1"), "sess-n1", edc_test_id("n1"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("n1"), edc_test_session_id("sess-n1"), edc_test_id("n1"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     force_interrupted(t);
     /* 没有依赖、没有工具账本、没有 active_turn —— 没有任何东西可以续 */
@@ -530,12 +530,12 @@ static void test_resume_error_continues_turn(void)
 {
     TEST("resume ERROR: continues the failed turn (reuses active_turn)");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r5", "R5");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r5"), "R5");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task *t = edc_task_new(edc_test_id("r5"), "sess-r5", edc_test_id("r5"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r5"), edc_test_session_id("sess-r5"), edc_test_id("r5"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     /* 失败前的半成品: 这轮已有 user 消息, LLM 请求失败没产出 assistant。 */
     t->active_turn = edc_turn_new();
@@ -571,12 +571,12 @@ static void test_resume_error_pending_tool_redispatches(void)
 {
     TEST("resume ERROR: pending tool -> TOOL_CALLING + redispatch");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r6", "R6");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r6"), "R6");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->redispatch_tools = stub_redispatch;
 
-    struct edc_task *t = edc_task_new(edc_test_id("r6"), "sess-r6", edc_test_id("r6"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r6"), edc_test_session_id("sess-r6"), edc_test_id("r6"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
@@ -610,12 +610,12 @@ static void test_resume_cancelled_dangling_tool(void)
 {
     TEST("resume CANCELLED: dangling tool_call (ledger cleared by cancel) -> note + resume LLM");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r7", "R7");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r7"), "R7");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task *t = edc_task_new(edc_test_id("r7"), "sess-r7", edc_test_id("r7"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r7"), edc_test_session_id("sess-r7"), edc_test_id("r7"), "task", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, "c1", "shell");
@@ -666,12 +666,12 @@ static void test_resume_cancelled_nothing_left(void)
 {
     TEST("resume CANCELLED: no turn/tools -> READY + ALIVE, no LLM");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-r8", "R8");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-r8"), "R8");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task *t = edc_task_new(edc_test_id("r8"), "sess-r8", edc_test_id("r8"), "task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("r8"), edc_test_session_id("sess-r8"), edc_test_id("r8"), "task", edc_channel_adapter);
     edc_task_send_signal(t, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(t), "task is CANCELLED");
 
@@ -697,13 +697,13 @@ static void test_resume_blocked_clears_the_note(void)
 {
     TEST("resume: a BLOCKED task drops the cascade's note from its output");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-blocked", "Blocked");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-blocked"), "Blocked");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, s);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task *src = edc_task_new(edc_test_id("bl-src"), "sess-blocked", edc_test_id("bl-src"), "src", edc_channel_adapter);
-    struct edc_task *dep = edc_task_new(edc_test_id("bl-dep"), "sess-blocked", edc_test_id("bl-src"), "dep", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("bl-src"), edc_test_session_id("sess-blocked"), edc_test_id("bl-src"), "src", edc_channel_adapter);
+    struct edc_task *dep = edc_task_new(edc_test_id("bl-dep"), edc_test_session_id("sess-blocked"), edc_test_id("bl-src"), "dep", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(src);
     edc_session_add_group(s, g);
     edc_task_group_add_task(g, dep);

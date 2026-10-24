@@ -86,7 +86,7 @@ static void test_explicit_workdir(void)
     make_tmpdir(dir, sizeof(dir));
 
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new_with_workdir(cfg, "sess-w", "W", dir);
+    struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-w"), "W", dir);
 
     char real[PATH_MAX];
     CHECK(realpath(dir, real) != NULL, "realpath(dir)");
@@ -111,7 +111,7 @@ static void test_default_unbound(void)
 {
     TEST("no workdir → unbound");
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new(cfg, "sess-def", "Def");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-def"), "Def");
     CHECK(edc_session_get_workdir(s) == NULL, "default session is unbound");
     edc_session_free(s);
     edc_config_free(cfg);
@@ -122,7 +122,7 @@ static void test_invalid_workdir(void)
 {
     TEST("invalid workdir fails creation (no default fallback)");
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new_with_workdir(cfg, "sess-bad", "Bad", "/no/such/dir/edgeclaw-xyz");
+    struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-bad"), "Bad", "/no/such/dir/edgeclaw-xyz");
     CHECK(s == NULL, "session creation fails on a nonexistent workdir");
     edc_config_free(cfg);
 }
@@ -193,12 +193,12 @@ static void test_persist_roundtrip(void)
     realpath(dir, real);
 
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new_with_workdir(cfg, "sess-p", "P", dir);
+    struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-p"), "P", dir);
 
     cJSON *json = edc_state_serialize(s, NULL);
     CHECK(json != NULL, "serialize");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-p", "P");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-p"), "P");
     CHECK(edc_session_get_workdir(s2) == NULL, "fresh session starts unbound");
     bool ok = edc_state_deserialize(json, s2, NULL);
     CHECK(ok, "deserialize");
@@ -495,8 +495,8 @@ static void test_task_workdir_owner(void)
     CHECK(realpath(dirB, realB) != NULL, "realpath(B)");
 
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *A = edc_session_new_with_workdir(cfg, "sess-A", "A", dirA);
-    struct edc_session *B = edc_session_new_with_workdir(cfg, "sess-B", "B", dirB);
+    struct edc_session *A = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-A"), "A", dirA);
+    struct edc_session *B = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-B"), "B", dirB);
 
     /* The task belongs to B (its group is bound to B): a tool call from that task
      * must resolve against B's directory. P3 ③: 目录**只看属主** —— core 里已经没有
@@ -504,7 +504,7 @@ static void test_task_workdir_owner(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, A);
 
-    struct edc_task *tB = edc_task_new(edc_test_id("tB"), "sess-B", edc_test_id("tB"), "desc", edc_channel_adapter);
+    struct edc_task *tB = edc_task_new(edc_test_id("tB"), edc_test_session_id("sess-B"), edc_test_id("tB"), "desc", edc_channel_adapter);
     struct edc_task_group *gB = edc_task_group_new(tB);
     edc_session_add_group(B, gB);
 
@@ -512,7 +512,7 @@ static void test_task_workdir_owner(void)
     CHECK(strcmp(edc_scheduler_task_workdir(tB), realB) == 0, "task owner dir = B (not the displayed A)");
     /* 没有属主就没有目录: 不再是"回退到当前 session"(那份副本已删)。工具层拿到
      * NULL 时落到沙箱根 (见 edc_tools_shell / edc_tools_fs)。 */
-    struct edc_task *ownerless = edc_task_new(edc_test_id("tX"), "sess-X", edc_test_id("tX"), "desc", edc_channel_adapter);
+    struct edc_task *ownerless = edc_task_new(edc_test_id("tX"), edc_test_session_id("sess-X"), edc_test_id("tX"), "desc", edc_channel_adapter);
     CHECK(edc_scheduler_task_workdir(ownerless) == NULL, "ownerless task → NULL (core 不猜)");
     CHECK(edc_scheduler_task_workdir(NULL) == NULL, "no task → NULL");
 
@@ -535,9 +535,12 @@ static void test_history_dir_convention(void)
 {
     TEST("session dir is <workspace>/<session_id> (frontend derives chat.jsonl from it)");
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new(cfg, "sess-dir", "D");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-dir"), "D");
 
-    sds expected = edc_path_join(cfg->workspace, "sess-dir", NULL);
+    /* The directory keeps the historical "s<id>" spelling (edc_session_dir_name): it
+     * holds live chat.jsonl transcripts, so the ids became numbers but the names did not. */
+    sds expected = edc_path_join(cfg->workspace,
+                                 edc_session_dir_name(edc_test_session_id("sess-dir")), NULL);
     CHECK(s->history_dir != NULL, "history_dir is set");
     CHECK(s->history_dir && strcmp(s->history_dir, expected) == 0, "history_dir == <workspace>/<session_id>");
     sdsfree(expected);
@@ -545,8 +548,9 @@ static void test_history_dir_convention(void)
 
     /* Binding a workdir must not move the state directory: cwd and storage are
      * two different things, and the frontend only knows the second one. */
-    struct edc_session *b = edc_session_new_with_workdir(cfg, "sess-dir2", "B", "/tmp");
-    sds expected2 = edc_path_join(cfg->workspace, "sess-dir2", NULL);
+    struct edc_session *b = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-dir2"), "B", "/tmp");
+    sds expected2 = edc_path_join(cfg->workspace,
+                                  edc_session_dir_name(edc_test_session_id("sess-dir2")), NULL);
     CHECK(b->history_dir && strcmp(b->history_dir, expected2) == 0, "bound workdir does not change history_dir");
     sdsfree(expected2);
     edc_session_free(b);

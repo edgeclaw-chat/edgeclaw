@@ -157,7 +157,7 @@ static void test_due_predicate(void)
     TEST("due: idle + something extractable, refused while busy / folded / capped");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-due", "Due");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-due"), "Due");
     struct edc_task_group *group = make_finished_user_group(session, "g1", "some work", OLD_TS, 2);
     time_t now = time(NULL);
 
@@ -213,7 +213,7 @@ static void test_material_excludes_group_memory(void)
     TEST("material: raw unfolded history + full index; the old group memory is NOT included");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-mat", "Mat");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-mat"), "Mat");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -265,7 +265,7 @@ static void test_cap_multi_round_and_idempotence(void)
     TEST("cap: an over-cap turn is extracted in rounds; the cursor is idempotent");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-cap", "Cap");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-cap"), "Cap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -347,7 +347,7 @@ static void test_fold_landing_clamps_memo_prefix(void)
     TEST("fold landing: what is folded is in L2 (memo_prefix clamped up to folded_prefix)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-clamp", "Clamp");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-clamp"), "Clamp");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
@@ -397,7 +397,7 @@ static void test_failure_backoff_and_bad_cut(void)
     TEST("failure: a bad cut advances nothing and counts a failure; the cap pauses automation");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-fail", "Fail");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-fail"), "Fail");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -439,7 +439,7 @@ static void test_serialization_tristate_and_v7(void)
     TEST("serialize: memo_kind round-trips; a v7 archive (memo_compact) reads as COMPACT");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-ser", "Ser");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -457,7 +457,7 @@ static void test_serialization_tristate_and_v7(void)
     cJSON *json = edc_state_serialize(session, sched);
     CHECK(json != NULL, "serialize returns non-NULL");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-ser", "Ser");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, s2);
     CHECK(edc_state_deserialize(json, s2, sched2), "v8 round-trips");
@@ -490,7 +490,7 @@ static void test_serialization_tristate_and_v7(void)
         }
     }
 
-    struct edc_session *s3 = edc_session_new(cfg, "sess-ser", "Ser");
+    struct edc_session *s3 = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
     struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
     install_resolver(sched3, s3);
     CHECK(edc_state_deserialize(json, s3, sched3), "v7 archive loads");
@@ -518,7 +518,7 @@ static void test_material_keeps_tool_calls(void)
     TEST("material: an assistant tool call renders its name + arguments");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-tc", "TC");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-tc"), "TC");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -571,7 +571,7 @@ static void test_extract_scan_service(void)
     TEST("service: extract-scan starts an extraction for an idle group on its tick");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-scan", "Scan");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-scan"), "Scan");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 

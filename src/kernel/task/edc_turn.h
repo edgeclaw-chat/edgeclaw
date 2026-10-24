@@ -22,8 +22,8 @@
 struct edc_turn
 {
     int64_t task_id;  /* owner task; with turn_ord this is the storage key */
-    char *session_id; /* the ancestors a message row needs (FK chain), see
-                       * edc_state_ensure_turn(). Borrowed from the task at creation. */
+    int64_t session_id; /* the ancestors a message row needs (FK chain), see
+                         * edc_state_ensure_turn(). A number, like the task id. */
     int64_t group_id;
     /* Position in the owner's turn sequence. Committed turns take their index in
      * task->turns; the in-flight turn takes the tail (== the committed count). Assigned by
@@ -50,10 +50,10 @@ struct edc_turn
  * first append. */
 extern struct edc_turn *edc_turn_new();
 /* A turn bound to (task_id, turn_ord) -- the normal constructor. */
-extern struct edc_turn *edc_turn_new_for(const char *session_id, int64_t group_id,
+extern struct edc_turn *edc_turn_new_for(int64_t session_id, int64_t group_id,
                                          int64_t task_id, int turn_ord);
 /* Bind the key. Only for turns built before their position is known (fork snapshots). */
-extern void edc_turn_set_key(struct edc_turn *turn, const char *session_id, int64_t group_id,
+extern void edc_turn_set_key(struct edc_turn *turn, int64_t session_id, int64_t group_id,
                              int64_t task_id, int turn_ord);
 
 extern void edc_turn_free(struct edc_turn *turn);

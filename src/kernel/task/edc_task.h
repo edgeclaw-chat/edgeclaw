@@ -172,7 +172,7 @@ struct edc_task
      * 0 = not assigned yet (a task under construction, or "no such group"). */
     int64_t task_id;    /* PID */
     int64_t group_id;   /* PGID -- the leader's task_id */
-    char *session_id;   /* SID (still textual: s7, s15, ...) */
+    int64_t session_id; /* SID: the sessions table key, a number like task_id */
 
     char *description; /* user-visible */
     /* The raw text the user typed, before the shell parser (the parsed form is
@@ -358,7 +358,7 @@ struct edc_task
     struct edc_task *prev, *next; /* session-wide list */
 };
 
-extern struct edc_task *edc_task_new(int64_t task_id, const char *session_id, int64_t group_id,
+extern struct edc_task *edc_task_new(int64_t task_id, int64_t session_id, int64_t group_id,
                                      const char *desc, edc_channel_type channel_type);
 /* Park the frontend's folded-paste map on this task's own user message, as a `payload`
  * object inside the message JSON. It rides with the message, so fork (cJSON_Duplicate in
@@ -397,7 +397,7 @@ extern void edc_task_free(struct edc_task *task);
  *  dst_task_id) with fresh identities, so the source rows are untouched.
  *  NULL when the task has none; the caller owns the returned turn. Used by fork rule 2 to
  *  recover a parent's own turns after L1 folding. */
-extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, const char *dst_session_id,
+extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, int64_t dst_session_id,
                                                 int64_t dst_group_id, int64_t dst_task_id,
                                                 int dst_turn_ord);
 

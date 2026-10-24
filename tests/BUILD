@@ -586,7 +586,7 @@ cc_test(
 #     bazel run //tests:bench_state_io -- <workspace> <session_id> <iterations>
 cc_binary(
     name = "bench_state_io",
-    srcs = ["bench_state_io.c"],
+    srcs = ["bench_state_io.c", "test_ws.h"],
     tags = ["manual"],
     deps = [
         "//src/actor:actors",

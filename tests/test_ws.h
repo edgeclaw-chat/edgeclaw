@@ -119,6 +119,12 @@ static void edc_test_store_down(struct edc_config *cfg)
     }
 }
 
+/* Fixture session ids live at the TOP of the band, descending (see edc_test_session_id):
+ * an explicit insert raises SQLite's AUTOINCREMENT sequence to that value and its own
+ * allocations then climb AWAY from the fixtures. Under 2^53 because ids travel through
+ * cJSON, which stores numbers as `double`. */
+#define EDC_TEST_SESSION_ID_BASE 9000000000000000LL
+
 /* A turn with a usable storage key, so a test can add messages without threading the
  * session/group through. Tests that care about the real ids overwrite task_id (and
  * edc_task_add_turn rebinds the ordinal when the turn is queued). */
@@ -131,7 +137,7 @@ static struct edc_turn *edc_test_turn_new(void)
      * same rows and the second would silently overwrite the first -- which is what makes
      * a multi-turn test see "0 messages" instead of 4. */
     static int64_t seq = 100000;
-    return edc_turn_new_for("sess-test", 90000 + (seq % 1000), ++seq, 0);
+    return edc_turn_new_for(EDC_TEST_SESSION_ID_BASE - 1, 90000 + (seq % 1000), ++seq, 0);
 }
 
 /* The ids a task/group carries are NUMBERS now (INTEGER PRIMARY KEYs), while fixtures name
@@ -173,6 +179,72 @@ static int64_t edc_test_id(const char *name)
     }
     names[n] = strdup(name);
     return (int64_t)(n++) + 1000000;
+}
+
+/* A stable session id for a fixture that names its sessions -- "sess-a", "test-sess".
+ *
+ * Session ids are numbers now (sessions.session_id is an INTEGER PRIMARY KEY AUTOINCREMENT),
+ * so a fixture has to hand edc_session_new() a number. The values DESCEND from the top of the
+ * band: a test that inserts one explicitly raises SQLite's AUTOINCREMENT sequence to that
+ * value, and its own allocations then climb upward -- away from the fixtures rather than into
+ * them (the same trap that made a fold's system task collide with a fixture group's id).
+ *
+ * The band stays under 2^53 because every id travels through cJSON, which stores numbers as
+ * `double`; above 2^53 an integer is not exactly representable.
+ *
+ * Lookups by NAME ("sess-a", "dev") keep working untouched: edc_session_manager_find() falls
+ * back to comparing the display name. */
+static int64_t edc_test_session_id(const char *name)
+{
+    static char **names;
+    static int n;
+    if (!name || !*name)
+        return 0;
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], name) == 0)
+            return EDC_TEST_SESSION_ID_BASE - (int64_t)i;
+    if (!names)
+        names = (char **)calloc(EDC_TEST_ID_MAX, sizeof(*names));
+    if (n >= EDC_TEST_ID_MAX)
+    {
+        fprintf(stderr, "edc_test_session_id: more than %d distinct names\n", EDC_TEST_ID_MAX);
+        abort();
+    }
+    names[n] = strdup(name);
+    return EDC_TEST_SESSION_ID_BASE - (int64_t)(n++);
+}
+
+/* The TEXT form of a fixture session id ("s<number>").
+ *
+ * edc_id_str() is a rotating buffer, so two calls in one expression can alias -- and these
+ * tests do compare ids inside a single CHECK. This returns a string allocated once per
+ * name, which is stable for the life of the process. */
+static const char *edc_test_session_id_str(const char *name)
+{
+    static char *names[EDC_TEST_ID_MAX];
+    static char *texts[EDC_TEST_ID_MAX];
+    static int n;
+    if (!name || !*name)
+        return "";
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], name) == 0)
+            return texts[i];
+    if (!names[0])
+    {
+        for (int i = 0; i < EDC_TEST_ID_MAX; i++)
+        {
+            names[i] = NULL;
+            texts[i] = NULL;
+        }
+    }
+    if (n >= EDC_TEST_ID_MAX)
+    {
+        fprintf(stderr, "edc_test_session_id_str: too many names\n");
+        abort();
+    }
+    names[n] = strdup(name);
+    texts[n] = sdscatprintf(sdsempty(), "s%lld", (long long)edc_test_session_id(name));
+    return texts[n++];
 }
 
 /* Tests build turns directly all over the place; this keeps them working now that a turn

@@ -116,7 +116,7 @@ int main(void)
     edc_test_workspace(); /* open the disposable store before anything writes */
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(edc_test_workspace());
-    struct edc_session *sess = edc_session_new(cfg, "sess-memo", "Memo");
+    struct edc_session *sess = edc_session_new(cfg, edc_test_session_id("sess-memo"), "Memo");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
     sched->send_llm = mock_send_llm;
@@ -124,7 +124,7 @@ int main(void)
     struct edc_session_manager *sm = sched->sessions;
 
     /* 一个带记忆的组 (手动策展的材料来源) */
-    struct edc_task *leader = edc_task_new(edc_test_id("675"), "sess-memo", edc_test_id("675"), "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("675"), edc_test_session_id("sess-memo"), edc_test_id("675"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(sess, g);
     g->memory = sdsnew("group 675 memory: 构建入口是 bazelisk");

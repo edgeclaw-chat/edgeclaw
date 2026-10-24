@@ -42,14 +42,13 @@ static sds edc_message_new_id(void)
     return sdscatprintf(sdsempty(), "m%llu_%lu", ms, g_msg_seq++);
 }
 
-void edc_turn_set_key(struct edc_turn *turn, const char *session_id, int64_t group_id,
+void edc_turn_set_key(struct edc_turn *turn, int64_t session_id, int64_t group_id,
                       int64_t task_id, int turn_ord)
 {
     if (!turn)
         return;
-    free(turn->session_id);
     turn->task_id = task_id;
-    turn->session_id = session_id ? strdup(session_id) : NULL;
+    turn->session_id = session_id;
     turn->group_id = group_id;
     turn->turn_ord = turn_ord;
 }
@@ -187,7 +186,7 @@ struct edc_turn *edc_turn_new()
     return g_new0(struct edc_turn, 1);
 }
 
-struct edc_turn *edc_turn_new_for(const char *session_id, int64_t group_id,
+struct edc_turn *edc_turn_new_for(int64_t session_id, int64_t group_id,
                                   int64_t task_id, int turn_ord)
 {
     struct edc_turn *turn = edc_turn_new();
@@ -199,7 +198,6 @@ void edc_turn_free(struct edc_turn *turn)
 {
     if (!turn)
         return;
-    free(turn->session_id);
     free(turn);
 }
 

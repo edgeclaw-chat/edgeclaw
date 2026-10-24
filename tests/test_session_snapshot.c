@@ -115,7 +115,7 @@ static void capture_snapshot(struct edc_scheduler *sched, sds json)
 static void request_snapshot(struct edc_scheduler *sched, struct edc_session *session)
 {
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, NULL, NULL,
-                                             sdsnew(session ? session->session_id : ""),
+                                             sdsnew(session ? edc_id_str(session->session_id) : ""),
                                              (edc_actor_data_free_fn)sdsfree);
     sched->self->handler(sched->self, msg);
 }
@@ -171,8 +171,8 @@ static void test_snapshot_follows_the_session(void)
     TEST("快照: 换 session 后取到的是新的那棵 (不是旧的、不是两棵混在一起)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *sa = edc_session_new(cfg, "sess-a", "A");
-    struct edc_session *sb = edc_session_new(cfg, "sess-b", "B");
+    struct edc_session *sa = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    struct edc_session *sb = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     sched->snapshot_reply = capture_snapshot;
     install_store(sched, sa, sb);
@@ -185,7 +185,9 @@ static void test_snapshot_follows_the_session(void)
     request_snapshot(sched, sa);
     cJSON *root = parse_snapshot();
     CHECK(root != NULL, "A: 快照可解析");
-    CHECK(snapshot_session_id(root) && strcmp(snapshot_session_id(root), "sess-a") == 0, "A: session_id 是 sess-a");
+    CHECK(snapshot_session_id(root) &&
+              strcmp(snapshot_session_id(root), edc_test_session_id_str("sess-a")) == 0,
+          "A: session_id 是 A 的 id");
     CHECK(snapshot_group_count(root) == 1, "A: 只有 1 个组");
     CHECK(snapshot_has_group(root, "100"), "A: 装的是组 100");
     CHECK(!snapshot_has_group(root, "200"), "A: 不含 B 的组 200");
@@ -195,7 +197,9 @@ static void test_snapshot_follows_the_session(void)
     request_snapshot(sched, sb);
     root = parse_snapshot();
     CHECK(root != NULL, "B: 快照可解析");
-    CHECK(snapshot_session_id(root) && strcmp(snapshot_session_id(root), "sess-b") == 0, "B: session_id 是 sess-b");
+    CHECK(snapshot_session_id(root) &&
+              strcmp(snapshot_session_id(root), edc_test_session_id_str("sess-b")) == 0,
+          "B: session_id 是 B 的 id");
     CHECK(snapshot_group_count(root) == 1, "B: 只有 1 个组");
     CHECK(snapshot_has_group(root, "200"), "B: 装的是组 200");
     CHECK(!snapshot_has_group(root, "100"), "B: 不含 A 的组 100 (没混在一起)");
@@ -205,7 +209,8 @@ static void test_snapshot_follows_the_session(void)
     request_snapshot(sched, sa);
     root = parse_snapshot();
     CHECK(root != NULL, "回到 A: 快照可解析");
-    CHECK(snapshot_session_id(root) && strcmp(snapshot_session_id(root), "sess-a") == 0, "回到 A: session_id 是 sess-a");
+    CHECK(snapshot_session_id(root) && strcmp(snapshot_session_id(root), edc_test_session_id_str("sess-a")) == 0,
+          "回到 A: session_id 是 A 的 id");
     CHECK(snapshot_has_group(root, "100") && !snapshot_has_group(root, "200"), "回到 A: 又只有 A 的树");
     cJSON_Delete(root);
 
@@ -224,8 +229,8 @@ static void test_snapshot_of_an_empty_session(void)
     TEST("快照: 空 session 给空树 (不崩、不退回别人的树)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *full = edc_session_new(cfg, "sess-full", "Full");
-    struct edc_session *empty = edc_session_new(cfg, "sess-empty", "Empty");
+    struct edc_session *full = edc_session_new(cfg, edc_test_session_id("sess-full"), "Full");
+    struct edc_session *empty = edc_session_new(cfg, edc_test_session_id("sess-empty"), "Empty");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     sched->snapshot_reply = capture_snapshot;
     install_store(sched, full, empty);
@@ -234,7 +239,7 @@ static void test_snapshot_of_an_empty_session(void)
     request_snapshot(sched, empty);
     cJSON *root = parse_snapshot();
     CHECK(root != NULL, "空 session: 快照可解析");
-    CHECK(snapshot_session_id(root) && strcmp(snapshot_session_id(root), "sess-empty") == 0,
+    CHECK(snapshot_session_id(root) && strcmp(snapshot_session_id(root), edc_test_session_id_str("sess-empty")) == 0,
           "空 session: session_id 是 sess-empty");
     CHECK(snapshot_group_count(root) == 0, "空 session: groups 是空数组");
     CHECK(!snapshot_has_group(root, "300"), "空 session: 没退回 full 的树");
@@ -293,7 +298,7 @@ static void test_group_usage_rollup(void)
     TEST("快照: 组的用量 = 成员相加; ctx = 规模最大的那个成员的对话 (不是相加)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-usage", "Usage");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-usage"), "Usage");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     sched->snapshot_reply = capture_snapshot;
     install_store(sched, s, NULL);

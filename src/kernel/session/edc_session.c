@@ -24,7 +24,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name)
+struct edc_session *edc_session_new(struct edc_config *config, int64_t session_id, const char *name)
 {
     return edc_session_new_with_workdir(config, session_id, name, NULL);
 }
@@ -68,7 +68,7 @@ bool edc_session_set_workdir(struct edc_session *session, const char *workdir, E
     session->workdir = sdsnew(resolved);
     sdsfree(resolved);
 
-    log_info("session %s bound to working directory %s", session->session_id, session->workdir);
+    log_info("session %s bound to working directory %s", edc_id_str(session->session_id), session->workdir);
     return true;
 }
 
@@ -138,16 +138,40 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
     return out ? out : sdsnew(".");
 }
 
-struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id, const char *name,
+sds edc_session_dir_name(int64_t session_id)
+{
+    return sdscatprintf(sdsempty(), "s%lld", (long long)session_id);
+}
+
+const char *edc_session_id_str(int64_t session_id)
+{
+    static char bufs[4][24];
+    static int next;
+    char *b = bufs[next];
+    next = (next + 1) % 4;
+    snprintf(b, sizeof(bufs[0]), "s%lld", (long long)session_id);
+    return b;
+}
+
+struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id, const char *name,
                                                  const char *workdir)
 {
     struct edc_session *session = g_new0(struct edc_session, 1);
-    session->session_id = strdup(session_id ? session_id : "sess-1");
-    session->name = sdsnew(name && strlen(name) > 0 ? name : session->session_id);
+    session->session_id = session_id;
+    {
+        /* The name falls back to the id, which is a number now, so it is rendered. */
+        char idbuf[32];
+        snprintf(idbuf, sizeof(idbuf), "s%lld", (long long)session_id);
+        session->name = sdsnew(name && strlen(name) > 0 ? name : idbuf);
+    }
     session->created_at = (uint64_t)edc_datetime_now();
     session->last_active = session->created_at;
     session->config = config;
-    session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
+    {
+        sds dir = edc_session_dir_name(session_id);
+        session->history_dir = edc_path_join(config->workspace, dir, NULL);
+        sdsfree(dir);
+    }
     session->next_completion_seq = 1;
     session->memo = edc_session_memory_new();
 
@@ -159,8 +183,8 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
         EdcError *error = NULL;
         if (!edc_session_set_workdir(session, workdir, &error))
         {
-            log_warn("session %s: cannot bind working directory '%s': %s", session->session_id, workdir,
-                     error ? error->message : "unknown");
+            log_warn("session %s: cannot bind working directory '%s': %s", edc_id_str(session->session_id),
+                     workdir, error ? error->message : "unknown");
             edc_error_free(error);
             edc_session_free(session);
             return NULL;
@@ -187,7 +211,6 @@ void edc_session_free(struct edc_session *session)
     session->groups = NULL;
 
     edc_session_memory_free(session->memo);
-    free(session->session_id);
     sdsfree(session->name);
     sdsfree(session->history_dir);
     sdsfree(session->workdir);
@@ -347,7 +370,7 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
         }
     }
 
-    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", session->session_id,
+    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", edc_session_id_str(session->session_id),
                            edc_session_get_name(session), is_current ? " · current" : " · background");
     out = sdscatprintf(out, "- **State**: %s\n", is_current ? "current (live)" : "background");
     out = sdscatprintf(out, "- **Working Directory**: %s\n",
@@ -438,7 +461,7 @@ static bool session_save_state_impl(struct edc_session *session, struct edc_sche
         out_cost->rows = -1;
     }
 
-    if (!session || !session->session_id || !*session->session_id)
+    if (!session || session->session_id <= 0)
         return false;
 
     /* A quarantined session must not persist: its in-memory form is just the shell after
@@ -448,7 +471,7 @@ static bool session_save_state_impl(struct edc_session *session, struct edc_sche
     if (session->state_quarantined)
     {
         log_warn("save_state: refusing to persist quarantined session %s",
-                 session->session_id ? session->session_id : "?");
+                 edc_id_str(session->session_id));
         return false;
     }
 
@@ -507,7 +530,7 @@ bool edc_session_save_state_tagged(struct edc_session *session, struct edc_sched
         }
 
         edc_state_probe_save(t1 - t0, doc_bytes, cost.io_bytes, cost.rows, n_tasks, n_msgs, ok,
-                             session ? session->session_id : NULL, tag);
+                             session ? edc_id_str(session->session_id) : NULL, tag);
     }
     return ok;
 }
@@ -530,7 +553,7 @@ static bool session_load_state_impl(struct edc_session *session, struct edc_sche
     *out_tasks = 0;
     *out_msgs = 0;
 
-    if (!session || !session->session_id || !*session->session_id)
+    if (!session || session->session_id <= 0)
         return false;
 
     if (!edc_state_store_open(session->config))
@@ -552,7 +575,7 @@ static bool session_load_state_impl(struct edc_session *session, struct edc_sche
             log_error("load_state: %s exists in the database but could not be read -- this "
                       "run will NOT persist it (otherwise the half-built session would "
                       "overwrite the real one)",
-                      session->session_id ? session->session_id : "?");
+                      edc_id_str(session->session_id));
         }
         return false;
     }
@@ -588,7 +611,7 @@ bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *s
      * same. ok=0 with rows=0 is the brand-new-session case, not a failure. */
     if (probe)
         edc_state_probe_load(t1 - t0, rows, ok, n_tasks, n_msgs,
-                             session ? session->session_id : NULL, "startup");
+                             session ? edc_id_str(session->session_id) : NULL, "startup");
     return ok;
 }
 
@@ -620,5 +643,8 @@ const char *edc_session_get_name(struct edc_session *session)
 {
     if (!session)
         return NULL;
-    return session->name ? session->name : session->session_id;
+    if (session->name)
+        return session->name;
+    /* No name: show the id, which is a number. */
+    return edc_session_id_str(session->session_id);
 }

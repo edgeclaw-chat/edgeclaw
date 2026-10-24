@@ -149,13 +149,13 @@ static void test_input_lands_in_the_tagged_session(void)
     TEST("入站: 标签指向 B ⇒ 任务/组落在 B (scheduler 绑的是 A)");
 
     struct edc_config *cfg = make_config();
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
     /* 没有 handle_command → 走 scheduler 自己的兜底建任务路径 (这正是要测的那条)。 */
 
-    deliver_input(sched, "sess-b", "hello from B", 1);
+    deliver_input(sched, edc_id_str(edc_test_session_id("sess-b")), "hello from B", 1);
 
     CHECK(count_groups(g_sess_a) == 0, "A 没有被建组");
     CHECK(count_tasks(g_sess_a) == 0, "A 里没有新任务");
@@ -175,7 +175,7 @@ static void test_input_lands_in_the_tagged_session(void)
 
     /* 任务自己的 session 字段也必须是 B (落盘时按它归位)。 */
     struct edc_task *t = g_sess_b->active_task;
-    CHECK(t && t->session_id && strcmp(t->session_id, "sess-b") == 0, "任务的 session_id 是 sess-b");
+    CHECK(t && t->session_id && t->session_id == edc_test_session_id("sess-b"), "任务的 session_id 是 sess-b");
 
     edc_scheduler_free(sched);
     edc_session_free(g_sess_a);
@@ -193,8 +193,8 @@ static void test_unknown_tag_is_rejected(void)
     TEST("入站: 标签指向不存在的 session ⇒ 拒绝这条输入 (两边都不落)");
 
     struct edc_config *cfg = make_config();
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
 
@@ -221,8 +221,8 @@ static void test_tagless_input_uses_the_default(void)
     TEST("入站: 没有标签 ⇒ 由读口给默认 session (crontab 行为不变)");
 
     struct edc_config *cfg = make_config();
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
 

@@ -291,7 +291,7 @@ static void test_roundtrip(void)
     cfg->workspace = sdsnew(g_dir);
     CHECK(edc_state_store_open(cfg), "open the store");
 
-    struct edc_session *s1 = edc_session_new(cfg, "s-diff", "Differential");
+    struct edc_session *s1 = edc_session_new(cfg, edc_test_session_id("s-diff"), "Differential");
     struct edc_scheduler *sched1 = edc_scheduler_new(cfg);
     install_sessions(sched1, s1);
     build_fixture(s1, sched1);
@@ -301,7 +301,7 @@ static void test_roundtrip(void)
     CHECK(edc_state_store_flush(s1, sched1), "flush into the database");
 
     /* Load into a FRESH session object: that is what a restart does. */
-    struct edc_session *s2 = edc_session_new(cfg, "s-diff", "Differential");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("s-diff"), "Differential");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_sessions(sched2, s2);
     CHECK(edc_state_store_load(s2, sched2), "load back from the database");
@@ -342,7 +342,7 @@ static void test_flush_is_idempotent(void)
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(g_dir);
 
-    struct edc_session *s = edc_session_new(cfg, "s-idem", "Idempotent");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-idem"), "Idempotent");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
 
@@ -363,7 +363,7 @@ static void test_flush_is_idempotent(void)
 
     CHECK(edc_state_store_flush(s, sched), "first flush");
 
-    struct edc_session *probe = edc_session_new(cfg, "s-idem", "Idempotent");
+    struct edc_session *probe = edc_session_new(cfg, edc_test_session_id("s-idem"), "Idempotent");
     struct edc_scheduler *psched = edc_scheduler_new(cfg);
     install_sessions(psched, probe);
     CHECK(edc_state_store_load(probe, psched), "load after first flush");
@@ -375,7 +375,7 @@ static void test_flush_is_idempotent(void)
     CHECK(edc_state_store_flush(s, sched), "second flush");
     CHECK(edc_state_store_flush(s, sched), "third flush");
 
-    struct edc_session *probe2 = edc_session_new(cfg, "s-idem", "Idempotent");
+    struct edc_session *probe2 = edc_session_new(cfg, edc_test_session_id("s-idem"), "Idempotent");
     struct edc_scheduler *psched2 = edc_scheduler_new(cfg);
     install_sessions(psched2, probe2);
     CHECK(edc_state_store_load(probe2, psched2), "load after three flushes");
@@ -398,7 +398,7 @@ static void test_normalization(void)
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(g_dir);
 
-    struct edc_session *s = edc_session_new(cfg, "s-norm", "Normalize");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-norm"), "Normalize");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
 
@@ -424,7 +424,7 @@ static void test_normalization(void)
 
     CHECK(edc_state_store_flush(s, sched), "flush a session with an ALIVE task");
 
-    struct edc_session *r = edc_session_new(cfg, "s-norm", "Normalize");
+    struct edc_session *r = edc_session_new(cfg, edc_test_session_id("s-norm"), "Normalize");
     struct edc_scheduler *rsched = edc_scheduler_new(cfg);
     install_sessions(rsched, r);
     CHECK(edc_state_store_load(r, rsched), "load (this is the restart)");
@@ -466,7 +466,7 @@ static void test_absent_session(void)
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(g_dir);
 
-    struct edc_session *s = edc_session_new(cfg, "s-never-written", "Absent");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-never-written"), "Absent");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
     CHECK(!edc_state_store_load(s, sched), "load returns false for an unwritten session");
@@ -482,7 +482,7 @@ static void test_forget_and_lookup(void)
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(g_dir);
 
-    struct edc_session *s = edc_session_new(cfg, "s-forget", "Forget");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-forget"), "Forget");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
     struct edc_task *leader = edc_task_new(edc_test_id("f-1"), s->session_id, edc_test_id("fg-1"), "task",
@@ -495,13 +495,14 @@ static void test_forget_and_lookup(void)
     CHECK(edc_state_store_flush(s, sched), "flush");
 
     char *sid = edc_state_store_session_for_task(edc_test_id("f-1"));
-    CHECK(sid && strcmp(sid, "s-forget") == 0, "session_for_task finds the owner");
+    CHECK(sid && strcmp(sid, edc_id_str(edc_test_session_id("s-forget"))) == 0,
+          "session_for_task finds the owner");
     free(sid);
 
     CHECK(edc_state_store_session_for_task(edc_test_id("no-such-task")) == NULL,
           "session_for_task returns NULL for an unknown task");
 
-    CHECK(edc_state_store_forget("s-forget"), "forget the session");
+    CHECK(edc_state_store_forget(edc_test_session_id("s-forget")), "forget the session");
     char *gone = edc_state_store_session_for_task(edc_test_id("f-1"));
     CHECK(gone == NULL, "its tasks are gone too (cascade)");
     free(gone);

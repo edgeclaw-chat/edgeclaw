@@ -126,7 +126,7 @@ typedef enum
 } scene;
 
 /* Build a task in `scene` through a legal transition chain (READY -> ... -> target). */
-static struct edc_task *make_task(const char *id, const char *sid, const char *desc, scene target)
+static struct edc_task *make_task(const char *id, int64_t sid, const char *desc, scene target)
 {
     struct edc_task *t = edc_task_new(edc_test_id(id), sid, edc_test_id(id), desc, edc_channel_adapter);
     /* 新模型: task 创建时就带着它的 input。fixture 必须装上一个 turn, 否则它就是
@@ -165,24 +165,24 @@ static void test_signal_scoped_to_session(void)
     struct edc_config *cfg = make_config();
 
     /* Session A (bound to the scheduler) */
-    struct edc_session *sa = edc_session_new(cfg, "sess-a", "A");
+    struct edc_session *sa = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
     struct edc_scheduler *sched_a = edc_scheduler_new(cfg);
     install_resolver(sched_a, sa);
-    struct edc_task *a_run = make_task("a-run", "sess-a", "running", SCENE_RUNNING);
+    struct edc_task *a_run = make_task("a-run", edc_test_session_id("sess-a"), "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
-    struct edc_task *a_done = make_task("a-done", "sess-a", "done", SCENE_COMPLETED);
+    struct edc_task *a_done = make_task("a-done", edc_test_session_id("sess-a"), "done", SCENE_COMPLETED);
     edc_task_group_add_task(ga, a_done);
     /* 非运行态: 离开时必须原样保留, 不能被"离开即取消"误伤 */
-    struct edc_task *a_wait = make_task("a-wait", "sess-a", "waiting input", SCENE_READY);
+    struct edc_task *a_wait = make_task("a-wait", edc_test_session_id("sess-a"), "waiting input", SCENE_READY);
     edc_task_group_add_task(ga, a_wait);
 
     /* Session B, NOT bound to the scheduler */
-    struct edc_session *sb = edc_session_new(cfg, "sess-b", "B");
+    struct edc_session *sb = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched_b = edc_scheduler_new(cfg);
     install_resolver(sched_b, sb);
-    struct edc_task *b_run = make_task("b-run", "sess-b", "other", SCENE_RUNNING);
-    struct edc_task *b_wait = make_task("b-wait", "sess-b", "other wait", SCENE_READY);
+    struct edc_task *b_run = make_task("b-run", edc_test_session_id("sess-b"), "other", SCENE_RUNNING);
+    struct edc_task *b_wait = make_task("b-wait", edc_test_session_id("sess-b"), "other wait", SCENE_READY);
     struct edc_task_group *gb = edc_task_group_new(b_run);
     edc_task_group_add_task(gb, b_wait);
     edc_session_add_group(sb, gb);
@@ -220,13 +220,13 @@ static void test_leave_persists_cancelled(void)
 
     struct edc_config *cfg = make_config();
 
-    struct edc_session *sa = edc_session_new(cfg, "sess-lv", "Leave");
+    struct edc_session *sa = edc_session_new(cfg, edc_test_session_id("sess-lv"), "Leave");
     struct edc_scheduler *sched_a = edc_scheduler_new(cfg);
     install_resolver(sched_a, sa);
-    struct edc_task *a_run = make_task("t1", "sess-lv", "running", SCENE_RUNNING);
+    struct edc_task *a_run = make_task("t1", edc_test_session_id("sess-lv"), "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
-    struct edc_task *a_wait = make_task("t2", "sess-lv", "waiting", SCENE_READY);
+    struct edc_task *a_wait = make_task("t2", edc_test_session_id("sess-lv"), "waiting", SCENE_READY);
     edc_task_group_add_task(ga, a_wait);
     edc_scheduler_set_foreground(sa, ga);
 
@@ -237,7 +237,7 @@ static void test_leave_persists_cancelled(void)
     CHECK(edc_session_save_state(sa, sched_a), "save_state succeeds");
 
     /* Reload into a fresh session (simulates switch-back / restart). */
-    struct edc_session *sa2 = edc_session_new(cfg, "sess-lv", "Leave");
+    struct edc_session *sa2 = edc_session_new(cfg, edc_test_session_id("sess-lv"), "Leave");
     struct edc_scheduler *sched_a2 = edc_scheduler_new(cfg);
     install_resolver(sched_a2, sa2);
     CHECK(edc_session_load_state(sa2, sched_a2), "load_state succeeds");
@@ -275,11 +275,11 @@ static void test_cancel_persists_without_explicit_save(void)
     clean_workspace();
 
     struct edc_config *cfg = make_config();
-    struct edc_session *sa = edc_session_new(cfg, "sess-lv2", "Leave2");
+    struct edc_session *sa = edc_session_new(cfg, edc_test_session_id("sess-lv2"), "Leave2");
     struct edc_scheduler *sched_a = edc_scheduler_new(cfg);
     install_resolver(sched_a, sa);
 
-    struct edc_task *a_run = make_task("t1", "sess-lv2", "running", SCENE_RUNNING);
+    struct edc_task *a_run = make_task("t1", edc_test_session_id("sess-lv2"), "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
     edc_scheduler_set_foreground(sa, ga);
@@ -289,7 +289,7 @@ static void test_cancel_persists_without_explicit_save(void)
     CHECK(edc_task_is_cancelled(a_run), "running 任务在内存里 CANCELLED");
 
     /* 关键: 这里**不**调 edc_session_save_state —— 落盘必须是取消那一步做的。 */
-    struct edc_session *sa2 = edc_session_new(cfg, "sess-lv2", "Leave2");
+    struct edc_session *sa2 = edc_session_new(cfg, edc_test_session_id("sess-lv2"), "Leave2");
     struct edc_scheduler *sched_a2 = edc_scheduler_new(cfg);
     install_resolver(sched_a2, sa2);
     CHECK(edc_session_load_state(sa2, sched_a2), "load_state succeeds");
@@ -313,10 +313,10 @@ static void test_interrupted_restores_cancelled(void)
 
     struct edc_config *cfg = make_config();
 
-    struct edc_session *sa = edc_session_new(cfg, "sess-dg", "Degrade");
+    struct edc_session *sa = edc_session_new(cfg, edc_test_session_id("sess-dg"), "Degrade");
     struct edc_scheduler *sched_a = edc_scheduler_new(cfg);
     install_resolver(sched_a, sa);
-    struct edc_task *a_run = make_task("t1", "sess-dg", "running", SCENE_RUNNING);
+    struct edc_task *a_run = make_task("t1", edc_test_session_id("sess-dg"), "running", SCENE_RUNNING);
     struct edc_task_group *ga = edc_task_group_new(a_run);
     edc_session_add_group(sa, ga);
 
@@ -324,7 +324,7 @@ static void test_interrupted_restores_cancelled(void)
     CHECK(edc_task_awaits_exec(a_run), "in-flight before save");
     CHECK(edc_session_save_state(sa, sched_a), "save_state succeeds");
 
-    struct edc_session *sa2 = edc_session_new(cfg, "sess-dg", "Degrade");
+    struct edc_session *sa2 = edc_session_new(cfg, edc_test_session_id("sess-dg"), "Degrade");
     struct edc_scheduler *sched_a2 = edc_scheduler_new(cfg);
     install_resolver(sched_a2, sa2);
     CHECK(edc_session_load_state(sa2, sched_a2), "load_state succeeds");

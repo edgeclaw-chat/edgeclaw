@@ -190,8 +190,8 @@ static void test_event_names_the_owner_and_carries_no_tree(void)
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(edc_test_workspace());
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
 
     /* scheduler 绑 A —— 但下面动的是 B 里的任务。 */
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -204,7 +204,7 @@ static void test_event_names_the_owner_and_carries_no_tree(void)
 
     reset_capture();
     /* 下面所有变化都发生在 B 里 ⇒ **每一个**事件的标签都必须是 sess-b。 */
-    g_event_expect_session = "sess-b";
+    g_event_expect_session = edc_test_session_id_str("sess-b");
 
     /* 两条置脏路径都要覆盖 (它们各自有一处置脏点, 都要看属主而不是绑定):
      *   ① 信号 → 强制迁移 (force path);
@@ -215,7 +215,7 @@ static void test_event_names_the_owner_and_carries_no_tree(void)
         edc_actor_t *actor = edc_scheduler_get_actor(sched);
         struct edc_channel_message *cm =
             edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew("hello in B"));
-        cm->session_id = sdsnew("sess-b");
+        cm->session_id = sdsnew(edc_test_session_id_str("sess-b"));
         edc_actor_msg_t *im =
             edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, NULL, edc_channel_input_new(cm),
                               (edc_actor_data_free_fn)edc_channel_input_free);
@@ -227,9 +227,9 @@ static void test_event_names_the_owner_and_carries_no_tree(void)
     CHECK(g_tree_count == 0, "状态变化**没有**发出树 (没有请求就没有树)");
 
     /* 明确反向对照: 有人看 A 时要 A 的树, 而事件说的是 B —— 两件事互不冒充。 */
-    pull(sched, "sess-a");
+    pull(sched, edc_test_session_id_str("sess-a"));
     CHECK(g_tree_count == 1, "点名要 A ⇒ 有一棵 (正好一棵)");
-    CHECK(tree_is_for(g_tree, "sess-a"), "那棵是 A 的");
+    CHECK(tree_is_for(g_tree, edc_test_session_id_str("sess-a")), "那棵是 A 的");
     CHECK(tree_has_group(g_tree, "100"), "装着 A 的组 100");
     CHECK(!tree_has_group(g_tree, "200"), "不含 B 的组 200");
 
@@ -252,8 +252,8 @@ static void test_pull_is_addressed(void)
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(edc_test_workspace());
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
     sched->snapshot_changed = capture_event;
@@ -263,18 +263,19 @@ static void test_pull_is_addressed(void)
     add_group_with_task(g_sess_b, "200", "work in B");
     reset_capture();
 
-    pull(sched, "sess-b");
+    pull(sched, edc_test_session_id_str("sess-b"));
     CHECK(g_tree_count == 1, "第一次: 一棵");
-    CHECK(tree_is_for(g_tree, "sess-b") && tree_has_group(g_tree, "200"), "要 B 给 B");
+    CHECK(tree_is_for(g_tree, edc_test_session_id_str("sess-b")) && tree_has_group(g_tree, "200"), "要 B 给 B");
     CHECK(!tree_has_group(g_tree, "100"), "B 的树里没有 A 的组");
 
-    pull(sched, "sess-a");
+    pull(sched, edc_test_session_id_str("sess-a"));
     CHECK(g_tree_count == 2, "第二次: 两棵");
-    CHECK(tree_is_for(g_tree, "sess-a") && tree_has_group(g_tree, "100"), "要 A 给 A");
+    CHECK(tree_is_for(g_tree, edc_test_session_id_str("sess-a")) && tree_has_group(g_tree, "100"),
+          "要 A 给 A");
     CHECK(!tree_has_group(g_tree, "200"), "A 的树里没有 B 的组");
 
-    pull(sched, "sess-b");
-    CHECK(tree_is_for(g_tree, "sess-b"), "再要 B 又是 B (没缓存成上一棵)");
+    pull(sched, edc_test_session_id_str("sess-b"));
+    CHECK(tree_is_for(g_tree, edc_test_session_id_str("sess-b")), "再要 B 又是 B (没缓存成上一棵)");
 
     edc_scheduler_free(sched);
     edc_session_free(g_sess_a);
@@ -294,8 +295,8 @@ static void test_unknown_tag_yields_no_tree(void)
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(edc_test_workspace());
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
     sched->snapshot_reply = capture_tree;
@@ -305,7 +306,7 @@ static void test_unknown_tag_yields_no_tree(void)
     pull(sched, "sess-does-not-exist");
     CHECK(g_tree_count == 0, "没有应答 (既不是 A 的树也不是 B 的)");
 
-    pull(sched, "sess-a");
+    pull(sched, edc_test_session_id_str("sess-a"));
     CHECK(g_tree_count == 1 && tree_has_group(g_tree, "100"), "正常的请求照旧拿到自己的树");
 
     edc_scheduler_free(sched);

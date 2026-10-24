@@ -114,7 +114,7 @@ static void harness_up(struct harness *h)
     h->cfg = g_new0(struct edc_config, 1);
     h->cfg->workspace = sdsnew(edc_test_workspace());
     h->sched = edc_scheduler_new(h->cfg);
-    h->sess = edc_session_new(h->cfg, "sess-req", "Req");
+    h->sess = edc_session_new(h->cfg, edc_test_session_id("sess-req"), "Req");
     install_sessions(h->sched, h->sess);
 
     h->llm_actor = edc_llm_actor_new(h->cfg);
@@ -148,7 +148,7 @@ static void harness_down(struct harness *h)
 
 /* ── fixtures ─────────────────────────────────────────────── */
 
-static struct edc_task_group *make_group(struct harness *h, struct edc_task **out_task, const char *sid)
+static struct edc_task_group *make_group(struct harness *h, struct edc_task **out_task, int64_t sid)
 {
     struct edc_task *leader = edc_task_new(edc_test_id("1"), sid, edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
@@ -198,7 +198,7 @@ static void test_turn_begin_honours_folded_prefix(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     history_add_user(g, "already committed member message");
 
     struct edc_turn *turn = attach_turn(&h, leader, "current input");
@@ -246,7 +246,7 @@ static void test_turn_begin_zero_without_prefix(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     (void)g;
 
     struct edc_turn *turn = attach_turn(&h, leader, "current input");
@@ -306,7 +306,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     (void)g;
     attach_turn(&h, leader, "current input");
 
@@ -383,10 +383,10 @@ static void test_head_blocks_cache_layout(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-head");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-head"));
     g->memory = sdsnew("MEM-SUMMARY"); /* 非空 ⇒ 两块都出现 */
 
-    struct edc_task *t2 = edc_task_new(edc_test_id("h-2"), "sess-head", g->group_id, "second task", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("h-2"), edc_test_session_id("sess-head"), g->group_id, "second task", edc_channel_adapter);
     edc_task_group_add_task(g, t2);
 
     attach_turn(&h, leader, "first input");
@@ -436,11 +436,11 @@ static void test_join_injection_shape(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-inj");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-inj"));
     (void)g;
 
     /* 源一: 普通任务 (description + output) */
-    struct edc_task *src = edc_task_new(edc_test_id("src-1"), "sess-inj", edc_test_id("src-1"), "src work", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("src-1"), edc_test_session_id("sess-inj"), edc_test_id("src-1"), "src work", edc_channel_adapter);
     {
         struct edc_turn *t = edc_turn_new();
         t->task_id = edc_test_id("src-1");
@@ -470,7 +470,7 @@ static void test_join_injection_shape(void)
     edc_task_mark_completed(fold_src);
 
     /* 目标: 自己的输入 = "DEST-OWN-TURN", 同时 JOIN 两个源 */
-    struct edc_task *dst = edc_task_new(edc_test_id("dst-1"), "sess-inj", edc_test_id("dst-1"), "dst work", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new(edc_test_id("dst-1"), edc_test_session_id("sess-inj"), edc_test_id("dst-1"), "dst work", edc_channel_adapter);
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
     edc_task_add_dependency(dst, fold_src, TASK_DEP_JOIN);
     attach_turn(&h, dst, "DEST-OWN-TURN");
@@ -540,7 +540,7 @@ static void test_curate_request_is_self_contained(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-curate");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-curate"));
     (void)g;
     /* 会话里放两条条目: 策展任务也不该被"通知" (它读的是自己 turn 里的材料) */
     sds id1 = memo_add(h.sess, "构建入口", "bazelisk", NULL);
@@ -585,7 +585,7 @@ static void test_summary_request_is_capped(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     (void)g;
 
     /* 普通任务: 不带 max_tokens (回复从不封顶)。 */
@@ -630,7 +630,7 @@ static void test_fold_request_is_self_contained(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-fold-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-fold-req"));
     (void)g;
 
     struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
@@ -708,12 +708,12 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
 
     /* The completed `!cmd` task's turn. The key is bound at CREATION: messages are rows
      * written under it, so assigning task_id afterwards would leave them under the
      * constructor's placeholder and history_add_turn would find nothing. */
-    struct edc_turn *done = edc_turn_new_for("sess-req", edc_test_id("2"), edc_test_id("2"), 0);
+    struct edc_turn *done = edc_turn_new_for(edc_test_session_id("sess-req"), edc_test_id("2"), edc_test_id("2"), 0);
     edc_turn_add_user_message(done, "!pwd");
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "command", "pwd");

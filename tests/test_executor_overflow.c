@@ -93,11 +93,11 @@ static void fix_up(struct fix *f, int window)
     f->cfg = g_new0(struct edc_config, 1);
     f->cfg->workspace = sdsnew(edc_test_workspace());
     f->cfg->context_window = window;
-    f->sess = edc_session_new(f->cfg, "sess-overflow", "Overflow");
+    f->sess = edc_session_new(f->cfg, edc_test_session_id("sess-overflow"), "Overflow");
     f->sched = edc_scheduler_new(f->cfg);
     install_resolver(f->sched, f->sess);
 
-    f->task = edc_task_new(edc_test_id("t-1"), "sess-overflow", edc_test_id("t-1"), "user task", edc_channel_adapter);
+    f->task = edc_task_new(edc_test_id("t-1"), edc_test_session_id("sess-overflow"), edc_test_id("t-1"), "user task", edc_channel_adapter);
     edc_session_add_group(f->sess, edc_task_group_new(f->task));
     give_input(f->task, "hello");
 }

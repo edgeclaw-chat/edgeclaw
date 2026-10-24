@@ -295,7 +295,7 @@ static int turn_count_tool_msgs(struct edc_turn *turn)
 /* A task parked in AWAIT_TOOLS with a live turn: "tool calls are out". */
 static struct edc_task *new_waiting_task(const char *id, const char *const *call_ids, int count)
 {
-    struct edc_task *t = edc_task_new(edc_test_id(id), "sess-tb", edc_test_id(id), "toolbox response test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(id), edc_test_session_id("sess-tb"), edc_test_id(id), "toolbox response test", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, call_ids, count);
