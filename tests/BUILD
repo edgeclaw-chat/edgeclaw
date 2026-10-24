@@ -941,6 +941,21 @@ cc_test(
 )
 
 cc_test(
+    name = "test_session_eviction",
+    srcs = ["test_session_eviction.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_state_guardrail",
     srcs = ["test_state_guardrail.c", "test_ws.h"],
     deps = [
@@ -1552,6 +1567,25 @@ cc_test(
     srcs = ["test_lex.c", "test_ws.h"],
     deps = [
         "//src/shell:lex",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# One-shot importer: <workspace>/<session_id>/session.json -> edgeclaw.db.
+# Manual, obvious reason: it rewrites a real workspace. Usage:
+#   ./bazel-bin/tests/import_session_json <workspace> <session_id> [--dry-run]
+cc_binary(
+    name = "import_session_json",
+    srcs = ["import_session_json.c"],
+    tags = ["manual"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )

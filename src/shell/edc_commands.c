@@ -613,8 +613,8 @@ static void cmd_notify_if_active_session_changed(struct edc_session_manager *sm,
     edc_channel_notify_active_session(channel_actor, now ? now->session_id : NULL);
 }
 
-static bool edc_commands_handle_session_new(struct edc_session_manager *sm, struct edc_reply_to to,
-                                            const char *name, const char *dir)
+static bool edc_commands_handle_session_new(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                            struct edc_reply_to to, const char *name, const char *dir)
 {
     /* create() switches active to the new session, so take the old one first. */
     struct edc_session *old = edc_session_manager_get_active(sm);
@@ -656,6 +656,9 @@ static bool edc_commands_handle_session_new(struct edc_session_manager *sm, stru
     edc_commands_reply(to, reply);
     sdsfree(reply);
     cmd_notify_if_active_session_changed(sm, to.channel_actor, old);
+    /* A switch is the only moment the resident set can grow, so it is also the moment to
+     * give memory back: the sessions nobody has touched in a while are pure cache. */
+    edc_session_manager_evict_idle(sm, sched, 0);
     return true;
 }
 
@@ -708,6 +711,7 @@ static bool edc_commands_handle_session_switch(struct edc_session_manager *sm, s
     edc_commands_reply(to, reply);
     sdsfree(reply);
     cmd_notify_if_active_session_changed(sm, to.channel_actor, old);
+    edc_session_manager_evict_idle(sm, sched, 0);
     return true;
 }
 
@@ -765,6 +769,7 @@ static bool edc_commands_handle_session_remove(struct edc_session_manager *sm, s
     edc_commands_reply(to, reply);
     sdsfree(reply);
     cmd_notify_if_active_session_changed(sm, to.channel_actor, active_before);
+    edc_session_manager_evict_idle(sm, sched, 0);
     sdsfree(stopped_id);
     sdsfree(stopped_name);
     return true;
@@ -910,17 +915,16 @@ static sds sub_argv_tail(const struct edc_sub_argv *a, int from)
 static void sub_session_new(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                             struct edc_channel_message *message, const struct edc_sub_argv *args)
 {
-    (void)sched;
     (void)message;
     /* ONE word can only be the directory, two are (name, dir), more is a usage error. */
     if (args->argc == 1)
     {
-        (void)edc_commands_handle_session_new(sm, to, NULL, args->argv[0]);
+        (void)edc_commands_handle_session_new(sm, sched, to, NULL, args->argv[0]);
         return;
     }
     if (args->argc == 2)
     {
-        (void)edc_commands_handle_session_new(sm, to, args->argv[0], args->argv[1]);
+        (void)edc_commands_handle_session_new(sm, sched, to, args->argv[0], args->argv[1]);
         return;
     }
     edc_commands_reply(to, "Usage: `/session new [name] <dir>`\n"

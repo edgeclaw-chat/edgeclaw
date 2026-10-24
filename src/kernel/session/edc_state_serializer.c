@@ -634,6 +634,19 @@ static void deser_session_meta(struct edc_session *session, cJSON *sj)
             sdsfree(session->name);
         session->name = sdsnew(cJSON_GetStringValue(name_j));
     }
+    /* created_at: the session was constructed a moment ago, so without this the snapshot's
+     * own creation time is replaced by "now" -- which is how an imported session ended up
+     * dated the day it was imported instead of the day it was created. Both shapes are
+     * accepted: an integer (current) and the display string older files carry. */
+    cJSON *ca_j = cJSON_GetObjectItem(sj, "created_at");
+    if (ca_j && cJSON_IsNumber(ca_j))
+        session->created_at = (uint64_t)cJSON_GetNumberValue(ca_j);
+    else if (ca_j && cJSON_IsString(ca_j))
+    {
+        time_t t = 0;
+        if (edc_datetime_parse(cJSON_GetStringValue(ca_j), &t))
+            session->created_at = (uint64_t)t;
+    }
     cJSON *la_j = cJSON_GetObjectItem(sj, "last_active");
     if (la_j && cJSON_IsNumber(la_j))
         session->last_active = (uint64_t)cJSON_GetNumberValue(la_j);

@@ -84,6 +84,52 @@ extern void edc_session_store_save_session_state_tagged(struct edc_session_manag
                                                        struct edc_session *session,
                                                        const char *tag);
 
+/* ── Unloading: the in-memory tree is a cache, so it can be given back ────────
+ *
+ * A loaded session keeps its groups/tasks in memory because the scheduler needs them. A
+ * session nobody has switched to in a while needs nothing -- and since reloading is cheap
+ * now (the group history is ids; a load collects them instead of materializing 40k
+ * messages), holding every session that was ever activated is pure waste.
+ *
+ * How many stay resident: 4 is a judgement call, not a measurement. A session tree is
+ * metadata (a few KB per task plus one pointer per message), so four of them stay well
+ * under a megabyte even for long conversations. Raising it buys nothing measurable;
+ * lowering it to 1 would make every switch reload. */
+#define EDC_SESSION_MAX_LOADED 4
+
+/* This drops one session's tree after making sure the database has it:
+ *
+ *   save -> reset -> state_loaded = false
+ *
+ * Returns false and changes NOTHING when it would be unsafe:
+ *   - the session is the active one (the scheduler is driving it),
+ *   - it holds work that is not finished (a task whose life is still ALIVE),
+ *   - it is quarantined (a failed load must never be persisted, see state_quarantined),
+ *   - the save failed (keeping the tree beats losing it).
+ *
+ * After this, the session is the same id/name shell it was before its first activation,
+ * and the ordinary load path brings it back on demand
+ * (edc_session_store_resolve_task / the /session switch handler). */
+bool edc_session_unload(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                        struct edc_session *session);
+
+/* Does this session hold work that has not finished? True when any member task is still
+ * ALIVE (queued, running, waiting on tools or on a dependency). An INTERRUPTED task does
+ * not count: it waits for a decision that survives on disk. */
+bool edc_session_has_live_work(struct edc_session *session);
+
+/* Evict idle sessions until at most |max_loaded| are resident. The active session and any
+ * session with live work or a quarantine are never evicted, so the real number can exceed
+ * |max_loaded|; |max_loaded| <= 0 uses EDC_SESSION_MAX_LOADED.
+ *
+ * Chooses the least recently active first (session->last_active). Called after a switch,
+ * which is the only moment the set can grow. Returns how many were dropped. */
+int edc_session_manager_evict_idle(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                   int max_loaded);
+
+/* How many sessions are resident right now (state_loaded), for logs and tests. */
+int edc_session_manager_loaded_count(struct edc_session_manager *sm);
+
 /** Cancel all non-terminal turns of the session (NULL = active) and persist at
  *  once, so CANCELLED survives a restart (`/session stop`). */
 extern void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc_scheduler *sched);
