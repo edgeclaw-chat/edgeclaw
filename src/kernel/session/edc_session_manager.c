@@ -201,27 +201,24 @@ struct edc_session *edc_session_manager_get_active(struct edc_session_manager *s
     return sm->sessions[sm->active_index];
 }
 
-/* Does the TEXT the user typed name the session with this id?
+/* Does the TEXT the user typed spell the session with this id?
  *
- * OUTPUT has exactly one form (the id's integer, see edc_session_dir_name). INPUT is
- * tolerant on purpose: "13" is what the UI shows and what the directories are called, but
- * "s13" is what has been typed for months and what older notes still say, so both resolve.
- * Being lenient about what we accept cannot create a second representation; only what we
- * WRITE can. Anything that is not those forms is a name, handled by the caller. */
+ * An id's text form is its integer, and that is the only form recognised here. Anything else
+ * -- including the old "s13" spelling -- falls through to the name comparison in the caller,
+ * which is the correct answer: "s13" is not this session's id, and after the directories were
+ * renamed it is not a name either.
+ *
+ * Keeping a prefix-stripping branch here bought nothing once the output side settled on one
+ * form, and it was actively misleading: it implied the "s<id>" spelling still existed
+ * somewhere. Tolerating an input format is only free while that format is still produced by
+ * something. */
 static bool edc_sm_id_matches(int64_t session_id, const char *typed)
 {
     if (!typed || !*typed || session_id <= 0)
         return false;
-    const char *num = typed;
-    if (typed[0] == 's' && typed[1] >= '0' && typed[1] <= '9')
-        num = typed + 1;
-    else if (strncmp(typed, "sess-", 5) == 0 && typed[5] >= '0' && typed[5] <= '9')
-        num = typed + 5;
-    if (num[0] < '0' || num[0] > '9')
-        return false;
     char *end = NULL;
-    const long long v = strtoll(num, &end, 10);
-    return end && *end == '\0' && v == session_id;
+    const long long v = strtoll(typed, &end, 10);
+    return end != typed && end && *end == '\0' && v == session_id;
 }
 
 struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, const char *name_or_id)
