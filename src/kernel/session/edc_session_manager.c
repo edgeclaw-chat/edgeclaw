@@ -567,7 +567,8 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
         size_t msg_count = edc_session_get_message_count(s);
         bool active = (i == sm->active_index);
 
-        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", edc_id_str(s->session_id), s->name ? s->name : "(unnamed)",
+        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", edc_session_id_str(s->session_id),
+                              s->name ? s->name : "(unnamed)",
                               active ? " · **current**" : "");
         {
             /* Formatted here, at the presentation edge: the value itself is an integer. */

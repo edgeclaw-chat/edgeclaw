@@ -161,10 +161,11 @@ static sds edc_toolbox_actor_cap_result(edc_toolbox_actor_state_t *state, struct
     if (len <= cap && lines <= EDC_TOOL_OUTPUT_MAX_LINES)
         return result; /* within both: untouched */
 
-    /* spill_output names a DIRECTORY, so it wants the "s<id>" text form. */
+    /* spill_output names a DIRECTORY (<ws>/<session>/tool-output), so it wants the
+     * "s<id>" spelling -- the same one the session directory actually has. */
     const char *session_id = NULL;
     if (tb_ctx->task && tb_ctx->task->group && tb_ctx->task->group->session)
-        session_id = edc_id_str(tb_ctx->task->group->session->session_id);
+        session_id = edc_session_id_str(tb_ctx->task->group->session->session_id);
     /* The whole output goes to a file BEFORE anything is cut: this is the difference between
      * "truncated" and "lost". A failure here still produces a correct (if lossy) message. */
     sds path = edc_toolbox_spill_output(state->toolbox, req->name, session_id, result, len);

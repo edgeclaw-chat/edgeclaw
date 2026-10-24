@@ -2302,8 +2302,10 @@ bool edc_state_store_insert_task_new(int64_t session_id, int64_t group_id, int64
                                -1, &st, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
-            /* name: a placeholder here; the real name arrives with the metadata flush. */
-            bind_str(st, 2, edc_id_str(session_id));
+            /* name: a placeholder here; the real name arrives with the metadata flush.
+             * Spelled "s<id>" to match what a session with no name is called everywhere
+             * else (edc_session_new_with_workdir uses the same fallback). */
+            bind_str(st, 2, edc_session_id_str(session_id));
             sqlite3_bind_int64(st, 3, (sqlite3_int64)time(NULL));
             ok = sqlite3_step(st) == SQLITE_DONE;
             sqlite3_finalize(st);
