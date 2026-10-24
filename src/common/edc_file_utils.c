@@ -150,46 +150,6 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
     return true;
 }
 
-bool edc_file_rename_replace(const char *src, const char *dst, EdcError **error)
-{
-    if (!src || !dst)
-    {
-        edc_error_set(error, EDC_ERR_INVAL, "rename: NULL path");
-        return false;
-    }
-#ifdef _WIN32
-    /* The CRT's rename() refuses to overwrite (errno EEXIST), which breaks every
-     * ".tmp -> real" state save after the first one. MoveFileExW replaces the
-     * destination and takes UTF-8 paths through the wide API. */
-    wchar_t *wsrc = edc_utf8_to_wide(src);
-    wchar_t *wdst = edc_utf8_to_wide(dst);
-    BOOL ok = FALSE;
-    DWORD err = ERROR_INVALID_PARAMETER;
-    if (wsrc && wdst)
-    {
-        ok = MoveFileExW(wsrc, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-        if (!ok)
-            err = GetLastError();
-    }
-    free(wsrc);
-    free(wdst);
-    if (!ok)
-    {
-        edc_error_set(error, EDC_ERR_FAILED, "rename '%s' -> '%s' failed: Windows error %lu", src, dst,
-                      (unsigned long)err);
-        return false;
-    }
-    return true;
-#else
-    if (rename(src, dst) != 0)
-    {
-        edc_error_set(error, EDC_ERR_FAILED, "rename '%s' -> '%s' failed: %s", src, dst, strerror(errno));
-        return false;
-    }
-    return true;
-#endif
-}
-
 /* True when the resolved parent directory of |path| lives inside |root|.
  * |root| == NULL/"" disables the check. A parent that cannot be resolved (e.g.
  * does not exist yet) fails closed. */

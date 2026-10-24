@@ -26,7 +26,6 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
  * kept the FIRST version of every state file on Windows (session.json, sessions
  * index, sequence watermarks). This wrapper uses MoveFileExW with REPLACE_EXISTING
  * on Windows and rename() elsewhere. Returns false with *error set on failure. */
-bool edc_file_rename_replace(const char *src, const char *dst, EdcError **error);
 
 /* Symlink-safe variants for writers whose target path is derived from a
  * directory the sandboxed model can write to (workspace, session dirs, ...).

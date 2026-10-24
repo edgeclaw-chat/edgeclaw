@@ -387,15 +387,6 @@ cc_test(
 )
 
 cc_test(
-    name = "test_file_rename",
-    srcs = ["test_file_rename.c", "test_ws.h"],
-    deps = [
-        "//src/common:edc_file_utils",
-    ],
-    linkopts = LINK_OPTS,
-)
-
-cc_test(
     name = "test_mention_pass",
     srcs = ["test_mention_pass.c", "test_ws.h"],
     deps = [
