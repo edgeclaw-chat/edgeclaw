@@ -166,190 +166,98 @@ static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
 
 /* ── Index persistence ─────────────────────────────────────── */
 
-static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
+/* The session list is a QUERY now, not a file. sessions.json restated the `sessions` table
+ * and the two could disagree -- an imported session sat invisible in the database until the
+ * file was rewritten by hand. `is_active` was the one fact the table lacked; it is a column
+ * now (with a partial unique index), so "where am I" survives a kill like everything else.
+ *
+ * What replaced edc_sm_save_index(): edc_session_manager_create / _switch / _stop each
+ * write the one row they changed. Nothing rewrites the whole list. */
+
+/* Persist which session is active. Called at every point that moves it. */
+static void edc_sm_persist_active(struct edc_session_manager *sm)
 {
-    cJSON *root = cJSON_CreateObject();
-    cJSON *arr = cJSON_CreateArray();
-
-    for (int i = 0; i < sm->session_count; i++)
-    {
-        struct edc_session *s = sm->sessions[i];
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "id", s->session_id);
-        cJSON_AddStringToObject(obj, "name", s->name ? s->name : s->session_id);
-        cJSON_AddNumberToObject(obj, "created_at", (double)s->created_at);
-        cJSON_AddItemToArray(arr, obj);
-    }
-
-    cJSON_AddItemToObject(root, "sessions", arr);
-    if (sm->active_index >= 0 && sm->active_index < sm->session_count)
-        cJSON_AddStringToObject(root, "active_session_id", sm->sessions[sm->active_index]->session_id);
-
-    return root;
-}
-
-static void edc_sm_save_index(struct edc_session_manager *sm)
-{
-    /* No index path = this store has no disk destination (a hand-built in-memory
-     * store in tests): skip rather than crash, same rule as edc_session_save_state's
-     * handling of history_dir. */
-    if (!sm->index_path)
+    if (!sm || sm->active_index < 0 || sm->active_index >= sm->session_count)
         return;
-
-    cJSON *root = edc_sm_build_index(sm);
-    char *json_str = cJSON_Print(root);
-    EdcError *err = NULL;
-
-    /* ensure directory exists */
-    sds dir = edc_path_dirname(sm->index_path);
-    mkdir(dir, 0755);
-    sdsfree(dir);
-
-    if (!edc_file_write(sm->index_path, json_str, (ssize_t)strlen(json_str), &err))
-    {
-        log_error("failed to save sessions.json: %s", err ? err->message : "unknown");
-        if (err)
-            edc_error_free(err);
-    }
-
-    cJSON_free(json_str);
-    cJSON_Delete(root);
+    struct edc_session *s = sm->sessions[sm->active_index];
+    if (!s || !s->session_id)
+        return;
+    if (!edc_state_store_open(sm->config))
+        return; /* no store (a hand-built test manager): memory only, as before */
+    edc_state_store_set_active_session(s->session_id);
 }
 
 /* ── Load ──────────────────────────────────────────────────── */
 
 bool edc_session_manager_load(struct edc_session_manager *sm)
 {
-    /* 1. Try to load index */
-    EdcError *err = NULL;
-    sds content = edc_file_read(sm->index_path, &err);
+    if (!sm)
+        return false;
 
-    if (!content)
+    /* The session list is the `sessions` table. sessions.json used to hold it too, and the
+     * two copies could disagree -- an imported session sat in the database invisible until
+     * the file was rewritten by hand. Opening the store here (idempotent) is what makes this
+     * possible: the manager is built before anything else, so before this change there was
+     * no database to ask. */
+    if (!edc_state_store_open(sm->config))
     {
-        edc_error_free(err);
-        /* No existing sessions — create default */
+        log_error("session manager: cannot open the state store at %s",
+                  sm->config && sm->config->workspace ? sm->config->workspace : "?");
+        return false;
+    }
+
+    struct edc_session_row *rows = NULL;
+    int n = 0;
+    if (!edc_state_store_list_sessions(&rows, &n))
+    {
+        log_error("session manager: cannot read the session list");
+        return false;
+    }
+
+    if (n == 0)
+    {
+        edc_session_rows_free(rows, 0);
+        /* A brand-new workspace: one session, and it is the active one. */
         struct edc_session *def = edc_session_manager_create(sm, "default");
         if (!def)
             return false;
-        edc_sm_save_index(sm);
-        return true;
-    }
-
-    cJSON *root = cJSON_Parse(content);
-    if (!root)
-    {
-        sdsfree(content);
-        /* fallback: create default */
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-            return false;
-        return true;
-    }
-
-    cJSON *arr = cJSON_GetObjectItem(root, "sessions");
-    if (!arr || !cJSON_IsArray(arr))
-    {
-        cJSON_Delete(root);
-        sdsfree(content);
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-            return false;
-        return true;
-    }
-
-    int count = cJSON_GetArraySize(arr);
-    if (count == 0)
-    {
-        cJSON_Delete(root);
-        sdsfree(content);
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-            return false;
-        return true;
-    }
-
-    sm->sessions = g_new0(struct edc_session *, count);
-    sm->session_count = count;
-
-    cJSON *active_id_json = cJSON_GetObjectItem(root, "active_session_id");
-    const char *active_id =
-        active_id_json && cJSON_IsString(active_id_json) ? cJSON_GetStringValue(active_id_json) : NULL;
-
-    for (int i = 0; i < count; i++)
-    {
-        cJSON *obj = cJSON_GetArrayItem(arr, i);
-        if (!obj)
-            continue;
-
-        cJSON *id_j = cJSON_GetObjectItem(obj, "id");
-        cJSON *name_j = cJSON_GetObjectItem(obj, "name");
-        cJSON *created_j = cJSON_GetObjectItem(obj, "created_at");
-
-        const char *id = id_j && cJSON_IsString(id_j) ? cJSON_GetStringValue(id_j) : NULL;
-        const char *name = name_j && cJSON_IsString(name_j) ? cJSON_GetStringValue(name_j) : NULL;
-
-        if (!id)
-            continue;
-
-        struct edc_session *s = edc_session_new(sm->config, id, name ? name : id);
-        if (!s)
-            continue;
-
-        /* Restore the timestamp. Integer is the format now; a string can only come from an
-         * index written by an older build, and is accepted so the first run after an
-         * upgrade does not silently reset every creation date. */
-        if (created_j && cJSON_IsNumber(created_j))
-            s->created_at = (uint64_t)cJSON_GetNumberValue(created_j);
-        else if (created_j && cJSON_IsString(created_j))
-        {
-            time_t t = 0;
-            if (edc_datetime_parse(cJSON_GetStringValue(created_j), &t))
-                s->created_at = (uint64_t)t;
-        }
-
-        sm->sessions[i] = s;
-
-        if (active_id && strcmp(id, active_id) == 0)
-            sm->active_index = i;
-    }
-
-    /* Compact out NULL entries */
-    int write = 0;
-    for (int i = 0; i < count; i++)
-    {
-        if (sm->sessions[i])
-        {
-            if (write != i)
-                sm->sessions[write] = sm->sessions[i];
-            write++;
-        }
-    }
-    sm->session_count = write;
-
-    /* Clamp active_index */
-    if (sm->active_index < 0 || sm->active_index >= sm->session_count)
         sm->active_index = 0;
+        edc_sm_persist_active(sm);
+        return true;
+    }
 
-    /* Numbers seen in the index also feed the high-water mark: compatible with old
-     * archives lacking .session_seq (on the first run of this change, the index's max
-     * must not be reissued). */
-    for (int i = 0; i < sm->session_count; i++)
+    sm->sessions = g_new0(struct edc_session *, n);
+    sm->session_count = n;
+    int active_idx = -1;
+    for (int i = 0; i < n; i++)
+    {
+        struct edc_session *s = edc_session_new(sm->config, rows[i].session_id,
+                                                rows[i].name && *rows[i].name ? rows[i].name
+                                                                              : rows[i].session_id);
+        if (!s)
+        {
+            edc_session_rows_free(rows, n);
+            return false;
+        }
+        s->created_at = rows[i].created_at;
+        s->last_active = rows[i].last_active;
+        sm->sessions[i] = s;
+        if (rows[i].is_active)
+            active_idx = i;
+    }
+    edc_session_rows_free(rows, n);
+
+    /* No recorded active session (a database written before is_active existed): pick the
+     * newest and record the choice, so the next start is deterministic. */
+    if (active_idx < 0)
+        active_idx = n - 1;
+    sm->active_index = active_idx;
+    edc_sm_persist_active(sm);
+
+    /* Every id this run may allocate must exceed every id already used. */
+    for (int i = 0; i < n; i++)
         edc_sm_observe_session_id(sm, sm->sessions[i]->session_id);
 
-    /* If nothing loaded, create default */
-    if (sm->session_count == 0)
-    {
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-        {
-            cJSON_Delete(root);
-            sdsfree(content);
-            return false;
-        }
-    }
-
-    cJSON_Delete(root);
-    sdsfree(content);
     return true;
 }
 
@@ -361,7 +269,6 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     sm->config = config;
     sm->active_index = -1;
     sm->sessions_dir = sdsnew(config->workspace);
-    sm->index_path = edc_path_join(config->workspace, "sessions.json", NULL);
     sm->next_session_id = 1;
 
     /* Restore the previous run's high-water mark, load the index (which also feeds
@@ -399,7 +306,6 @@ void edc_session_manager_free(struct edc_session_manager *sm)
 
     free(sm->sessions);
     sdsfree(sm->sessions_dir);
-    sdsfree(sm->index_path);
     free(sm);
 }
 
@@ -577,7 +483,9 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
 
     s->last_active = (uint64_t)edc_datetime_now();
 
-    edc_sm_save_index(sm);
+    /* One row, not a rewritten list: creation is a database write now. */
+    edc_state_store_ensure_session(s->session_id, s->name ? s->name : s->session_id, s->created_at);
+    edc_sm_persist_active(sm);
     log_info("created session: id=%s name=%s", s->session_id, s->name);
     return s;
 }
@@ -616,7 +524,7 @@ bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name
 
     new_sess->last_active = (uint64_t)edc_datetime_now();
 
-    edc_sm_save_index(sm);
+    edc_sm_persist_active(sm);
     log_info("switched to session: id=%s name=%s", new_sess->session_id, new_sess->name);
     return true;
 }
@@ -677,7 +585,7 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
         active->last_active = (uint64_t)edc_datetime_now();
     }
 
-    edc_sm_save_index(sm);
+    edc_sm_persist_active(sm);
     return true;
 }
 
@@ -696,7 +604,7 @@ bool edc_session_manager_rename(struct edc_session_manager *sm, const char *name
     sdsfree(s->name);
     s->name = sdsnew(new_name);
 
-    edc_sm_save_index(sm);
+    edc_state_store_ensure_session(s->session_id, s->name, s->created_at);
     log_info("renamed session %s to %s", s->session_id, new_name);
     return true;
 }
@@ -737,14 +645,14 @@ void edc_session_manager_save_all(struct edc_session_manager *sm)
     if (!sm)
         return;
 
-    /* The index, and only the index. Session state is not written here: this function has
-     * no scheduler, and since the move to the store every per-session save needs one. The
-     * paths that want the tree on disk are edc_session_store_save_all_sessions_state() and
+    /* Session state is not written here: this function has no scheduler, and since the
+     * move to the store every per-session save needs one. The paths that want the tree on
+     * disk are edc_session_store_save_all_sessions_state() and
      * edc_session_store_save_session_state_tagged(), and both call
-     * edc_session_manager_save_loaded_states() after this. (An earlier version carried an
-     * empty `if (active)` branch here with a comment claiming it saved the active session:
-     * a save that silently saved nothing.) */
-    edc_sm_save_index(sm);
+     * edc_session_manager_save_loaded_states() after this.
+     *
+     * What is left is the one fact this layer owns: which session is active. */
+    edc_sm_persist_active(sm);
 }
 
 void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, struct edc_scheduler *sched)

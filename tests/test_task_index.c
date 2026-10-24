@@ -181,8 +181,11 @@ int main(void)
 
         struct edc_config *c = make_config();
         struct edc_session_manager *m = open_sm(c);
+        /* The list IS the database now, so forgetting a session also removes it from the
+         * list. (Before, sessions.json still carried B and only its state was gone -- a
+         * shell that could not be loaded and that nothing could ever populate again.) */
         struct edc_session *b = edc_session_manager_find(m, "B");
-        CHECK(b != NULL, "B's shell is still listed");
+        CHECK(b == NULL, "B is gone from the list as well");
         CHECK(edc_session_manager_session_for_task(m, bt_id) == NULL,
               "B's task no longer resolves to anyone");
         edc_session_manager_free(m);

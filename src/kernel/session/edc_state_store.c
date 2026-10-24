@@ -109,6 +109,14 @@ static const char *const EDC_SCHEMA_SQL =
     "  active_task_id        TEXT,"
     "  foreground_group_id   TEXT,"
     "  next_completion_seq   INTEGER NOT NULL DEFAULT 1,"
+    /* Which session the UI is on. It used to live only in sessions.json's
+     * active_session_id, which is why the session LIST also lived there: the index was the
+     * only place the answer to "where am I" could be written. As a column it is one row to
+     * update, it survives a kill, and the list can be a plain query.
+     *
+     * A partial unique index (below) enforces the invariant "at most one active session"
+     * instead of trusting every writer to clear the others. */
+    "  is_active             INTEGER NOT NULL DEFAULT 0,"
     /* `archived` and `broken` were forward-looking placeholders with no reader and no
      * writer (the load guard uses the in-memory state_quarantined flag). Declared columns
      * with no owner are how a schema rots. */
@@ -117,6 +125,10 @@ static const char *const EDC_SCHEMA_SQL =
     "  memo_pruned_before    INTEGER NOT NULL DEFAULT 0,"
     "  updated_at            INTEGER NOT NULL"
     ");"
+    /* At most one active session, enforced by the database rather than by every writer
+     * remembering to clear the others. */
+    "CREATE UNIQUE INDEX IF NOT EXISTS sessions_one_active ON sessions(is_active) WHERE is_active=1;"
+    "CREATE INDEX IF NOT EXISTS sessions_by_created ON sessions(created_at);"
 
     "CREATE TABLE IF NOT EXISTS groups ("
     "  session_id         TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,"
@@ -2244,6 +2256,171 @@ bool edc_state_store_has_session(const char *session_id)
     if (!g_db || !session_id || !*session_id)
         return false;
     return session_exists(session_id);
+}
+
+/* ── The session list, and which one is active ─────────────────────────────── */
+
+void edc_session_rows_free(struct edc_session_row *rows, int n)
+{
+    if (!rows)
+        return;
+    for (int i = 0; i < n; i++)
+    {
+        free(rows[i].session_id);
+        free(rows[i].name);
+    }
+    free(rows);
+}
+
+bool edc_state_store_list_sessions(struct edc_session_row **out, int *n)
+{
+    if (out)
+        *out = NULL;
+    if (n)
+        *n = 0;
+    if (!g_db)
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "SELECT session_id, name, coalesce(created_at,0), "
+                           "coalesce(last_active,0), is_active "
+                           "FROM sessions ORDER BY created_at, session_id",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+
+    struct edc_session_row *rows = NULL;
+    int cnt = 0, cap = 0;
+    bool ok = true;
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        if (cnt == cap)
+        {
+            const int ncap = cap ? cap * 2 : 8;
+            struct edc_session_row *grown = realloc(rows, (size_t)ncap * sizeof(*grown));
+            if (!grown)
+            {
+                ok = false;
+                break;
+            }
+            rows = grown;
+            cap = ncap;
+        }
+        struct edc_session_row *r = &rows[cnt++];
+        const char *id = col_str(st, 0);
+        const char *name = col_str(st, 1);
+        r->session_id = strdup(id ? id : "");
+        r->name = strdup(name ? name : "");
+        r->created_at = (uint64_t)sqlite3_column_int64(st, 2);
+        r->last_active = (uint64_t)sqlite3_column_int64(st, 3);
+        r->is_active = sqlite3_column_int(st, 4) != 0;
+    }
+    sqlite3_finalize(st);
+
+    if (!ok)
+    {
+        edc_session_rows_free(rows, cnt);
+        return false;
+    }
+    if (out)
+        *out = rows;
+    else
+        edc_session_rows_free(rows, cnt);
+    if (n)
+        *n = cnt;
+    return true;
+}
+
+bool edc_state_store_set_active_session(const char *session_id)
+{
+    if (!g_db || !session_id || !*session_id)
+        return false;
+
+    /* Clear-then-set in one transaction: the partial unique index rejects the moment two
+     * rows carry is_active=1, so the two statements cannot be allowed to straddle a commit
+     * that another reader could see. */
+    if (!exec_sql(g_db, "BEGIN IMMEDIATE", "set_active BEGIN"))
+        return false;
+    if (!exec_sql(g_db, "UPDATE sessions SET is_active=0 WHERE is_active<>0", "set_active clear"))
+    {
+        exec_sql(g_db, "ROLLBACK", "set_active rollback");
+        return false;
+    }
+    {
+        sqlite3_stmt *st = NULL;
+        bool ok = false;
+        if (sqlite3_prepare_v2(g_db, "UPDATE sessions SET is_active=1 WHERE session_id=?", -1, &st, NULL) ==
+            SQLITE_OK)
+        {
+            bind_str(st, 1, session_id);
+            ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(g_db) > 0;
+            sqlite3_finalize(st);
+        }
+        if (!ok)
+        {
+            exec_sql(g_db, "ROLLBACK", "set_active rollback");
+            return false;
+        }
+    }
+    if (!exec_sql(g_db, "COMMIT", "set_active COMMIT"))
+    {
+        exec_sql(g_db, "ROLLBACK", "set_active rollback");
+        return false;
+    }
+    return true;
+}
+
+char *edc_state_store_active_session(void)
+{
+    if (!g_db)
+        return NULL;
+    sqlite3_stmt *st = NULL;
+    char *out = NULL;
+    if (sqlite3_prepare_v2(g_db, "SELECT session_id FROM sessions WHERE is_active=1 LIMIT 1", -1, &st,
+                           NULL) == SQLITE_OK)
+    {
+        if (sqlite3_step(st) == SQLITE_ROW)
+        {
+            const char *id = col_str(st, 0);
+            if (id)
+                out = strdup(id);
+        }
+        sqlite3_finalize(st);
+    }
+    return out;
+}
+
+bool edc_state_store_ensure_session(const char *session_id, const char *name, uint64_t created_at)
+{
+    if (!g_db || !session_id || !*session_id)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "INSERT OR IGNORE INTO sessions(session_id,name,created_at,last_active,"
+                           "updated_at) VALUES(?,?,?,?,?)",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, session_id);
+    bind_str(st, 2, (name && *name) ? name : session_id);
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)created_at);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)created_at);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)time(NULL));
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool edc_state_store_delete_session(const char *session_id)
+{
+    if (!g_db || !session_id || !*session_id)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "DELETE FROM sessions WHERE session_id=?", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, session_id);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
 }
 
 /* ── message JSON <-> columns ────────────────────────────────────────────────

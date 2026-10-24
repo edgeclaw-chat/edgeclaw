@@ -20,6 +20,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C"
 {
@@ -44,8 +45,15 @@ struct edc_scheduler;
  *     converted between the two. The columns now hold all the metadata, `body` holds only
  *     what goes on the wire, and session_id/group_id are denormalized so a group's
  *     messages can be read without joining tasks. Every timestamp in this file is an
- *     INTEGER unix second -- there is exactly one representation. */
-#define EDC_DB_VERSION 3
+ *     INTEGER unix second -- there is exactly one representation.
+ *
+ * v4: sessions.is_active. Which session the UI is on used to live only in
+ *     <workspace>/sessions.json, and the session LIST lived there too because the index was
+ *     the only place the answer could be written; the two copies could disagree, which is
+ *     how an imported session stayed invisible. It is a column now, with a partial unique
+ *     index so "at most one active" is enforced rather than assumed, and the list is a
+ *     query. */
+#define EDC_DB_VERSION 4
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
@@ -253,6 +261,43 @@ char *edc_state_store_session_for_task(const char *task_id);
  * for the caller: a session that was never written (a brand-new session -- saving an empty
  * tree is correct) and a session that IS there but could not be read (a failed load --
  * saving would overwrite real state with a half-built shell). */
+/* ── The session list, and which one is active ───────────────────────────────
+ *
+ * The list used to live in <workspace>/sessions.json and this table was just "where the
+ * rows go". Now the table IS the list: the index file restated it, and keeping two copies
+ * in step is what made an imported session invisible until the file was rewritten by hand.
+ *
+ * `is_active` is the one thing the file held that the table did not; it is a column now,
+ * with a partial unique index so "at most one" is enforced rather than assumed.
+ */
+struct edc_session_row
+{
+    char *session_id;
+    char *name;
+    uint64_t created_at;
+    uint64_t last_active;
+    bool is_active;
+};
+
+/* Every session, oldest first (the order an id list wants). Caller frees with
+ * edc_session_rows_free(). Returns false on a SQL error; *out stays NULL with *n == 0. */
+bool edc_state_store_list_sessions(struct edc_session_row **out, int *n);
+void edc_session_rows_free(struct edc_session_row *rows, int n);
+
+/* Make |session_id| the active one and clear every other. One statement pair inside one
+ * transaction: the partial unique index would reject a half-applied switch. */
+bool edc_state_store_set_active_session(const char *session_id);
+
+/* Which session was active in the previous process, or NULL. */
+char *edc_state_store_active_session(void);
+
+/* Insert a session row if it does not exist yet (creation path, before any state is
+ * flushed for it). */
+bool edc_state_store_ensure_session(const char *session_id, const char *name, uint64_t created_at);
+
+/* Delete a session row. Cascades take its groups/tasks/turns/messages. */
+bool edc_state_store_delete_session(const char *session_id);
+
 bool edc_state_store_has_session(const char *session_id);
 
 /* ── Introspection on the store's OWN connection ──────────────────────────────

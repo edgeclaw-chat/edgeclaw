@@ -23,7 +23,6 @@ struct edc_session_manager
      * session.json / chat.jsonl / tasks.idx. */
     long long next_session_id;
     sds sessions_dir; /* workspace/ -- session dirs live here */
-    sds index_path;   /* workspace/sessions.json */
     struct edc_config *config;
 
     /* task_id -> session_id for sessions NOT loaded this run, built lazily by

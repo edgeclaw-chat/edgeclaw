@@ -412,7 +412,7 @@ static void test_resume_pending_redispatches(void)
 /* ── 迁移过来的任务: 相位丢了 (step=READY), 残留状态才是线索 ──────────
  *
  * v4 的 SUSPENDED 任务, 磁盘上**根本没写**它当时在哪一步 —— 迁移只能给中性值
- * READY (见 tools/migrate_session_v4_to_v5.py)。如果 resume **只**看 step, 这类
+ * READY (by the one-shot migration that is no longer shipped)。如果 resume **只**看 step, 这类
  * 任务就会走进 READY 分支、把工具账本和 active_turn 全忽略掉: 排队的工具永远不
  * 重发, 任务静默卡死。
  *

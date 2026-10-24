@@ -2004,7 +2004,8 @@ static void test_schema_version_is_current(void)
 
     /* A pre-migration file must be rejected: the load path no longer carries the
      * v3 compatibility branches (system-container drop, displayed/header strip)
-     * -- those moved into tools/migrate_session_v3_to_v4.py. */
+     * -- those were handled by a one-shot migration that is no longer shipped (the
+     * session.json format it targeted is gone). */
     cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(3));
     struct edc_session *s3 = edc_session_new(cfg, "sess-ver", "Ver");
     struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
