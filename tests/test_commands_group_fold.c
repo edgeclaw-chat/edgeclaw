@@ -85,14 +85,31 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
     edc_scheduler_schedule(sched); /* 消息末尾的扫描 = "这条消息处理完了" */
 }
 
+/* Fixture ids live at the TOP, descending. The store allocates real task ids with
+ * AUTOINCREMENT, and an explicit insert raises its sequence to the inserted value -- so a
+ * fixture in the low band would eventually be met by a database-allocated id (it was: the
+ * fold's system task was handed the id of a fixture group). Descending keeps them apart.
+ *
+ * The band is capped at 1e15 because every id travels through cJSON, which stores numbers as
+ * `double`: above 2^53 (~9e15) an integer stops being exactly representable, and the id read
+ * back from the snapshot would no longer match the row it names. */
+#define FOLD_FIXTURE_ID_BASE 1000000000000000LL
+static int64_t fold_fixture_id(const char *name)
+{
+    return FOLD_FIXTURE_ID_BASE - edc_test_id(name);
+}
+
 /* 一个可折叠的组: leader 已完成 + 带一个 turn (两条消息)。 */
 static struct edc_task_group *make_group(struct edc_session *sess, const char *id)
 {
-    struct edc_task *leader = edc_task_new(edc_test_id(id), sess->session_id, edc_test_id(id), "leader work", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(fold_fixture_id(id), sess->session_id, fold_fixture_id(id),
+                                          "leader work", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(sess, g);
-    struct edc_turn *turn = edc_turn_new();
-    turn->task_id = leader->task_id;
+    /* The turn is created ALREADY bound to the leader's key. Building it first and then
+     * assigning turn->task_id would leave the messages it wrote under the constructor's
+     * placeholder key, where nothing looks for them afterwards. */
+    struct edc_turn *turn = edc_turn_new_for(sess->session_id, leader->group_id, leader->task_id, 0);
     for (int i = 0; i < 2; i++)
     {
         cJSON *m = cJSON_CreateObject();
@@ -170,7 +187,7 @@ int main(void)
     install_resolver(sched, sess);
     sched->send_llm = mock_send_llm;
 
-    struct edc_task_group *g1 = make_group(sess, "11");
+    struct edc_task_group *g1 = make_group(sess, "fold-g11");
     edc_scheduler_set_foreground(sess, g1);
 
     TEST("判据没到 (对照): 窗口宽 ⇒ 自动触发不会折");
@@ -189,11 +206,14 @@ int main(void)
     finish_fold(sched, g_llm_task); /* 屏障松开 (折叠没起来时是 no-op), 后面才有干净起点 */
 
     TEST("/group fold <id> <focus>: 按 id 找到那个组, focus 原文进 prompt");
-    struct edc_task_group *g2 = make_group(sess, "12");
+    struct edc_task_group *g2 = make_group(sess, "fold-g12");
     CHECK(g2 != g1, "第二个组");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sched->sessions, sched, "/group fold 12 keep the build flags as they are");
+    char fold12[128];
+    snprintf(fold12, sizeof(fold12), "/group fold %s keep the build flags as they are",
+             edc_id_str(fold_fixture_id("fold-g12")));
+    drive_command(cfg, sched->sessions, sched, fold12);
     CHECK(g_llm_calls == 1, "请求发出去了");
     CHECK(g_llm_task && g_llm_task->sink_group == g2, "折的是 id 指定的那个组 (不是前台组)");
     const char *p = fold_prompt_of(g_llm_task);
@@ -208,15 +228,17 @@ int main(void)
     CHECK(g_llm_calls == 0, "没有请求");
 
     TEST("屏障: 同一个组已有折叠在飞 ⇒ 第二次 /group fold 不起");
-    struct edc_task_group *g3 = make_group(sess, "13");
+    struct edc_task_group *g3 = make_group(sess, "fold-g13");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sched->sessions, sched, "/group fold 13");
+    char fold13[64];
+    snprintf(fold13, sizeof(fold13), "/group fold %s", edc_id_str(fold_fixture_id("fold-g13")));
+    drive_command(cfg, sched->sessions, sched, fold13);
     CHECK(g_llm_calls == 1, "第一次起来了 (这个组确实有可折的内容)");
     struct edc_task *pending_fold = g_llm_task; /* 后面 /task fg 那条用例拿它当系统组任务 */
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sched->sessions, sched, "/group fold 13");
+    drive_command(cfg, sched->sessions, sched, fold13);
     CHECK(g_llm_calls == 0, "第二次没有请求 (一次一个 session)");
     (void)g3;
 
@@ -235,7 +257,7 @@ int main(void)
     }
 
     TEST("/group info: 一个组的上下文 / 折叠数字");
-    struct edc_task_group *gi = make_group(sess, "15");
+    struct edc_task_group *gi = make_group(sess, "fold-g15");
     sds info = edc_commands_group_info_text(sess, gi, cfg);
     CHECK(info && strstr(info, "fold line") && strstr(info, "1032192"), "带折线 (window − 16384)");
     CHECK(info && strstr(info, "1 members"), "带成员数");
@@ -247,7 +269,9 @@ int main(void)
 
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sched->sessions, sched, "/group info 15");
+    char info15[64];
+    snprintf(info15, sizeof(info15), "/group info %s", edc_id_str(fold_fixture_id("fold-g15")));
+    drive_command(cfg, sched->sessions, sched, info15);
     CHECK(g_llm_calls == 0, "只报告, 不折任何东西");
     g_llm_calls = 0;
     g_llm_task = NULL;
@@ -255,10 +279,16 @@ int main(void)
     CHECK(g_llm_calls == 0, "不带 id 看前台组, 也不折");
 
     TEST("/group files: 被折叠走过的文件（含空态与免责声明）");
-    struct edc_task_group *gf = make_group(sess, "16");
+    struct edc_task_group *gf = make_group(sess, "fold-g16");
     /* ① 从没折过 */
     sds files = edc_commands_group_files_text(gf);
-    CHECK(files && strstr(files, "## Tracked files in `16`"), "带组标题");
+    {
+        /* The heading names the group by its id, which is the fixture band value now. */
+        sds want = sdscatprintf(sdsempty(), "## Tracked files in `%s`",
+                                edc_id_str(fold_fixture_id("fold-g16")));
+        CHECK(files && strstr(files, want) != NULL, "带组标题");
+        sdsfree(want);
+    }
     CHECK(files && strstr(files, "never been folded"), "没折过就说没折过");
     CHECK(files && strstr(files, "not a live view"), "空态也带免责声明");
     sdsfree(files);

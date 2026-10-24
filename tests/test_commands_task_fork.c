@@ -138,11 +138,20 @@ int main(void)
     /* Give the parent group a memory and a transcript to snapshot: history[0] is the
      * system prompt, history[1] the first message. */
     parent->group->memory = sdsnew("PARENT-MEMORY");
-    edc_task_group_history_add_owned(parent->group, cJSON_CreateObject());
-    cJSON *m1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(m1, "role", "user");
-    cJSON_AddStringToObject(m1, "content", "PARENT-MESSAGE");
-    edc_task_group_history_add_owned(parent->group, m1);
+    /* A COMMITTED turn gives the parent a transcript to snapshot. Injecting entries into
+     * group->history by hand does not survive: that array is derived (rebuilt from the
+     * turns), so the next rebuild would drop them and the fork would have nothing to copy.
+     * Rebuilding after adding the turn also puts the system prompt in slot 0, which is what
+     * the fork inherits. */
+    {
+        struct edc_turn *pturn = edc_turn_new_for(sess->session_id, parent->group_id, parent->task_id, 0);
+        cJSON *m1 = cJSON_CreateObject();
+        cJSON_AddStringToObject(m1, "role", "user");
+        cJSON_AddStringToObject(m1, "content", "PARENT-MESSAGE");
+        edc_turn_add_message(pturn, m1);
+        edc_task_add_turn(parent, pturn);
+        edc_task_group_rebuild_history(parent->group);
+    }
 
     /* ── ① 落位: 新组 + 前台 + active ───────────────────────────── */
 

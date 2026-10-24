@@ -1716,9 +1716,20 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
                 fork_point_seq = m->completion_seq;
         }
     }
-    /* 0 = "the store assigns one": the child is inserted by the scheduler's persist path,
-     * which is where a task gets its id now (there is no counter to ask). */
-    struct edc_task *child = edc_task_fork(parent, 0, desc, fork_point_seq, to.type);
+    /* The id comes from the store, and it has to be asked for HERE: the child is created
+     * before it is adopted, and every piece of the fork below (the snapshot turn, the group
+     * it leads) is keyed by it. Passing 0 and hoping a later step assigns one left the child
+     * with task_id 0, so its snapshot turn had no storage key and every message went
+     * nowhere. The store fills group_id from the task id when group_id is 0, which is
+     * exactly the "child leads its own group" case. */
+    int64_t child_id = 0;
+    if (!edc_state_store_insert_task_new(session->session_id, 0, &child_id))
+    {
+        edc_commands_reply(to, "Fork failed — the store could not allocate a task id.");
+        sdsfree(desc);
+        return;
+    }
+    struct edc_task *child = edc_task_fork(parent, child_id, desc, fork_point_seq, to.type);
 
     /* The child starts its own group (as leader) and takes the foreground; desc is the
      * input, as in /task new. Which group and who owns the foreground is the
