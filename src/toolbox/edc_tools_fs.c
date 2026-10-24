@@ -719,7 +719,10 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     sds created = edc_edit_file_try_create(path, safe_path, old_text, new_text, error);
     if (created || *error)
     {
-        sdsfree(safe_path);
+        /* safe_path is the JOB's, freed by edc_fs_after_cb -- like the cleanup path below
+         * says. It was freed here as well, so every edit_file that took this early return
+         * ("Successfully created ...", "File not found", "already exists and is not empty")
+         * released the same sds twice and aborted the process with "free(): invalid pointer". */
         return created;
     }
 

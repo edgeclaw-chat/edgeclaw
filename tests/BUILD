@@ -254,6 +254,21 @@ cc_test(
 )
 
 cc_test(
+    name = "test_tools_fs",
+    srcs = ["test_tools_fs.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_tool_shell_loop",
     srcs = ["test_tool_shell_loop.c", "test_ws.h"],
     deps = [

@@ -4,6 +4,7 @@ load(
     ":compilation_mode_features.bzl",
     "COMPILATION_MODE_ACTIONS",
     "COMPILATION_MODE_FEATURES",
+    "COVERAGE_FEATURE",
 )
 
 def _normalize_path(path):
@@ -60,9 +61,9 @@ def _generate_android_config_bzl(tool_paths, include_dirs, arch_config):
     # Always include the compilation-mode feature set (see
     # :compilation_mode_features.bzl) so --compilation_mode actually maps to
     # -O flags; arch_config may add its own features on top.
-    features_str = COMPILATION_MODE_FEATURES
+    features_str = COMPILATION_MODE_FEATURES + COVERAGE_FEATURE
     if arch_config.get("features"):
-        features_str = COMPILATION_MODE_FEATURES + arch_config["features"]
+        features_str = COMPILATION_MODE_FEATURES + COVERAGE_FEATURE + arch_config["features"]
     cc_toolchain_config_imports = 'load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl", "tool_path", "action_config", "tool", "feature", "flag_set", "flag_group", "with_feature_set")'
 
     return """{cc_toolchain_config_imports}

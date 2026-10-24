@@ -4,6 +4,7 @@ load(
     ":compilation_mode_features.bzl",
     "COMPILATION_MODE_ACTIONS",
     "COMPILATION_MODE_FEATURES",
+    "COVERAGE_FEATURE",
 )
 
 def _normalize_path(path):
@@ -122,7 +123,7 @@ aarch64_toolchain_config = rule(
     implementation = _impl,
     attrs = {{}},
 )
-""".format(prefix = prefix, tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES)
+""".format(prefix = prefix, tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES + COVERAGE_FEATURE)
 
 def _aarch64_toolchain_repo_impl(rctx):
     prefix = rctx.os.environ.get("CROSS_COMPILE", "")

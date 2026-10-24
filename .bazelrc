@@ -45,3 +45,13 @@ build:dbg --strip=never
 # Falls back to MSVC if MinGW not found
 build:windows --extra_toolchains=@mingw_toolchain//:mingw_windows_toolchain
 build:windows --repo_env=PATH
+
+# Code coverage (GCC + gcov). The toolchains' "coverage" feature is what actually adds
+# -fprofile-arcs/-ftest-coverage/--coverage; see toolchain/compilation_mode_features.bzl
+# for why a hand-rolled cc_toolchain config needs it spelled out.
+# --instrumentation_filter defaults to "^//tests[/:]", i.e. the report would describe the
+# tests and report ~0 for every line of src/. Pin it here so `bazel coverage` is
+# reproducible without remembering the flag:
+#   bazel coverage --config=cov //tests/...
+build:cov --collect_code_coverage
+build:cov --instrumentation_filter=//src

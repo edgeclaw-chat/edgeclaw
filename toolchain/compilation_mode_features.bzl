@@ -79,6 +79,60 @@ COMPILATION_MODE_FEATURES = """        feature(name = "fastbuild"),
         ),
 """
 
+# Coverage instrumentation ("bazel coverage") for the GCC toolchains.
+#
+# Why this block exists
+# ---------------------
+# `bazel coverage //tests:...` only instruments a cc_test if its toolchain
+# declares a feature *named exactly* "coverage": that is the switch Bazel
+# itself flips when --collect_code_coverage is on (rules_cc configure_features
+# adds it to the enabled feature set). Our toolchains are hand-rolled
+# cc_common.create_cc_toolchain_config_info() configs, so before this block
+# existed nothing added -fprofile-arcs/-ftest-coverage, no .gcda was written,
+# and LcovMerger ended with "WARNING: There was no coverage found." while the
+# test itself passed -- silent zero coverage.
+#
+# The flags mirror rules_cc's unix_cc_toolchain_config.bzl:
+#   compile actions: -fprofile-arcs -ftest-coverage  (.gcno emitted, counters
+#                    written to .gcda at exit)
+#   link actions:    --coverage                      (pulls in libgcov; without
+#                    it the binary fails to link/run with undefined __gcov_*)
+# --coverage must also be given to c++-link-nodeps-dynamic-library: the
+# instrumented objects reference gcov symbols and those libraries are linked
+# without libgcov otherwise.
+#
+# The gcov tool itself is already listed in every toolchain's tool_paths
+# ("gcov"), which is what Bazel hands to collect_cc_coverage.sh as
+# COVERAGE_GCOV_PATH. GCC >= 9 writes the intermediate report as
+# *.gcov.json.gz and Bazel's coverage merger reads that format, so no lcov
+# package is needed for collection.
+#
+# Brace-free on purpose: spliced into generated Starlark that goes through
+# str.format().
+COVERAGE_FEATURE = """        feature(
+            name = "coverage",
+            provides = ["profile"],
+            flag_sets = [
+                flag_set(
+                    actions = all_compile_actions,
+                    flag_groups = [
+                        flag_group(flags = ["-fprofile-arcs", "-ftest-coverage"]),
+                    ],
+                ),
+                flag_set(
+                    actions = [
+                        "c++-link-executable",
+                        "c++-link-dynamic-library",
+                        "c++-link-nodeps-dynamic-library",
+                    ],
+                    flag_groups = [
+                        flag_group(flags = ["--coverage"]),
+                    ],
+                ),
+            ],
+        ),
+"""
+
 # The symbols the generated config needs to load for the block above.
 COMPILATION_MODE_LOAD_SYMBOLS = [
     "feature",
