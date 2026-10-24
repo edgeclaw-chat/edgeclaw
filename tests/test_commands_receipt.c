@@ -53,7 +53,7 @@ int main(void)
     printf("=== task-creation receipt tests ===\n\n");
 
     /* #3 leads its own group, which has exactly one member -- the plain `+desc` shape. */
-    struct edc_task *t3 = edc_task_new("3", "s1", "3", "do it", edc_channel_adapter);
+    struct edc_task *t3 = edc_task_new(edc_test_id("3"), "s1", edc_test_id("3"), "do it", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t3);
 
     TEST("plain new-group creation: silent");
@@ -69,7 +69,7 @@ int main(void)
     sdsfree(r);
 
     /* #4 joins the existing group. */
-    struct edc_task *t4 = edc_task_new("4", "s1", "3", "more", edc_channel_adapter);
+    struct edc_task *t4 = edc_task_new(edc_test_id("4"), "s1", edc_test_id("3"), "more", edc_channel_adapter);
     edc_task_group_add_task(g, t4);
 
     TEST("plain join: silent");
@@ -92,7 +92,7 @@ int main(void)
 
     /* #9 waits on #4 and injects its output (a JOIN dep); SEQUENCE would lose to it,
      * as a `|` segment does. */
-    struct edc_task *t9 = edc_task_new("9", "s1", "3", "merge", edc_channel_adapter);
+    struct edc_task *t9 = edc_task_new(edc_test_id("9"), "s1", edc_test_id("3"), "merge", edc_channel_adapter);
     edc_task_group_add_task(g, t9);
     edc_task_add_dependency(t9, t4, TASK_DEP_JOIN);
 
@@ -108,7 +108,7 @@ int main(void)
     sdsfree(r);
 
     TEST("system task: silent");
-    struct edc_task *st = edc_task_new("7", "s1", "7", "fold", edc_channel_adapter);
+    struct edc_task *st = edc_task_new(edc_test_id("7"), "s1", edc_test_id("7"), "fold", edc_channel_adapter);
     struct edc_task_group *sg = edc_task_group_new(st);
     sg->kind = EDC_GROUP_KIND_SYSTEM;
     r = edc_commands_task_receipt_text(st);
@@ -123,9 +123,9 @@ int main(void)
     /* ── One input => one receipt ───────────────────────────── */
 
     /* Two genuinely plain tasks (no deps, foreground) in one fresh group. */
-    struct edc_task *p1 = edc_task_new("21", "s1", "21", "one", edc_channel_adapter);
+    struct edc_task *p1 = edc_task_new(edc_test_id("21"), "s1", edc_test_id("21"), "one", edc_channel_adapter);
     struct edc_task_group *g3 = edc_task_group_new(p1);
-    struct edc_task *p2 = edc_task_new("22", "s1", "21", "two", edc_channel_adapter);
+    struct edc_task *p2 = edc_task_new(edc_test_id("22"), "s1", edc_test_id("21"), "two", edc_channel_adapter);
     edc_task_group_add_task(g3, p2);
     struct edc_task *plain[2] = {p1, p2};
     TEST("a chain of plain creations: still silent");
@@ -155,7 +155,7 @@ int main(void)
     t4->is_background = false;
 
     /* A chain that spans groups drops the group field (there is no single one). */
-    struct edc_task *t10 = edc_task_new("10", "s1", "10", "elsewhere", edc_channel_adapter);
+    struct edc_task *t10 = edc_task_new(edc_test_id("10"), "s1", edc_test_id("10"), "elsewhere", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(t10);
     t4->is_background = true;
     t10->is_background = true;

@@ -22,7 +22,7 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
         return NULL;
 
     struct edc_task_group *group = g_new0(struct edc_task_group, 1);
-    group->group_id = strdup(leader->task_id);
+    group->group_id = leader->task_id;
     group->leader = leader;
     group->members = leader;
     leader->group_next = NULL;
@@ -38,8 +38,7 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
 
     leader->is_group_leader = 1;
     leader->group = group;
-    free(leader->group_id);
-    leader->group_id = strdup(group->group_id);
+    leader->group_id = group->group_id;
 
     return group;
 }
@@ -56,7 +55,6 @@ void edc_task_group_free(struct edc_task_group *group)
         edc_task_free(task);
     }
 
-    free(group->group_id);
     history_clear(group);
     if (group->tools_decl)
         cJSON_Delete(group->tools_decl);
@@ -489,8 +487,7 @@ void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task
     if (task->group == group)
         return;
 
-    free(task->group_id);
-    task->group_id = strdup(group->group_id);
+    task->group_id = group->group_id;
     task->group = group;
 
     LL_APPEND2(group->members, task, group_next);
@@ -521,15 +518,15 @@ void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *t
     }
 }
 
-struct edc_task *edc_task_group_find_task(struct edc_task_group *group, const char *task_id)
+struct edc_task *edc_task_group_find_task(struct edc_task_group *group, int64_t task_id)
 {
-    if (!group || !task_id)
+    if (!group || task_id <= 0)
         return NULL;
 
     struct edc_task *task;
     LL_FOREACH2(group->members, task, group_next)
     {
-        if (strcmp(task->task_id, task_id) == 0)
+        if (task->task_id == task_id)
             return task;
     }
     return NULL;
@@ -550,14 +547,12 @@ void edc_task_group_set_leader(struct edc_task_group *group, struct edc_task *ne
     new_leader->is_group_leader = 1;
     group->is_orphaned = false;
 
-    free(group->group_id);
-    group->group_id = strdup(new_leader->task_id);
+    group->group_id = new_leader->task_id;
 
     struct edc_task *m;
     LL_FOREACH2(group->members, m, group_next)
     {
-        free(m->group_id);
-        m->group_id = strdup(group->group_id);
+        m->group_id = group->group_id;
     }
 }
 

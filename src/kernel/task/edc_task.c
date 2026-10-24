@@ -379,8 +379,16 @@ bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const stru
         free(task->blocked_by);
         task->blocked_by = NULL;
     }
-    if (source && source->task_id)
-        task->blocked_by = strdup(source->task_id);
+    /* blocked_by is informational text that outlives the source task, so the numeric id is
+     * rendered here instead of being stored as an id. strdup, not sdscatprintf: this field
+     * is freed with free() everywhere else in the file, and an sds header would turn that
+     * into an invalid free. */
+    if (source && source->task_id > 0)
+    {
+        char idbuf[32];
+        snprintf(idbuf, sizeof(idbuf), "%lld", (long long)source->task_id);
+        task->blocked_by = strdup(idbuf);
+    }
     /* A cascaded task will not produce either, so it passes the cascade on -- through the
      * SAME broadcast its life implies, exactly as the stop and failure paths do. */
     if (life == EDC_LIFE_CANCELLED)
@@ -492,13 +500,13 @@ void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_lif
 
 /* ── Lifetime ──────────────────────────────────────────────── */
 
-struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id, const char *desc,
+struct edc_task *edc_task_new(int64_t task_id, const char *session_id, int64_t group_id, const char *desc,
                               edc_channel_type channel_type)
 {
     struct edc_task *task = g_new0(struct edc_task, 1);
-    task->task_id = strdup(task_id);
+    task->task_id = task_id;
     task->session_id = strdup(session_id);
-    task->group_id = strdup(group_id);
+    task->group_id = group_id;
     task->description = strdup(desc ? desc : "");
     /* A new task is "parked with input, waiting to be dispatched" -- there is no
      * "waiting for user input" phase, so it starts at (READY, ALIVE) (the old
@@ -646,20 +654,14 @@ cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
     return NULL;
 }
 
-struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
+struct edc_task *edc_task_fork(struct edc_task *parent, int64_t task_id, const char *desc,
                                uint32_t fork_point_completion_seq, edc_channel_type channel_type)
 {
     if (!parent)
         return NULL;
 
-    char auto_id[64];
-    if (!task_id)
-    {
-        static int fork_seq = 0;
-        snprintf(auto_id, sizeof(auto_id), "ft%d", ++fork_seq);
-        task_id = auto_id;
-    }
-
+    /* task_id 0 = "the store assigns one": the caller persists the child and reads the id
+     * back (see edc_scheduler_task_create). There is no in-memory id source any more. */
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
     child->fork_point_completion_seq = fork_point_completion_seq;
@@ -670,7 +672,7 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
 /* ── fork snapshot ────────────────────────────────────────── */
 
 struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, const char *dst_session_id,
-                                         const char *dst_group_id, const char *dst_task_id,
+                                         int64_t dst_group_id, int64_t dst_task_id,
                                          int dst_turn_ord)
 {
     if (!task)
@@ -800,8 +802,6 @@ void edc_task_free(struct edc_task *task)
      * only mattered to a still-live host. */
     edc_task_drain_moves(task, NULL, NULL);
 
-    free(task->task_id);
-    free(task->group_id);
     free(task->session_id);
     free(task->description);
 
@@ -810,9 +810,7 @@ void edc_task_free(struct edc_task *task)
 
     if (task->output)
         sdsfree(task->output);
-    free(task->fold_cut_task_id);
     edc_fold_files_free(task->fold_files);
-    free(task->memo_cut_task_id);
 
     if (task->redirect_stdout)
         sdsfree(task->redirect_stdout);
@@ -839,7 +837,7 @@ void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn)
      * task was created with the ordinal its caller wanted (a fork snapshot parked at 1
      * next to the in-flight turn at 0), and the queue length is not the right answer for
      * it -- recomputing would move it onto the in-flight turn's rows. */
-    if (!turn->task_id || strcmp(turn->task_id, task->task_id) != 0)
+    if (turn->task_id == 0 || turn->task_id != task->task_id)
     {
         const int ord = (int)edc_queue_length(&task->turns);
         edc_msg_turn_move(turn->task_id, turn->turn_ord, task->session_id, task->group_id,
@@ -1207,8 +1205,10 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
      *   - only EDC_END_BLOCKED (a stop, its own failure and a `||` skip stay explicit);
      *   - only when the source completing NOW is the one that blocked it (blocked_by):
      *     some OTHER dependency finishing says nothing about whether it may run again. */
-    if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id &&
-        strcmp(target->blocked_by, source->task_id) == 0 && !edc_task_awaits_deps(target))
+    char source_id_text[32];
+    snprintf(source_id_text, sizeof(source_id_text), "%lld", (long long)source->task_id);
+    if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id > 0 &&
+        strcmp(target->blocked_by, source_id_text) == 0 && !edc_task_awaits_deps(target))
     {
         /* The note the cascade wrote ("[failed: its dependency … ]") described a state that
          * is over: the task is about to move again, and leaving it there makes /task output
@@ -1223,9 +1223,8 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
              * again because the dependency it was blocked on produced. A queue advance and
              * a cascade are routine / already announced, so they carry no notice. */
             task_record_move(source, target, EDC_MOVE_UNBLOCKED,
-                             sdscatprintf(sdsempty(), "`%s` is running again — its dependency `%s` produced.",
-                                          target->task_id ? target->task_id : "?",
-                                          source->task_id ? source->task_id : "?"));
+                             sdscatprintf(sdsempty(), "`%lld` is running again — its dependency `%lld` produced.",
+                                          (long long)target->task_id, (long long)source->task_id));
     }
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
@@ -1434,7 +1433,7 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
                           ? "so the output it was waiting for is not available -- resume that one to get it"
                           : "so this task cannot go on -- resume that one first";
     if (source->task_id)
-        edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s %s, %s]", source->task_id,
+        edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s %s, %s]", edc_id_str(source->task_id),
                                                  what, why));
     else
         edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: a dependency %s, %s]", what, why));

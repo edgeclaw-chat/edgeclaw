@@ -193,7 +193,7 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
 {
     /* A terminal task with two committed turns plus an in-flight one, a tool ledger, a
      * todo document and a dependency edge. */
-    struct edc_task *leader = edc_task_new("t-1", s->session_id, "g-1", "the first task",
+    struct edc_task *leader = edc_task_new(edc_test_id("t-1"), s->session_id, edc_test_id("g-1"), "the first task",
                                            edc_channel_adapter);
     leader->is_group_leader = 1;
     leader->step = EDC_TASKSTEP_DONE;
@@ -219,14 +219,17 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     add_msg(t1, "assistant", "first answer", NULL);
     t1->folded_prefix = 1;
     t1->memo_prefix = 1;
-    edc_queue_push(&leader->turns, t1);
+    /* edc_task_add_turn, not a raw push: it binds the turn to the task's storage key and
+     * moves the messages it already wrote. A bare push leaves them under the helper's
+     * placeholder id, where the store never finds them again. */
+    edc_task_add_turn(leader, t1);
 
     struct edc_turn *t2 = edc_turn_new();
     add_msg(t2, "user", "second question", "mid-b");
-    edc_queue_push(&leader->turns, t2);
+    edc_task_add_turn(leader, t2);
 
     /* A child task that depends on the leader and was forked from it. */
-    struct edc_task *child = edc_task_new("t-2", s->session_id, "g-1", "the child task",
+    struct edc_task *child = edc_task_new(edc_test_id("t-2"), s->session_id, edc_test_id("g-1"), "the child task",
                                           edc_channel_adapter);
     child->step = EDC_TASKSTEP_DONE;
     child->life = EDC_LIFE_CANCELLED;
@@ -249,7 +252,7 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     child->deps = dep;
 
     /* A second group, so group ordering and multiple groups are covered. */
-    struct edc_task *sys = edc_task_new("t-3", s->session_id, "g-2", "second group leader",
+    struct edc_task *sys = edc_task_new(edc_test_id("t-3"), s->session_id, edc_test_id("g-2"), "second group leader",
                                         edc_channel_adapter);
     sys->is_group_leader = 1;
     sys->step = EDC_TASKSTEP_DONE;
@@ -343,7 +346,7 @@ static void test_flush_is_idempotent(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
 
-    struct edc_task *leader = edc_task_new("i-1", s->session_id, "ig-1", "task", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("i-1"), s->session_id, edc_test_id("ig-1"), "task", edc_channel_adapter);
     leader->is_group_leader = 1;
     leader->step = EDC_TASKSTEP_DONE;
     leader->life = EDC_LIFE_COMPLETED;
@@ -401,7 +404,7 @@ static void test_normalization(void)
 
     /* A task left ALIVE (the process died without a clean shutdown) and one CANCELLED
      * with no end reason -- both must be repaired by the loader. */
-    struct edc_task *alive = edc_task_new("n-1", s->session_id, "ng-1", "alive task",
+    struct edc_task *alive = edc_task_new(edc_test_id("n-1"), s->session_id, edc_test_id("ng-1"), "alive task",
                                           edc_channel_adapter);
     alive->is_group_leader = 1;
     alive->step = EDC_TASKSTEP_AWAIT_EXEC;
@@ -411,7 +414,7 @@ static void test_normalization(void)
     struct edc_task_group *g = edc_task_group_new(alive);
     edc_session_add_group(s, g);
 
-    struct edc_task *cancelled = edc_task_new("n-2", s->session_id, "ng-1", "cancelled task",
+    struct edc_task *cancelled = edc_task_new(edc_test_id("n-2"), s->session_id, edc_test_id("ng-1"), "cancelled task",
                                               edc_channel_adapter);
     cancelled->step = EDC_TASKSTEP_READY;
     cancelled->life = EDC_LIFE_CANCELLED;
@@ -434,12 +437,12 @@ static void test_normalization(void)
         struct edc_task *it;
         LL_FOREACH2(rg->members, it, group_next)
         {
-            if (it->task_id && strcmp(it->task_id, "n-1") == 0)
+            if (it->task_id == edc_test_id("n-1"))
             {
                 found_alive = true;
                 t = it;
             }
-            if (it->task_id && strcmp(it->task_id, "n-2") == 0)
+            if (it->task_id == edc_test_id("n-2"))
                 found_cancelled = true;
         }
     }
@@ -482,7 +485,7 @@ static void test_forget_and_lookup(void)
     struct edc_session *s = edc_session_new(cfg, "s-forget", "Forget");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
-    struct edc_task *leader = edc_task_new("f-1", s->session_id, "fg-1", "task",
+    struct edc_task *leader = edc_task_new(edc_test_id("f-1"), s->session_id, edc_test_id("fg-1"), "task",
                                            edc_channel_adapter);
     leader->is_group_leader = 1;
     leader->step = EDC_TASKSTEP_DONE;
@@ -491,15 +494,15 @@ static void test_forget_and_lookup(void)
     edc_session_add_group(s, edc_task_group_new(leader));
     CHECK(edc_state_store_flush(s, sched), "flush");
 
-    char *sid = edc_state_store_session_for_task("f-1");
+    char *sid = edc_state_store_session_for_task(edc_test_id("f-1"));
     CHECK(sid && strcmp(sid, "s-forget") == 0, "session_for_task finds the owner");
     free(sid);
 
-    CHECK(edc_state_store_session_for_task("no-such-task") == NULL,
+    CHECK(edc_state_store_session_for_task(edc_test_id("no-such-task")) == NULL,
           "session_for_task returns NULL for an unknown task");
 
     CHECK(edc_state_store_forget("s-forget"), "forget the session");
-    char *gone = edc_state_store_session_for_task("f-1");
+    char *gone = edc_state_store_session_for_task(edc_test_id("f-1"));
     CHECK(gone == NULL, "its tasks are gone too (cascade)");
     free(gone);
 

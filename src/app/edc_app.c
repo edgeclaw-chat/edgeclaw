@@ -61,7 +61,7 @@ static cJSON *app_group_tools(void *ctx, struct edc_task *task)
         if (hist)
             cJSON_Delete(hist);
         group->toolset_epoch++;
-        log_info("toolset: group %s declares %d tools (epoch %u)", group->group_id,
+        log_info("toolset: group %s declares %d tools (epoch %u)", edc_id_str(group->group_id),
                  group->tools_decl ? cJSON_GetArraySize(group->tools_decl) : 0, group->toolset_epoch);
     }
     return group->tools_decl;

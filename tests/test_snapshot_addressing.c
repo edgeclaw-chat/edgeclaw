@@ -154,7 +154,7 @@ static void pull(struct edc_scheduler *sched, const char *session_id)
 
 static struct edc_task *add_group_with_task(struct edc_session *session, const char *task_id, const char *desc)
 {
-    struct edc_task *task = edc_task_new(task_id, session->session_id, task_id, desc, edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id(task_id), session->session_id, edc_test_id(task_id), desc, edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
     return task;
@@ -164,7 +164,7 @@ static bool tree_has_group(const char *json, const char *group_id)
 {
     if (!json)
         return false;
-    sds pat = sdscatprintf(sdsempty(), "\"id\":\"%s\"", group_id);
+    sds pat = sdscatprintf(sdsempty(), "\"id\":\"%s\"", edc_id_str(edc_test_id(group_id)));
     bool found = strstr(json, pat) != NULL;
     sdsfree(pat);
     return found;

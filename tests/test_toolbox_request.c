@@ -271,7 +271,7 @@ static void ledger_add(struct edc_task *task, const char *call_id, const char *n
 
 static struct edc_task *new_task(const char *id)
 {
-    return edc_task_new(id, "sess-tr", id, "toolbox request test", edc_channel_adapter);
+    return edc_task_new(edc_test_id(id), "sess-tr", edc_test_id(id), "toolbox request test", edc_channel_adapter);
 }
 
 /* Same element description the llm actor builds its array with (a POD entry:

@@ -88,7 +88,7 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (strcmp(name, "SELF") == 0)
     {
         struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sched->sessions));
-        return front ? sdsnew(front->task_id) : NULL;
+        return front ? sdscatprintf(sdsempty(), "%lld", (long long)front->task_id) : NULL;
     }
 
     /* {{LAST}} -> the last completed task's output */
@@ -114,7 +114,10 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     }
 
     /* {{<digits>}} -> look up by task id (global; lazily activates the owning session if needed) */
-    struct edc_task *t = edc_session_store_resolve_task(sched->sessions, sched, name, NULL);
+    /* `name` comes from the message text, so it is parsed here -- the one place a task id
+     * still arrives as a string. */
+    struct edc_task *t = edc_session_store_resolve_task(sched->sessions, sched,
+                                                        (int64_t)strtoll(name, NULL, 10), NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
 }
 
@@ -248,8 +251,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         /* Print completed AND cancelled: a voided edge (source terminal) has one field
          * false and the other true; reading completed alone would misread it as "still
          * waiting". */
-        log_info("send_llm task=%s dep src=%s completed=%d cancelled=%d output=%s", task->task_id,
-                 dep->source ? dep->source->task_id : "(null)", dep->completed, dep->cancelled,
+        log_info("send_llm task=%s dep src=%s completed=%d cancelled=%d output=%s", edc_id_str(task->task_id),
+                 edc_id_str(dep->source ? dep->source->task_id : 0), dep->completed, dep->cancelled,
                  (dep->source && dep->source->output) ? "yes" : "none");
         if (dep->completed && dep->source && !dep->injected && dep->type == TASK_DEP_JOIN)
         {
@@ -276,7 +279,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                 if (!append_to_task_input(task, block))
                 {
                     log_warn("  -> task %s has no input message to splice into; appending a system message instead",
-                             task->task_id ? task->task_id : "(null)");
+                             edc_id_str(task->task_id));
                     cJSON *sys = cJSON_CreateObject();
                     cJSON_AddStringToObject(sys, "role", "system");
                     cJSON_AddStringToObject(sys, "content", block);
@@ -284,7 +287,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                 }
                 sdsfree(block);
             }
-            log_info("  -> spliced the output of task %s into the task input", dep->source->task_id);
+            log_info("  -> spliced the output of task %s into the task input", edc_id_str(dep->source->task_id));
         }
     }
 
@@ -354,7 +357,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * B0): every request of one conversation then shares a cache shard. Only a normal reply --
      * a fold or curator call is one-shot and would just take space in someone else's shard. */
     if (!is_memory_sink && task->group && task->group->group_id)
-        req->cache_key = sdsnew(task->group->group_id);
+        req->cache_key = sdscatprintf(sdsempty(), "%lld", (long long)task->group->group_id);
     /* The summary's output budget (a): paired with the corpus cap
      * EDC_FOLD_MAX_CORPUS_TOKENS, keeping a single fold's compression ratio achievable
      * (<= 4:1). This is the only exception to "requests never send max_tokens". */

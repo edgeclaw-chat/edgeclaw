@@ -33,16 +33,16 @@ static struct edc_session_memory *memory_of(struct edc_toolbox_call_ctx *ctx, sd
 
 /* Which group an entry written by this call is sourced from: a curation task carries
  * the just-folded group in sink_group; any other task is sourced from its own group. */
-static const char *memo_sources_of(struct edc_toolbox_call_ctx *ctx)
+static int64_t memo_sources_of(struct edc_toolbox_call_ctx *ctx)
 {
     struct edc_task *t = ctx ? ctx->task : NULL;
     if (!t)
-        return NULL;
-    if (t->sink_group && t->sink_group->group_id)
+        return 0;
+    if (t->sink_group && t->sink_group->group_id > 0)
         return t->sink_group->group_id;
-    if (t->group && t->group->group_id)
+    if (t->group && t->group->group_id > 0)
         return t->group->group_id;
-    return NULL;
+    return 0;
 }
 
 /* Non-blocking duplicate nudge for memory_write: index lines of EXISTING entries that
@@ -321,7 +321,9 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
      * itself. Non-blocking: the write still happens; the model decides what to do. */
     sds related = memo_related_hint(m, title, summary);
 
-    sds id = edc_session_memory_create_entry(m, title, summary, detail, ctx->task ? ctx->task->task_id : NULL);
+    sds id = edc_session_memory_create_entry(
+        m, title, summary, detail,
+        ctx->task && ctx->task->task_id > 0 ? edc_id_str(ctx->task->task_id) : NULL);
     if (!id)
     {
         if (related)
@@ -335,7 +337,8 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
     {
         e->created_seq = seq;
         e->updated_seq = seq;
-        const char *src = memo_sources_of(ctx);
+        const int64_t src_id = memo_sources_of(ctx);
+        const char *src = src_id > 0 ? edc_id_str(src_id) : NULL;
         if (src)
             e->sources = strdup(src);
     }

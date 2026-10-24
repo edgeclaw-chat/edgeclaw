@@ -78,7 +78,7 @@ struct fix
 static void give_input(struct edc_task *task, const char *text)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
+    turn->task_id = task->task_id;
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", "user");
     cJSON_AddStringToObject(msg, "content", text);
@@ -97,7 +97,7 @@ static void fix_up(struct fix *f, int window)
     f->sched = edc_scheduler_new(f->cfg);
     install_resolver(f->sched, f->sess);
 
-    f->task = edc_task_new("t-1", "sess-overflow", "t-1", "user task", edc_channel_adapter);
+    f->task = edc_task_new(edc_test_id("t-1"), "sess-overflow", edc_test_id("t-1"), "user task", edc_channel_adapter);
     edc_session_add_group(f->sess, edc_task_group_new(f->task));
     give_input(f->task, "hello");
 }

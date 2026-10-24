@@ -25,6 +25,7 @@
  * text. No channel actor ⇒ replies go nowhere.
  */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -408,7 +409,7 @@ int main(void)
     const int before_opt = task_count(sess);
     {
         char optline[128];
-        snprintf(optline, sizeof(optline), "\"opt work\" -d %s", at_fg ? at_fg->task_id : "1");
+        snprintf(optline, sizeof(optline), "\"opt work\" -d %s", edc_id_str(at_fg ? at_fg->task_id : 1));
         drive_command(cfg, sm, sched, optline);
     }
     struct edc_task *opt = find_task_by_desc(sess, "opt work");

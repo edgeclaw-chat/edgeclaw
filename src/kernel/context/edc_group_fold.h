@@ -80,7 +80,7 @@ extern bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_m
 
 struct edc_fold_cut
 {
-    const char *task_id;
+    int64_t task_id; /* the member the cut landed in */
     uint32_t turn;
     uint32_t prefix;
 };

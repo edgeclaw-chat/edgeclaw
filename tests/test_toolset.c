@@ -7,6 +7,7 @@
  * the field (and cost one cache miss). Design: docs/pi-toolset-plan.zh.md. */
 
 #include "edc_toolset.h"
+#include "test_ws.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "edc_task_group.h"
@@ -392,7 +393,7 @@ static void test_note_change_adding_a_direct_tool_rewrites_the_field(void)
     add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
-    group->group_id = strdup("g1");
+    group->group_id = edc_test_id("g1");
     /* The group is built by hand, so it has no session: the history starts empty and the
      * tool set is resolved against nothing (same as a fresh group). */
     group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
@@ -437,7 +438,7 @@ static void test_note_change_adding_a_deferred_tool_keeps_the_bytes(void)
     add_tool(tb, "mcp__fs", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DEFERRED);
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
-    group->group_id = strdup("g1b");
+    group->group_id = edc_test_id("g1b");
     /* Hand-built group with no session: the history starts empty. */
     group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
     char *before = cJSON_PrintUnformatted(group->tools_decl);
@@ -467,7 +468,7 @@ static void test_note_change_removal_rewrites_the_field(void)
     add_tool(tb, "beta", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
-    group->group_id = strdup("g2");
+    group->group_id = edc_test_id("g2");
     /* Hand-built group with no session: the history starts empty. */
     group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
     const uint32_t epoch_before = group->toolset_epoch;
@@ -500,7 +501,7 @@ static void test_notices_survive_a_history_rebuild(void)
     add_tool(tb, "alpha", EDC_TOOL_SCOPE_NORMAL, EDC_TOOL_EXPOSURE_DIRECT);
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(struct edc_task_group));
-    group->group_id = strdup("g3");
+    group->group_id = edc_test_id("g3");
     const char *removed[] = {"ghost"};
     edc_toolset_note_change(tb, group, NULL, removed, 1, "test:rebuild");
 
@@ -546,7 +547,7 @@ static void test_note_change_appends_the_current_section(void)
     edc_tool_set_snippet(beta, "Beta two");
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
-    group->group_id = strdup("g-head");
+    group->group_id = edc_test_id("g-head");
     /* 模拟已经冻结的 system prompt：note_change 不许碰它。 */
     cJSON *head = cJSON_CreateObject();
     cJSON_AddStringToObject(head, "role", "system");
@@ -593,7 +594,7 @@ static void test_rebuild_keeps_only_the_latest_notice(void)
     edc_tool_set_snippet(t, "Beta two");
 
     struct edc_task_group *group = (struct edc_task_group *)calloc(1, sizeof(*group));
-    group->group_id = strdup("g-rebuild");
+    group->group_id = edc_test_id("g-rebuild");
     /* Hand-built group with no session: the history starts empty. */
     group->tools_decl = edc_toolset_resolve(tb, NULL, EDC_TOOL_SCOPE_NORMAL);
 

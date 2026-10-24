@@ -53,7 +53,13 @@ struct edc_scheduler;
  *     how an imported session stayed invisible. It is a column now, with a partial unique
  *     index so "at most one active" is enforced rather than assumed, and the list is a
  *     query. */
-#define EDC_DB_VERSION 4
+/* v5: task_id and group_id are INTEGER PRIMARY KEYs assigned by the database.
+ *     The old shape was TEXT ids produced by a process-wide counter whose high-water mark
+ *     had to be persisted in <ws>/.task_seq (one open/write/rename per allocation). The
+ *     INSERT allocates now, in one transaction with the group_id fill-in, so the counter
+ *     and its file are gone. group_id follows task_id because a group's id IS its leader's
+ *     task id. */
+#define EDC_DB_VERSION 5
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
@@ -162,39 +168,39 @@ bool edc_state_store_forget(const char *session_id);
  * metadata flush overwrites them with the real values.
  *
  * INSERT OR IGNORE throughout: an existing row is never modified by this call. */
-bool edc_state_ensure_turn(const char *session_id, const char *group_id, const char *task_id,
+bool edc_state_ensure_turn(const char *session_id, int64_t group_id, int64_t task_id,
                            int turn_ord);
 
 /* Append one message at |msg_ord|. |tokens| is the estimate computed once at append
  * time (0 = unknown), so token accounting is a range SUM instead of re-estimating every
  * message per request. The turn row must already exist (edc_state_ensure_turn). */
-bool edc_msg_append(const char *task_id, int turn_ord, int msg_ord, const struct cJSON *msg,
+bool edc_msg_append(int64_t task_id, int turn_ord, int msg_ord, const struct cJSON *msg,
                     long long tokens);
 
 /* One message, parsed into a fresh object the CALLER owns (free with cJSON_Delete), or
  * NULL when the row does not exist. */
-struct cJSON *edc_msg_get(const char *task_id, int turn_ord, int msg_ord);
+struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord);
 
 /* How many messages the turn has, straight from the rows (0 when none / store closed). */
-int edc_msg_turn_len(const char *task_id, int turn_ord);
+int edc_msg_turn_len(int64_t task_id, int turn_ord);
 
 /* Sum of the token estimates of messages [from, len). One indexed range scan; this
  * replaces walking every message in C. Returns -1 when the store is closed. */
-long long edc_msg_turn_tokens_from(const char *task_id, int turn_ord, int from);
+long long edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from);
 
 /* Drop messages with msg_ord >= |new_len| (revert / rollback). */
-bool edc_msg_turn_truncate(const char *task_id, int turn_ord, int new_len);
+bool edc_msg_turn_truncate(int64_t task_id, int turn_ord, int new_len);
 
 /* Drop the whole turn's messages (turn removed). */
-bool edc_msg_turn_clear(const char *task_id, int turn_ord);
+bool edc_msg_turn_clear(int64_t task_id, int turn_ord);
 
 /* Re-key a turn: move its message rows from (old_task, old_ord) to (new_task, new_ord).
  *
  * Needed because the storage key is POSITIONAL and a turn can be built before its final
  * position is known (a fork snapshot, a test that builds turns directly). Production
  * binds the key at creation, so for it this is a no-op. The watermarks come along. */
-bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_session,
-                       const char *new_group, const char *new_task, int new_ord);
+bool edc_msg_turn_move(int64_t old_task, int old_ord, const char *new_session,
+                       int64_t new_group, int64_t new_task, int new_ord);
 
 /* A range of messages loaded in one query: the query RESULT, not a cache. The caller
  * owns |items| and every element, and must call edc_msg_span_free. |to| < 0 means "to the
@@ -205,7 +211,7 @@ struct edc_msg_span
     struct cJSON **items;
     int n;
 };
-bool edc_msg_span_load(const char *task_id, int turn_ord, int from, int to,
+bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to,
                        struct edc_msg_span *out);
 void edc_msg_span_free(struct edc_msg_span *span);
 
@@ -223,7 +229,7 @@ struct edc_msg_ids
     char **ids;
     int n;
 };
-bool edc_msg_ids_for_turn(const char *task_id, int turn_ord, int from, int to,
+bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,
                           struct edc_msg_ids *out);
 void edc_msg_ids_free(struct edc_msg_ids *s);
 
@@ -253,7 +259,7 @@ bool edc_msg_role_by_id(const char *id, char *buf, size_t n);
 
 /* Which session owns a task: one primary-key lookup, replacing the old
  * parse-every-session.json index. Returns a malloc'd copy (caller frees) or NULL. */
-char *edc_state_store_session_for_task(const char *task_id);
+char *edc_state_store_session_for_task(int64_t task_id);
 
 /* Does the database hold any row for this session?
  *
@@ -297,6 +303,20 @@ bool edc_state_store_ensure_session(const char *session_id, const char *name, ui
 
 /* Delete a session row. Cascades take its groups/tasks/turns/messages. */
 bool edc_state_store_delete_session(const char *session_id);
+
+/* Create a task row and return the id the database assigned.
+ *
+ * This is how a task gets its identity now: `tasks.task_id` is an INTEGER PRIMARY KEY, so
+ * the INSERT allocates it -- no counter, no .task_seq file, no fsync per allocation.
+ *
+ * ONE TRANSACTION, deliberately: the row is inserted with group_id = 0 (a task that starts
+ * its own group does not know the id yet -- the group id IS the leader's task id), the id
+ * is read back with last_insert_rowid(), and group_id is filled in. Splitting those two
+ * statements across transactions would leave a task pointing at group 0 after a crash, and
+ * nothing would ever repair it. The caller then builds the struct around the id.
+ *
+ * |group_id| 0 = "this task leads its own group": the group id becomes the task id. */
+bool edc_state_store_insert_task_new(const char *session_id, int64_t group_id, int64_t *out_task_id);
 
 bool edc_state_store_has_session(const char *session_id);
 

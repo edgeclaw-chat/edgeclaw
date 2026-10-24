@@ -102,7 +102,7 @@ static void give_turn(struct edc_task *t, const char *text, const char *ts, int 
 static struct edc_task_group *make_finished_user_group(struct edc_session *session, const char *gid, const char *text,
                                                        const char *ts, int n)
 {
-    struct edc_task *leader = edc_task_new(gid, session->session_id, gid, text, edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id(gid), session->session_id, edc_test_id(gid), text, edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     give_turn(leader, text, ts, n);
@@ -166,7 +166,7 @@ static void test_due_predicate(void)
     CHECK(!edc_session_memory_extract_due(NULL, cfg, now), "NULL group => not due");
 
     /* Not idle: a member still running. */
-    struct edc_task *busy = edc_task_new("2", session->session_id, "g1", "busy", edc_channel_adapter);
+    struct edc_task *busy = edc_task_new(edc_test_id("2"), session->session_id, edc_test_id("g1"), "busy", edc_channel_adapter);
     edc_task_group_add_task(group, busy);
     CHECK(!edc_session_memory_extract_due(group, cfg, now), "a running member => not due");
     edc_task_await_exec(busy);
@@ -234,7 +234,7 @@ static void test_material_excludes_group_memory(void)
     CHECK(task != NULL, "the extraction task is in the system group");
     CHECK(task && task->memo_kind == EDC_MEMO_KIND_EXTRACT, "memo_kind = EXTRACT");
     CHECK(task && task->sink_group == group, "knows which group it is extracting");
-    CHECK(task && task->memo_cut_task_id && strcmp(task->memo_cut_task_id, "g1") == 0, "cut lands on the member");
+    CHECK(task && task->memo_cut_task_id && task->memo_cut_task_id == edc_test_id("g1"), "cut lands on the member");
 
     const char *material = task_input(task);
     CHECK(material != NULL, "the prompt is attached");
@@ -269,7 +269,7 @@ static void test_cap_multi_round_and_idempotence(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *leader = edc_task_new("g1", session->session_id, "g1", "big", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("g1"), session->session_id, edc_test_id("g1"), "big", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
@@ -409,7 +409,7 @@ static void test_failure_backoff_and_bad_cut(void)
         edc_scheduler_spawn_system_task_as(sched, session, "extract session memory", EDC_SINK_SESSION_MEMORY);
     task->memo_kind = EDC_MEMO_KIND_EXTRACT;
     task->sink_group = group;
-    task->memo_cut_task_id = strdup("does-not-exist");
+    task->memo_cut_task_id = edc_test_id("does-not-exist");
     task->memo_cut_turn = 0;
     task->memo_cut_prefix = 2;
 
@@ -443,7 +443,7 @@ static void test_serialization_tristate_and_v7(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *leader = edc_task_new("1", session->session_id, "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), session->session_id, edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     give_turn(leader, "x", NULL, 3);
@@ -461,7 +461,7 @@ static void test_serialization_tristate_and_v7(void)
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, s2);
     CHECK(edc_state_deserialize(json, s2, sched2), "v8 round-trips");
-    struct edc_task *r = edc_session_find_task(s2, "1");
+    struct edc_task *r = edc_session_find_task(s2, edc_test_id("1"));
     CHECK(r != NULL, "task restored");
     CHECK(r && r->memo_kind == EDC_MEMO_KIND_COMPACT, "memo_kind=COMPACT round-trips");
     CHECK(r && ((struct edc_turn *)r->turns.data[r->turns.head])->memo_prefix == 2, "turn memo_prefix round-trips");
@@ -494,7 +494,7 @@ static void test_serialization_tristate_and_v7(void)
     struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
     install_resolver(sched3, s3);
     CHECK(edc_state_deserialize(json, s3, sched3), "v7 archive loads");
-    struct edc_task *r3 = edc_session_find_task(s3, "1");
+    struct edc_task *r3 = edc_session_find_task(s3, edc_test_id("1"));
     CHECK(r3 != NULL, "v7 task restored");
     CHECK(r3 && r3->memo_kind == EDC_MEMO_KIND_COMPACT, "v7 memo_compact=true reads as COMPACT");
     CHECK(r3 && ((struct edc_turn *)r3->turns.data[r3->turns.head])->memo_prefix ==
@@ -522,7 +522,7 @@ static void test_material_keeps_tool_calls(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *leader = edc_task_new("g1", session->session_id, "g1", "work", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("g1"), session->session_id, edc_test_id("g1"), "work", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
 

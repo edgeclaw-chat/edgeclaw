@@ -124,7 +124,7 @@ int main(void)
     struct edc_session_manager *sm = sched->sessions;
 
     /* 一个带记忆的组 (手动策展的材料来源) */
-    struct edc_task *leader = edc_task_new("675", "sess-memo", "675", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("675"), "sess-memo", edc_test_id("675"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(sess, g);
     g->memory = sdsnew("group 675 memory: 构建入口是 bazelisk");

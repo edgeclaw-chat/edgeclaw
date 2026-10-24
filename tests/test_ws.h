@@ -130,10 +130,49 @@ static struct edc_turn *edc_test_turn_new(void)
     /* A DISTINCT key per turn. Two turns sharing (task_id, turn_ord) would write to the
      * same rows and the second would silently overwrite the first -- which is what makes
      * a multi-turn test see "0 messages" instead of 4. */
-    static int seq;
-    char id[64];
-    snprintf(id, sizeof(id), "task-test-%d", ++seq);
-    return edc_turn_new_for("sess-test", "g-test", id, 0);
+    static int64_t seq = 100000;
+    return edc_turn_new_for("sess-test", 90000 + (seq % 1000), ++seq, 0);
+}
+
+/* The ids a task/group carries are NUMBERS now (INTEGER PRIMARY KEYs), while fixtures name
+ * things with strings -- "task-1", "parent", "L". This maps a name to a stable, small
+ * positive id so a fixture keeps its identity across calls and a CHECK can compare
+ * `t->task_id == edc_test_id("task-1")`.
+ *
+ * A table rather than a hash: a collision would make two different fixtures land on the
+ * same row and fail somewhere far away from the cause. 512 distinct names per test binary
+ * is far more than any test needs, and running out is loud (returns 0) rather than silent.
+ *
+ * Not thread safe, and does not need to be: each test binary is single-threaded here. */
+#define EDC_TEST_ID_MAX 8192
+static int64_t edc_test_id(const char *name)
+{
+    static char **names;
+    static int n;
+    if (!name || !*name)
+        return 0;
+
+    /* A purely numeric name IS the id: fixtures say "100" or "3" and mean that number, and
+     * several assertions still spell it out in the expected value. */
+    {
+        char *end = NULL;
+        const long long v = strtoll(name, &end, 10);
+        if (end && *end == '\0' && v > 0)
+            return (int64_t)v;
+    }
+
+    for (int i = 0; i < n; i++)
+        if (strcmp(names[i], name) == 0)
+            return (int64_t)i + 1000000; /* high range: never collides with a numeric name */
+    if (!names)
+        names = (char **)calloc(EDC_TEST_ID_MAX, sizeof(*names));
+    if (n >= EDC_TEST_ID_MAX)
+    {
+        fprintf(stderr, "edc_test_id: more than %d distinct names\n", EDC_TEST_ID_MAX);
+        abort();
+    }
+    names[n] = strdup(name);
+    return (int64_t)(n++) + 1000000;
 }
 
 /* Tests build turns directly all over the place; this keeps them working now that a turn

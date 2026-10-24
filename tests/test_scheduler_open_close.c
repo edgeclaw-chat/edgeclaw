@@ -245,12 +245,12 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     CHECK(b && edc_task_is_resumable(b), "and B can be resumed...");
 
     /* Reopen: the state comes back as stated -- nothing is inferred on the way in. */
-    const char *a_id = a->task_id;
-    const char *b_id = b->task_id;
+    int64_t a_id = a->task_id;
+    int64_t b_id = b->task_id;
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     CHECK(edc_scheduler_open(sched2), "reopen()");
-    struct edc_task *ra = edc_session_manager_find_task_any(sched2->sessions, a_id, NULL);
-    struct edc_task *rb = edc_session_manager_find_task_any(sched2->sessions, b_id, NULL);
+    struct edc_task *ra = edc_session_manager_find_task_any(sched2->sessions, a_id, 0);
+    struct edc_task *rb = edc_session_manager_find_task_any(sched2->sessions, b_id, 0);
     CHECK(ra && edc_task_is_interrupted(ra), "INTERRUPTED round-trips (no inference on load)");
     CHECK(ra && ra->is_background, "and the background flag does too (resuming it must not put it on screen)");
     CHECK(rb && edc_task_is_interrupted(rb), "and B's INTERRUPTED does too");
@@ -317,13 +317,13 @@ static void test_running_task_survives_a_kill(void)
 
     /* Make it in flight, then die the way a kill does: no close(). */
     CHECK(edc_task_await_exec(t), "task is in flight (LLM_PROCESSING)");
-    const char *tid = strdup(t->task_id ? t->task_id : "");
+    const char *tid = strdup(edc_id_str(t->task_id));
     edc_scheduler_free(sched); /* NOT close(): this is the kill */
 
     TEST("R8: after a kill, the unfinished task is there and can be resumed");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     CHECK(edc_scheduler_open(sched2), "reopen()");
-    struct edc_task *back = edc_session_manager_find_task_any(sched2->sessions, tid, NULL);
+    struct edc_task *back = edc_session_manager_find_task_any(sched2->sessions, (int64_t)strtoll(tid, NULL, 10), 0);
     CHECK(back != NULL, "the task that was running exists after the restart");
     /* The loader states what happened: it was ALIVE with no clean shutdown, so it comes
      * back INTERRUPTED (the same thing close() would have written). */

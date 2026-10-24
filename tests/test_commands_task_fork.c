@@ -150,7 +150,7 @@ int main(void)
     g_llm_calls = 0;
     g_llm_task = NULL;
     char fork_cmd[256];
-    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s child work", parent->task_id);
+    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s child work", edc_id_str(parent->task_id));
     drive_command(cfg, sm, sched, fork_cmd);
 
     struct edc_task *child = find_task_by_desc(sess, "child work");
@@ -159,7 +159,7 @@ int main(void)
     {
         CHECK(child->group != NULL && child->group != parent->group, "it leads a group of its own");
         CHECK(child->group && child->group->leader == child, "it is the leader of that group");
-        CHECK(child->group && child->group_id && strcmp(child->group_id, child->task_id) == 0,
+        CHECK(child->group && child->group_id == child->task_id,
               "group id = child task id");
         CHECK(edc_scheduler_get_foreground(sess) == child->group, "the foreground moved onto it");
         CHECK(edc_session_get_active_task(sess) == child, "it is the active task");
@@ -193,7 +193,7 @@ int main(void)
     TEST("/task fork with no desc is a usage error");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s", parent->task_id);
+    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s", edc_id_str(parent->task_id));
     drive_command(cfg, sm, sched, fork_cmd);
 
     CHECK(find_task_by_desc(sess, "") == NULL, "no child was created");

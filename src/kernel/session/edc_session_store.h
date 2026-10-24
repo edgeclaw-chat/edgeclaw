@@ -2,6 +2,7 @@
 #define __EDC_SESSION_STORE_H__
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /* ── session store readers and lifetime ────────────────────────
  *
@@ -31,7 +32,7 @@ struct edc_task;
  *  or NULL on miss. Loading is side-effect-free with respect to the active
  *  session: the foreground group lives on each session, not on the scheduler. */
 extern struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                                       const char *task_id, struct edc_session **owner_out);
+                                                       int64_t task_id, struct edc_session **owner_out);
 
 /** Load a session's persisted state and reconcile any cross-session dependency
  *  edges it revealed. Marks the session loaded (memory is authoritative even for

@@ -116,7 +116,7 @@ static char *first_task_id(struct edc_session *session)
     {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
-        return t->task_id;
+        return edc_id_str(t->task_id);
     }
     return NULL;
 }
@@ -165,10 +165,10 @@ static void test_input_lands_in_the_tagged_session(void)
     char *tid = first_task_id(g_sess_b);
     CHECK(tid != NULL, "B 的任务存在");
     CHECK(g_sess_b->active_task != NULL, "B 的 active task 被设置");
-    CHECK(g_sess_b->active_task && tid && strcmp(g_sess_b->active_task->task_id, tid) == 0,
+    CHECK(g_sess_b->active_task && tid && strcmp(edc_id_str(g_sess_b->active_task->task_id), tid) == 0,
           "active task 就是刚建的那个");
     CHECK(g_sess_b->foreground_group != NULL, "B 有了前台组");
-    CHECK(g_sess_b->foreground_group && tid && strcmp(g_sess_b->foreground_group->group_id, tid) == 0,
+    CHECK(g_sess_b->foreground_group && tid && strcmp(edc_id_str(g_sess_b->foreground_group->group_id), tid) == 0,
           "前台组以它为首 (group_id == leader id)");
     CHECK(g_sess_a->active_task == NULL, "A 的 active task 没被动过");
     CHECK(g_sess_a->foreground_group == NULL, "A 的前台组没被动过");

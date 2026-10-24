@@ -88,11 +88,11 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
 /* 一个可折叠的组: leader 已完成 + 带一个 turn (两条消息)。 */
 static struct edc_task_group *make_group(struct edc_session *sess, const char *id)
 {
-    struct edc_task *leader = edc_task_new(id, sess->session_id, id, "leader work", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id(id), sess->session_id, edc_test_id(id), "leader work", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(sess, g);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(leader->task_id);
+    turn->task_id = leader->task_id;
     for (int i = 0; i < 2; i++)
     {
         cJSON *m = cJSON_CreateObject();
@@ -227,7 +227,7 @@ int main(void)
     {
         struct edc_task_group *fg_before = edc_scheduler_get_foreground(sess);
         char cmd[128];
-        snprintf(cmd, sizeof(cmd), "/task fg %s", pending_fold->task_id);
+        snprintf(cmd, sizeof(cmd), "/task fg %s", edc_id_str(pending_fold->task_id));
         drive_command(cfg, sched->sessions, sched, cmd);
         CHECK(edc_scheduler_get_foreground(sess) == fg_before, "前台没动");
         CHECK(edc_scheduler_get_foreground(sess) != sys, "也没有变成系统组");

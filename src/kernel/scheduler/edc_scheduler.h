@@ -9,6 +9,7 @@
 #include "edc_task_group.h"
 #include "sds.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 struct edc_session;
 struct edc_session_manager;
@@ -66,8 +67,8 @@ struct edc_sched_dirty
  *  from the loaded session's id_map. Kept by id so it cannot dangle. */
 struct edc_pending_dep
 {
-    sds target_task_id;
-    sds source_task_id;
+    int64_t target_task_id;
+    int64_t source_task_id;
     edc_task_dep_type type;
     bool completed;
     bool cancelled;
@@ -137,8 +138,8 @@ struct edc_scheduler
 
 /* Record an unresolved cross-session edge (source absent from the loaded
  * session's id_map); copied by id and drained by the reconcile pass. */
-extern void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
-                                          const char *source_task_id, edc_task_dep_type type, bool completed,
+extern void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, int64_t target_task_id,
+                                          int64_t source_task_id, edc_task_dep_type type, bool completed,
                                           bool cancelled, bool injected);
 
 /** True while |task| has an unresolved cross-session dep, i.e. it must not be
@@ -146,20 +147,20 @@ extern void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, const cha
 extern bool edc_scheduler_task_has_unresolved_deps(struct edc_scheduler *sched, struct edc_task *task);
 
 /** Source id of |task|'s first unresolved cross-session dep, or NULL. */
-extern const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task);
+extern int64_t edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task);
 
 /** Walk the pending (unresolvable) edges of |task_id|: pass NULL to start, then the
  *  returned node as |prev|. Read-only, for `/task dep`'s listing. */
 extern const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched,
-                                                                   const char *task_id,
+                                                                   int64_t task_id,
                                                                    const struct edc_pending_dep *prev);
 
 /** Forget the unresolved edge |target| -> |source| (or every one of |target|'s when
  *  |source_task_id| is NULL): the answer to "that session is gone for good". The caller
  *  re-decides the target -- there is no edge row to void here (the source task was never
  *  loaded), only this constraint. Returns how many were removed. */
-extern int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
-                                          const char *source_task_id);
+extern int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, int64_t target_task_id,
+                                          int64_t source_task_id);
 
 extern struct edc_scheduler *edc_scheduler_new(struct edc_config *config);
 extern void edc_scheduler_free(struct edc_scheduler *sched);
@@ -201,10 +202,10 @@ extern char *edc_scheduler_gen_task_id(struct edc_scheduler *sched);
  *  selects one task, else `group_id` selects every member. Returns a malloc'd
  *  string (caller frees) or NULL when not found. */
 extern char *edc_scheduler_task_history_json(struct edc_scheduler *sched, struct edc_session *session,
-                                             const char *group_id, const char *task_id);
+                                             int64_t group_id, int64_t task_id);
 /** Fold an existing decimal task id into the allocator's high-water mark and
  *  persist it, so ids issued after a restart stay above the saved maximum. */
-extern void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id);
+
 
 /** The bare task object: id, owner session, L2 watermark, raw input. Makes NO group
  *  membership and attaches NO turn -- placement is edc_scheduler_task_create's job
@@ -254,7 +255,7 @@ struct edc_task_spec
     int nparts;
 
     edc_task_place place;
-    const char *group_id; /* EDC_TASK_PLACE_GROUP */
+    int64_t group_id; /* EDC_TASK_PLACE_GROUP; 0 = no named group */
     /* Move the session's foreground group and active pointer onto this task.
      * Background and system tasks do not take it. */
     bool take_foreground;
@@ -338,7 +339,7 @@ extern struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, voi
 /** Find a task by id within |session|. Cross-session lookups go through the
  *  store's task index. */
 extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, struct edc_session *session,
-                                                      const char *task_id);
+                                                      int64_t task_id);
 
 /** The task a command with no id acts on: the foreground group's last unfinished
  *  member, or NULL when there is no foreground group or all of its members have
@@ -372,12 +373,12 @@ extern void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_
                                        const struct edc_advance_result *res);
 
 extern void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session,
-                                              const char *task_id, edc_task_signal sig);
+                                              int64_t task_id, edc_task_signal sig);
 /** Same as the id-based variant, on an already-resolved task pointer. */
 extern void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct edc_task *task,
                                                   edc_task_signal sig);
 extern void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, struct edc_session *session,
-                                               const char *group_id, edc_task_signal sig);
+                                               int64_t group_id, edc_task_signal sig);
 /** Signal every group under |session|: true hits only edc_task_is_running()
  *  tasks (process exit), false clears every non-terminal task (/session remove). */
 extern void edc_scheduler_send_signal_to_session(struct edc_scheduler *sched, struct edc_session *session,

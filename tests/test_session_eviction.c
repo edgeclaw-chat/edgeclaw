@@ -47,7 +47,7 @@ static void install_sessions(struct edc_scheduler *sched, struct edc_session_man
 static void add_work(struct edc_session *s, struct edc_scheduler *sched, const char *task_id,
                      const char *text)
 {
-    struct edc_task *t = edc_task_new(task_id, s->session_id, task_id, text, edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(task_id), s->session_id, edc_test_id(task_id), text, edc_channel_adapter);
     edc_task_group_add_task(edc_task_group_new(t), t);
     struct edc_task_group *g = t->group;
     edc_session_add_group(s, g);
@@ -123,7 +123,7 @@ int main(void)
     struct edc_session *c = edc_session_manager_create(sm, "C");
     c->state_loaded = true;
     {
-        struct edc_task *t = edc_task_new("tc-1", c->session_id, "tc-1", "running", edc_channel_adapter);
+        struct edc_task *t = edc_task_new(edc_test_id("tc-1"), c->session_id, edc_test_id("tc-1"), "running", edc_channel_adapter);
         edc_task_group_add_task(edc_task_group_new(t), t);
         edc_session_add_group(c, t->group);
         edc_task_await_exec(t); /* ALIVE + AWAIT_EXEC: may still advance by itself */
@@ -135,7 +135,7 @@ int main(void)
 
     /* Finish it, and it becomes evictable. */
     {
-        struct edc_task *t = edc_session_manager_find_task_any(sm, "tc-1", NULL);
+        struct edc_task *t = edc_session_manager_find_task_any(sm, edc_test_id("tc-1"), 0);
         CHECK(t != NULL, "the live task is findable");
         if (t)
             edc_task_mark_completed(t);
@@ -168,7 +168,7 @@ int main(void)
             cJSON_Delete(msg);
     }
     {
-        struct edc_task *t = edc_session_manager_find_task_any(sm, "ta-1", NULL);
+        struct edc_task *t = edc_session_manager_find_task_any(sm, edc_test_id("ta-1"), 0);
         CHECK(t != NULL, "the task is findable by id");
         CHECK(t != NULL && edc_task_is_completed(t), "and keeps its completed state");
     }
@@ -202,9 +202,9 @@ int main(void)
         /* Step 5 may have evicted A already; bring it back so there is a task to point at. */
         if (!a->state_loaded)
             CHECK(edc_session_store_load_session(sm, sched, a), "A reloads for the dep test");
-        struct edc_task *src = edc_session_manager_find_task_any(sm, "ta-1", NULL);
+        struct edc_task *src = edc_session_manager_find_task_any(sm, edc_test_id("ta-1"), 0);
         struct edc_task *dep_task =
-            edc_task_new("td-1", d->session_id, "td-1", "depends on A", edc_channel_adapter);
+            edc_task_new(edc_test_id("td-1"), d->session_id, edc_test_id("td-1"), "depends on A", edc_channel_adapter);
         edc_task_group_add_task(edc_task_group_new(dep_task), dep_task);
         edc_session_add_group(d, dep_task->group);
         CHECK(src != NULL, "A's task is loaded and findable");

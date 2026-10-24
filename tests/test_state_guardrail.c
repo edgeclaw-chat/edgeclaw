@@ -73,7 +73,7 @@ static void install_sessions(struct edc_scheduler *sched, struct edc_session *se
 /* A task with input, so the serializer's persist predicate keeps it. */
 static struct edc_task_group *add_task(struct edc_session *s, const char *task_id, const char *desc)
 {
-    struct edc_task *t = edc_task_new(task_id, s->session_id, "g-1", desc, edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(task_id), s->session_id, edc_test_id("g-1"), desc, edc_channel_adapter);
     t->is_group_leader = 1;
     t->step = EDC_TASKSTEP_DONE;
     t->life = EDC_LIFE_COMPLETED;

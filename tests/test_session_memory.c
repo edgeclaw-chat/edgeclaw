@@ -349,8 +349,8 @@ static void test_adopt(void)
 
     edc_session_memory_add_event(s->memo, "m1", EDC_MEMO_CREATED, "t", "s");
     edc_session_memory_add_event(s->memo, "m2", EDC_MEMO_CREATED, "t", "s");
-    struct edc_task *early = edc_task_new("100", "l2", "100", "早的", edc_channel_adapter);
-    struct edc_task *late = edc_task_new("101", "l2", "100", "晚的", edc_channel_adapter);
+    struct edc_task *early = edc_task_new(edc_test_id("100"), "l2", edc_test_id("100"), "早的", edc_channel_adapter);
+    struct edc_task *late = edc_task_new(edc_test_id("101"), "l2", edc_test_id("100"), "晚的", edc_channel_adapter);
     edc_session_memory_adopt_task(s, early);
     CHECK(early->memo_seen_seq == 0, "采纳 = 0 (不是表头 2)");
     CHECK(s->memo->next_seq == 2, "表头是 2 ⇒ 差集 = {1,2} = 首轮回填");

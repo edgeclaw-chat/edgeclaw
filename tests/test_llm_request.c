@@ -150,7 +150,7 @@ static void harness_down(struct harness *h)
 
 static struct edc_task_group *make_group(struct harness *h, struct edc_task **out_task, const char *sid)
 {
-    struct edc_task *leader = edc_task_new("1", sid, "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), sid, edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(h->sess, g);
     edc_task_await_exec(leader);
@@ -386,7 +386,7 @@ static void test_head_blocks_cache_layout(void)
     struct edc_task_group *g = make_group(&h, &leader, "sess-head");
     g->memory = sdsnew("MEM-SUMMARY"); /* 非空 ⇒ 两块都出现 */
 
-    struct edc_task *t2 = edc_task_new("h-2", "sess-head", g->group_id, "second task", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("h-2"), "sess-head", g->group_id, "second task", edc_channel_adapter);
     edc_task_group_add_task(g, t2);
 
     attach_turn(&h, leader, "first input");
@@ -440,10 +440,10 @@ static void test_join_injection_shape(void)
     (void)g;
 
     /* 源一: 普通任务 (description + output) */
-    struct edc_task *src = edc_task_new("src-1", "sess-inj", "src-1", "src work", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("src-1"), "sess-inj", edc_test_id("src-1"), "src work", edc_channel_adapter);
     {
         struct edc_turn *t = edc_turn_new();
-        t->task_id = strdup("src-1");
+        t->task_id = edc_test_id("src-1");
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "SOURCE-USER-TEXT");
@@ -458,7 +458,7 @@ static void test_join_injection_shape(void)
     struct edc_task *fold_src = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
     {
         struct edc_turn *t = edc_turn_new();
-        t->task_id = strdup(fold_src->task_id);
+        t->task_id = fold_src->task_id;
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "FOLD-PROMPT-TEXT");
@@ -470,7 +470,7 @@ static void test_join_injection_shape(void)
     edc_task_mark_completed(fold_src);
 
     /* 目标: 自己的输入 = "DEST-OWN-TURN", 同时 JOIN 两个源 */
-    struct edc_task *dst = edc_task_new("dst-1", "sess-inj", "dst-1", "dst work", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new(edc_test_id("dst-1"), "sess-inj", edc_test_id("dst-1"), "dst work", edc_channel_adapter);
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
     edc_task_add_dependency(dst, fold_src, TASK_DEP_JOIN);
     attach_turn(&h, dst, "DEST-OWN-TURN");
@@ -713,7 +713,7 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     /* The completed `!cmd` task's turn. The key is bound at CREATION: messages are rows
      * written under it, so assigning task_id afterwards would leave them under the
      * constructor's placeholder and history_add_turn would find nothing. */
-    struct edc_turn *done = edc_turn_new_for("sess-req", "2", "2", 0);
+    struct edc_turn *done = edc_turn_new_for("sess-req", edc_test_id("2"), edc_test_id("2"), 0);
     edc_turn_add_user_message(done, "!pwd");
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "command", "pwd");

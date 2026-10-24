@@ -194,9 +194,9 @@ void edc_group_fold_note_failure(struct edc_task_group *group)
     if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
         log_error("L1 fold: group %s failed %d times in a row — automatic folding is paused for this group "
                   "(do new work in it, or run /group fold %s, to try again)",
-                  group->group_id, group->fold_failures, group->group_id);
+                  edc_id_str(group->group_id), group->fold_failures, edc_id_str(group->group_id));
     else
-        log_info("L1 fold: group %s fold failure %d/%d", group->group_id, group->fold_failures,
+        log_info("L1 fold: group %s fold failure %d/%d", edc_id_str(group->group_id), group->fold_failures,
                  EDC_FOLD_MAX_FAILURES);
 }
 
@@ -204,7 +204,7 @@ void edc_group_fold_note_progress(struct edc_task_group *group)
 {
     if (!group || group->fold_failures == 0)
         return;
-    log_info("L1 fold: group %s failure streak cleared (was %d)", group->group_id, group->fold_failures);
+    log_info("L1 fold: group %s failure streak cleared (was %d)", edc_id_str(group->group_id), group->fold_failures);
     group->fold_failures = 0;
 }
 
@@ -259,7 +259,7 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
 
             if (edc_group_fold_due(g, conf))
             {
-                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (window=%d)", g->group_id,
+                log_info("L1 fold trigger: group %s foldable=%zu unfolded=%zu (window=%d)", edc_id_str(g->group_id),
                          foldable, unfolded, conf ? conf->context_window : 0);
                 /* Not startable right now (a member is still running) → keep looking
                  * at this session's other groups instead of declaring one started. */
@@ -272,7 +272,7 @@ bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager 
             }
             if (foldable > 0 || unfolded > 0)
             {
-                log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", g->group_id, foldable, unfolded);
+                log_debug("L1 fold check: group %s foldable=%zu unfolded=%zu", edc_id_str(g->group_id), foldable, unfolded);
             }
         }
     }
@@ -476,7 +476,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
 {
     if (out_cut)
     {
-        out_cut->task_id = NULL;
+        out_cut->task_id = 0;
         out_cut->turn = 0;
         out_cut->prefix = 0;
     }
@@ -489,7 +489,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     size_t cnt = collect_pieces(members, n, &ps);
     if (cnt == 0)
     {
-        log_debug("L1 fold: group %s has nothing unfolded to fold", group->group_id);
+        log_debug("L1 fold: group %s has nothing unfolded to fold", edc_id_str(group->group_id));
         free(members);
         free_pieces(ps, cnt);
         return NULL;
@@ -508,7 +508,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     {
         keep = cnt / 2;
         log_info("L1 fold: group %s is under keep_recent (%lld <= %d tokens) — folding the oldest half (%zu of %zu msgs)",
-                 group->group_id, total, EDC_FOLD_KEEP_RECENT_TOKENS, cnt - keep, cnt);
+                 edc_id_str(group->group_id), total, EDC_FOLD_KEEP_RECENT_TOKENS, cnt - keep, cnt);
     }
     else
     {
@@ -571,8 +571,8 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     }
     log_info("L1 fold: group %s fold %zu/%zu msgs (%lld corpus tokens, cap %d; keep_recent ~%d), "
              "cut at task %s turn %zu msg %u",
-             group->group_id, cut_at, cnt, corpus, EDC_FOLD_MAX_CORPUS_TOKENS, EDC_FOLD_KEEP_RECENT_TOKENS,
-             cut_piece->task->task_id, cut_piece->turn_index, cut_prefix);
+             edc_id_str(group->group_id), cut_at, cnt, corpus, EDC_FOLD_MAX_CORPUS_TOKENS, EDC_FOLD_KEEP_RECENT_TOKENS,
+             edc_id_str(cut_piece->task->task_id), cut_piece->turn_index, cut_prefix);
 
     bool has_memory = (group->memory && sdslen(group->memory) > 0);
     sds prompt = sdsempty();
@@ -585,7 +585,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         if (tk != cur)
         {
             cur = tk;
-            prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
+            prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", edc_id_str(tk->task_id), tk->description ? tk->description : "");
         }
         cJSON *m = ps[i].msg;
         if (out_files)
@@ -630,7 +630,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     if (cut_at > 0 && ps[cut_at - 1].turn_index == EDC_FOLD_CUT_ACTIVE_TURN)
         split_turn = true; /* the corpus tail is an in-flight turn */
     if (split_turn)
-        log_info("L1 fold: group %s split turn at the cut (pi §5 turn context section)", group->group_id);
+        log_info("L1 fold: group %s split turn at the cut (pi §5 turn context section)", edc_id_str(group->group_id));
 
     prompt = sdscat(prompt, has_memory ? kUpdateSummaryInstruction : kInitialSummaryInstruction);
     if (split_turn)
@@ -684,7 +684,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
     task->fold_files = files;
     task->sink_group = group; /* output goes into this group's memory (sink = GROUP_MEMORY) */
     /* The corpus and the cut are computed in one pass, so landing applies this cut. */
-    task->fold_cut_task_id = cut.task_id ? strdup(cut.task_id) : NULL;
+    task->fold_cut_task_id = cut.task_id;
     task->fold_cut_turn = cut.turn;
     task->fold_cut_prefix = cut.prefix;
 
@@ -695,13 +695,13 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
      * guard never corrected it: every fold call then ran with EdgeClaw's persona
      * and MEMORY.md in front of the transcript. */
 
-    log_info("L1 fold start: group %s task=%s prompt=%zu bytes, cut=task %s turn %u msg %u", group->group_id,
-             task->task_id, sdslen(prompt), task->fold_cut_task_id ? task->fold_cut_task_id : "(none)",
+    log_info("L1 fold start: group %s task=%s prompt=%zu bytes, cut=task %s turn %u msg %u", edc_id_str(group->group_id),
+             edc_id_str(task->task_id), sdslen(prompt), edc_id_str(task->fold_cut_task_id),
              task->fold_cut_turn, task->fold_cut_prefix);
 
     if (!edc_scheduler_attach_input(sched, task, prompt))
     {
-        log_error("L1 fold: could not attach the fold prompt for group %s — no fold this round", group->group_id);
+        log_error("L1 fold: could not attach the fold prompt for group %s — no fold this round", edc_id_str(group->group_id));
         /* Do not leave a half-built task; marking it failed also releases any
          * dependents (SEQUENCE). */
         edc_task_mark_failed(task);
@@ -732,7 +732,7 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
 
     /* The prompt is dispatched by the message-end scan, like any task. */
     log_info("L1 fold: prompt attached to system task %s (it will be dispatched by the scheduler)",
-             task->task_id);
+             edc_id_str(task->task_id));
 
     sdsfree(prompt);
     return task;
@@ -813,7 +813,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     if (!group || !content || !*content)
     {
         log_error("L1 fold: task %s produced no memory (target=%s, content=%s) — group memory unchanged",
-                  (task && task->task_id) ? task->task_id : "(null)", group ? "yes" : "none",
+                  edc_id_str(task ? task->task_id : 0), group ? "yes" : "none",
                   (content && *content) ? "non-empty" : "empty");
         /* (c) No memory written = not landed; still counts as one failure. */
         edc_group_fold_note_failure(group);
@@ -852,7 +852,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     if (!task->fold_cut_task_id)
     {
         log_error("L1 fold: task %s carries no cut (older format) — group %s memory updated but no prefix applied",
-                  task->task_id, group->group_id);
+                  edc_id_str(task->task_id), edc_id_str(group->group_id));
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) no prefix applied = nothing really folded */
@@ -868,7 +868,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     struct edc_task *cut_member = NULL;
     for (size_t i = 0; i < n && !cut_member; i++)
     {
-        if (strcmp(members[i]->task_id, task->fold_cut_task_id) == 0)
+        if (task->fold_cut_task_id > 0 && members[i]->task_id == task->fold_cut_task_id)
             cut_member = members[i];
     }
     struct edc_turn *cut_turn = NULL;
@@ -887,7 +887,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     if (!cut_member || !cut_turn)
     {
         log_error("L1 fold: cut (task=%s turn=%u) does not resolve in group %s — memory updated, nothing folded",
-                  task->fold_cut_task_id, task->fold_cut_turn, group->group_id);
+                  edc_id_str(task->fold_cut_task_id), task->fold_cut_turn, edc_id_str(group->group_id));
         free(members);
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
@@ -937,7 +937,7 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     group->memory_covers_to = group_memory_covers_to(group);
     /* (c) Successful landing => clear the consecutive-failure count. */
     edc_group_fold_note_progress(group);
-    log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", group->group_id,
-             folded_turns, folded_msgs, task->fold_cut_task_id, task->fold_cut_turn, task->fold_cut_prefix);
+    log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", edc_id_str(group->group_id),
+             folded_turns, folded_msgs, edc_id_str(task->fold_cut_task_id), task->fold_cut_turn, task->fold_cut_prefix);
     return true;
 }

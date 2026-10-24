@@ -76,7 +76,7 @@ static struct edc_task *find_task(struct edc_session *s, const char *tid)
     DL_FOREACH(s->groups, g) {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next) {
-            if (strcmp(t->task_id, tid) == 0) return t;
+            if (t->task_id == edc_test_id(tid)) return t;
         }
     }
     return NULL;
@@ -98,7 +98,7 @@ static void test_exit_save(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *t1 = edc_task_new("task-exit1", "sess-exit", "task-exit1",
+    struct edc_task *t1 = edc_task_new(edc_test_id("task-exit1"), "sess-exit", edc_test_id("task-exit1"),
                                         "exit task 1", edc_channel_adapter);
     t1->is_group_leader = 1;
     edc_task_mark_ready(t1);
@@ -159,7 +159,7 @@ static void test_startup_load(void)
         struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
         install_resolver(sc1, s1);
 
-        struct edc_task *t1 = edc_task_new("task-start1", "sess-start", "task-start1",
+        struct edc_task *t1 = edc_task_new(edc_test_id("task-start1"), "sess-start", edc_test_id("task-start1"),
                                             "startup task", edc_channel_adapter);
         t1->is_group_leader = 1;
         edc_task_mark_ready(t1);
@@ -240,7 +240,7 @@ static void test_switch_save(void)
     struct edc_scheduler *scA = edc_scheduler_new(cfg);
     install_resolver(scA, sA);
 
-    struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A",
+    struct edc_task *tA = edc_task_new(edc_test_id("task-A"), "sess-A", edc_test_id("task-A"),
                                         "task in A", edc_channel_adapter);
     tA->is_group_leader = 1;
     edc_task_mark_ready(tA);
@@ -261,7 +261,7 @@ static void test_switch_save(void)
     struct edc_scheduler *scB = edc_scheduler_new(cfg);
     install_resolver(scB, sB);
 
-    struct edc_task *tB = edc_task_new("task-B", "sess-B", "task-B",
+    struct edc_task *tB = edc_task_new(edc_test_id("task-B"), "sess-B", edc_test_id("task-B"),
                                         "task in B", edc_channel_adapter);
     tB->is_group_leader = 1;
     edc_task_mark_ready(tB);
@@ -290,12 +290,12 @@ static void test_switch_save(void)
      * back to gid == tid, i.e. a brand-new group). */
     CHECK(edc_scheduler_get_foreground(sA2) != NULL, "foreground group restored after switch-back");
     CHECK(edc_scheduler_get_foreground(sA2) != NULL &&
-              strcmp(edc_scheduler_get_foreground(sA2)->group_id, "task-A") == 0,
+              edc_scheduler_get_foreground(sA2)->group_id == edc_test_id("task-A"),
           "restored foreground group has the original group id");
     struct edc_task *fresh = edc_scheduler_task_new(scA2, sA2, "next task", edc_channel_adapter);
     CHECK(fresh != NULL, "new task created after switch-back");
-    CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0, "new task joins the restored foreground group");
-    CHECK(fresh != NULL && strcmp(fresh->group_id, fresh->task_id) != 0, "new task does not spawn its own group");
+    CHECK(fresh != NULL && fresh->group_id == edc_test_id("task-A"), "new task joins the restored foreground group");
+    CHECK(fresh != NULL && fresh->group_id != fresh->task_id, "new task does not spawn its own group");
     if (fresh)
         edc_task_free(fresh);
 
@@ -335,7 +335,7 @@ static void test_switch_keeps_background_running(void)
     struct edc_session *sA = edc_session_new(cfg, "sess-A", "SessionA");
     struct edc_scheduler *sc = edc_scheduler_new(cfg);
     install_resolver(sc, sA);
-    struct edc_task *tA = edc_task_new("task-A", "sess-A", "task-A", "task in A", edc_channel_adapter);
+    struct edc_task *tA = edc_task_new(edc_test_id("task-A"), "sess-A", edc_test_id("task-A"), "task in A", edc_channel_adapter);
     edc_task_await_exec(tA);
     struct edc_task_group *gA = edc_scheduler_create_group(sc, sA, tA);
     edc_scheduler_set_foreground(sA, gA);
@@ -352,7 +352,7 @@ static void test_switch_keeps_background_running(void)
     CHECK(edc_scheduler_get_foreground(sA) == gA, "A keeps its own foreground group (nothing was reset)");
 
     struct edc_task *fresh = edc_scheduler_task_new(sc, sA, "next task", edc_channel_adapter);
-    CHECK(fresh != NULL && strcmp(fresh->group_id, "task-A") == 0,
+    CHECK(fresh != NULL && fresh->group_id == edc_test_id("task-A"),
           "new task joins the restored foreground group, not its own");
     if (fresh)
         edc_task_free(fresh);
@@ -391,8 +391,8 @@ static void test_repeated_cycle(void)
         snprintf(tid, sizeof(tid), "task-cycle%d", cycle);
         snprintf(tdesc, sizeof(tdesc), "cycle %d task", cycle);
 
-        struct edc_task *t = edc_task_new(tid, "sess-cycle",
-                                           cycle == 0 ? tid : "task-cycle0",
+        struct edc_task *t = edc_task_new(edc_test_id(tid), "sess-cycle",
+                                           edc_test_id(cycle == 0 ? tid : "task-cycle0"),
                                            tdesc, edc_channel_adapter);
         if (cycle == 0) t->is_group_leader = 1;
         edc_task_mark_ready(t);

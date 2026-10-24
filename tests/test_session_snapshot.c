@@ -156,7 +156,7 @@ static bool snapshot_has_group(cJSON *root, const char *group_id)
 /* 给 session 装一个组 + 一个成员任务 (id 与组 id 都显式给, 断言里要认它们)。 */
 static struct edc_task *add_group_with_task(struct edc_session *session, const char *task_id, const char *desc)
 {
-    struct edc_task *task = edc_task_new(task_id, session->session_id, task_id, desc, edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id(task_id), session->session_id, edc_test_id(task_id), desc, edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
     return task;
@@ -298,10 +298,10 @@ static void test_group_usage_rollup(void)
     sched->snapshot_reply = capture_snapshot;
     install_store(sched, s, NULL);
 
-    struct edc_task *t1 = edc_task_new("4100", s->session_id, "4100", "leader", edc_channel_adapter);
+    struct edc_task *t1 = edc_task_new(edc_test_id("4100"), s->session_id, edc_test_id("4100"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(t1);
     edc_session_add_group(s, group);
-    struct edc_task *t2 = edc_task_new("4101", s->session_id, "4100", "member", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("4101"), s->session_id, edc_test_id("4100"), "member", edc_channel_adapter);
     edc_task_group_add_task(group, t2);
 
     /* 真实顺序: 组里已经有 system prompt (history[0]) 才发得出请求 —— 锚的位置

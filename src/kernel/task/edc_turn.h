@@ -5,6 +5,7 @@
 #include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /* ── A turn is METADATA. The messages are rows in <workspace>/edgeclaw.db ─────
  *
@@ -20,10 +21,10 @@
  */
 struct edc_turn
 {
-    char *task_id;    /* owner task; with turn_ord this is the storage key */
+    int64_t task_id;  /* owner task; with turn_ord this is the storage key */
     char *session_id; /* the ancestors a message row needs (FK chain), see
                        * edc_state_ensure_turn(). Borrowed from the task at creation. */
-    char *group_id;
+    int64_t group_id;
     /* Position in the owner's turn sequence. Committed turns take their index in
      * task->turns; the in-flight turn takes the tail (== the committed count). Assigned by
      * edc_task_new_active_turn() / edc_turn_new_for(), never changed afterwards -- the
@@ -49,11 +50,11 @@ struct edc_turn
  * first append. */
 extern struct edc_turn *edc_turn_new();
 /* A turn bound to (task_id, turn_ord) -- the normal constructor. */
-extern struct edc_turn *edc_turn_new_for(const char *session_id, const char *group_id,
-                                         const char *task_id, int turn_ord);
+extern struct edc_turn *edc_turn_new_for(const char *session_id, int64_t group_id,
+                                         int64_t task_id, int turn_ord);
 /* Bind the key. Only for turns built before their position is known (fork snapshots). */
-extern void edc_turn_set_key(struct edc_turn *turn, const char *session_id, const char *group_id,
-                             const char *task_id, int turn_ord);
+extern void edc_turn_set_key(struct edc_turn *turn, const char *session_id, int64_t group_id,
+                             int64_t task_id, int turn_ord);
 
 extern void edc_turn_free(struct edc_turn *turn);
 

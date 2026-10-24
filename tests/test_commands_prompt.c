@@ -361,7 +361,7 @@ int main(void)
         CHECK(older != NULL && sess->foreground_group != older, "the older group is not in front");
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s focus", older ? older->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(older ? older->group_id : 0));
         const int groups_before = count_groups(sess);
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
@@ -371,7 +371,7 @@ int main(void)
         CHECK(older && last_member(older) && last_member(older)->group == older, "it joined the named group");
 
         TEST("--group accepts a QUOTED id");
-        snprintf(line, sizeof(line), "/prompt review --group \"%s\" focus", older ? older->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group \"%s\" focus", edc_id_str(older ? older->group_id : 0));
         const int tasks_before_q = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
         CHECK(count_tasks(sess) == tasks_before_q + 1, "the quotes are stripped, so the group is found");
@@ -390,7 +390,7 @@ int main(void)
             edc_task_group_mark_orphaned(doomed); /* what a departed leader leaves behind */
 
             char line[256];
-            snprintf(line, sizeof(line), "/prompt review --group %s focus", doomed->group_id);
+            snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(doomed->group_id));
             const int tasks_before = count_tasks(sess);
             drive_command(cfg, sm, sched, line);
 
@@ -430,7 +430,7 @@ int main(void)
         CHECK(target != NULL && sess->foreground_group != target, "the target is not the group in front");
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group=%s focus", target ? target->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group=%s focus", edc_id_str(target ? target->group_id : 0));
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
         CHECK(count_tasks(sess) == tasks_before + 1, "a task was created");
@@ -445,7 +445,7 @@ int main(void)
         if (sys && sys->group)
         {
             char line[256];
-            snprintf(line, sizeof(line), "/prompt review --group %s focus", sys->group->group_id);
+            snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(sys->group->group_id));
             const int tasks_before = count_tasks(sess);
             drive_command(cfg, sm, sched, line);
             CHECK(count_tasks(sess) == tasks_before, "nothing was created");
@@ -474,7 +474,7 @@ int main(void)
         CHECK(busy != NULL && sess->foreground_group != busy, "the busy group is not the group in front");
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s queued", busy ? busy->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s queued", edc_id_str(busy ? busy->group_id : 0));
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
 
@@ -494,7 +494,7 @@ int main(void)
         struct edc_task_group *front = sess->foreground_group;
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s --bg alongside", busy ? busy->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s --bg alongside", edc_id_str(busy ? busy->group_id : 0));
         drive_command(cfg, sm, sched, line);
 
         struct edc_task *t = last_member(busy);

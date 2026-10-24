@@ -115,10 +115,10 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
         return sdsempty();
 
     /* A background task runs alongside: "background" is the whole story. */
-    const char *gid = (task->group && task->group->group_id) ? task->group->group_id : "?";
+    const char *gid = (task->group && task->group->group_id) ? edc_id_str(task->group->group_id) : "?";
     const char *fresh = (task->group && task->group->member_count == 1) ? " (new)" : "";
     if (task->is_background)
-        return sdscatprintf(sdsempty(), "→ task #%s · group #%s%s · background", task->task_id, gid, fresh);
+        return sdscatprintf(sdsempty(), "→ task #%s · group #%s%s · background", edc_id_str(task->task_id), gid, fresh);
 
     /* JOIN deps inject the source's output; every other kind only orders (the `|` / `;` / `&&` /
  * `||` predecessor, the wait-behind-the-front edge, or a maintenance barrier). A just-created
@@ -130,7 +130,7 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
         if (!d->source || !d->source->task_id)
             continue;
         if (d->type == TASK_DEP_JOIN)
-            joins = sdscatprintf(joins, "%s#%s", sdslen(joins) ? ", " : "", d->source->task_id);
+            joins = sdscatprintf(joins, "%s#%s", sdslen(joins) ? ", " : "", edc_id_str(d->source->task_id));
         else if (!seq && !edc_task_is_memory_sink(d->source))
             /* "queued behind" is about a predecessor the user can see. A fold / curation task
              * is the runtime's own housekeeping: naming it here would only confuse. */
@@ -139,11 +139,11 @@ sds edc_commands_task_receipt_text(const struct edc_task *task)
 
     sds out = sdsempty();
     if (sdslen(joins) > 0)
-        out = sdscatprintf(out, "→ task #%s · group #%s%s · waits for %s (outputs injected)", task->task_id, gid, fresh,
+        out = sdscatprintf(out, "→ task #%s · group #%s%s · waits for %s (outputs injected)", edc_id_str(task->task_id), gid, fresh,
                            joins);
     else if (seq)
-        out = sdscatprintf(out, "→ task #%s · group #%s%s · queued behind #%s", task->task_id, gid, fresh,
-                           seq->source->task_id);
+        out = sdscatprintf(out, "→ task #%s · group #%s%s · queued behind #%s", edc_id_str(task->task_id), gid, fresh,
+                           edc_id_str(seq->source->task_id));
     /* else: a plain foreground creation -- the UI already shows it, so say nothing. */
     sdsfree(joins);
     return out;
@@ -162,7 +162,7 @@ sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t count)
     bool any_notable = false;
     bool all_background = true;
     bool same_group = true;
-    const char *group_id = NULL;
+    sds group_id = NULL;
     sds ids = sdsempty();
     for (size_t i = 0; i < count; i++)
     {
@@ -174,16 +174,19 @@ sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t count)
 
         if (!t || !t->task_id)
             continue;
-        ids = sdscatprintf(ids, "%s#%s", sdslen(ids) ? ", " : "", t->task_id);
+        ids = sdscatprintf(ids, "%s#%s", sdslen(ids) ? ", " : "", edc_id_str(t->task_id));
         if (!t->is_background)
             all_background = false;
 
-        const char *gid = (t->group && t->group->group_id) ? t->group->group_id : NULL;
-        if (!gid)
+        /* edc_id_str() hands out a rotating static buffer, so its result must be COPIED
+         * before it is compared with the next iteration's -- otherwise both pointers alias
+         * the same slot and every pair looks equal. */
+        const bool has_group = t->group && t->group->group_id > 0;
+        if (!has_group)
             same_group = false;
         else if (!group_id)
-            group_id = gid;
-        else if (strcmp(group_id, gid) != 0)
+            group_id = sdsnew(edc_id_str(t->group->group_id));
+        else if (strcmp(group_id, edc_id_str(t->group->group_id)) != 0)
             same_group = false;
     }
 
@@ -199,6 +202,7 @@ sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t count)
     if (all_background)
         out = sdscat(out, " · background");
     sdsfree(ids);
+    sdsfree(group_id);
     return out;
 }
 
@@ -854,7 +858,7 @@ static bool edc_commands_handle_session_status(struct edc_session_manager *sm, s
     bool is_current = (sess == edc_session_manager_get_active(sm));
     struct edc_task_group *fg = is_current ? edc_scheduler_get_foreground(sess) : NULL;
 
-    sds out = edc_session_status_text(sess, is_current, fg ? fg->group_id : NULL);
+    sds out = edc_session_status_text(sess, is_current, fg ? edc_id_str(fg->group_id) : NULL);
     edc_commands_reply(to, out);
     sdsfree(out);
     return true;
@@ -1205,7 +1209,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
         deps = calloc((size_t)opts.dep_count, sizeof(*deps));
         for (int i = 0; i < opts.dep_count; i++)
         {
-            deps[i] = edc_session_store_resolve_task(sm, sched, opts.dep_ids[i], NULL);
+            deps[i] = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(opts.dep_ids[i], NULL, 10), NULL);
             if (!deps[i])
             {
                 sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", opts.dep_ids[i]);
@@ -1235,14 +1239,14 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     if (opts.group_id)
     {
         /* The name may not exist yet; the scheduler makes one led by this task. */
-        if (!edc_session_find_group(session, opts.group_id))
+        if (!edc_session_find_group(session, (int64_t)strtoll(opts.group_id, NULL, 10)))
         {
             sds reply = sdscatprintf(sdsempty(), "Group `%s` not found — creating a new group.", opts.group_id);
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
         spec.place = EDC_TASK_PLACE_GROUP;
-        spec.group_id = opts.group_id;
+        spec.group_id = opts.group_id ? (int64_t)strtoll(opts.group_id, NULL, 10) : 0;
     }
     else
     {
@@ -1266,7 +1270,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     edc_commands_announce_task(to, task);
 
     if (opts.desc && sdslen(opts.desc) > 0 && edc_task_awaits_deps(task))
-        log_info("/task new: task %s waits for its dependencies, turn queued", task->task_id);
+        log_info("/task new: task %s waits for its dependencies, turn queued", edc_id_str(task->task_id));
 
     edc_cmd_task_opts_free(&opts);
 }
@@ -1315,7 +1319,7 @@ static void edc_commands_handle_task_list(struct edc_session_manager *sm, struct
         any = true;
         bool fg = edc_scheduler_get_foreground(sess) == g;
         out =
-            sdscatprintf(out, "- `%s` · %d task%s%s%s\n", g->group_id, g->member_count, g->member_count == 1 ? "" : "s",
+            sdscatprintf(out, "- `%s` · %d task%s%s%s\n", edc_id_str(g->group_id), g->member_count, g->member_count == 1 ? "" : "s",
                          fg ? " · **foreground**" : "", g->is_orphaned ? " · _orphaned_" : "");
 
         struct edc_task *t;
@@ -1325,7 +1329,7 @@ static void edc_commands_handle_task_list(struct edc_session_manager *sm, struct
             /* The state is an inline code span, not bold: the renderer colours a span that
              * carries a task-state name with that state's colour (markdown.cpp), so the list is
              * scannable by colour without any new markup. */
-            out = sdscatprintf(out, "  - %s `%s` `%s`", t == g->leader ? "`[L]`" : "`[M]`", t->task_id,
+            out = sdscatprintf(out, "  - %s `%s` `%s`", t == g->leader ? "`[L]`" : "`[M]`", edc_id_str(t->task_id),
                                edc_task_state_str(t));
             /* Why it ended, when the state alone does not say it (see EDC_END_*). */
             {
@@ -1373,7 +1377,7 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
     {
         /* Check the task exists first: otherwise a blind signal reports success for
          * an unknown id. Search spans all loaded sessions. */
-        t = edc_session_store_resolve_task(sm, sched, id, NULL);
+        t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), NULL);
         if (!t)
         {
             sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id);
@@ -1383,7 +1387,7 @@ static void edc_commands_handle_task_stop(struct edc_session_manager *sm, struct
         }
     }
     edc_scheduler_send_signal_to_task_ptr(sched, t, TASK_SIGTERM);
-    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — stop signal sent.", t->task_id);
+    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — stop signal sent.", edc_id_str(t->task_id));
     if (t->group && t->group->session && t->group->session != sess)
         reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
     edc_commands_reply(to, reply);
@@ -1403,7 +1407,7 @@ sds edc_commands_resume_text(const struct edc_task *t, edc_task_end was, edc_tas
                       : was == EDC_END_FAILED    ? "had failed"
                       : was == EDC_END_BLOCKED   ? "was blocked by a dependency"
                                                  : "was stopped";
-    sds out = sdscatprintf(sdsempty(), "**Task `%s`** — resumed (%s, %s).", t->task_id ? t->task_id : "?", what,
+    sds out = sdscatprintf(sdsempty(), "**Task `%s`** — resumed (%s, %s).", edc_id_str(t->task_id), what,
                            edc_task_state_str(t));
 
     /* A failed task is being retried: say what failed last time, or "resumed" looks like a
@@ -1475,7 +1479,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     }
     else
     {
-        t = edc_session_store_resolve_task(sm, sched, id, NULL);
+        t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), NULL);
         if (!t)
         {
             sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id);
@@ -1494,7 +1498,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
         sds reply = sdscatprintf(sdsempty(),
                                  "**Task `%s`** — skipped: `||` saw its source succeed, so this branch was not "
                                  "taken. Send the command again if you want it to run.",
-                                 t->task_id);
+                                 edc_id_str(t->task_id));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
@@ -1504,7 +1508,7 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
      * and ALIVE are not). */
     if (!edc_task_is_resumable(t))
     {
-        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — %s, not resumable.", t->task_id, edc_task_state_str(t));
+        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — %s, not resumable.", edc_id_str(t->task_id), edc_task_state_str(t));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
@@ -1513,13 +1517,13 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
     /* Resume gate: try to restore any cross-session dependency now (may lazy-load
      * its owner); if it cannot be resolved, hold the task. */
     edc_session_store_reconcile_pending_deps(sm, sched);
-    const char *missing = edc_scheduler_first_unresolved_dep(sched, t);
-    if (missing)
+    const int64_t missing = edc_scheduler_first_unresolved_dep(sched, t);
+    if (missing > 0)
     {
         sds reply = sdscatprintf(sdsempty(),
                                  "**Task `%s` is held** — it depends on `%s`, which could not be restored "
                                  "(no loaded session provides it). It will not run until that dependency is available.",
-                                 t->task_id, missing);
+                                 edc_id_str(t->task_id), edc_id_str(missing));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
@@ -1546,14 +1550,14 @@ static void edc_commands_handle_task_resume(struct edc_session_manager *sm, stru
                 continue;
             if (sdslen(waiting))
                 waiting = sdscat(waiting, ", ");
-            waiting = sdscatprintf(waiting, "`%s` (%s)", dep->source->task_id, edc_task_state_str(dep->source));
+            waiting = sdscatprintf(waiting, "`%s` (%s)", edc_id_str(dep->source->task_id), edc_task_state_str(dep->source));
         }
         /* No "its output arrives": a SEQUENCE / BARRIER edge injects nothing, it only
          * needs the dependency to produce (succeed). */
         sds reply = sdscatprintf(sdsempty(),
                                  "**Task `%s` is waiting** — it still depends on %s. Resume one of them "
                                  "(`/task resume <id>`); this task runs once its dependency produces.",
-                                 t->task_id, sdslen(waiting) ? waiting : "an unfinished dependency");
+                                 edc_id_str(t->task_id), sdslen(waiting) ? waiting : "an unfinished dependency");
         if (t->group && t->group->session && t->group->session != sess)
             reply = sdscatprintf(reply, " (session `[%s]`)", t->group->session->session_id);
         edc_commands_reply(to, reply);
@@ -1582,7 +1586,7 @@ static bool edc_commands_task_in_active_session(struct edc_session_manager *sm, 
         return true;
     sds reply =
         sdscatprintf(sdsempty(), "Task `%s` belongs to session `[%s]` — switch to it first (`/session switch %s`).",
-                     t->task_id, owner->session_id, owner->session_id);
+                     edc_id_str(t->task_id), owner->session_id, owner->session_id);
     edc_commands_reply(to, reply);
     sdsfree(reply);
     return false;
@@ -1595,7 +1599,7 @@ static void edc_commands_handle_task_fg(struct edc_session_manager *sm, struct e
         edc_commands_reply(to, "Usage: `/task fg <id>`");
         return;
     }
-    struct edc_task *t = edc_session_manager_find_task_any(sm, id, NULL);
+    struct edc_task *t = edc_session_manager_find_task_any(sm, (int64_t)strtoll(id, NULL, 10), NULL);
     if (!t)
     {
         edc_commands_reply(to, "Task not found.");
@@ -1619,7 +1623,7 @@ static void edc_commands_handle_task_fg(struct edc_session_manager *sm, struct e
     }
     edc_scheduler_set_foreground(edc_session_manager_get_active(sm), g);
     edc_session_set_active_task(edc_session_manager_get_active(sm), t);
-    sds reply = sdscatprintf(sdsempty(), "**Foreground** — group `%s` · active task `%s`.", g->group_id, t->task_id);
+    sds reply = sdscatprintf(sdsempty(), "**Foreground** — group `%s` · active task `%s`.", edc_id_str(g->group_id), edc_id_str(t->task_id));
     edc_commands_reply(to, reply);
     sdsfree(reply);
 }
@@ -1628,7 +1632,7 @@ static void edc_commands_handle_task_bg(struct edc_session_manager *sm, struct e
 {
     if (id && *id)
     {
-        struct edc_task *t = edc_session_manager_find_task_any(sm, id, NULL);
+        struct edc_task *t = edc_session_manager_find_task_any(sm, (int64_t)strtoll(id, NULL, 10), NULL);
         if (!t)
         {
             edc_commands_reply(to, "Task not found.");
@@ -1646,13 +1650,13 @@ static void edc_commands_handle_task_bg(struct edc_session_manager *sm, struct e
         {
             edc_scheduler_set_foreground(edc_session_manager_get_active(sm), NULL);
             edc_session_set_active_task(edc_session_manager_get_active(sm), NULL);
-            sds reply = sdscatprintf(sdsempty(), "**Background** — group `%s`.", g->group_id);
+            sds reply = sdscatprintf(sdsempty(), "**Background** — group `%s`.", edc_id_str(g->group_id));
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
         else
         {
-            sds reply = sdscatprintf(sdsempty(), "Group `%s` is already in the background.", g->group_id);
+            sds reply = sdscatprintf(sdsempty(), "Group `%s` is already in the background.", edc_id_str(g->group_id));
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
@@ -1685,7 +1689,7 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
     /* `session` is a parameter: the session THIS INPUT belongs to (resolved from the
      * message's tag -- no more "ask the active session and assume it is this input's
      * home"). */
-    struct edc_task *parent = edc_session_manager_find_task_any(sm, tokens[0], NULL);
+    struct edc_task *parent = edc_session_manager_find_task_any(sm, (int64_t)strtoll(tokens[0], NULL, 10), NULL);
     if (!parent)
     {
         sds reply = sdscatprintf(sdsempty(), "Parent task not found: `%s`", tokens[0]);
@@ -1712,9 +1716,9 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
                 fork_point_seq = m->completion_seq;
         }
     }
-    char *fork_tid = edc_scheduler_gen_task_id(sched);
-    struct edc_task *child = edc_task_fork(parent, fork_tid, desc, fork_point_seq, to.type);
-    free(fork_tid);
+    /* 0 = "the store assigns one": the child is inserted by the scheduler's persist path,
+     * which is where a task gets its id now (there is no counter to ask). */
+    struct edc_task *child = edc_task_fork(parent, 0, desc, fork_point_seq, to.type);
 
     /* The child starts its own group (as leader) and takes the foreground; desc is the
      * input, as in /task new. Which group and who owns the foreground is the
@@ -1803,10 +1807,10 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
 
     /* The foreground is already on the child and the input turn is already attached
      * (adopt). Running it is the message-end scheduler's job (the only drive entry). */
-    log_info("/task fork: task=%s turn attached (deps_total=%zu)", child->task_id, child->deps_total);
+    log_info("/task fork: task=%s turn attached (deps_total=%zu)", edc_id_str(child->task_id), child->deps_total);
 
     sds reply = sdscatprintf(sdsempty(), "**Fork created** — `%s` from `%s` · group `%s` · fork point %zu",
-                             child->task_id, parent->task_id, child->group_id, fork_point);
+                             edc_id_str(child->task_id), edc_id_str(parent->task_id), edc_id_str(child->group_id), fork_point);
     edc_commands_reply(to, reply);
     sdsfree(reply);
     sdsfree(desc);
@@ -1821,7 +1825,7 @@ static void edc_commands_handle_group_list(struct edc_session_manager *sm, struc
     {
         out = sdscatprintf(
             out, "- %s%s  **%s**  %d members  _%s_\n", edc_scheduler_get_foreground(sess) == g ? "`[fg]` " : "",
-            g->is_orphaned ? "`[orphan]` " : "", g->group_id, g->member_count, edc_task_group_status_label(g));
+            g->is_orphaned ? "`[orphan]` " : "", edc_id_str(g->group_id), g->member_count, edc_task_group_status_label(g));
     }
     edc_commands_reply(to, out);
     sdsfree(out);
@@ -1835,7 +1839,7 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
     if (id && *id)
     {
         /* Global lookup: a task in another session can be inspected too. */
-        t = edc_session_store_resolve_task(sm, sched, id, &owner);
+        t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), &owner);
         if (!t)
         {
             edc_commands_reply(to, "Task not found.");
@@ -1858,7 +1862,7 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
                            "- **state**: %s\n"
                            "- **group**: %s\n"
                            "- **desc**: %s\n",
-                           t->task_id, edc_task_state_str(t), t->group_id, t->description);
+                           edc_id_str(t->task_id), edc_task_state_str(t), edc_id_str(t->group_id), t->description);
 
     /* The state says which bucket it is in; this says why it got there. Without it a
      * CANCELLED task looks the same whether the user stopped it, a `||` branch skipped it,
@@ -1881,9 +1885,10 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
 
     /* Unresolved cross-session dependency: the task is "stuck" and resume is refused by the gate. */
     {
-        const char *missing = edc_scheduler_first_unresolved_dep(sched, t);
-        if (missing)
-            out = sdscatprintf(out, "- **held**: waiting on `%s` (unresolved cross-session dependency)\n", missing);
+        const int64_t missing = edc_scheduler_first_unresolved_dep(sched, t);
+        if (missing > 0)
+            out = sdscatprintf(out, "- **held**: waiting on `%s` (unresolved cross-session dependency)\n",
+                               edc_id_str(missing));
     }
 
     /* The user input the task actually received (not just the description); the
@@ -1920,7 +1925,7 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
     }
     if (t->forked_from)
     {
-        out = sdscatprintf(out, "- **forked from**: `%s`\n", t->forked_from->task_id);
+        out = sdscatprintf(out, "- **forked from**: `%s`\n", edc_id_str(t->forked_from->task_id));
     }
     edc_commands_reply(to, out);
     sdsfree(out);
@@ -1934,7 +1939,7 @@ static void edc_commands_handle_task_output(struct edc_session_manager *sm, stru
         edc_commands_reply(to, "Usage: `/task output <id>`");
         return;
     }
-    struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, NULL);
+    struct edc_task *t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), NULL);
     if (!t)
     {
         edc_commands_reply(to, "Task not found.");
@@ -1970,7 +1975,7 @@ static void edc_commands_handle_history(struct edc_session_manager *sm, struct e
     /* The resolver also returns the owning session: a task id is globally unique, so this command can find another
      * session's task. */
     struct edc_session *owner = NULL;
-    struct edc_task *t = edc_session_store_resolve_task(sm, sched, task_id, &owner);
+    struct edc_task *t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(task_id, NULL, 10), &owner);
     if (!t || !owner)
     {
         edc_commands_reply(to, "Task not found.");
@@ -1980,8 +1985,11 @@ static void edc_commands_handle_history(struct edc_session_manager *sm, struct e
     /* A group's id IS its leader's task id (edc_task_group_new), so the same resolver
      * knows groups too; the group payload is chunked by member (each block is that
      * member's own messages). */
-    const char *target_id = group ? task_id : t->task_id;
-    char *payload = edc_scheduler_task_history_json(sched, owner, group ? target_id : NULL, group ? NULL : target_id);
+    /* One of the two selectors is set: a group id, or a task id. Both are numbers now, and
+     * the unused one is 0 (the scheduler treats "> 0" as "given"). */
+    const int64_t group_sel = group ? (int64_t)strtoll(task_id, NULL, 10) : 0;
+    const int64_t task_sel = group ? 0 : t->task_id;
+    char *payload = edc_scheduler_task_history_json(sched, owner, group_sel, task_sel);
     if (!payload)
     {
         edc_commands_reply(to, "_No history._");
@@ -2011,7 +2019,7 @@ static void edc_commands_handle_history(struct edc_session_manager *sm, struct e
     const int count = cJSON_GetArraySize(messages);
     const char *input = cJSON_GetStringValue(cJSON_GetObjectItem(root, "input"));
 
-    sds out = sdscatprintf(sdsempty(), "**task %s** · %d message%s\n", t->task_id, count, count == 1 ? "" : "s");
+    sds out = sdscatprintf(sdsempty(), "**task %s** · %d message%s\n", edc_id_str(t->task_id), count, count == 1 ? "" : "s");
     if (input && *input)
         out = sdscatprintf(out, "_input:_ %s\n", input);
 
@@ -2053,7 +2061,7 @@ static void edc_commands_handle_group_fold(struct edc_session_manager *sm, struc
         /* `id` is the first word; `focus` is every word after it, joined with single
          * spaces by the caller (quoting decided where the words broke). */
         struct edc_session *owner = NULL;
-        struct edc_task *t = edc_session_store_resolve_task(sm, sched, id, &owner);
+        struct edc_task *t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), &owner);
         if (!t || !owner || !(group = edc_session_find_group(owner, t->group_id)))
         {
             sds reply = sdscatprintf(
@@ -2083,13 +2091,13 @@ static void edc_commands_handle_group_fold(struct edc_session_manager *sm, struc
         sds reply = sdscatprintf(sdsempty(),
                                  "Nothing to fold in group `%s` — it has no unfolded messages, or a fold is "
                                  "already in flight for that session.",
-                                 group->group_id);
+                                 edc_id_str(group->group_id));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
     }
 
-    sds reply = sdscatprintf(sdsempty(), "Folding group `%s` into its Group Memory%s%s.", group->group_id,
+    sds reply = sdscatprintf(sdsempty(), "Folding group `%s` into its Group Memory%s%s.", edc_id_str(group->group_id),
                              focus ? " with focus: " : "", focus ? focus : "");
     edc_commands_reply(to, reply);
     sdsfree(reply);
@@ -2151,7 +2159,7 @@ sds edc_commands_group_files_text(struct edc_task_group *group)
     const size_t nw = edc_commands_count_entries(writes);
 
     sds out = sdscatprintf(sdsempty(), "## Tracked files in `%s`\n\n",
-                           group->group_id ? group->group_id : "?");
+                           edc_id_str(group->group_id));
 
     if (nr + nw == 0)
     {
@@ -2193,7 +2201,7 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
     struct edc_task *leader = group->leader;
     const char *place = (session && edc_scheduler_get_foreground(session) == group) ? "foreground" : "background";
 
-    sds out = sdscatprintf(sdsempty(), "## Group `%s` (%s%s)\n\n", group->group_id, place,
+    sds out = sdscatprintf(sdsempty(), "## Group `%s` (%s%s)\n\n", edc_id_str(group->group_id), place,
                            group->is_orphaned ? ", orphaned" : "");
     out = sdscatprintf(out, "- **%d members** · **%zu foldable** · **%zu unfolded messages**\n", group->member_count,
                        edc_task_group_count_foldable(group), edc_task_group_unfolded_msg_count(group));
@@ -2219,7 +2227,7 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
         const size_t nw = edc_commands_count_entries(writes);
         if (nr + nw > 0)
             out = sdscatprintf(out, "- **tracked files** %zu read · %zu modified (`/group files %s`)\n", nr, nw,
-                               group->group_id ? group->group_id : "<id>");
+                               edc_id_str(group->group_id));
         else if (group->memory && sdslen(group->memory) > 0)
             out = sdscatprintf(out, "- **tracked files** none recorded — this group was folded before the lists "
                                     "existed, or its corpus touched no readable/writable file\n");
@@ -2230,7 +2238,7 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
                        (session && edc_scheduler_has_pending_system_task(session)) ? "yes" : "no",
                        edc_group_fold_in_flight(group) ? "yes" : "no");
     if (leader)
-        out = sdscatprintf(out, "- leader `%s`%s\n", leader->task_id,
+        out = sdscatprintf(out, "- leader `%s`%s\n", edc_id_str(leader->task_id),
                            (leader->description && *leader->description) ? leader->description : "");
     out = sdscatprintf(out, "\n_`/group fold` folds now, ignoring the line._\n");
     return out;
@@ -2242,7 +2250,8 @@ static void edc_commands_handle_group_info(struct edc_session_manager *sm, struc
     struct edc_session *sess = edc_session_manager_get_active(sm);
     bool named = (id && *id);
     struct edc_task_group *g =
-        named ? (sess ? edc_session_find_group(sess, id) : NULL) : (sess ? edc_scheduler_get_foreground(sess) : NULL);
+        named ? (sess ? edc_session_find_group(sess, (int64_t)strtoll(id, NULL, 10)) : NULL)
+              : (sess ? edc_scheduler_get_foreground(sess) : NULL);
     if (!g)
     {
         edc_commands_reply(to, named ? "**Group** — not found (the id is the one on its header)."
@@ -2325,7 +2334,8 @@ static void sub_group_files(struct edc_session_manager *sm, struct edc_scheduler
     const char *id = args->argc > 0 ? args->argv[0] : NULL;
     const bool named = (id && *id);
     struct edc_task_group *g =
-        named ? (sess ? edc_session_find_group(sess, id) : NULL) : (sess ? edc_scheduler_get_foreground(sess) : NULL);
+        named ? (sess ? edc_session_find_group(sess, (int64_t)strtoll(id, NULL, 10)) : NULL)
+              : (sess ? edc_scheduler_get_foreground(sess) : NULL);
     if (!g)
     {
         edc_commands_reply(to, named ? "**Group** — not found (the id is the one on its header)."
@@ -2425,7 +2435,7 @@ static sds edc_commands_outstanding_deps(const struct edc_task *t)
             continue;
         if (sdslen(out))
             out = sdscat(out, ", ");
-        out = sdscatprintf(out, "`%s` (%s)", dep->source->task_id, edc_task_state_str(dep->source));
+        out = sdscatprintf(out, "`%s` (%s)", edc_id_str(dep->source->task_id), edc_task_state_str(dep->source));
     }
     return out;
 }
@@ -2448,9 +2458,11 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
     }
     const char *id = args->argv[0];
     const char *flag = args->argc > 1 ? args->argv[1] : NULL;
-    const char *src = args->argc > 2 ? args->argv[2] : NULL;
+    /* Text as typed; parsed once below where a numeric id is needed. */
+    const char *src_text = args->argc > 2 ? args->argv[2] : NULL;
+    const int64_t src = src_text ? (int64_t)strtoll(src_text, NULL, 10) : 0;
 
-    struct edc_task *t = id ? edc_session_store_resolve_task(sm, sched, id, NULL) : NULL;
+    struct edc_task *t = id ? edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), NULL) : NULL;
     if (!t)
     {
         sds reply = sdscatprintf(sdsempty(), "Task not found: `%s`", id ? id : "");
@@ -2463,7 +2475,7 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
     {
         sds reply = sdscatprintf(sdsempty(),
                                  "**Task dep** — unknown option `%s`. Use `/task dep %s --drop [<source-id>]`.", flag,
-                                 t->task_id ? t->task_id : "");
+                                 edc_id_str(t->task_id));
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
@@ -2477,13 +2489,13 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
         size_t total = 0;
         for (const struct edc_task_dep *dep = t->deps; dep; dep = dep->next)
             total++;
-        sds out = sdscatprintf(sdsempty(), "**Task `%s`** — %d dependency edge%s\n", t->task_id ? t->task_id : "?",
+        sds out = sdscatprintf(sdsempty(), "**Task `%s`** — %d dependency edge%s\n", edc_id_str(t->task_id),
                                (int)total, total == 1 ? "" : "s");
         for (const struct edc_task_dep *dep = t->deps; dep; dep = dep->next)
         {
             const char *state = dep->cancelled ? "dropped" : dep->completed ? "done" : "outstanding";
             out = sdscatprintf(out, "- `%s` %s — %s",
-                               (dep->source && dep->source->task_id) ? dep->source->task_id : "?",
+                               edc_id_str(dep->source ? dep->source->task_id : 0),
                                edc_commands_dep_kind(dep->type), state);
             if (!dep->cancelled && !dep->completed && dep->source)
                 out = sdscatprintf(out, " (%s)", edc_task_state_str(dep->source));
@@ -2495,8 +2507,8 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
                 out = sdscatprintf(out,
                                    "- `%s` — held: its owner session is not loaded "
                                    "(`/task dep %s --drop %s`)\n",
-                                   pd->source_task_id ? pd->source_task_id : "?", t->task_id,
-                                   pd->source_task_id ? pd->source_task_id : "?");
+                                   edc_id_str(pd->source_task_id), edc_id_str(t->task_id),
+                                   edc_id_str(pd->source_task_id));
         }
         if (total == 0 && !edc_scheduler_first_unresolved_dep(sched, t))
             out = sdscat(out, "_No dependencies._\n");
@@ -2513,7 +2525,7 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
     {
         if (dep->completed || dep->cancelled || !dep->source)
             continue;
-        if (src && (!dep->source->task_id || strcmp(dep->source->task_id, src) != 0))
+        if (src > 0 && dep->source->task_id != src)
             continue;
         if (edc_task_drop_dep(t, dep->source))
             dropped++;
@@ -2522,8 +2534,8 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
 
     if (dropped == 0)
     {
-        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — nothing to drop%s%s%s.", t->task_id ? t->task_id : "",
-                                 src ? " for `" : "", src ? src : "", src ? "`" : "");
+        sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — nothing to drop%s%s%s.", edc_id_str(t->task_id),
+                                 src > 0 ? " for `" : "", src > 0 ? edc_id_str(src) : "", src > 0 ? "`" : "");
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return;
@@ -2537,7 +2549,7 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
     if (!edc_task_is_finished(t) || t->end == EDC_END_BLOCKED)
         edc_scheduler_resume_task(sched, t);
 
-    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — dropped %d dependency edge%s", t->task_id ? t->task_id : "",
+    sds reply = sdscatprintf(sdsempty(), "**Task `%s`** — dropped %d dependency edge%s", edc_id_str(t->task_id),
                              dropped, dropped == 1 ? "" : "s");
     /* Say what actually happened, in the task's own words: "ready" for a task that is
      * still BLOCKED would be a lie. */
@@ -2556,7 +2568,7 @@ static void edc_commands_handle_task_dep(struct edc_session_manager *sm, struct 
         reply = sdscat(reply, "; it is ready and the scan will run it");
     else
         reply = sdscatprintf(reply, "; it is still %s (`/task resume %s` decides what next)",
-                             edc_task_state_str(t), t->task_id ? t->task_id : "?");
+                             edc_task_state_str(t), edc_id_str(t->task_id));
     reply = sdscat(reply, ".");
     edc_commands_reply(to, reply);
     sdsfree(reply);
@@ -2884,7 +2896,8 @@ static bool cmd_resolve_place(struct edc_session *session, const struct cmd_plac
 
     if (flags->group_id)
     {
-        struct edc_task_group *group = session ? edc_session_find_group(session, flags->group_id) : NULL;
+        struct edc_task_group *group =
+            session ? edc_session_find_group(session, (int64_t)strtoll(flags->group_id, NULL, 10)) : NULL;
         if (!group)
         {
             *err = sdscatprintf(sdsempty(), "**No group** named `%s`.\n\nRun `/group list` to see them.",

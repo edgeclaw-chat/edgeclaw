@@ -44,7 +44,7 @@ extern int edc_session_manager_index_of(struct edc_session_manager *sm, const ch
  *  monotonic counter persisted in <workspace>/.task_seq, so a hit is unambiguous.
  *  When |owner_out| is non-NULL it receives the owning session on success, or NULL
  *  on failure. */
-extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
+extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, int64_t task_id,
                                                           struct edc_session **owner_out);
 
 /** Hand every task in memory to |cb| (session list x group list x member list).
@@ -55,7 +55,7 @@ extern void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc
 
 /** Owning session of |task_id| when it is not loaded yet, via the lazily-built
  *  index. Loaded sessions are not indexed here; callers search memory first. */
-extern struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id);
+extern struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, int64_t task_id);
 
 /** Drop the cached task-id index (rebuilt on next lookup). Only needed when
  *  persisted state changed behind the manager's back (tests / external tooling). */

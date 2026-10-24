@@ -92,7 +92,7 @@ static struct edc_session_manager *open_sm(struct edc_config *cfg)
 static void give_input(struct edc_task *t)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     edc_turn_add_user_message(turn, "input");
     t->active_turn = turn;
 }
@@ -124,7 +124,7 @@ int main(void)
     edc_task_mark_interrupted(bt);
     CHECK(edc_session_save_state(sb, sched), "B state saved");
 
-    sds bt_id = sdsnew(bt->task_id);
+    sds bt_id = sdsnew(edc_id_str(bt->task_id));
 
     /* Also give A a task, so "the active session does not own it" is a real distinction. */
     struct edc_task *at = edc_scheduler_task_new(sched, sa, "a-task", edc_channel_adapter);
@@ -139,9 +139,9 @@ int main(void)
         struct edc_session_manager *m = open_sm(c);
         struct edc_session *b = edc_session_manager_find(m, "B");
         CHECK(b != NULL && !b->state_loaded, "B present but unloaded");
-        CHECK(edc_session_manager_session_for_task(m, bt_id) == b,
+        CHECK(edc_session_manager_session_for_task(m, (int64_t)strtoll(bt_id, NULL, 10)) == b,
               "owner resolved by a primary-key lookup (no parsing)");
-        CHECK(edc_session_manager_session_for_task(m, bt_id) == b, "a repeated lookup is stable");
+        CHECK(edc_session_manager_session_for_task(m, (int64_t)strtoll(bt_id, NULL, 10)) == b, "a repeated lookup is stable");
         edc_session_manager_free(m);
         edc_config_free(c);
     }
@@ -153,12 +153,12 @@ int main(void)
         struct edc_session_manager *m = open_sm(c);
         struct edc_session *a = edc_session_manager_get_active(m);
         a->state_loaded = true;
-        struct edc_task *fresh = edc_task_new("never-flushed", a->session_id, "g-x", "fresh",
+        struct edc_task *fresh = edc_task_new(edc_test_id("never-flushed"), a->session_id, edc_test_id("g-x"), "fresh",
                                               edc_channel_adapter);
         fresh->is_group_leader = 1;
         edc_queue_init(&fresh->turns);
         edc_session_add_group(a, edc_task_group_new(fresh));
-        CHECK(edc_session_manager_session_for_task(m, "never-flushed") == a,
+        CHECK(edc_session_manager_session_for_task(m, edc_test_id("never-flushed")) == a,
               "an unflushed in-memory task still resolves");
         edc_session_manager_free(m);
         edc_config_free(c);
@@ -168,7 +168,7 @@ int main(void)
     {
         struct edc_config *c = make_config();
         struct edc_session_manager *m = open_sm(c);
-        CHECK(edc_session_manager_session_for_task(m, "no-such-task-at-all") == NULL,
+        CHECK(edc_session_manager_session_for_task(m, edc_test_id("no-such-task-at-all")) == NULL,
               "unknown id -> NULL");
         edc_session_manager_free(m);
         edc_config_free(c);
@@ -186,7 +186,7 @@ int main(void)
          * shell that could not be loaded and that nothing could ever populate again.) */
         struct edc_session *b = edc_session_manager_find(m, "B");
         CHECK(b == NULL, "B is gone from the list as well");
-        CHECK(edc_session_manager_session_for_task(m, bt_id) == NULL,
+        CHECK(edc_session_manager_session_for_task(m, (int64_t)strtoll(bt_id, NULL, 10)) == NULL,
               "B's task no longer resolves to anyone");
         edc_session_manager_free(m);
         edc_config_free(c);

@@ -106,8 +106,8 @@ static const char *const EDC_SCHEMA_SQL =
     "  created_at            INTEGER,"
     "  last_active           INTEGER,"
     "  workdir               TEXT,"
-    "  active_task_id        TEXT,"
-    "  foreground_group_id   TEXT,"
+    "  active_task_id        INTEGER, /* tasks.task_id, 0/NULL = none */"
+    "  foreground_group_id   INTEGER, /* groups.group_id, 0/NULL = none */"
     "  next_completion_seq   INTEGER NOT NULL DEFAULT 1,"
     /* Which session the UI is on. It used to live only in sessions.json's
      * active_session_id, which is why the session LIST also lived there: the index was the
@@ -137,7 +137,7 @@ static const char *const EDC_SCHEMA_SQL =
      * separate column could only ever hold the same string. Its `is_orphaned` twin stays:
      * a group whose leader left keeps its id but has no leader any more, and that is not
      * recoverable from the remaining rows. */
-    "  group_id           TEXT NOT NULL,"
+    "  group_id           INTEGER NOT NULL,"
     "  is_orphaned        INTEGER NOT NULL DEFAULT 0,"
     "  kind               TEXT NOT NULL DEFAULT 'user',"
     "  memory             TEXT,"
@@ -152,7 +152,7 @@ static const char *const EDC_SCHEMA_SQL =
 
     "CREATE TABLE IF NOT EXISTS group_fold_files ("
     "  session_id TEXT NOT NULL,"
-    "  group_id   TEXT NOT NULL,"
+    "  group_id   INTEGER NOT NULL,"
     "  ord        INTEGER NOT NULL,"
     "  path       TEXT NOT NULL,"
     "  PRIMARY KEY (session_id, group_id, ord),"
@@ -160,9 +160,13 @@ static const char *const EDC_SCHEMA_SQL =
     ");"
 
     "CREATE TABLE IF NOT EXISTS tasks ("
-    "  task_id                   TEXT PRIMARY KEY,"
+    /* AUTOINCREMENT, not a bare INTEGER PRIMARY KEY: SQLite then never hands out an id
+     * twice, even after the row is deleted. That is the invariant the old .task_seq
+     * high-water file existed to provide -- a task id must not be reused, or a resumed
+     * task could collide with a new one. It costs one row in sqlite_sequence. */
+    "  task_id                   INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  session_id                TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,"
-    "  group_id                  TEXT NOT NULL,"
+    "  group_id                  INTEGER NOT NULL,"
     "  ord                       INTEGER NOT NULL DEFAULT 0,"
     "  description               TEXT,"
     "  raw_input                 TEXT,"
@@ -178,14 +182,14 @@ static const char *const EDC_SCHEMA_SQL =
     "  deferred_vars             INTEGER NOT NULL DEFAULT 0,"
     "  memo_kind                 TEXT NOT NULL DEFAULT 'curate',"
     "  sink                      TEXT,"
-    "  sink_group_id             TEXT,"
-    "  fold_cut_task             TEXT,"
+    "  sink_group_id             INTEGER,"
+    "  fold_cut_task             INTEGER,"
     "  fold_cut_turn             INTEGER NOT NULL DEFAULT 0,"
     "  fold_cut_prefix           INTEGER NOT NULL DEFAULT 0,"
-    "  memo_cut_task             TEXT,"
+    "  memo_cut_task             INTEGER,"
     "  memo_cut_turn             INTEGER NOT NULL DEFAULT 0,"
     "  memo_cut_prefix           INTEGER NOT NULL DEFAULT 0,"
-    "  forked_from_task_id       TEXT REFERENCES tasks(task_id),"
+    "  forked_from_task_id       INTEGER REFERENCES tasks(task_id),"
     "  fork_point_completion_seq INTEGER NOT NULL DEFAULT 0,"
     "  output                    TEXT,"
     "  completion_seq            INTEGER NOT NULL DEFAULT 0,"
@@ -211,8 +215,8 @@ static const char *const EDC_SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS tasks_by_fork  ON tasks(forked_from_task_id);"
 
     "CREATE TABLE IF NOT EXISTS task_deps ("
-    "  target_task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,"
-    "  source_task_id TEXT NOT NULL,"
+    "  target_task_id INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "  source_task_id INTEGER NOT NULL,"
     "  type           TEXT NOT NULL,"
     "  completed      INTEGER NOT NULL DEFAULT 0,"
     "  cancelled      INTEGER NOT NULL DEFAULT 0,"
@@ -223,7 +227,7 @@ static const char *const EDC_SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS task_deps_by_source ON task_deps(source_task_id);"
 
     "CREATE TABLE IF NOT EXISTS task_tool_calls ("
-    "  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "  task_id INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,"
     "  ord     INTEGER NOT NULL,"
     "  call_id TEXT,"
     "  name    TEXT,"
@@ -233,7 +237,7 @@ static const char *const EDC_SCHEMA_SQL =
     ");"
 
     "CREATE TABLE IF NOT EXISTS turns ("
-    "  task_id       TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,"
+    "  task_id       INTEGER NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,"
     "  turn_ord      INTEGER NOT NULL,"
     "  folded_prefix INTEGER NOT NULL DEFAULT 0,"
     "  memo_prefix   INTEGER NOT NULL DEFAULT 0,"
@@ -255,8 +259,8 @@ static const char *const EDC_SCHEMA_SQL =
      * task_id here has to re-derive them (see edc_msg_turn_move). They are correct by
      * discipline, not by construction, which is the price of the join they save. */
     "  session_id TEXT NOT NULL,"
-    "  group_id   TEXT NOT NULL,"
-    "  task_id    TEXT NOT NULL,"
+    "  group_id   INTEGER NOT NULL,"
+    "  task_id    INTEGER NOT NULL,"
     "  turn_ord   INTEGER NOT NULL,"
     "  msg_ord    INTEGER NOT NULL,"
     /* Metadata the model never sees. Each of these used to live INSIDE the message JSON
@@ -1075,8 +1079,10 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
     sqlite3_bind_int64(st, 3, (sqlite3_int64)js_num(sj, "created_at"));
     sqlite3_bind_int64(st, 4, (sqlite3_int64)js_num(sj, "last_active"));
     bind_str(st, 5, js_str(sj, "workdir"));
-    bind_str(st, 6, js_str(sj, "active_task_id"));
-    bind_str(st, 7, js_str(sj, "foreground_group_id"));
+    /* INTEGER columns: a number bound as text would be stored as text and read back as 0
+     * by sqlite3_column_int64, silently losing the pointer. */
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)js_num(sj, "active_task_id"));
+    sqlite3_bind_int64(st, 7, (sqlite3_int64)js_num(sj, "foreground_group_id"));
     bind_num(st, 8, js_num(sj, "next_completion_seq"));
     sqlite3_bind_int64(st, 9, (sqlite3_int64)time(NULL));
 }
@@ -1103,7 +1109,7 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     struct group_bind *b = ctx;
     const cJSON *g = b->gj;
     bind_str(st, 1, b->session_id);
-    bind_str(st, 2, js_str(g, "group_id"));
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)js_num(g, "group_id"));
     sqlite3_bind_int(st, 3, js_bool(g, "is_orphaned"));
     bind_str(st, 4, js_str(g, "kind") ? js_str(g, "kind") : "user");
     bind_str(st, 5, js_str(g, "memory"));
@@ -1156,9 +1162,9 @@ static void bind_task(sqlite3_stmt *st, void *ctx)
     struct task_bind *b = ctx;
     const cJSON *t = b->tj;
     int i = 1;
-    bind_str(st, i++, js_str(t, "task_id"));
+    sqlite3_bind_int64(st, i++, (sqlite3_int64)js_num(t, "task_id"));
     bind_str(st, i++, b->session_id ? b->session_id : js_str(t, "session_id"));
-    bind_str(st, i++, js_str(t, "group_id"));
+    sqlite3_bind_int64(st, i++, (sqlite3_int64)js_num(t, "group_id"));
     sqlite3_bind_int(st, i++, b->ord);
     bind_str(st, i++, js_str(t, "description") ? js_str(t, "description") : "");
     bind_str(st, i++, js_str(t, "raw_input"));
@@ -1175,13 +1181,34 @@ static void bind_task(sqlite3_stmt *st, void *ctx)
     bind_str(st, i++, js_str(t, "memo_kind") ? js_str(t, "memo_kind") : "curate");
     bind_str(st, i++, js_str(t, "sink"));
     bind_str(st, i++, js_str(t, "sink_group_id"));
-    bind_str(st, i++, js_str(t, "fold_cut_task"));
+    /* 0 = no cut; NULL in the column, so add_num_or_omit reads it back the same way. */
+    {
+        const double c = js_num(t, "fold_cut_task");
+        if (c > 0)
+            sqlite3_bind_int64(st, i++, (sqlite3_int64)c);
+        else
+            sqlite3_bind_null(st, i++);
+    }
     bind_num(st, i++, js_num(t, "fold_cut_turn"));
     bind_num(st, i++, js_num(t, "fold_cut_prefix"));
-    bind_str(st, i++, js_str(t, "memo_cut_task"));
+    {
+        const double c = js_num(t, "memo_cut_task");
+        if (c > 0)
+            sqlite3_bind_int64(st, i++, (sqlite3_int64)c);
+        else
+            sqlite3_bind_null(st, i++);
+    }
     bind_num(st, i++, js_num(t, "memo_cut_turn"));
     bind_num(st, i++, js_num(t, "memo_cut_prefix"));
-    bind_str(st, i++, js_str(t, "forked_from_task_id"));
+    /* 0 = not forked; the column is NULL then (add_num_or_omit on the way back treats both
+     * the same, and a 0 FK would point at no task). */
+    {
+        const double fk = js_num(t, "forked_from_task_id");
+        if (fk > 0)
+            sqlite3_bind_int64(st, i++, (sqlite3_int64)fk);
+        else
+            sqlite3_bind_null(st, i++);
+    }
     bind_num(st, i++, js_num(t, "fork_point_completion_seq"));
     bind_str(st, i++, js_str(t, "output"));
     bind_num(st, i++, js_num(t, "completion_seq"));
@@ -1221,7 +1248,7 @@ static const char *INSERT_DEP =
 
 struct dep_bind
 {
-    const char *target;
+    int64_t target;
     const cJSON *dj;
     int ord;
 };
@@ -1229,8 +1256,8 @@ struct dep_bind
 static void bind_dep(sqlite3_stmt *st, void *ctx)
 {
     struct dep_bind *b = ctx;
-    bind_str(st, 1, b->target);
-    bind_str(st, 2, js_str(b->dj, "source_task_id"));
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)b->target);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)js_num(b->dj, "source_task_id"));
     bind_str(st, 3, js_str(b->dj, "type") ? js_str(b->dj, "type") : "JOIN");
     sqlite3_bind_int(st, 4, js_bool(b->dj, "completed"));
     sqlite3_bind_int(st, 5, js_bool(b->dj, "cancelled"));
@@ -1243,7 +1270,7 @@ static const char *INSERT_TOOL_CALL =
 
 struct tool_call_bind
 {
-    const char *task_id;
+    int64_t task_id;
     const cJSON *cj;
     int ord;
 };
@@ -1251,7 +1278,7 @@ struct tool_call_bind
 static void bind_tool_call(sqlite3_stmt *st, void *ctx)
 {
     struct tool_call_bind *b = ctx;
-    bind_str(st, 1, b->task_id);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)b->task_id);
     sqlite3_bind_int(st, 2, b->ord);
     bind_str(st, 3, js_str(b->cj, "call_id"));
     bind_str(st, 4, js_str(b->cj, "name"));
@@ -1284,7 +1311,7 @@ static const char *INSERT_TURN =
 
 struct turn_bind
 {
-    const char *task_id;
+    int64_t task_id;
     int turn_ord;
     const cJSON *tj;
     int is_active;
@@ -1293,7 +1320,7 @@ struct turn_bind
 static void bind_turn(sqlite3_stmt *st, void *ctx)
 {
     struct turn_bind *b = ctx;
-    bind_str(st, 1, b->task_id);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)b->task_id);
     sqlite3_bind_int(st, 2, b->turn_ord);
     bind_num(st, 3, js_num(b->tj, "folded_prefix"));
     bind_num(st, 4, js_num(b->tj, "memo_prefix"));
@@ -1316,7 +1343,7 @@ static const char *INSERT_MESSAGE =
 
 struct message_bind
 {
-    const char *task_id;
+    int64_t task_id;
     int turn_ord;
     const cJSON *mj;
     int msg_ord;
@@ -1325,12 +1352,12 @@ struct message_bind
 /* A message with no id gets a POSITIONAL one. It has to be deterministic: the store keys
  * on id, so a regenerated id would make every flush insert a second copy of the same
  * message. Only rows written by something other than edc_turn_add_message can lack one. */
-static sds message_id_for(const cJSON *mj, const char *task_id, int turn_ord, int msg_ord)
+static sds message_id_for(const cJSON *mj, int64_t task_id, int turn_ord, int msg_ord)
 {
     const char *own = js_str(mj, "id");
     if (own && *own)
         return sdsnew(own);
-    return sdscatprintf(sdsempty(), "pos_%s_%d_%d", task_id ? task_id : "?", turn_ord, msg_ord);
+    return sdscatprintf(sdsempty(), "pos_%lld_%d_%d", (long long)task_id, turn_ord, msg_ord);
 }
 
 static void bind_message(sqlite3_stmt *st, void *ctx)
@@ -1339,7 +1366,7 @@ static void bind_message(sqlite3_stmt *st, void *ctx)
     sds id = message_id_for(b->mj, b->task_id, b->turn_ord, b->msg_ord);
     bind_str(st, 1, id);
     sdsfree(id);
-    bind_str(st, 2, b->task_id);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)b->task_id);
     sqlite3_bind_int(st, 3, b->turn_ord);
     sqlite3_bind_int(st, 4, b->msg_ord);
     bind_str(st, 5, js_str(b->mj, "role"));
@@ -1365,25 +1392,25 @@ static void bind_message(sqlite3_stmt *st, void *ctx)
 /* ── flush bookkeeping ──────────────────────────────────────────────────────
  * Small helpers for the "upsert, then remove what disappeared" shape of the flush. */
 
-static bool mark_seen_group(const char *group_id)
+static bool mark_seen_group(int64_t group_id)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO flush_seen_group(group_id) VALUES(?)", -1, &st,
                            NULL) != SQLITE_OK)
         return false;
-    bind_str(st, 1, group_id);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)group_id);
     const bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
 }
 
-static bool mark_seen_task(const char *task_id)
+static bool mark_seen_task(int64_t task_id)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO flush_seen_task(task_id) VALUES(?)", -1, &st,
                            NULL) != SQLITE_OK)
         return false;
-    bind_str(st, 1, task_id);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     const bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -1396,7 +1423,7 @@ static bool delete_group_fold_files(const char *session_id, const char *group_id
                            NULL) != SQLITE_OK)
         return false;
     bind_str(st, 1, session_id);
-    bind_str(st, 2, group_id);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)group_id);
     const bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -1405,13 +1432,13 @@ static bool delete_group_fold_files(const char *session_id, const char *group_id
 /* Turns at or beyond |keep| no longer exist for this task: drop them. Their messages go
  * with them through the cascade, which is correct -- a turn that was removed has no
  * conversation left to keep. */
-static bool delete_turns_from(const char *task_id, int keep)
+static bool delete_turns_from(int64_t task_id, int keep)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, "DELETE FROM turns WHERE task_id=? AND turn_ord>=?", -1, &st, NULL) !=
         SQLITE_OK)
         return false;
-    bind_str(st, 1, task_id);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int(st, 2, keep);
     const bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
@@ -1448,7 +1475,7 @@ static bool delete_stale(const char *session_id)
 }
 
 /* Write one turn (its row plus its messages) for |task_id|. */
-static bool flush_turn(sqlite3 *db, const char *task_id, int turn_ord, const cJSON *tj, int is_active)
+static bool flush_turn(sqlite3 *db, int64_t task_id, int turn_ord, const cJSON *tj, int is_active)
 {
     struct turn_bind tb = {task_id, turn_ord, tj, is_active};
     if (!run_stmt(db, INSERT_TURN, "turn", bind_turn, &tb))
@@ -1471,8 +1498,8 @@ static bool flush_turn(sqlite3 *db, const char *task_id, int turn_ord, const cJS
 /* Write one task and everything hanging off it. */
 static bool flush_task(sqlite3 *db, const char *session_id, const cJSON *tj, int ord)
 {
-    const char *task_id = js_str(tj, "task_id");
-    if (!task_id || !*task_id)
+    const int64_t task_id = (int64_t)js_num(tj, "task_id");
+    if (task_id <= 0)
         return true; /* nothing to key on: skip rather than fail the whole flush */
 
     struct task_bind tb = {tj, session_id, ord};
@@ -1690,8 +1717,8 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
          * without building an IN () list in C. TEMP tables live for the connection and
          * are emptied here, not re-created. */
         if (!exec_sql(g_db,
-                      "CREATE TEMP TABLE IF NOT EXISTS flush_seen_group(group_id TEXT PRIMARY KEY);"
-                      "CREATE TEMP TABLE IF NOT EXISTS flush_seen_task(task_id TEXT PRIMARY KEY);"
+                      "CREATE TEMP TABLE IF NOT EXISTS flush_seen_group(group_id INTEGER PRIMARY KEY);"
+                      "CREATE TEMP TABLE IF NOT EXISTS flush_seen_task(task_id INTEGER PRIMARY KEY);"
                       "DELETE FROM flush_seen_group;"
                       "DELETE FROM flush_seen_task;",
                       "flush seen-sets"))
@@ -1716,7 +1743,7 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
                 struct group_bind gb = {g, session_id, ord++};
                 if (!run_stmt(g_db, INSERT_GROUP, "group", bind_group, &gb))
                     goto rollback;
-                if (!mark_seen_group(js_str(g, "group_id")))
+                if (!mark_seen_group((int64_t)js_num(g, "group_id")))
                     goto rollback;
                 /* The file list is replaced wholesale: a path dropped from the group must
                  * not survive as a stale row. Its rows are not an ancestor of anything. */
@@ -1841,7 +1868,7 @@ static cJSON *load_turn_messages(const char *task_id, int turn_ord)
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
         return arr;
-    sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int(st, 2, turn_ord);
     while (sqlite3_step(st) == SQLITE_ROW)
     {
@@ -1864,15 +1891,15 @@ struct load_task_ctx
 static cJSON *load_task_row(sqlite3_stmt *st)
 {
     cJSON *tj = cJSON_CreateObject();
-    const char *task_id = col_str(st, 0);
-    if (!task_id)
+    const sqlite3_int64 task_id = sqlite3_column_int64(st, 0);
+    if (task_id <= 0)
     {
         cJSON_Delete(tj);
         return NULL;
     }
 
-    cJSON_AddStringToObject(tj, "task_id", task_id);
-    add_str(tj, "group_id", col_str(st, 1));
+    cJSON_AddNumberToObject(tj, "task_id", (double)task_id);
+    cJSON_AddNumberToObject(tj, "group_id", (double)sqlite3_column_int64(st, 1));
     add_str(tj, "session_id", col_str(st, 2));
     add_str(tj, "description", col_str(st, 3));
     add_str(tj, "raw_input", col_str(st, 4));
@@ -1888,14 +1915,14 @@ static cJSON *load_task_row(sqlite3_stmt *st)
     cJSON_AddBoolToObject(tj, "deferred_vars", sqlite3_column_int(st, 14) != 0);
     add_str(tj, "memo_kind", col_str(st, 15));
     add_str(tj, "sink", col_str(st, 16));
-    add_str(tj, "sink_group_id", col_str(st, 17));
-    add_str(tj, "fold_cut_task", col_str(st, 18));
+    add_num_or_omit(tj, "sink_group_id", st, 17);
+    add_num_or_omit(tj, "fold_cut_task", st, 18);
     add_num_or_omit(tj, "fold_cut_turn", st, 19);
     add_num_or_omit(tj, "fold_cut_prefix", st, 20);
-    add_str(tj, "memo_cut_task", col_str(st, 21));
+    add_num_or_omit(tj, "memo_cut_task", st, 21);
     add_num_or_omit(tj, "memo_cut_turn", st, 22);
     add_num_or_omit(tj, "memo_cut_prefix", st, 23);
-    add_str(tj, "forked_from_task_id", col_str(st, 24));
+    add_num_or_omit(tj, "forked_from_task_id", st, 24);
     cJSON_AddNumberToObject(tj, "fork_point_completion_seq", (double)sqlite3_column_int64(st, 25));
     add_str(tj, "output", col_str(st, 26));
     cJSON_AddNumberToObject(tj, "completion_seq", (double)sqlite3_column_int64(st, 27));
@@ -1932,11 +1959,11 @@ static cJSON *load_task_row(sqlite3_stmt *st)
                                      "FROM task_deps WHERE target_task_id=? ORDER BY ord",
                                -1, &d, NULL) == SQLITE_OK)
         {
-            sqlite3_bind_text(d, 1, task_id, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(d, 1, task_id);
             while (sqlite3_step(d) == SQLITE_ROW)
             {
                 cJSON *o = cJSON_CreateObject();
-                add_str(o, "source_task_id", col_str(d, 0));
+                cJSON_AddNumberToObject(o, "source_task_id", (double)sqlite3_column_int64(d, 0));
                 add_str(o, "type", col_str(d, 1));
                 cJSON_AddBoolToObject(o, "completed", sqlite3_column_int(d, 2) != 0);
                 cJSON_AddBoolToObject(o, "cancelled", sqlite3_column_int(d, 3) != 0);
@@ -1955,7 +1982,7 @@ static cJSON *load_task_row(sqlite3_stmt *st)
         if (sqlite3_prepare_v2(g_db, "SELECT call_id,name,args,status FROM task_tool_calls "
                                      "WHERE task_id=? ORDER BY ord", -1, &c, NULL) == SQLITE_OK)
         {
-            sqlite3_bind_text(c, 1, task_id, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(c, 1, task_id);
             while (sqlite3_step(c) == SQLITE_ROW)
             {
                 if (!calls)
@@ -1991,7 +2018,7 @@ static cJSON *load_task_row(sqlite3_stmt *st)
                                      "FROM turns WHERE task_id=? ORDER BY turn_ord",
                                -1, &t, NULL) == SQLITE_OK)
         {
-            sqlite3_bind_text(t, 1, task_id, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(t, 1, task_id);
             while (sqlite3_step(t) == SQLITE_ROW)
             {
                 cJSON *o = cJSON_CreateObject();
@@ -2076,8 +2103,10 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
         cJSON_AddNumberToObject(sj, "created_at", (double)sqlite3_column_int64(st, 2));
         cJSON_AddNumberToObject(sj, "last_active", (double)sqlite3_column_int64(st, 3));
         add_str(sj, "workdir", col_str(st, 4));
-        add_str(sj, "active_task_id", col_str(st, 5));
-        add_str(sj, "foreground_group_id", col_str(st, 6));
+        /* INTEGER columns: read them as numbers, or the deserializer sees nothing (a
+         * NULL text column would silently drop the pointer). */
+        add_num_or_omit(sj, "active_task_id", st, 5);
+        add_num_or_omit(sj, "foreground_group_id", st, 6);
         cJSON_AddNumberToObject(sj, "next_completion_seq", (double)sqlite3_column_int64(st, 7));
         cJSON_AddItemToObject(root, "session", sj);
 
@@ -2103,8 +2132,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             while (sqlite3_step(st) == SQLITE_ROW)
             {
                 cJSON *gj = cJSON_CreateObject();
-                const char *group_id = col_str(st, 0);
-                add_str(gj, "group_id", group_id);
+                cJSON_AddNumberToObject(gj, "group_id", (double)sqlite3_column_int64(st, 0));
                 /* The leader is the task whose id equals group_id -- no column for it. */
                 cJSON_AddBoolToObject(gj, "is_orphaned", sqlite3_column_int(st, 1) != 0);
                 add_str(gj, "kind", col_str(st, 2));
@@ -2118,12 +2146,11 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                 {
                     sqlite3_stmt *f = NULL;
                     cJSON *files = NULL;
-                    if (group_id &&
-                        sqlite3_prepare_v2(g_db, "SELECT path FROM group_fold_files WHERE session_id=? "
+                    if (sqlite3_prepare_v2(g_db, "SELECT path FROM group_fold_files WHERE session_id=? "
                                                  "AND group_id=? ORDER BY ord", -1, &f, NULL) == SQLITE_OK)
                     {
                         sqlite3_bind_text(f, 1, session_id, -1, SQLITE_TRANSIENT);
-                        sqlite3_bind_text(f, 2, group_id, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_int64(f, 2, sqlite3_column_int64(st, 0));
                         while (sqlite3_step(f) == SQLITE_ROW)
                         {
                             const char *path = col_str(f, 0);
@@ -2143,17 +2170,14 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                 {
                     sqlite3_stmt *m = NULL;
                     cJSON *members = cJSON_CreateArray();
-                    if (group_id &&
-                        sqlite3_prepare_v2(g_db, "SELECT task_id FROM tasks WHERE session_id=? AND "
+                    if (sqlite3_prepare_v2(g_db, "SELECT task_id FROM tasks WHERE session_id=? AND "
                                                  "group_id=? ORDER BY ord", -1, &m, NULL) == SQLITE_OK)
                     {
                         sqlite3_bind_text(m, 1, session_id, -1, SQLITE_TRANSIENT);
-                        sqlite3_bind_text(m, 2, group_id, -1, SQLITE_TRANSIENT);
+                        sqlite3_bind_int64(m, 2, sqlite3_column_int64(st, 0));
                         while (sqlite3_step(m) == SQLITE_ROW)
-                        {
-                            const char *tid = col_str(m, 0);
-                            cJSON_AddItemToArray(members, cJSON_CreateString(tid ? tid : ""));
-                        }
+                            cJSON_AddItemToArray(members, cJSON_CreateNumber(
+                                (double)sqlite3_column_int64(m, 0)));
                     }
                     sqlite3_finalize(m);
                     cJSON_AddItemToObject(gj, "member_task_ids", members);
@@ -2249,6 +2273,92 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     if (!ok)
         log_error("state_store: deserialize failed for %s", session_id);
     return ok;
+}
+
+bool edc_state_store_insert_task_new(const char *session_id, int64_t group_id, int64_t *out_task_id)
+{
+    if (out_task_id)
+        *out_task_id = 0;
+    if (!g_db || !session_id || !*session_id || !out_task_id)
+        return false;
+
+    if (!exec_sql(g_db, "BEGIN IMMEDIATE", "new task BEGIN"))
+        return false;
+
+    int64_t id = 0;
+    {
+        /* The session row must exist first: tasks.session_id references it, and
+         * foreign_keys is ON. INSERT OR IGNORE because a live session is usually already
+         * there (the flush creates it); this only covers the very first task of a workspace
+         * or a task created before its session was ever persisted. */
+        sqlite3_stmt *st = NULL;
+        bool ok = false;
+        if (sqlite3_prepare_v2(g_db,
+                               "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) "
+                               "VALUES(?,?,?)",
+                               -1, &st, NULL) == SQLITE_OK)
+        {
+            bind_str(st, 1, session_id);
+            bind_str(st, 2, session_id);
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)time(NULL));
+            ok = sqlite3_step(st) == SQLITE_DONE;
+            sqlite3_finalize(st);
+        }
+        if (!ok)
+        {
+            exec_sql(g_db, "ROLLBACK", "new task rollback");
+            return false;
+        }
+    }
+
+    {
+        sqlite3_stmt *st = NULL;
+        bool ok = false;
+        /* group_id starts at 0: a task that leads its own group cannot know it before the
+         * row exists. The second statement closes that window inside the same transaction. */
+        if (sqlite3_prepare_v2(g_db,
+                               "INSERT INTO tasks(session_id,group_id,updated_at) VALUES(?,0,?)",
+                               -1, &st, NULL) == SQLITE_OK)
+        {
+            bind_str(st, 1, session_id);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)time(NULL));
+            ok = sqlite3_step(st) == SQLITE_DONE;
+            sqlite3_finalize(st);
+        }
+        if (!ok)
+        {
+            exec_sql(g_db, "ROLLBACK", "new task rollback");
+            return false;
+        }
+        id = (int64_t)sqlite3_last_insert_rowid(g_db);
+    }
+
+    {
+        const int64_t want_group = (group_id > 0) ? group_id : id;
+        sqlite3_stmt *st = NULL;
+        bool ok = false;
+        if (sqlite3_prepare_v2(g_db, "UPDATE tasks SET group_id=? WHERE task_id=?", -1, &st, NULL) ==
+            SQLITE_OK)
+        {
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)want_group);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)id);
+            ok = sqlite3_step(st) == SQLITE_DONE;
+            sqlite3_finalize(st);
+        }
+        if (!ok)
+        {
+            exec_sql(g_db, "ROLLBACK", "new task rollback");
+            return false;
+        }
+    }
+
+    if (!exec_sql(g_db, "COMMIT", "new task COMMIT"))
+    {
+        exec_sql(g_db, "ROLLBACK", "new task rollback");
+        return false;
+    }
+    *out_task_id = id;
+    return true;
 }
 
 bool edc_state_store_has_session(const char *session_id)
@@ -2564,10 +2674,10 @@ static cJSON *msg_from_row(sqlite3_stmt *st, int base)
  *  removes. A message is a row; appending one is one INSERT.
  * ══════════════════════════════════════════════════════════════════════════ */
 
-bool edc_state_ensure_turn(const char *session_id, const char *group_id, const char *task_id,
+bool edc_state_ensure_turn(const char *session_id, int64_t group_id, int64_t task_id,
                            int turn_ord)
 {
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return false;
     /* A turn built without a session (tests, and any caller that only carries a task id)
      * still needs an ancestor row for the FK chain. One shared placeholder keeps that
@@ -2589,16 +2699,25 @@ bool edc_state_ensure_turn(const char *session_id, const char *group_id, const c
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db, steps[i], -1, &st, NULL) != SQLITE_OK)
             return false;
-        sqlite3_bind_text(st, 1, (i == 0 || i == 1) ? session_id : task_id, -1, SQLITE_TRANSIENT);
-        if (i == 1)
-            sqlite3_bind_text(st, 2, (group_id && *group_id) ? group_id : "", -1, SQLITE_TRANSIENT);
-        else if (i == 2)
+        switch (i)
         {
+        case 0: /* sessions(session_id) */
+            sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+            break;
+        case 1: /* groups(session_id, group_id) */
+            sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(st, 2, (sqlite3_int64)group_id);
+            break;
+        case 2: /* tasks(task_id, session_id, group_id) */
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
             sqlite3_bind_text(st, 2, session_id, -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(st, 3, (group_id && *group_id) ? group_id : "", -1, SQLITE_TRANSIENT);
-        }
-        else if (i == 3)
+            sqlite3_bind_int64(st, 3, (sqlite3_int64)group_id);
+            break;
+        default: /* turns(task_id, turn_ord) */
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
             sqlite3_bind_int(st, 2, turn_ord);
+            break;
+        }
 
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
@@ -2612,9 +2731,9 @@ bool edc_state_ensure_turn(const char *session_id, const char *group_id, const c
  * turns.msg_count / turns.token_count. Called after any message insert or delete, so the
  * two numbers can never drift from the rows they summarize. Indexed range scan, no table
  * walk. */
-static void turn_recount(const char *task_id, int turn_ord)
+static void turn_recount(int64_t task_id, int turn_ord)
 {
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db,
@@ -2625,16 +2744,16 @@ static void turn_recount(const char *task_id, int turn_ord)
                            "WHERE task_id=?1 AND turn_ord=?2",
                            -1, &st, NULL) != SQLITE_OK)
         return;
-    sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int(st, 2, turn_ord);
     sqlite3_step(st);
     sqlite3_finalize(st);
 }
 
-bool edc_msg_append(const char *task_id, int turn_ord, int msg_ord, const struct cJSON *msg,
+bool edc_msg_append(int64_t task_id, int turn_ord, int msg_ord, const struct cJSON *msg,
                     long long tokens)
 {
-    if (!g_db || !task_id || !*task_id || !msg || msg_ord < 0)
+    if (!g_db || task_id <= 0 || !msg || msg_ord < 0)
         return false;
 
     /* body = the message minus the metadata that lives in columns (see kStoreOnlyMsgKeys).
@@ -2675,11 +2794,11 @@ bool edc_msg_append(const char *task_id, int turn_ord, int msg_ord, const struct
         {
             /* No identity on the message: a deterministic positional one (same rule the
              * snapshot writer uses, see bind_message). */
-            fallback = sdscatprintf(sdsempty(), "%s#%d.%d", task_id, turn_ord, msg_ord);
+            fallback = sdscatprintf(sdsempty(), "%s#%d.%d", edc_id_str(task_id), turn_ord, msg_ord);
             id = fallback;
         }
         sqlite3_bind_text(st, 1, id, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(st, 2, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)task_id);
         sqlite3_bind_int(st, 3, turn_ord);
         sqlite3_bind_int(st, 4, msg_ord);
         bind_str(st, 5, cJSON_GetStringValue((cJSON *)role));
@@ -2705,9 +2824,9 @@ bool edc_msg_append(const char *task_id, int turn_ord, int msg_ord, const struct
 
 /* ── Message rows end ─────────────────────────────────────────────────────── */
 
-struct cJSON *edc_msg_get(const char *task_id, int turn_ord, int msg_ord)
+struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord)
 {
-    if (!g_db || !task_id || !*task_id || msg_ord < 0)
+    if (!g_db || task_id <= 0 || msg_ord < 0)
         return NULL;
 
     char sql[256];
@@ -2718,7 +2837,7 @@ struct cJSON *edc_msg_get(const char *task_id, int turn_ord, int msg_ord)
     struct cJSON *out = NULL;
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
     {
-        sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
         sqlite3_bind_int(st, 2, turn_ord);
         sqlite3_bind_int(st, 3, msg_ord);
         if (sqlite3_step(st) == SQLITE_ROW)
@@ -2728,9 +2847,9 @@ struct cJSON *edc_msg_get(const char *task_id, int turn_ord, int msg_ord)
     return out;
 }
 
-int edc_msg_turn_len(const char *task_id, int turn_ord)
+int edc_msg_turn_len(int64_t task_id, int turn_ord)
 {
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return 0;
 
     sqlite3_stmt *st = NULL;
@@ -2738,7 +2857,7 @@ int edc_msg_turn_len(const char *task_id, int turn_ord)
     if (sqlite3_prepare_v2(g_db, "SELECT count(*) FROM messages WHERE task_id=? AND turn_ord=?", -1, &st,
                            NULL) == SQLITE_OK)
     {
-        sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
         sqlite3_bind_int(st, 2, turn_ord);
         if (sqlite3_step(st) == SQLITE_ROW)
             n = sqlite3_column_int(st, 0);
@@ -2747,9 +2866,9 @@ int edc_msg_turn_len(const char *task_id, int turn_ord)
     return n;
 }
 
-long long edc_msg_turn_tokens_from(const char *task_id, int turn_ord, int from)
+long long edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from)
 {
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return -1;
 
     sqlite3_stmt *st = NULL;
@@ -2759,7 +2878,7 @@ long long edc_msg_turn_tokens_from(const char *task_id, int turn_ord, int from)
                            "WHERE task_id=? AND turn_ord=? AND msg_ord>=?",
                            -1, &st, NULL) == SQLITE_OK)
     {
-        sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
         sqlite3_bind_int(st, 2, turn_ord);
         sqlite3_bind_int(st, 3, from > 0 ? from : 0);
         if (sqlite3_step(st) == SQLITE_ROW)
@@ -2769,15 +2888,15 @@ long long edc_msg_turn_tokens_from(const char *task_id, int turn_ord, int from)
     return total;
 }
 
-static bool msg_run_delete(const char *sql, const char *task_id, int turn_ord, int arg3)
+static bool msg_run_delete(const char *sql, int64_t task_id, int turn_ord, int arg3)
 {
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return false;
     sqlite3_stmt *st = NULL;
     bool ok = false;
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
     {
-        sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
         sqlite3_bind_int(st, 2, turn_ord);
         if (arg3 >= 0)
             sqlite3_bind_int(st, 3, arg3);
@@ -2787,7 +2906,7 @@ static bool msg_run_delete(const char *sql, const char *task_id, int turn_ord, i
     return ok;
 }
 
-bool edc_msg_turn_truncate(const char *task_id, int turn_ord, int new_len)
+bool edc_msg_turn_truncate(int64_t task_id, int turn_ord, int new_len)
 {
     const bool ok = msg_run_delete("DELETE FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=?",
                                    task_id, turn_ord, new_len < 0 ? 0 : new_len);
@@ -2796,7 +2915,7 @@ bool edc_msg_turn_truncate(const char *task_id, int turn_ord, int new_len)
     return ok;
 }
 
-bool edc_msg_turn_clear(const char *task_id, int turn_ord)
+bool edc_msg_turn_clear(int64_t task_id, int turn_ord)
 {
     const bool ok = msg_run_delete("DELETE FROM messages WHERE task_id=? AND turn_ord=?", task_id,
                                    turn_ord, -1);
@@ -2805,12 +2924,12 @@ bool edc_msg_turn_clear(const char *task_id, int turn_ord)
     return ok;
 }
 
-bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_session,
-                       const char *new_group, const char *new_task, int new_ord)
+bool edc_msg_turn_move(int64_t old_task, int old_ord, const char *new_session,
+                       int64_t new_group, int64_t new_task, int new_ord)
 {
-    if (!g_db || !old_task || !new_task)
+    if (!g_db || old_task <= 0 || new_task <= 0)
         return false;
-    if (strcmp(old_task, new_task) == 0 && old_ord == new_ord)
+    if (old_task == new_task && old_ord == new_ord)
         return true; /* already where it belongs: nothing to move */
 
     /* The destination's ancestor chain (and its turn row) must exist first. */
@@ -2828,9 +2947,9 @@ bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_sessio
                                "WHERE task_id=?1 AND turn_ord=?2",
                                -1, &st, NULL) != SQLITE_OK)
             return false;
-        sqlite3_bind_text(st, 1, new_task, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)new_task);
         sqlite3_bind_int(st, 2, new_ord);
-        sqlite3_bind_text(st, 3, old_task, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)old_task);
         sqlite3_bind_int(st, 4, old_ord);
         sqlite3_step(st);
         sqlite3_finalize(st);
@@ -2852,9 +2971,9 @@ bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_sessio
                                "WHERE task_id=?3 AND turn_ord=?4",
                                -1, &st, NULL) != SQLITE_OK)
             return false;
-        sqlite3_bind_text(st, 1, new_task, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)new_task);
         sqlite3_bind_int(st, 2, new_ord);
-        sqlite3_bind_text(st, 3, old_task, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)old_task);
         sqlite3_bind_int(st, 4, old_ord);
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
@@ -2868,7 +2987,7 @@ bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_sessio
         if (sqlite3_prepare_v2(g_db, "DELETE FROM turns WHERE task_id=? AND turn_ord=?", -1, &st,
                                NULL) != SQLITE_OK)
             return false;
-        sqlite3_bind_text(st, 1, old_task, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)old_task);
         sqlite3_bind_int(st, 2, old_ord);
         sqlite3_step(st);
         sqlite3_finalize(st);
@@ -2877,14 +2996,14 @@ bool edc_msg_turn_move(const char *old_task, int old_ord, const char *new_sessio
     return true;
 }
 
-bool edc_msg_span_load(const char *task_id, int turn_ord, int from, int to, struct edc_msg_span *out)
+bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to, struct edc_msg_span *out)
 {
     if (!out)
         return false;
     out->items = NULL;
     out->n = 0;
 
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return false;
     if (from < 0)
         from = 0;
@@ -2900,7 +3019,7 @@ bool edc_msg_span_load(const char *task_id, int turn_ord, int from, int to, stru
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
 
-    sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int(st, 2, turn_ord);
     sqlite3_bind_int(st, 3, from);
     if (to >= 0)
@@ -2949,14 +3068,14 @@ void edc_msg_span_free(struct edc_msg_span *span)
 
 /* ── Addressing messages by id ─────────────────────────────────────────────── */
 
-bool edc_msg_ids_for_turn(const char *task_id, int turn_ord, int from, int to,
+bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,
                           struct edc_msg_ids *out)
 {
     if (!out)
         return false;
     out->ids = NULL;
     out->n = 0;
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return false;
     if (from < 0)
         from = 0;
@@ -2970,7 +3089,7 @@ bool edc_msg_ids_for_turn(const char *task_id, int turn_ord, int from, int to,
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     sqlite3_bind_int(st, 2, turn_ord);
     sqlite3_bind_int(st, 3, from);
     if (to >= 0)
@@ -3144,14 +3263,14 @@ bool edc_state_store_forget(const char *session_id)
     return ok;
 }
 
-char *edc_state_store_session_for_task(const char *task_id)
+char *edc_state_store_session_for_task(int64_t task_id)
 {
-    if (!g_db || !task_id || !*task_id)
+    if (!g_db || task_id <= 0)
         return NULL;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, "SELECT session_id FROM tasks WHERE task_id=?", -1, &st, NULL) != SQLITE_OK)
         return NULL;
-    sqlite3_bind_text(st, 1, task_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
     char *out = NULL;
     if (sqlite3_step(st) == SQLITE_ROW)
     {

@@ -108,7 +108,7 @@ static struct edc_task *find_task(struct edc_session *session, const char *task_
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
         {
-            if (strcmp(t->task_id, task_id) == 0)
+            if (t->task_id == edc_test_id(task_id))
                 return t;
         }
     }
@@ -128,11 +128,11 @@ typedef enum
 /* Build a task in `scene` through a legal transition chain (READY -> ... -> target). */
 static struct edc_task *make_task(const char *id, const char *sid, const char *desc, scene target)
 {
-    struct edc_task *t = edc_task_new(id, sid, id, desc, edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(id), sid, edc_test_id(id), desc, edc_channel_adapter);
     /* 新模型: task 创建时就带着它的 input。fixture 必须装上一个 turn, 否则它就是
      * 一条 turn-less 残渣 —— 落盘时会被判据丢弃。 */
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(id);
+    turn->task_id = edc_test_id(id);
     edc_turn_add_user_message(turn, desc);
     t->active_turn = turn;
     switch (target)
@@ -285,7 +285,7 @@ static void test_cancel_persists_without_explicit_save(void)
     edc_scheduler_set_foreground(sa, ga);
 
     /* 走 `/task stop` 那条路: 它是 persist=true 的信号 (executor 里落盘)。 */
-    edc_scheduler_send_signal_to_task(sched_a, sa, "t1", TASK_SIGTERM);
+    edc_scheduler_send_signal_to_task(sched_a, sa, edc_test_id("t1"), TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(a_run), "running 任务在内存里 CANCELLED");
 
     /* 关键: 这里**不**调 edc_session_save_state —— 落盘必须是取消那一步做的。 */

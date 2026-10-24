@@ -16,7 +16,7 @@
  * (task_id -> session_id, parsed once from each unloaded session.json) locates the
  * owner, which is then loaded on demand. */
 struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                                const char *task_id, struct edc_session **owner_out)
+                                                int64_t task_id, struct edc_session **owner_out)
 {
     if (owner_out)
         *owner_out = NULL;
@@ -78,8 +78,7 @@ static void apply_dep_flags(struct edc_task *target, struct edc_task *source, bo
 
 static void free_pending_dep(struct edc_pending_dep *pd)
 {
-    sdsfree(pd->target_task_id);
-    sdsfree(pd->source_task_id);
+    /* The ids are values now: nothing to free but the node. */
     free(pd);
 }
 
@@ -157,8 +156,8 @@ void edc_session_store_reconcile_pending_deps(struct edc_session_manager *sm, st
     /* Whatever is left is genuinely unresolvable: surface it, and rely on the
      * resume gate to keep the target from running. */
     for (struct edc_pending_dep *pd = sched->pending_deps; pd; pd = pd->next)
-        log_warn("cross-session dep unresolved: task `%s` waits on `%s` (owner session not found)", pd->target_task_id,
-                 pd->source_task_id);
+        log_warn("cross-session dep unresolved: task `%s` waits on `%s` (owner session not found)", edc_id_str(pd->target_task_id),
+                 edc_id_str(pd->source_task_id));
 
     sched->reconciling = false;
 }

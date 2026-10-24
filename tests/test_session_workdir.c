@@ -504,7 +504,7 @@ static void test_task_workdir_owner(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, A);
 
-    struct edc_task *tB = edc_task_new("tB", "sess-B", "tB", "desc", edc_channel_adapter);
+    struct edc_task *tB = edc_task_new(edc_test_id("tB"), "sess-B", edc_test_id("tB"), "desc", edc_channel_adapter);
     struct edc_task_group *gB = edc_task_group_new(tB);
     edc_session_add_group(B, gB);
 
@@ -512,7 +512,7 @@ static void test_task_workdir_owner(void)
     CHECK(strcmp(edc_scheduler_task_workdir(tB), realB) == 0, "task owner dir = B (not the displayed A)");
     /* 没有属主就没有目录: 不再是"回退到当前 session"(那份副本已删)。工具层拿到
      * NULL 时落到沙箱根 (见 edc_tools_shell / edc_tools_fs)。 */
-    struct edc_task *ownerless = edc_task_new("tX", "sess-X", "tX", "desc", edc_channel_adapter);
+    struct edc_task *ownerless = edc_task_new(edc_test_id("tX"), "sess-X", edc_test_id("tX"), "desc", edc_channel_adapter);
     CHECK(edc_scheduler_task_workdir(ownerless) == NULL, "ownerless task → NULL (core 不猜)");
     CHECK(edc_scheduler_task_workdir(NULL) == NULL, "no task → NULL");
 

@@ -129,7 +129,7 @@ int main(void)
     struct edc_task *found = edc_session_manager_find_task_any(sm, bt->task_id, &owner);
     CHECK(found == bt, "cross-session find returns B's task");
     CHECK(owner == sb, "owner session is B");
-    CHECK(edc_session_manager_find_task_any(sm, "no-such-task", &owner) == NULL, "unknown id → NULL");
+    CHECK(edc_session_manager_find_task_any(sm, edc_test_id("no-such-task"), &owner) == NULL, "unknown id → NULL");
     CHECK(owner == NULL, "owner cleared on miss");
 
     /* ── S1a: cross-session -d dependency ───────────────────── */
@@ -137,7 +137,7 @@ int main(void)
     int before = count_tasks(sa);
     /* --new-group pins the placement: what this case checks is the cross-session
      * dependency, and joining the group in front would add a queue edge on top of it. */
-    sds scmd = sdscatprintf(sdsempty(), "/task new \"\"\"crossdep\"\"\" -d %s --new-group", bt->task_id);
+    sds scmd = sdscatprintf(sdsempty(), "/task new \"\"\"crossdep\"\"\" -d %s --new-group", edc_id_str(bt->task_id));
     send_cmd(cfg, sm, sched, channel_actor, scmd);
     sdsfree(scmd);
 
@@ -165,7 +165,7 @@ int main(void)
     TEST("/task fg refuses a task in another session");
     struct edc_task_group *fg_before =
         edc_scheduler_get_foreground(edc_session_manager_get_active(sm));
-    sds fg_cmd = sdscatprintf(sdsempty(), "/task fg %s", bt->task_id);
+    sds fg_cmd = sdscatprintf(sdsempty(), "/task fg %s", edc_id_str(bt->task_id));
     send_cmd(cfg, sm, sched, channel_actor, fg_cmd);
     sdsfree(fg_cmd);
     CHECK(edc_scheduler_get_foreground(edc_session_manager_get_active(sm)) == fg_before,
@@ -185,12 +185,12 @@ int main(void)
      * B 的 session.json 里; 本用例要验的是"属主 session 未激活时靠磁盘反解 task id"。 */
     {
         struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup(bt2->task_id);
+        turn->task_id = bt2->task_id;
         edc_turn_add_user_message(turn, "b2-task input");
         bt2->active_turn = turn;
         edc_task_mark_interrupted(bt2);
     }
-    sds bt2_id = sdsnew(bt2->task_id);
+    sds bt2_id = sdsnew(edc_id_str(bt2->task_id));
     CHECK(edc_session_save_state(sb, sched), "B state saved to disk");
     switch_to(cfg, sm, sched, channel_actor, sa->session_id);
 
@@ -209,7 +209,7 @@ int main(void)
     /* The cached task-id index may have been built earlier while B was loaded;
      * drop it so the next lookup re-derives B's owner from its tasks.idx. */
     edc_session_manager_reset_task_index(sm);
-    CHECK(edc_session_manager_find_task_any(sm, bt2_id, NULL) == NULL, "bt2 absent from memory");
+    CHECK(edc_session_manager_find_task_any(sm, (int64_t)strtoll(bt2_id, NULL, 10), 0) == NULL, "bt2 absent from memory");
 
     int before2 = count_tasks(sa);
     sds load_cmd = sdscatprintf(sdsempty(), "/task new \"\"\"needs-b2\"\"\" -d %s --new-group", bt2_id);
@@ -219,7 +219,7 @@ int main(void)
     struct edc_task *at3 = edc_session_get_active_task(sa);
     CHECK(count_tasks(sa) == before2 + 1, "a task was created in A");
     CHECK(at3 && at3->deps_total == 1 && at3->deps->source &&
-              strcmp(at3->deps->source->task_id, bt2_id) == 0,
+              strcmp(edc_id_str(at3->deps->source->task_id), bt2_id) == 0,
           "dependency resolved against B, loaded on demand");
     CHECK(sb->state_loaded, "B was activated on demand");
     CHECK(edc_session_manager_get_active(sm) == sa, "active session unchanged by the on-demand load");

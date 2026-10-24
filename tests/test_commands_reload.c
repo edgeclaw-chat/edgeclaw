@@ -114,7 +114,7 @@ int main(void)
     CHECK(prompt0 && strstr(prompt0, "first") != NULL, "`first` is in the prompt");
 
     /* A group whose cached prompt is the one we just built. */
-    struct edc_task *leader = edc_task_new("1", "s1", "1", "lead", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), "s1", edc_test_id("1"), "lead", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(sess, g);
 

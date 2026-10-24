@@ -88,7 +88,7 @@ static struct edc_task *find_task(struct edc_session *session, const char *task_
     DL_FOREACH(session->groups, g) {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next) {
-            if (strcmp(t->task_id, task_id) == 0) return t;
+            if (t->task_id == edc_test_id(task_id)) return t;
         }
     }
     return NULL;
@@ -106,7 +106,7 @@ static void test_turn_owns_messages(void)
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, "sess-rng", "Range");
 
-    struct edc_task *task = edc_task_new("task-1", "sess-rng", "task-1", "t", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("task-1"), "sess-rng", edc_test_id("task-1"), "t", edc_channel_adapter);
     task->is_group_leader = 1;
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
@@ -152,7 +152,7 @@ static void test_single_mode_roundtrip(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *task = edc_task_new("task-1", "sess-cpt2", "task-1", "single", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("task-1"), "sess-cpt2", edc_test_id("task-1"), "single", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
     edc_task_await_exec(task);
@@ -220,7 +220,7 @@ static void test_multi_turns(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *task = edc_task_new("task-mt", "sess-mt", "task-mt", "multi turn", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("task-mt"), "sess-mt", edc_test_id("task-mt"), "multi turn", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
     edc_task_await_exec(task);
@@ -294,7 +294,7 @@ static void test_empty_turn(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *task = edc_task_new("task-etf", "sess-etf", "task-etf", "e", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("task-etf"), "sess-etf", edc_test_id("task-etf"), "e", edc_channel_adapter);
     task->is_group_leader = 1;
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
@@ -335,7 +335,7 @@ static void test_state_file_roundtrip(void)
     struct edc_scheduler *sc1 = edc_scheduler_new(cfg);
     install_resolver(sc1, s1);
 
-    struct edc_task *task = edc_task_new("task-ft", "sess-full", "task-ft", "full test", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("task-ft"), "sess-full", edc_test_id("task-ft"), "full test", edc_channel_adapter);
     task->is_group_leader = 1;
     edc_task_mark_ready(task);
     edc_task_await_exec(task);

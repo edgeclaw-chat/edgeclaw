@@ -28,7 +28,7 @@ extern bool edc_task_group_is_system(const struct edc_task_group *group);
 
 struct edc_task_group
 {
-    char *group_id;           /* PGID (= the leader's task_id) */
+    int64_t group_id;         /* PGID (= the leader's task_id) */
     struct edc_task *leader;
     struct edc_task *members; /* all tasks in the group, including the leader */
     int member_count;
@@ -118,7 +118,7 @@ extern void edc_task_group_free(struct edc_task_group *group);
 
 extern void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task);
 extern void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *task);
-extern struct edc_task *edc_task_group_find_task(struct edc_task_group *group, const char *task_id);
+extern struct edc_task *edc_task_group_find_task(struct edc_task_group *group, int64_t task_id);
 
 /* ── Group history: a slot list, not a copy of the conversation ───────────────
  *

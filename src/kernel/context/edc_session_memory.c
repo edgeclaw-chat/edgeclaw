@@ -616,7 +616,7 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
     /* Remember the size we tried at, so a round that cannot shrink below the cap does not
      * start another one until the memory grows again. */
     session->memo->compact_at_entries = session->memo->entry_count;
-    log_info("L2 memo compact start: session=%s task=%s entries=%zu", session->session_id, task->task_id,
+    log_info("L2 memo compact start: session=%s task=%s entries=%zu", session->session_id, edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -690,7 +690,7 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
                     continue;
                 any = true;
                 sds when = edc_datetime_format_min((time_t)g->memory_updated_at);
-                out = sdscatprintf(out, "\n### group %s (memory last updated %s)\n%s", g->group_id ? g->group_id : "?",
+                out = sdscatprintf(out, "\n### group %s (memory last updated %s)\n%s", edc_id_str(g->group_id),
                                    when, g->memory);
                 sdsfree(when);
             }
@@ -708,7 +708,7 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
             sds when = edc_datetime_format_min((time_t)group->memory_updated_at);
             sds covers = edc_datetime_format_min((time_t)group->memory_covers_to);
             out = sdscatprintf(out, "Group %s — memory last updated %s (covers up to %s).\n",
-                               group->group_id ? group->group_id : "?", when, covers);
+                               edc_id_str(group->group_id), when, covers);
             sdsfree(when);
             sdsfree(covers);
         }
@@ -784,7 +784,7 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
     }
 
     log_info("L2 memo start: session=%s from group=%s task=%s entries=%zu", session->session_id,
-             (folded_group && folded_group->group_id) ? folded_group->group_id : "?", task->task_id,
+             edc_id_str(folded_group ? folded_group->group_id : 0), edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -817,7 +817,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
         return NULL;
     }
     sdsfree(prompt);
-    log_info("L2 memo start (manual): session=%s task=%s entries=%zu", session->session_id, task->task_id,
+    log_info("L2 memo start (manual): session=%s task=%s entries=%zu", session->session_id, edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -952,7 +952,7 @@ static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, st
  * earlier in content order is covered whole. */
 struct edc_extract_cut
 {
-    const char *task_id;
+    int64_t task_id; /* 0 = none */
     uint32_t turn;
     uint32_t prefix;
 };
@@ -976,7 +976,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
 {
     if (out_cut)
     {
-        out_cut->task_id = NULL;
+        out_cut->task_id = 0;
         out_cut->turn = 0;
         out_cut->prefix = 0;
     }
@@ -1016,7 +1016,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         if (cut_at == 0)
             cut_at = 1;
         log_info("L2 memo extract: group %s corpus %lld > cap %d — extracting the oldest %zu of %zu msgs",
-                 group->group_id, total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
+                 edc_id_str(group->group_id), total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
     }
 
     if (out_cut)
@@ -1041,7 +1041,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
                            "## Group history to extract from\n"
                            "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
                            "content order) that has NOT reached the session memory yet.\n\n",
-                           group->group_id ? group->group_id : "?");
+                           edc_id_str(group->group_id));
     if (group->memory && sdslen(group->memory) > 0)
     {
         /* Neither the group memory's text nor its entries are here, but its recency is:
@@ -1060,7 +1060,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         if (tk != cur)
         {
             cur = tk;
-            out = sdscatprintf(out, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
+            out = sdscatprintf(out, "\n### [task %s] %s\n", edc_id_str(tk->task_id), tk->description ? tk->description : "");
         }
         cJSON *m = ps[i].msg;
         if (cJSON_GetStringValue(cJSON_GetObjectItem(m, "role")))
@@ -1231,7 +1231,7 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
     }
     task->memo_kind = EDC_MEMO_KIND_EXTRACT;
     task->sink_group = group;
-    task->memo_cut_task_id = cut.task_id ? strdup(cut.task_id) : NULL;
+    task->memo_cut_task_id = cut.task_id;
     task->memo_cut_turn = cut.turn;
     task->memo_cut_prefix = cut.prefix;
 
@@ -1240,7 +1240,7 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
      * what any request sends. */
     if (!edc_scheduler_attach_input(sched, task, prompt))
     {
-        log_error("L2 memo extract: could not attach the prompt for group %s — nothing started", group->group_id);
+        log_error("L2 memo extract: could not attach the prompt for group %s — nothing started", edc_id_str(group->group_id));
         edc_task_mark_failed(task); /* failure also releases dependents */
         sdsfree(prompt);
         edc_session_memory_extract_note_failure(group);
@@ -1248,7 +1248,7 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
     }
     sdsfree(prompt);
     log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", session->session_id,
-             group->group_id, task->task_id, task->memo_cut_task_id ? task->memo_cut_task_id : "(none)",
+             edc_id_str(group->group_id), edc_id_str(task->task_id), edc_id_str(task->memo_cut_task_id),
              task->memo_cut_turn, task->memo_cut_prefix);
     return task;
 }
@@ -1276,7 +1276,7 @@ bool edc_session_memory_extract_try(struct edc_scheduler *sched, struct edc_sess
         {
             if (!edc_session_memory_extract_due(g, conf, now))
                 continue;
-            log_info("L2 memo extract trigger: group %s idle, %zu msgs pending", g->group_id,
+            log_info("L2 memo extract trigger: group %s idle, %zu msgs pending", edc_id_str(g->group_id),
                      edc_task_group_extractable_msg_count(g));
             struct edc_task *task = extract_start(sched, sess, g);
             if (task)
@@ -1298,9 +1298,9 @@ void edc_session_memory_extract_note_failure(struct edc_task_group *group)
     if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
         log_error("L2 memo extract: group %s failed %d times in a row — automatic extraction is paused for this "
                   "group (do new work in it, or fold it, to try again)",
-                  group->group_id, group->memo_extract_failures);
+                  edc_id_str(group->group_id), group->memo_extract_failures);
     else
-        log_info("L2 memo extract: group %s failure %d/%d", group->group_id, group->memo_extract_failures,
+        log_info("L2 memo extract: group %s failure %d/%d", edc_id_str(group->group_id), group->memo_extract_failures,
                  EDC_MEMO_EXTRACT_MAX_FAILURES);
 }
 
@@ -1308,7 +1308,7 @@ void edc_session_memory_extract_note_progress(struct edc_task_group *group)
 {
     if (!group || group->memo_extract_failures == 0)
         return;
-    log_info("L2 memo extract: group %s failure streak cleared (was %d)", group->group_id,
+    log_info("L2 memo extract: group %s failure streak cleared (was %d)", edc_id_str(group->group_id),
              group->memo_extract_failures);
     group->memo_extract_failures = 0;
 }
@@ -1338,7 +1338,7 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     if (!group || !task->memo_cut_task_id)
     {
         log_error("L2 memo extract: task %s carries no resolvable cut — watermark unchanged",
-                  (task && task->task_id) ? task->task_id : "(null)");
+                  edc_id_str(task ? task->task_id : 0));
         edc_session_memory_extract_note_failure(group);
         return false;
     }
@@ -1348,7 +1348,7 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     struct edc_task *cut_member = NULL;
     for (size_t i = 0; i < n && !cut_member; i++)
     {
-        if (members[i]->task_id && strcmp(members[i]->task_id, task->memo_cut_task_id) == 0)
+        if (task->memo_cut_task_id > 0 && members[i]->task_id == task->memo_cut_task_id)
             cut_member = members[i];
     }
 
@@ -1360,7 +1360,7 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     if (!cut_member || !cut_turn)
     {
         log_error("L2 memo extract: cut (task=%s turn=%u) does not resolve in group %s — watermark unchanged",
-                  task->memo_cut_task_id, task->memo_cut_turn, group->group_id);
+                  edc_id_str(task->memo_cut_task_id), task->memo_cut_turn, edc_id_str(group->group_id));
         free(members);
         edc_session_memory_extract_note_failure(group);
         return false;
@@ -1391,8 +1391,8 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     free(members);
 
     edc_session_memory_extract_note_progress(group);
-    log_info("L2 memo extract done: group %s advanced %zu turns, cut at task %s turn %u msg %u", group->group_id,
-             advanced_turns, task->memo_cut_task_id, task->memo_cut_turn, task->memo_cut_prefix);
+    log_info("L2 memo extract done: group %s advanced %zu turns, cut at task %s turn %u msg %u", edc_id_str(group->group_id),
+             advanced_turns, edc_id_str(task->memo_cut_task_id), task->memo_cut_turn, task->memo_cut_prefix);
     return true;
 }
 

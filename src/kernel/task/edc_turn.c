@@ -1,4 +1,5 @@
 #include "edc_turn.h"
+#include "edc_task.h"  /* edc_id_str() for log lines */
 #include "edc_state_store.h"
 #include "edc_token_estimate.h"
 #include "edc_datetime_utils.h"
@@ -41,17 +42,15 @@ static sds edc_message_new_id(void)
     return sdscatprintf(sdsempty(), "m%llu_%lu", ms, g_msg_seq++);
 }
 
-void edc_turn_set_key(struct edc_turn *turn, const char *session_id, const char *group_id,
-                      const char *task_id, int turn_ord)
+void edc_turn_set_key(struct edc_turn *turn, const char *session_id, int64_t group_id,
+                      int64_t task_id, int turn_ord)
 {
     if (!turn)
         return;
-    free(turn->task_id);
     free(turn->session_id);
-    free(turn->group_id);
-    turn->task_id = task_id ? strdup(task_id) : NULL;
+    turn->task_id = task_id;
     turn->session_id = session_id ? strdup(session_id) : NULL;
-    turn->group_id = group_id ? strdup(group_id) : NULL;
+    turn->group_id = group_id;
     turn->turn_ord = turn_ord;
 }
 
@@ -117,7 +116,7 @@ bool edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
          * introduce. */
         log_error("turn: message NOT persisted (task=%s turn=%d ord=%d) -- is the state "
                   "store open?",
-                  turn->task_id ? turn->task_id : "?", turn->turn_ord, ord);
+                  (long long)edc_id_str(turn->task_id), turn->turn_ord, ord);
     }
 
     cJSON_Delete(msg); /* the row owns the JSON now */
@@ -188,8 +187,8 @@ struct edc_turn *edc_turn_new()
     return g_new0(struct edc_turn, 1);
 }
 
-struct edc_turn *edc_turn_new_for(const char *session_id, const char *group_id,
-                                  const char *task_id, int turn_ord)
+struct edc_turn *edc_turn_new_for(const char *session_id, int64_t group_id,
+                                  int64_t task_id, int turn_ord)
 {
     struct edc_turn *turn = edc_turn_new();
     edc_turn_set_key(turn, session_id, group_id, task_id, turn_ord);
@@ -200,9 +199,7 @@ void edc_turn_free(struct edc_turn *turn)
 {
     if (!turn)
         return;
-    free(turn->task_id);
     free(turn->session_id);
-    free(turn->group_id);
     free(turn);
 }
 

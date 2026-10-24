@@ -348,7 +348,7 @@ int edc_session_manager_index_of(struct edc_session_manager *sm, const char *nam
     return -1;
 }
 
-struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
+struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, int64_t task_id,
                                                    struct edc_session **owner_out)
 {
     if (owner_out)
@@ -423,9 +423,9 @@ void edc_session_manager_reset_task_index(struct edc_session_manager *sm)
     (void)sm;
 }
 
-struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id)
+struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, int64_t task_id)
 {
-    if (!sm || !task_id || !*task_id)
+    if (!sm || task_id <= 0)
         return NULL;
 
     /* An in-memory session wins: it is authoritative and may hold a task that has not

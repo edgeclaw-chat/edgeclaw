@@ -244,14 +244,14 @@ void edc_session_remove_group(struct edc_session *session, struct edc_task_group
     group->session = NULL;
 }
 
-struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id)
+struct edc_task_group *edc_session_find_group(struct edc_session *session, int64_t group_id)
 {
     if (!session || !group_id)
         return NULL;
     struct edc_task_group *group;
     DL_FOREACH(session->groups, group)
     {
-        if (strcmp(group->group_id, group_id) == 0)
+        if (group->group_id == group_id)
             return group;
     }
     return NULL;
@@ -271,7 +271,7 @@ struct edc_task_group *edc_session_find_system_group(struct edc_session *session
     return NULL;
 }
 
-struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id)
+struct edc_task *edc_session_find_task(struct edc_session *session, int64_t task_id)
 {
     if (!session || !task_id)
         return NULL;
@@ -340,7 +340,7 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
             }
             if (bucket == k_state_order_n)
             {
-                log_warn("status: task %s reports an unknown state '%s'", t->task_id, state);
+                log_warn("status: task %s reports an unknown state '%s'", edc_id_str(t->task_id), state);
                 continue;
             }
             state_counts[bucket]++;
@@ -371,10 +371,10 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
 
     if (is_current)
     {
-        out = sdscatprintf(out, "- **Foreground group**: %s\n", foreground_group_id ? foreground_group_id : "(none)");
+        out = sdscatprintf(out, "- **Foreground group**: %s\n", foreground_group_id);
         struct edc_task *active = session->active_task;
         if (active)
-            out = sdscatprintf(out, "- **Active task**: %s%s%s\n", active->task_id,
+            out = sdscatprintf(out, "- **Active task**: %s%s%s\n", edc_id_str(active->task_id),
                                (active->description && *active->description) ? " — " : "",
                                active->description ? active->description : "");
         else

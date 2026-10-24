@@ -220,7 +220,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         {
             task->net_retried = true;
             task->llm_rounds++; /* the retry consumes a run-budget round */
-            log_warn("task %s: LLM transport failure (%s) — re-sending once", task->task_id, notice);
+            log_warn("task %s: LLM transport failure (%s) — re-sending once", edc_id_str(task->task_id), notice);
             return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
         }
 
@@ -264,7 +264,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
             edc_task_mark_failed(task);
             const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
             log_error("%s: task %s asked for a tool call — discarded, nothing landed",
-                      curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)");
+                      curate ? "L2 memo" : "L1 fold", edc_id_str(task->task_id));
             return (struct edc_advance_result){
                 .outcome = EDC_STEP_ERROR,
                 .settled = true,
@@ -354,7 +354,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
          * docs/session-memory-write-path.md). */
         const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
         log_error("%s: task %s did not finish cleanly (reason=%d) — stopped early",
-                  curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)", (int)e->reason);
+                  curate ? "L2 memo" : "L1 fold", edc_id_str(task->task_id), (int)e->reason);
         if (e->reason == EDC_REASON_LENGTH)
             notice = curate ? "Curation was truncated (max_tokens) — it stopped early; entries it already wrote remain"
                             : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";

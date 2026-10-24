@@ -1,4 +1,5 @@
 ﻿#include "edc_scheduler.h"
+#include "edc_state_store.h"
 #include "edc_cmd_parse.h"
 #include "edc_datetime_utils.h"
 #include "edc_compat.h"
@@ -159,88 +160,11 @@ static void sched_drain_dirty(struct edc_scheduler *sched)
     sched->dirty_count = 0;
 }
 
-/* next_task_id is a process-wide monotonic allocator; scanning live tasks cannot
- * recover it, so the high-water mark is persisted in a tiny file under the
- * workspace. A write failure degrades to memory-only monotonicity. */
-
-static sds sched_task_seq_path(struct edc_scheduler *sched)
-{
-    if (!sched || !sched->config || !sched->config->workspace || sdslen(sched->config->workspace) == 0)
-        return NULL;
-    return edc_path_join(sched->config->workspace, ".task_seq", NULL);
-}
-
-static void sched_persist_task_seq(struct edc_scheduler *sched)
-{
-    sds path = sched_task_seq_path(sched);
-    if (!path)
-        return;
-
-    sds tmp = sdscatprintf(sdsempty(), "%s.tmp", path);
-    /* Plain stdio, not edc_file_*: scheduler tests do not set up the uv file loop. */
-    FILE *f = fopen(tmp, "w");
-    if (!f && errno == ENOENT && sched->config && sched->config->workspace)
-    {
-        /* The workspace dir may not exist yet; create it and retry once. */
-        mkdir(sched->config->workspace, 0755);
-        f = fopen(tmp, "w");
-    }
-    if (!f)
-    {
-        log_debug("task_seq: open %s for write failed: %s", tmp, strerror(errno));
-    }
-    else
-    {
-        if (fprintf(f, "%lld\n", (long long)sched->next_task_id) < 0)
-            log_debug("task_seq: write %s failed: %s", tmp, strerror(errno));
-        fclose(f);
-        EdcError *rerr = NULL;
-        if (!edc_file_rename_replace(tmp, path, &rerr))
-        {
-            log_warn("task_seq: %s", rerr ? rerr->message : "rename failed");
-            if (rerr)
-                edc_error_free(rerr);
-        }
-    }
-
-    sdsfree(tmp);
-    sdsfree(path);
-}
-
-static void sched_load_task_seq(struct edc_scheduler *sched)
-{
-    sds path = sched_task_seq_path(sched);
-    if (!path)
-        return;
-
-    FILE *f = fopen(path, "r");
-    sdsfree(path);
-    if (!f)
-        return; /* first run / missing file: keep the in-memory initial value */
-
-    long long v = 0;
-    if (fscanf(f, "%lld", &v) == 1 && v > sched->next_task_id)
-        sched->next_task_id = v;
-    fclose(f);
-}
-
-void edc_scheduler_observe_task_id(struct edc_scheduler *sched, const char *task_id)
-{
-    if (!sched || !task_id || !*task_id)
-        return;
-
-    /* Only plain decimal numbers; "task-1"-style ids in old archives/tests read as 0. */
-    char *end = NULL;
-    long long id = strtoll(task_id, &end, 10);
-    if (end == task_id || (end && *end != '\0'))
-        return;
-
-    if (id >= sched->next_task_id)
-    {
-        sched->next_task_id = id + 1;
-        sched_persist_task_seq(sched);
-    }
-}
+/* There is no task-id counter and no .task_seq file any more. `tasks.task_id` is an
+ * INTEGER PRIMARY KEY: the INSERT allocates the id, and edc_state_store_insert_task_new()
+ * does it in one transaction (see its comment). The only thing that used to need the
+ * high-water mark -- "a restart must not reuse a number" -- the database now guarantees
+ * itself. */
 
 /* ── Lifetime ──────────────────────────────────────────────── */
 
@@ -249,10 +173,6 @@ struct edc_scheduler *edc_scheduler_new(struct edc_config *config)
     struct edc_scheduler *sched = g_new0(struct edc_scheduler, 1);
     sched->config = config;
     sched->task_hash = NULL;
-    sched->next_task_id = 1;
-
-    /* Restore the previous run's high-water mark so task_id never regresses or repeats. */
-    sched_load_task_seq(sched);
 
     edc_executor_init(&sched->executor, &sched_executor_ops, sched, config);
 
@@ -375,8 +295,7 @@ void edc_scheduler_free(struct edc_scheduler *sched)
     for (pd = sched->pending_deps; pd; pd = pd_tmp)
     {
         pd_tmp = pd->next;
-        sdsfree(pd->target_task_id);
-        sdsfree(pd->source_task_id);
+
         free(pd);
     }
 
@@ -401,15 +320,15 @@ void edc_scheduler_free(struct edc_scheduler *sched)
 
 /* ── Unresolved cross-session dependencies ─────────────────── */
 
-void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, const char *target_task_id,
-                                   const char *source_task_id, edc_task_dep_type type, bool completed, bool cancelled,
+void edc_scheduler_add_pending_dep(struct edc_scheduler *sched, int64_t target_task_id,
+                                   int64_t source_task_id, edc_task_dep_type type, bool completed, bool cancelled,
                                    bool injected)
 {
-    if (!sched || !target_task_id || !source_task_id)
+    if (!sched || target_task_id <= 0 || source_task_id <= 0)
         return;
     struct edc_pending_dep *pd = g_new0(struct edc_pending_dep, 1);
-    pd->target_task_id = sdsnew(target_task_id);
-    pd->source_task_id = sdsnew(source_task_id);
+    pd->target_task_id = target_task_id;
+    pd->source_task_id = source_task_id;
     pd->type = type;
     pd->completed = completed;
     pd->cancelled = cancelled;
@@ -433,21 +352,21 @@ bool edc_scheduler_task_has_unresolved_deps(struct edc_scheduler *sched, struct 
     return edc_scheduler_first_unresolved_dep(sched, task) != NULL;
 }
 
-const char *edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task)
+int64_t edc_scheduler_first_unresolved_dep(struct edc_scheduler *sched, struct edc_task *task)
 {
-    if (!sched || !task || !task->task_id)
-        return NULL;
+    if (!sched || !task || task->task_id <= 0)
+        return 0;
     for (struct edc_pending_dep *pd = sched->pending_deps; pd; pd = pd->next)
     {
-        if (pd->target_task_id && strcmp(pd->target_task_id, task->task_id) == 0)
+        if (pd->target_task_id == task->task_id)
             return pd->source_task_id;
     }
-    return NULL;
+    return 0;
 }
 
 /* Iterate the pending (unresolvable) edges of one task: NULL starts, the returned node is
  * the next "previous". Read-only, for /task dep's listing. */
-const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched, const char *task_id,
+const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_scheduler *sched, int64_t task_id,
                                                              const struct edc_pending_dep *prev)
 {
     if (!sched || !task_id)
@@ -455,15 +374,15 @@ const struct edc_pending_dep *edc_scheduler_next_pending_dep(const struct edc_sc
     const struct edc_pending_dep *pd = prev ? prev->next : sched->pending_deps;
     for (; pd; pd = pd->next)
     {
-        if (pd->target_task_id && strcmp(pd->target_task_id, task_id) == 0)
+        if (pd->target_task_id == task_id)
             return pd;
     }
     return NULL;
 }
 
-int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *target_task_id, const char *source_task_id)
+int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, int64_t target_task_id, int64_t source_task_id)
 {
-    if (!sched || !target_task_id)
+    if (!sched || target_task_id <= 0)
         return 0;
     int dropped = 0;
     struct edc_pending_dep **link = &sched->pending_deps;
@@ -471,18 +390,15 @@ int edc_scheduler_drop_pending_dep(struct edc_scheduler *sched, const char *targ
     {
         struct edc_pending_dep *pd = *link;
         const bool match =
-            pd->target_task_id && strcmp(pd->target_task_id, target_task_id) == 0 &&
-            (!source_task_id || (pd->source_task_id && strcmp(pd->source_task_id, source_task_id) == 0));
+            pd->target_task_id == target_task_id &&
+            (source_task_id <= 0 || pd->source_task_id == source_task_id);
         if (!match)
         {
             link = &pd->next;
             continue;
         }
         *link = pd->next;
-        if (pd->target_task_id)
-            sdsfree(pd->target_task_id);
-        if (pd->source_task_id)
-            sdsfree(pd->source_task_id);
+
         free(pd);
         dropped++;
     }
@@ -496,30 +412,29 @@ edc_actor_t *edc_scheduler_get_actor(struct edc_scheduler *sched)
 
 /* ── Task/Group management ─────────────────────────────────── */
 
-char *edc_scheduler_gen_task_id(struct edc_scheduler *sched)
-{
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%lld", (long long)sched->next_task_id++);
-    /* Persist on issue, so a reclaimed or killed task's id is never reused. */
-    sched_persist_task_seq(sched);
-    return strdup(buf);
-}
-
 struct edc_task *edc_scheduler_task_new(struct edc_scheduler *sched, struct edc_session *session, const char *desc,
                                            edc_channel_type channel_type)
 {
     if (!sched || !session)
         return NULL;
 
-    char *tid = edc_scheduler_gen_task_id(sched);
     /* Owned by the passed session; no session -> reject rather than guess. */
     const char *sid = session->session_id ? session->session_id : "sess-1";
     struct edc_task_group *fg = sched_foreground(session);
-    const char *gid = fg ? fg->group_id : tid;
 
-    struct edc_task *task = edc_task_new(tid, sid, gid, desc, channel_type);
+    /* The row comes FIRST, because that is what allocates the id. group_id 0 means "this
+     * task leads its own group", and the store fills the group id from the task id inside
+     * the same transaction -- a task that starts a group cannot know that id before it
+     * exists. */
+    int64_t tid = 0;
+    if (!edc_state_store_insert_task_new(sid, fg ? fg->group_id : 0, &tid))
+    {
+        log_error("task_new: the store could not allocate a task id");
+        return NULL;
+    }
+
+    struct edc_task *task = edc_task_new(tid, sid, fg ? fg->group_id : tid, desc, channel_type);
     /* edc_task_new already leaves it READY; no forced WAITING_INPUT. */
-    free(tid);
     if (!task)
         return NULL;
 
@@ -581,7 +496,7 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
 
     case EDC_TASK_PLACE_GROUP:
         /* The caller names the group; an unknown name makes one led by this task. */
-        group = spec->group_id ? edc_session_find_group(session, spec->group_id) : NULL;
+        group = spec->group_id > 0 ? edc_session_find_group(session, spec->group_id) : NULL;
         if (group)
             edc_task_group_add_task(group, task);
         else
@@ -644,7 +559,7 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
     struct edc_task_group *group = sched_settle_task(sched, session, task, spec, &chained);
     if (!group)
     {
-        log_error("task %s: nowhere to land (group not creatable)", task->task_id ? task->task_id : "?");
+        log_error("task %s: nowhere to land (group not creatable)", edc_id_str(task->task_id));
         return false;
     }
 
@@ -684,7 +599,7 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
     {
         task->tool_only = true;
 
-        sds call_id = sdscatprintf(sdsempty(), "call_local_%s", task->task_id ? task->task_id : "0");
+        sds call_id = sdscatprintf(sdsempty(), "call_local_%lld", (long long)task->task_id);
         if (task->active_turn)
             edc_turn_add_assistant_tool_call(task->active_turn, call_id, spec->initial_tool_name,
                                              spec->initial_tool_args);
@@ -760,10 +675,14 @@ struct edc_task *edc_scheduler_spawn_system_task_as(struct edc_scheduler *sched,
 
     struct edc_task_group *group = edc_session_find_system_group(session);
 
-    char *tid = edc_scheduler_gen_task_id(sched);
-    const char *gid = group ? group->group_id : tid;
-    struct edc_task *task = edc_task_new(tid, session->session_id, gid, desc, edc_channel_adapter);
-    free(tid);
+    int64_t tid = 0;
+    if (!edc_state_store_insert_task_new(session->session_id, group ? group->group_id : 0, &tid))
+    {
+        log_error("system task: the store could not allocate a task id");
+        return NULL;
+    }
+    struct edc_task *task =
+        edc_task_new(tid, session->session_id, group ? group->group_id : tid, desc, edc_channel_adapter);
     if (!task)
         return NULL;
     edc_session_memory_adopt_task(session, task);
@@ -975,7 +894,7 @@ struct edc_task *edc_scheduler_find_task(struct edc_scheduler *sched, void *requ
 }
 
 struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sched, struct edc_session *session,
-                                               const char *task_id)
+                                               int64_t task_id)
 {
     if (!sched || !task_id || !session)
         return NULL;
@@ -1089,7 +1008,7 @@ void edc_scheduler_send_signal_to_task_ptr(struct edc_scheduler *sched, struct e
     edc_scheduler_apply_advance(sched, task, req_id, &res);
 }
 
-void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session, const char *task_id,
+void edc_scheduler_send_signal_to_task(struct edc_scheduler *sched, struct edc_session *session, int64_t task_id,
                                        edc_task_signal sig)
 {
     struct edc_task *task = edc_scheduler_find_task_by_id(sched, session, task_id);
@@ -1139,7 +1058,7 @@ static void sched_signal_group_members(struct edc_scheduler *sched, struct edc_t
     edc_task_group_finish_signal(group);
 }
 
-void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, struct edc_session *session, const char *group_id,
+void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, struct edc_session *session, int64_t group_id,
                                         edc_task_signal sig)
 {
     if (!sched || !session)
@@ -1147,7 +1066,7 @@ void edc_scheduler_send_signal_to_group(struct edc_scheduler *sched, struct edc_
     struct edc_task_group *group = NULL;
     DL_FOREACH(session->groups, group)
     {
-        if (strcmp(group->group_id, group_id) == 0)
+        if (group->group_id == group_id)
             break;
     }
     sched_signal_group_members(sched, group, sig, false);
@@ -1498,7 +1417,7 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
              * not wrong, just a wasted call. */
             if (!landed)
                 log_warn("L1 fold: group %s landed nothing — the chained curation will see the previous memory",
-                         task->sink_group ? task->sink_group->group_id : "?");
+                         edc_id_str(task->sink_group ? task->sink_group->group_id : 0));
         }
         else if (task->sink == EDC_SINK_SESSION_MEMORY)
         {
@@ -1519,7 +1438,7 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
             }
             else
                 log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
-                         task->task_id ? task->task_id : "(null)");
+                         edc_id_str(task->task_id));
         }
         else if (sched->send_reply)
             sched->send_reply(sched, task, res->notice, EDC_CHANNEL_MESSAGE_RESP_TYPE, req_id);
@@ -1845,7 +1764,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
     DL_FOREACH(session->groups, g)
     {
         cJSON *gj = cJSON_CreateObject();
-        cJSON_AddStringToObject(gj, "id", g->group_id ? g->group_id : "");
+        cJSON_AddStringToObject(gj, "id", edc_id_str(g->group_id));
         /* A pure projection: the scheduler neither reads nor filters on it. */
         cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(g->kind));
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
@@ -1891,7 +1810,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         LL_FOREACH2(g->members, t, group_next)
         {
             cJSON *tj = cJSON_CreateObject();
-            cJSON_AddStringToObject(tj, "id", t->task_id ? t->task_id : "");
+            cJSON_AddStringToObject(tj, "id", edc_id_str(t->task_id));
             cJSON_AddStringToObject(tj, "state", edc_task_state_str(t));
             /* WHY it ended ("" = NONE): the sidebar draws a different marker for a task
              * the user stopped, one a `||` branch skipped and one a dependency blocked --
@@ -2009,7 +1928,7 @@ static void history_append_messages(const struct edc_task *task, cJSON *messages
 static cJSON *history_task_block(const struct edc_task *task)
 {
     cJSON *block = cJSON_CreateObject();
-    cJSON_AddStringToObject(block, "id", task->task_id ? task->task_id : "");
+    cJSON_AddStringToObject(block, "id", edc_id_str(task->task_id));
     /* The raw input that created this task: what the user actually typed. */
     cJSON_AddStringToObject(block, "input", task->raw_input ? task->raw_input : "");
     history_append_messages(task, cJSON_AddArrayToObject(block, "messages"));
@@ -2017,21 +1936,21 @@ static cJSON *history_task_block(const struct edc_task *task)
 }
 
 char *edc_scheduler_task_history_json(struct edc_scheduler *sched, struct edc_session *session,
-                                      const char *group_id, const char *task_id)
+                                      int64_t group_id, int64_t task_id)
 {
     if (!sched || !session || (!group_id && !task_id))
         return NULL;
 
     struct edc_task_group *g = NULL;
-    if (group_id && *group_id)
+    if (group_id > 0)
     {
         DL_FOREACH(session->groups, g)
         {
-            if (!g->group_id || strcmp(g->group_id, group_id) != 0)
+            if (group_id > 0 && g->group_id != group_id)
                 continue;
             cJSON *root = cJSON_CreateObject();
             cJSON_AddStringToObject(root, "kind", "group");
-            cJSON_AddStringToObject(root, "id", group_id);
+            cJSON_AddStringToObject(root, "id", edc_id_str(group_id));
             cJSON *blocks = cJSON_AddArrayToObject(root, "tasks");
             struct edc_task *t = NULL;
             LL_FOREACH2(g->members, t, group_next)
@@ -2049,7 +1968,7 @@ char *edc_scheduler_task_history_json(struct edc_scheduler *sched, struct edc_se
         return NULL;
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "kind", "task");
-    cJSON_AddStringToObject(root, "id", t->task_id ? t->task_id : "");
+    cJSON_AddStringToObject(root, "id", edc_id_str(t->task_id));
     cJSON_AddStringToObject(root, "input", t->raw_input ? t->raw_input : "");
     history_append_messages(t, cJSON_AddArrayToObject(root, "messages"));
     char *out = cJSON_PrintUnformatted(root);

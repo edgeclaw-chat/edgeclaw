@@ -308,7 +308,7 @@ bool edc_toolset_note_change(struct edc_toolbox *tb, struct edc_task_group *grou
                          (before && after && strcmp(before, after) != 0);
     if (changed)
         group->toolset_epoch++;
-    log_info("toolset: group %s reason=%s +%d -%zu epoch=%u cache=%s", group->group_id ? group->group_id : "?",
+    log_info("toolset: group %s reason=%s +%d -%zu epoch=%u cache=%s", edc_id_str(group->group_id),
              why, n_added, n_removed, group->toolset_epoch, changed ? "reset" : "kept");
     if (before)
         cJSON_free(before);

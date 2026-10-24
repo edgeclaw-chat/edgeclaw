@@ -94,8 +94,8 @@ static cJSON *turn_to_json(struct edc_turn *turn)
      * reader can safely re-derive (an in-flight turn's ordinal is the queue tail, and the
      * rows are already written under it). */
     cJSON_AddNumberToObject(tj, "turn_ord", turn->turn_ord);
-    if (turn->task_id)
-        cJSON_AddStringToObject(tj, "owner_task_id", turn->task_id);
+    if (turn->task_id > 0)
+        cJSON_AddNumberToObject(tj, "owner_task_id", (double)turn->task_id);
 
     /* Messages already folded into group memory (the L1 fold cut): requests and history start after this. */
     cJSON_AddNumberToObject(tj, "folded_prefix", turn->folded_prefix);
@@ -117,8 +117,8 @@ static cJSON *task_to_json(struct edc_task *task)
     cJSON *tj = cJSON_CreateObject();
 
     /* ── identity ── */
-    cJSON_AddStringToObject(tj, "task_id", task->task_id ? task->task_id : "");
-    cJSON_AddStringToObject(tj, "group_id", task->group_id ? task->group_id : "");
+    cJSON_AddNumberToObject(tj, "task_id", (double)task->task_id);
+    cJSON_AddNumberToObject(tj, "group_id", (double)task->group_id);
     cJSON_AddStringToObject(tj, "session_id", task->session_id ? task->session_id : "");
 
     /* ── description & state ── */
@@ -171,18 +171,18 @@ static cJSON *task_to_json(struct edc_task *task)
      * output target and cut must round-trip; otherwise the resumed fold would not
      * know which group to write, nor where this round's cut was (P2a-4). */
     cJSON_AddStringToObject(tj, "sink", edc_task_sink_name(task->sink));
-    if (task->sink_group && task->sink_group->group_id)
-        cJSON_AddStringToObject(tj, "sink_group_id", task->sink_group->group_id);
-    if (task->fold_cut_task_id)
+    if (task->sink_group && task->sink_group->group_id > 0)
+        cJSON_AddNumberToObject(tj, "sink_group_id", (double)task->sink_group->group_id);
+    if (task->fold_cut_task_id > 0)
     {
-        cJSON_AddStringToObject(tj, "fold_cut_task", task->fold_cut_task_id);
+        cJSON_AddNumberToObject(tj, "fold_cut_task", (double)task->fold_cut_task_id);
         cJSON_AddNumberToObject(tj, "fold_cut_turn", (int)task->fold_cut_turn);
         cJSON_AddNumberToObject(tj, "fold_cut_prefix", (int)task->fold_cut_prefix);
     }
     /* Extraction rounds carry their own cut, same shape as the fold cut. */
-    if (task->memo_cut_task_id)
+    if (task->memo_cut_task_id > 0)
     {
-        cJSON_AddStringToObject(tj, "memo_cut_task", task->memo_cut_task_id);
+        cJSON_AddNumberToObject(tj, "memo_cut_task", (double)task->memo_cut_task_id);
         cJSON_AddNumberToObject(tj, "memo_cut_turn", (int)task->memo_cut_turn);
         cJSON_AddNumberToObject(tj, "memo_cut_prefix", (int)task->memo_cut_prefix);
     }
@@ -192,7 +192,7 @@ static cJSON *task_to_json(struct edc_task *task)
 
     /* ── fork chain ── */
     if (task->forked_from)
-        cJSON_AddStringToObject(tj, "forked_from_task_id", task->forked_from->task_id);
+        cJSON_AddNumberToObject(tj, "forked_from_task_id", (double)task->forked_from->task_id);
     cJSON_AddNumberToObject(tj, "fork_point_completion_seq", (int)task->fork_point_completion_seq);
 
     /* ── deps (outgoing only) ── */
@@ -201,7 +201,7 @@ static cJSON *task_to_json(struct edc_task *task)
     LL_FOREACH(task->deps, dep)
     {
         cJSON *d = cJSON_CreateObject();
-        cJSON_AddStringToObject(d, "source_task_id", dep->source ? dep->source->task_id : "");
+        cJSON_AddNumberToObject(d, "source_task_id", dep->source ? (double)dep->source->task_id : 0);
         cJSON_AddStringToObject(d, "type", dep_type_name(dep->type));
         cJSON_AddBoolToObject(d, "completed", dep->completed);
         cJSON_AddBoolToObject(d, "cancelled", dep->cancelled);
@@ -299,7 +299,7 @@ static cJSON *group_to_json(struct edc_task_group *group)
 {
     cJSON *gj = cJSON_CreateObject();
 
-    cJSON_AddStringToObject(gj, "group_id", group->group_id ? group->group_id : "");
+    cJSON_AddNumberToObject(gj, "group_id", (double)group->group_id);
     /* No "leader_task_id": the leader is the task whose id IS group_id (see
      * edc_task_group_new / set_leader). Writing it out would restate group_id, and the
      * old fallback branch -- group_id when the leader is gone -- proved it: both branches
@@ -328,7 +328,7 @@ static cJSON *group_to_json(struct edc_task_group *group)
     cJSON *members = cJSON_CreateArray();
     struct edc_task *m;
     LL_FOREACH2(group->members, m, group_next)
-        cJSON_AddItemToArray(members, cJSON_CreateString(m->task_id ? m->task_id : ""));
+        cJSON_AddItemToArray(members, cJSON_CreateNumber((double)m->task_id));
     cJSON_AddItemToObject(gj, "member_task_ids", members);
 
     return gj;
@@ -358,12 +358,12 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
     if (session->workdir)
         cJSON_AddStringToObject(sj, "workdir", session->workdir);
     if (session->active_task)
-        cJSON_AddStringToObject(sj, "active_task_id", session->active_task->task_id);
+        cJSON_AddNumberToObject(sj, "active_task_id", (double)session->active_task->task_id);
     /* The foreground group is the session's own attribute -- read it directly; a
      * background session's persist brings back the right id (the scheduler keeps no
      * copy, so no fallback). */
     if (session->foreground_group)
-        cJSON_AddStringToObject(sj, "foreground_group_id", session->foreground_group->group_id);
+        cJSON_AddNumberToObject(sj, "foreground_group_id", (double)session->foreground_group->group_id);
     cJSON_AddNumberToObject(sj, "next_completion_seq", (int)session->next_completion_seq);
     cJSON_AddItemToObject(root, "session", sj);
 
@@ -411,9 +411,9 @@ cJSON *edc_state_serialize(struct edc_session *session, struct edc_scheduler *sc
                 if (t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE && !t->active_turn &&
                     !t->tool_calls)
                 {
-                    log_warn("serialize: dropping a task with no input: task=%s group=%s "
+                    log_warn("serialize: dropping a task with no input: task=%lld group=%lld "
                              "(created without a turn — the retired 'waiting for input' shape)",
-                             t->task_id ? t->task_id : "(null)", t->group_id ? t->group_id : "(null)");
+                             (long long)t->task_id, (long long)t->group_id);
                     continue;
                 }
                 cJSON_AddItemToArray(tasks_json, task_to_json(t));
@@ -491,40 +491,42 @@ static struct edc_turn *turn_from_json(cJSON *tj)
 
 struct task_map_entry
 {
-    char *task_id;
+    int64_t task_id;
     struct edc_task *task;
     struct task_map_entry *next; /* singly-linked collision chain */
 };
 
 #define TASK_MAP_BUCKETS 64
 
-static unsigned int hash_str(const char *s)
+/* Ids are numbers now, so the key is hashed directly. */
+static unsigned int hash_id(int64_t id)
 {
-    unsigned int h = 5381;
-    while (*s)
-        h = ((h << 5) + h) + (unsigned char)*s++;
-    return h;
+    unsigned long long x = (unsigned long long)id;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return (unsigned int)x;
 }
 
-static void task_map_put(struct task_map_entry **map, const char *id, struct edc_task *task)
+static void task_map_put(struct task_map_entry **map, int64_t id, struct edc_task *task)
 {
-    unsigned int b = hash_str(id) % TASK_MAP_BUCKETS;
+    unsigned int b = hash_id(id) % TASK_MAP_BUCKETS;
     struct task_map_entry *e = g_new0(struct task_map_entry, 1);
-    e->task_id = strdup(id);
+    e->task_id = id;
     e->task = task;
     e->next = map[b];
     map[b] = e;
 }
 
-static struct edc_task *task_map_get(struct task_map_entry **map, const char *id)
+static struct edc_task *task_map_get(struct task_map_entry **map, int64_t id)
 {
-    if (!id)
+    if (id <= 0)
         return NULL;
-    unsigned int b = hash_str(id) % TASK_MAP_BUCKETS;
+    unsigned int b = hash_id(id) % TASK_MAP_BUCKETS;
     struct task_map_entry *e = map[b];
     while (e)
     {
-        if (strcmp(e->task_id, id) == 0)
+        if (e->task_id == id)
             return e->task;
         e = e->next;
     }
@@ -539,43 +541,65 @@ static void task_map_free(struct task_map_entry **map)
         while (e)
         {
             struct task_map_entry *next = e->next;
-            free(e->task_id);
             free(e);
             e = next;
         }
     }
 }
 
+/* An id out of a JSON object: a number (what this build writes) or a numeric string
+ * (hand-written fixtures, and archives written before the ids became INTEGER). Anything
+ * else -- a missing key, a non-numeric string -- reads as 0, "no id". */
+static int64_t js_id(const cJSON *o, const char *key)
+{
+    const cJSON *v = cJSON_GetObjectItem((cJSON *)o, key);
+    if (!v)
+        return 0;
+    if (cJSON_IsNumber(v))
+        return (int64_t)cJSON_GetNumberValue(v);
+    if (cJSON_IsString(v))
+    {
+        const char *s = cJSON_GetStringValue((cJSON *)v);
+        if (!s || !*s)
+            return 0;
+        char *end = NULL;
+        const long long n = strtoll(s, &end, 10);
+        if (end && *end == '\0' && n > 0)
+            return (int64_t)n;
+    }
+    return 0;
+}
+
 /* ── Simple string→group hash map ── */
 
 struct group_map_entry
 {
-    char *group_id;
+    int64_t group_id;
     struct edc_task_group *group;
     struct group_map_entry *next;
 };
 
 #define GROUP_MAP_BUCKETS 16
 
-static void group_map_put(struct group_map_entry **map, const char *id, struct edc_task_group *group)
+static void group_map_put(struct group_map_entry **map, int64_t id, struct edc_task_group *group)
 {
-    unsigned int b = hash_str(id) % GROUP_MAP_BUCKETS;
+    unsigned int b = hash_id(id) % GROUP_MAP_BUCKETS;
     struct group_map_entry *e = g_new0(struct group_map_entry, 1);
-    e->group_id = strdup(id);
+    e->group_id = id;
     e->group = group;
     e->next = map[b];
     map[b] = e;
 }
 
-static struct edc_task_group *group_map_get(struct group_map_entry **map, const char *id)
+static struct edc_task_group *group_map_get(struct group_map_entry **map, int64_t id)
 {
-    if (!id)
+    if (id <= 0)
         return NULL;
-    unsigned int b = hash_str(id) % GROUP_MAP_BUCKETS;
+    unsigned int b = hash_id(id) % GROUP_MAP_BUCKETS;
     struct group_map_entry *e = map[b];
     while (e)
     {
-        if (strcmp(e->group_id, id) == 0)
+        if (e->group_id == id)
             return e->group;
         e = e->next;
     }
@@ -590,7 +614,6 @@ static void group_map_free(struct group_map_entry **map)
         while (e)
         {
             struct group_map_entry *next = e->next;
-            free(e->group_id);
             free(e);
             e = next;
         }
@@ -616,9 +639,8 @@ static void deser_rebuild_group_history(struct edc_session *session, struct edc_
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
         {
-            struct edc_task *t;
-            LL_FOREACH2(g->members, t, group_next)
-                edc_scheduler_observe_task_id(sched, t->task_id);
+            /* Nothing to observe: the store assigns task ids, so there is no counter to
+             * keep ahead of the loaded tree. */
         }
     }
 }
@@ -689,15 +711,15 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
         cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
         if (!tj)
             continue;
-        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-        if (!task_id)
+        const int64_t task_id = js_id(tj, "task_id");
+        if (task_id <= 0)
             continue;
 
         /* The on-disk "channel" key is a compatibility artifact (the only channel = adapter); the reader ignores its value. */
 
         struct edc_task *task =
             edc_task_new(task_id, cJSON_GetStringValue(cJSON_GetObjectItem(tj, "session_id")) ?: "",
-                         cJSON_GetStringValue(cJSON_GetObjectItem(tj, "group_id")) ?: "",
+                         js_id(tj, "group_id"),
                          cJSON_GetStringValue(cJSON_GetObjectItem(tj, "description")) ?: "",
                          edc_channel_adapter);
         if (!task)
@@ -796,14 +818,14 @@ static void deser_create_tasks(cJSON *json, struct task_map_entry **id_map)
             task->output = sdsnew(cJSON_GetStringValue(v));
         if ((v = cJSON_GetObjectItem(tj, "completion_seq")) && cJSON_IsNumber(v))
             task->completion_seq = (uint32_t)cJSON_GetNumberValue(v);
-        if ((v = cJSON_GetObjectItem(tj, "fold_cut_task")) && cJSON_IsString(v))
-            task->fold_cut_task_id = strdup(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "fold_cut_task")) && cJSON_IsNumber(v))
+            task->fold_cut_task_id = (int64_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "fold_cut_turn")) && cJSON_IsNumber(v))
             task->fold_cut_turn = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "fold_cut_prefix")) && cJSON_IsNumber(v))
             task->fold_cut_prefix = (uint32_t)cJSON_GetNumberValue(v);
-        if ((v = cJSON_GetObjectItem(tj, "memo_cut_task")) && cJSON_IsString(v))
-            task->memo_cut_task_id = strdup(cJSON_GetStringValue(v));
+        if ((v = cJSON_GetObjectItem(tj, "memo_cut_task")) && cJSON_IsNumber(v))
+            task->memo_cut_task_id = (int64_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "memo_cut_turn")) && cJSON_IsNumber(v))
             task->memo_cut_turn = (uint32_t)cJSON_GetNumberValue(v);
         if ((v = cJSON_GetObjectItem(tj, "memo_cut_prefix")) && cJSON_IsNumber(v))
@@ -876,12 +898,12 @@ static void deser_fork_chains(cJSON *json, struct task_map_entry **id_map)
     for (size_t i = 0; i < tcount; i++)
     {
         cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-        const char *fork_p = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "forked_from_task_id"));
-        if (task_id && fork_p)
+        const int64_t tid = js_id(tj, "task_id");
+        const int64_t fp = js_id(tj, "forked_from_task_id");
+        if (tid > 0 && fp > 0)
         {
-            struct edc_task *task = task_map_get(id_map, task_id);
-            struct edc_task *parent = task_map_get(id_map, fork_p);
+            struct edc_task *task = task_map_get(id_map, tid);
+            struct edc_task *parent = task_map_get(id_map, fp);
             if (task && parent)
                 task->forked_from = parent;
         }
@@ -896,7 +918,7 @@ static void deser_fork_chains(cJSON *json, struct task_map_entry **id_map)
  * field is not necessarily authoritative.
  * only_group non-NULL = detach from that one group only (used when attaching a member
  * to its own group). */
-static void deser_detach_from_groups(struct edc_session *session, struct edc_task *task, const char *task_id,
+static void deser_detach_from_groups(struct edc_session *session, struct edc_task *task, int64_t task_id,
                                      struct edc_task_group *only_group)
 {
     if (!session || !task)
@@ -918,8 +940,8 @@ static void deser_detach_from_groups(struct edc_session *session, struct edc_tas
             LL_DELETE2(g->members, t, group_next); /* the member chain's field is group_next, not next */
             if (g->member_count > 0)
                 g->member_count--;
-            log_warn("deserialize: task %s detached from group %s (a task belongs to one group only)",
-                     task_id ?: "(null)", g->group_id ?: "(null)");
+            log_warn("deserialize: task %lld detached from group %lld (a task belongs to one group only)",
+                     (long long)task_id, (long long)g->group_id);
             break;
         }
     }
@@ -936,11 +958,13 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
     for (size_t i = 0; i < gcount; i++)
     {
         cJSON *gj = cJSON_GetArrayItem(groups_json, i);
-        const char *group_id = cJSON_GetStringValue(cJSON_GetObjectItem(gj, "group_id"));
+        const int64_t group_id = js_id(gj, "group_id");
+        if (group_id <= 0)
+            continue;
         /* The leader IS the task whose id equals group_id -- there is no separate
          * leader_task_id field any more. `is_orphaned` says whether that task is still
          * the leader: an orphaned group kept the id but lost the leader. */
-        const char *leader_id = group_id;
+        const int64_t leader_id = group_id;
         cJSON *orph = cJSON_GetObjectItem(gj, "is_orphaned");
         bool is_orph = orph && cJSON_IsTrue(orph);
 
@@ -954,11 +978,23 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         {
             cJSON *members = cJSON_GetObjectItem(gj, "member_task_ids");
             if (members && cJSON_IsArray(members) && cJSON_GetArraySize(members) > 0)
-                leader = task_map_get(id_map, cJSON_GetStringValue(cJSON_GetArrayItem(members, 0)));
+            {
+                /* The first member's id: the array holds ids, so read element 0 (and accept
+                 * a numeric string there too, like every other id). */
+                const cJSON *m0 = cJSON_GetArrayItem(members, 0);
+                int64_t mid0 = 0;
+                if (cJSON_IsNumber(m0))
+                    mid0 = (int64_t)cJSON_GetNumberValue((cJSON *)m0);
+                else if (cJSON_IsString(m0))
+                    mid0 = (int64_t)strtoll(cJSON_GetStringValue((cJSON *)m0), NULL, 10);
+                if (mid0 > 0)
+                    leader = task_map_get(id_map, mid0);
+            }
         }
         if (!leader)
         {
-            log_warn("deserialize: group %s leader %s not found", group_id ?: "(null)", leader_id ?: "(null)");
+            log_warn("deserialize: group %lld leader %lld not found",
+                     (long long)group_id, (long long)leader_id);
             continue;
         }
 
@@ -972,17 +1008,13 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
          * more, so it is not serialized, so `leader` above fell back to a member and the
          * id would silently change to that member's task id. Every message row keyed on
          * the old id would then point at a group that no longer answers to it. */
-        if (group_id && *group_id && (!group->group_id || strcmp(group->group_id, group_id) != 0))
+        if (group_id > 0 && group->group_id != group_id)
         {
-            free(group->group_id);
-            group->group_id = strdup(group_id);
+            group->group_id = group_id;
             /* Members carry their group's id too (denormalized); keep them in step. */
             struct edc_task *m;
             LL_FOREACH2(group->members, m, group_next)
-            {
-                free(m->group_id);
-                m->group_id = strdup(group_id);
-            }
+                m->group_id = group_id;
         }
         if (is_orph)
             group->is_orphaned = true;
@@ -994,8 +1026,8 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
         if (kind_name)
             group->kind = edc_task_group_classify_kind(kind_name);
         else
-            log_debug("deserialize: group %s carries no kind (pre-v12 archive) -- user group",
-                      group_id ? group_id : "?");
+            log_debug("deserialize: group %lld carries no kind (pre-v12 archive) -- user group",
+                      (long long)group_id);
 
         {
             cJSON *mem = cJSON_GetObjectItem(gj, "memory");
@@ -1037,8 +1069,9 @@ static void deser_create_groups(cJSON *json, struct edc_session *session, struct
             size_t mcount = cJSON_GetArraySize(members);
             for (size_t j = 0; j < mcount; j++)
             {
-                const char *mid = cJSON_GetStringValue(cJSON_GetArrayItem(members, j));
-                if (!mid || strcmp(mid, leader->task_id) == 0)
+                const cJSON *mj = cJSON_GetArrayItem(members, j);
+                const int64_t mid = cJSON_IsNumber(mj) ? (int64_t)cJSON_GetNumberValue((cJSON *)mj) : 0;
+                if (mid <= 0 || mid == leader->task_id)
                     continue;
                 struct edc_task *mt = task_map_get(id_map, mid);
                 if (!mt)
@@ -1069,14 +1102,11 @@ static void deser_sink_groups(cJSON *json, struct task_map_entry **id_map, struc
         cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
         if (!tj)
             continue;
-        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-        const char *sg_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "sink_group_id"));
-        if (!task_id || !sg_id || !*sg_id)
+        struct edc_task *task = task_map_get(id_map, js_id(tj, "task_id"));
+        const int64_t sg = js_id(tj, "sink_group_id");
+        if (!task || sg <= 0)
             continue;
-        struct edc_task *task = task_map_get(id_map, task_id);
-        if (!task)
-            continue;
-        task->sink_group = group_map_get(group_map, sg_id);
+        task->sink_group = group_map_get(group_map, sg);
     }
 }
 
@@ -1090,12 +1120,12 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_s
     for (size_t i = 0; i < tcount; i++)
     {
         cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
+        const int64_t tid = js_id(tj, "task_id");
         cJSON *deps_json = cJSON_GetObjectItem(tj, "deps");
-        if (!task_id || !deps_json || !cJSON_IsArray(deps_json))
+        if (tid <= 0 || !deps_json || !cJSON_IsArray(deps_json))
             continue;
 
-        struct edc_task *target = task_map_get(id_map, task_id);
+        struct edc_task *target = task_map_get(id_map, tid);
         if (!target)
             continue;
 
@@ -1103,9 +1133,9 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_s
         for (size_t j = 0; j < dcount; j++)
         {
             cJSON *dj = cJSON_GetArrayItem(deps_json, j);
-            const char *src_id = cJSON_GetStringValue(cJSON_GetObjectItem(dj, "source_task_id"));
+            const int64_t src_id = js_id(dj, "source_task_id");
             edc_task_dep_type dt = dep_type_from_name(cJSON_GetStringValue(cJSON_GetObjectItem(dj, "type")));
-            struct edc_task *source = (src_id && src_id[0]) ? task_map_get(id_map, src_id) : NULL;
+            struct edc_task *source = task_map_get(id_map, src_id);
             if (!source)
             {
                 /* Source not in this session → a cross-session edge (or a stale
@@ -1116,7 +1146,8 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_s
                 cJSON *comp0 = cJSON_GetObjectItem(dj, "completed");
                 cJSON *canc0 = cJSON_GetObjectItem(dj, "cancelled");
                 cJSON *inj0 = cJSON_GetObjectItem(dj, "injected");
-                edc_scheduler_add_pending_dep(sched, task_id, src_id, dt, comp0 && cJSON_IsTrue(comp0),
+                edc_scheduler_add_pending_dep(sched, tid, src_id, dt,
+                                              comp0 && cJSON_IsTrue(comp0),
                                               canc0 && cJSON_IsTrue(canc0), inj0 && cJSON_IsTrue(inj0));
                 continue;
             }
@@ -1224,8 +1255,7 @@ static void deser_turns(cJSON *json, struct task_map_entry **id_map)
     for (size_t i = 0; i < tcount; i++)
     {
         cJSON *tj = cJSON_GetArrayItem(tasks_json, i);
-        const char *task_id = cJSON_GetStringValue(cJSON_GetObjectItem(tj, "task_id"));
-        struct edc_task *task = task_map_get(id_map, task_id);
+        struct edc_task *task = task_map_get(id_map, js_id(tj, "task_id"));
         if (!task)
             continue;
 
@@ -1241,10 +1271,9 @@ static void deser_turns(cJSON *json, struct task_map_entry **id_map)
                 /* The ordinal in the snapshot IS the storage key the rows were written
                  * under; falling back to the queue index keeps old snapshots readable. */
                 const int ord = turn->turn_ord >= 0 ? turn->turn_ord : (int)edc_queue_length(&task->turns);
-                const char *owner = cJSON_GetStringValue(cJSON_GetObjectItem(
-                    cJSON_GetArrayItem(turns_json, j), "owner_task_id"));
-                edc_turn_set_key(turn, task->session_id, task->group_id,
-                                 (owner && *owner) ? owner : task->task_id, ord);
+                const int64_t owner = js_id(cJSON_GetArrayItem(turns_json, j), "owner_task_id");
+                const int64_t owner_key = owner > 0 ? owner : task->task_id;
+                edc_turn_set_key(turn, task->session_id, task->group_id, owner_key, ord);
                 edc_task_add_turn(task, turn);
             }
         }
@@ -1257,9 +1286,9 @@ static void deser_turns(cJSON *json, struct task_map_entry **id_map)
             {
                 /* Keep the key the turn was stored under (see turn_to_json): the rows are
                  * already written against it. */
-                const char *owner = cJSON_GetStringValue(cJSON_GetObjectItem(at_json, "owner_task_id"));
-                edc_turn_set_key(turn, task->session_id, task->group_id,
-                                 (owner && *owner) ? owner : task->task_id, turn->turn_ord);
+                const int64_t owner = js_id(at_json, "owner_task_id");
+                const int64_t owner_key = owner > 0 ? owner : task->task_id;
+                edc_turn_set_key(turn, task->session_id, task->group_id, owner_key, turn->turn_ord);
                 task->active_turn = turn;
             }
         }
@@ -1271,15 +1300,11 @@ static void deser_global_ptrs(cJSON *sj, struct edc_session *session,
 {
     if (!sj)
         return;
-    const char *at_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "active_task_id"));
-    if (at_id)
-        session->active_task = task_map_get(id_map, at_id);
+    session->active_task = task_map_get(id_map, js_id(sj, "active_task_id"));
     /* The foreground group is recorded only on its owning session -- it is a session
      * attribute and the scheduler holds no copy (loading a session has no side effect;
      * there is no current view to restore). */
-    const char *fg_id = cJSON_GetStringValue(cJSON_GetObjectItem(sj, "foreground_group_id"));
-    if (fg_id)
-        session->foreground_group = group_map_get(group_map, fg_id);
+    session->foreground_group = group_map_get(group_map, js_id(sj, "foreground_group_id"));
 }
 
 int edc_state_schema_version(void)

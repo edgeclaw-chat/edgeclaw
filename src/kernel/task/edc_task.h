@@ -9,6 +9,8 @@
 #include "sds.h"
 #include <cJSON.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stddef.h>
 
 struct edc_session;
@@ -142,11 +144,35 @@ struct edc_tool_call_record
     struct edc_tool_call_record *next;
 };
 
+/* Render an id for a log line ("%s ...", edc_id_str(task->task_id)).
+ *
+ * Ids are numbers now and the log format strings are all %s, so this keeps those calls
+ * unchanged instead of rewriting every message to %lld. A small rotating buffer works
+ * because a single log call never needs more than a few ids at once; it is NOT thread
+ * safe, and logging already assumes that. */
+static inline const char *edc_id_str(int64_t id)
+{
+    static char bufs[4][24];
+    static int next;
+    char *b = bufs[next];
+    next = (next + 1) % 4;
+    if (id > 0)
+        snprintf(b, sizeof(bufs[0]), "%lld", (long long)id);
+    else
+        snprintf(b, sizeof(bufs[0]), "(none)");
+    return b;
+}
+
 struct edc_task
 {
-    char *task_id;    /* PID */
-    char *group_id;   /* PGID -- the leader's task_id */
-    char *session_id; /* SID */
+    /* Numeric ids. The database assigns task_id (INTEGER PRIMARY KEY on INSERT) and
+     * group_id is the leader's task_id, so both are integers. They used to be strings from
+     * a process-wide counter whose high-water mark had to be persisted in .task_seq --
+     * an open/write/rename per allocation, for something SQLite does on INSERT.
+     * 0 = not assigned yet (a task under construction, or "no such group"). */
+    int64_t task_id;    /* PID */
+    int64_t group_id;   /* PGID -- the leader's task_id */
+    char *session_id;   /* SID (still textual: s7, s15, ...) */
 
     char *description; /* user-visible */
     /* The raw text the user typed, before the shell parser (the parsed form is
@@ -303,7 +329,7 @@ struct edc_task
      * older binary): the landing then has nothing to apply and reports it.
      * Filled by the folding side; the task itself does not interpret them. */
     struct edc_task_group *sink_group;
-    char *fold_cut_task_id;
+    int64_t fold_cut_task_id; /* 0 = none */
     uint32_t fold_cut_turn;
     uint32_t fold_cut_prefix;
     /* Files named by the tool calls in THIS fold's corpus, collected while the prompt is
@@ -319,7 +345,7 @@ struct edc_task
      * reads an in-flight turn), so there is no active-turn sentinel. A NULL task id
      * means no cut was recorded (the landing then advances nothing and counts one
      * failure). Filled by the extraction side; the task does not interpret them. */
-    char *memo_cut_task_id;
+    int64_t memo_cut_task_id; /* 0 = none */
     uint32_t memo_cut_turn;
     uint32_t memo_cut_prefix;
 
@@ -332,7 +358,7 @@ struct edc_task
     struct edc_task *prev, *next; /* session-wide list */
 };
 
-extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
+extern struct edc_task *edc_task_new(int64_t task_id, const char *session_id, int64_t group_id,
                                      const char *desc, edc_channel_type channel_type);
 /* Park the frontend's folded-paste map on this task's own user message, as a `payload`
  * object inside the message JSON. It rides with the message, so fork (cJSON_Duplicate in
@@ -362,7 +388,7 @@ extern cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
  *  RETURNS A COPY the caller must cJSON_Delete. */
 extern cJSON *edc_task_user_payload(struct edc_task *task);
 
-extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
+extern struct edc_task *edc_task_fork(struct edc_task *parent, int64_t task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
@@ -372,7 +398,7 @@ extern void edc_task_free(struct edc_task *task);
  *  NULL when the task has none; the caller owns the returned turn. Used by fork rule 2 to
  *  recover a parent's own turns after L1 folding. */
 extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, const char *dst_session_id,
-                                                const char *dst_group_id, const char *dst_task_id,
+                                                int64_t dst_group_id, int64_t dst_task_id,
                                                 int dst_turn_ord);
 
 /* State machine write points, named by intent: the caller says what it wants, and

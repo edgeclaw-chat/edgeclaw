@@ -26,11 +26,11 @@ static int test_passed = 0;
 static void test_lifecycle(void)
 {
     TEST("task_new / task_free");
-    struct edc_task *t = edc_task_new("task-1", "sess-1", "task-1", "test task", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-1"), "sess-1", edc_test_id("task-1"), "test task", edc_channel_adapter);
     CHECK(t != NULL, "task_new returns non-NULL");
-    CHECK(strcmp(t->task_id, "task-1") == 0, "task_id set");
+    CHECK(t->task_id == edc_test_id("task-1"), "task_id set");
     CHECK(strcmp(t->session_id, "sess-1") == 0, "session_id set");
-    CHECK(strcmp(t->group_id, "task-1") == 0, "group_id set");
+    CHECK(t->group_id == edc_test_id("task-1"), "group_id set");
     CHECK(strcmp(t->description, "test task") == 0, "description set");
     CHECK(edc_task_is_ready(t), "initial state is IDLE");
     CHECK(t->is_group_leader == 0, "not group leader by default");
@@ -44,7 +44,7 @@ static void test_lifecycle(void)
     edc_task_free(t);
 
     TEST("task_new with NULL description");
-    t = edc_task_new("task-2", "sess-1", "task-1", NULL, edc_channel_adapter);
+    t = edc_task_new(edc_test_id("task-2"), "sess-1", edc_test_id("task-1"), NULL, edc_channel_adapter);
     CHECK(strcmp(t->description, "") == 0, "NULL desc becomes empty string");
     edc_task_free(t);
 
@@ -58,13 +58,13 @@ static void test_lifecycle(void)
 static void test_fork(void)
 {
     TEST("task_fork inherits parent session_id and group_id");
-    struct edc_task *parent = edc_task_new("task-parent", "sess-2", "task-parent", "parent", edc_channel_adapter);
-    struct edc_task *child = edc_task_fork(parent, "task-child", "child task", 42, edc_channel_adapter);
+    struct edc_task *parent = edc_task_new(edc_test_id("task-parent"), "sess-2", edc_test_id("task-parent"), "parent", edc_channel_adapter);
+    struct edc_task *child = edc_task_fork(parent, edc_test_id("task-child"), "child task", 42, edc_channel_adapter);
 
     CHECK(child != NULL, "fork returns non-NULL");
     CHECK(strcmp(child->session_id, "sess-2") == 0, "child inherits session_id");
-    CHECK(strcmp(child->group_id, "task-parent") == 0, "child inherits group_id");
-    CHECK(strcmp(child->task_id, "task-child") == 0, "child has own task_id");
+    CHECK(child->group_id == edc_test_id("task-parent"), "child inherits group_id");
+    CHECK(child->task_id == edc_test_id("task-child"), "child has own task_id");
     CHECK(strcmp(child->description, "child task") == 0, "child has own description");
     CHECK(child->forked_from == parent, "forked_from set to parent");
     CHECK(child->fork_point_completion_seq == 42, "fork_point_completion_seq set");
@@ -82,14 +82,14 @@ static void test_fork(void)
 /* 造一个停在 (step, life) 的任务 —— 绕过状态机, 只为摆场景 (等价于落盘读回后的样子)。 */
 static struct edc_task *park_at(const char *id, edc_task_step step, edc_task_life life)
 {
-    struct edc_task *t = edc_task_new(id, "sess-1", id, "sm test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(id), "sess-1", edc_test_id(id), "sm test", edc_channel_adapter);
     edc_task_force_move(t, step, life);
     return t;
 }
 
 static void test_state_machine(void)
 {
-    struct edc_task *t = edc_task_new("task-sm", "sess-1", "task-sm", "sm test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-sm"), "sess-1", edc_test_id("task-sm"), "sm test", edc_channel_adapter);
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE, "a new task parks at READY+ALIVE");
 
     TEST("valid transitions from READY (parked with its input)");
@@ -242,7 +242,7 @@ static void test_display_names(void)
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, "ERROR"},
     };
 
-    struct edc_task *t = edc_task_new("t-names", "s", "g", "x", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("t-names"), "s", edc_test_id("g"), "x", edc_channel_adapter);
     bool saw_retired = false;
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
     {
@@ -295,7 +295,7 @@ static void test_step_life_read_side(void)
         {EDC_TASKSTEP_DONE, EDC_LIFE_ERROR, false, false, false, false, false, true, true, false, false},
     };
 
-    struct edc_task *t = edc_task_new("t-readside", "s", "g", "x", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("t-readside"), "s", edc_test_id("g"), "x", edc_channel_adapter);
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++)
     {
         const struct read_side_row *r = &rows[i];
@@ -512,7 +512,7 @@ static void test_transition_table_spec(void)
     /* 6 步 × 4 个 life = 24 个源: 规格必须**盖满**它们, 一个不漏, 一个不重。 */
     CHECK(sizeof(g_table) / sizeof(g_table[0]) == 24, "the spec has 24 source rows");
 
-    struct edc_task *t = edc_task_new("t-spec", "s", "g", "x", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("t-spec"), "s", edc_test_id("g"), "x", edc_channel_adapter);
     int combos = 0, drift = 0, edges = 0, missing = 0, dup = 0;
     for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++)
     {
@@ -564,7 +564,7 @@ static void test_transition_table_spec(void)
 static void test_intent_writes(void)
 {
     TEST("intent writes land on the right (step, life)");
-    struct edc_task *t = edc_task_new("t-intent", "s", "g", "x", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("t-intent"), "s", edc_test_id("g"), "x", edc_channel_adapter);
     CHECK(t->step == EDC_TASKSTEP_READY && t->life == EDC_LIFE_ALIVE, "a new task starts READY+ALIVE");
     CHECK(edc_task_await_exec(t), "READY → await_exec");
     CHECK(t->step == EDC_TASKSTEP_AWAIT_EXEC && t->life == EDC_LIFE_ALIVE, "… lands on AWAIT_EXEC+ALIVE");
@@ -605,7 +605,7 @@ static void test_intent_writes(void)
 static void test_turns(void)
 {
     TEST("add_turn and commit_active_turn");
-    struct edc_task *t = edc_task_new("task-turn", "sess-1", "task-turn", "turn test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-turn"), "sess-1", edc_test_id("task-turn"), "turn test", edc_channel_adapter);
 
     /* Add turn via add_turn */
     struct edc_turn *turn1 = edc_turn_new();
@@ -637,7 +637,7 @@ static void test_turns(void)
     /* edc_task_message_count: message total = sum over committed turns +
      * in-flight active_turn (contrast with turns, which counts rounds). */
     TEST("edc_task_message_count sums committed turns + active_turn");
-    struct edc_task *mt = edc_task_new("task-msg", "sess-1", "task-msg", "msg test", edc_channel_adapter);
+    struct edc_task *mt = edc_task_new(edc_test_id("task-msg"), "sess-1", edc_test_id("task-msg"), "msg test", edc_channel_adapter);
     CHECK(edc_task_message_count(mt) == 0, "empty task has 0 messages");
 
     struct edc_turn *a = edc_turn_new();
@@ -664,7 +664,7 @@ static void test_turns(void)
 
     /* edc_task_user_input: user messages across turns + active_turn. */
     TEST("edc_task_user_input collects user messages");
-    struct edc_task *ut = edc_task_new("task-uin", "sess-1", "task-uin", "u test", edc_channel_adapter);
+    struct edc_task *ut = edc_task_new(edc_test_id("task-uin"), "sess-1", edc_test_id("task-uin"), "u test", edc_channel_adapter);
     CHECK(edc_task_user_input(ut, NULL) == NULL, "no input -> NULL");
 
     struct edc_turn *t1 = edc_turn_new();
@@ -710,8 +710,8 @@ static void test_turns(void)
 static void test_dependencies(void)
 {
     TEST("add_dependency basic");
-    struct edc_task *target = edc_task_new("task-target", "sess-1", "task-target", "target", edc_channel_adapter);
-    struct edc_task *source = edc_task_new("task-source", "sess-1", "task-target", "source", edc_channel_adapter);
+    struct edc_task *target = edc_task_new(edc_test_id("task-target"), "sess-1", edc_test_id("task-target"), "target", edc_channel_adapter);
+    struct edc_task *source = edc_task_new(edc_test_id("task-source"), "sess-1", edc_test_id("task-target"), "source", edc_channel_adapter);
 
     bool ok = edc_task_add_dependency(target, source, TASK_DEP_JOIN);
     CHECK(ok, "add_dependency returns true");
@@ -730,9 +730,9 @@ static void test_dependencies(void)
 
     TEST("transitive cycle rejected");
     {
-        struct edc_task *a = edc_task_new("ta-cyc", "sess-1", "ta-cyc", "A", edc_channel_adapter);
-        struct edc_task *b = edc_task_new("tb-cyc", "sess-1", "ta-cyc", "B", edc_channel_adapter);
-        struct edc_task *c = edc_task_new("tc-cyc", "sess-1", "ta-cyc", "C", edc_channel_adapter);
+        struct edc_task *a = edc_task_new(edc_test_id("ta-cyc"), "sess-1", edc_test_id("ta-cyc"), "A", edc_channel_adapter);
+        struct edc_task *b = edc_task_new(edc_test_id("tb-cyc"), "sess-1", edc_test_id("ta-cyc"), "B", edc_channel_adapter);
+        struct edc_task *c = edc_task_new(edc_test_id("tc-cyc"), "sess-1", edc_test_id("ta-cyc"), "C", edc_channel_adapter);
         CHECK(edc_task_add_dependency(a, b, TASK_DEP_JOIN), "a→b");
         CHECK(edc_task_add_dependency(b, c, TASK_DEP_JOIN), "b→c");
         CHECK(!edc_task_add_dependency(c, a, TASK_DEP_JOIN), "c→a rejected (cycle)");
@@ -742,9 +742,9 @@ static void test_dependencies(void)
     }
 
     TEST("dep_completed advances state when all deps done");
-    struct edc_task *target2 = edc_task_new("task-target2", "sess-1", "task-target2", "target2", edc_channel_adapter);
-    struct edc_task *sourceA = edc_task_new("task-srcA", "sess-1", "task-target2", "srcA", edc_channel_adapter);
-    struct edc_task *sourceB = edc_task_new("task-srcB", "sess-1", "task-target2", "srcB", edc_channel_adapter);
+    struct edc_task *target2 = edc_task_new(edc_test_id("task-target2"), "sess-1", edc_test_id("task-target2"), "target2", edc_channel_adapter);
+    struct edc_task *sourceA = edc_task_new(edc_test_id("task-srcA"), "sess-1", edc_test_id("task-target2"), "srcA", edc_channel_adapter);
+    struct edc_task *sourceB = edc_task_new(edc_test_id("task-srcB"), "sess-1", edc_test_id("task-target2"), "srcB", edc_channel_adapter);
 
     CHECK(edc_task_is_ready(target2), "target2 starts IDLE");
     edc_task_add_dependency(target2, sourceA, TASK_DEP_JOIN);
@@ -783,8 +783,8 @@ static void test_dep_cancelled(void)
     /* SEQUENCE 与 JOIN 在失败/取消的传播上完全一致 (只差"输出是否注入"):
      * 源取消 -> 目标被级联取消, 且**边留着** (resume 它会回到等依赖)。 */
     TEST("SEQUENCE dep cancelled: target is cascaded, the edge is kept");
-    struct edc_task *target = edc_task_new("task-tgt-c", "sess-1", "task-tgt-c", "target-c", edc_channel_adapter);
-    struct edc_task *source = edc_task_new("task-src-c", "sess-1", "task-tgt-c", "source-c", edc_channel_adapter);
+    struct edc_task *target = edc_task_new(edc_test_id("task-tgt-c"), "sess-1", edc_test_id("task-tgt-c"), "target-c", edc_channel_adapter);
+    struct edc_task *source = edc_task_new(edc_test_id("task-src-c"), "sess-1", edc_test_id("task-tgt-c"), "source-c", edc_channel_adapter);
 
     edc_task_add_dependency(target, source, TASK_DEP_SEQUENCE);
     CHECK(target->deps_total == 1, "deps_total=1 before cancel");
@@ -804,9 +804,9 @@ static void test_dep_cancel_cascade(void)
     /* chain: a --SEQ--> b --JOIN--> c  (a 依赖 b, b 依赖 c)
      * 取消 c: b 是 JOIN 依赖者 → 级联取消; a 是 b 的 SEQ 依赖者 → **同样级联取消**。 */
     TEST("cancel cascades through both kinds, keeping the edges");
-    struct edc_task *a = edc_task_new("cas-a", "sess-cas", "cas-a", "A", edc_channel_adapter);
-    struct edc_task *b = edc_task_new("cas-b", "sess-cas", "cas-a", "B", edc_channel_adapter);
-    struct edc_task *c = edc_task_new("cas-c", "sess-cas", "cas-a", "C", edc_channel_adapter);
+    struct edc_task *a = edc_task_new(edc_test_id("cas-a"), "sess-cas", edc_test_id("cas-a"), "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new(edc_test_id("cas-b"), "sess-cas", edc_test_id("cas-a"), "B", edc_channel_adapter);
+    struct edc_task *c = edc_task_new(edc_test_id("cas-c"), "sess-cas", edc_test_id("cas-a"), "C", edc_channel_adapter);
 
     CHECK(edc_task_add_dependency(a, b, TASK_DEP_SEQUENCE), "a -SEQ-> b");
     CHECK(edc_task_add_dependency(b, c, TASK_DEP_JOIN), "b -JOIN-> c");
@@ -829,8 +829,8 @@ static void test_dep_cancel_cascade(void)
 static void test_signals(void)
 {
     TEST("SIGTERM on JOIN source cascades the cancel to its dependent");
-    struct edc_task *target = edc_task_new("task-sig1", "sess-1", "task-sig1", "sig test target", edc_channel_adapter);
-    struct edc_task *source = edc_task_new("task-sig2", "sess-1", "task-sig1", "sig test source", edc_channel_adapter);
+    struct edc_task *target = edc_task_new(edc_test_id("task-sig1"), "sess-1", edc_test_id("task-sig1"), "sig test target", edc_channel_adapter);
+    struct edc_task *source = edc_task_new(edc_test_id("task-sig2"), "sess-1", edc_test_id("task-sig1"), "sig test source", edc_channel_adapter);
 
     edc_task_add_dependency(target, source, TASK_DEP_JOIN);
     CHECK(target->deps_total == 1, "target waits for source");
@@ -848,8 +848,8 @@ static void test_signals(void)
     edc_task_free(source);
 
     TEST("SIGTERM on a SEQUENCE source cascades, keeping the edge");
-    struct edc_task *starget = edc_task_new("task-sig5", "sess-1", "task-sig5", "seq target", edc_channel_adapter);
-    struct edc_task *ssource = edc_task_new("task-sig6", "sess-1", "task-sig5", "seq source", edc_channel_adapter);
+    struct edc_task *starget = edc_task_new(edc_test_id("task-sig5"), "sess-1", edc_test_id("task-sig5"), "seq target", edc_channel_adapter);
+    struct edc_task *ssource = edc_task_new(edc_test_id("task-sig6"), "sess-1", edc_test_id("task-sig5"), "seq source", edc_channel_adapter);
 
     edc_task_add_dependency(starget, ssource, TASK_DEP_SEQUENCE);
     edc_task_send_signal(ssource, TASK_SIGTERM);
@@ -861,8 +861,8 @@ static void test_signals(void)
     edc_task_free(ssource);
 
     TEST("SIGKILL: does NOT notify dependents");
-    struct edc_task *target2 = edc_task_new("task-sig3", "sess-2", "task-sig3", "sig test target2", edc_channel_adapter);
-    struct edc_task *source2 = edc_task_new("task-sig4", "sess-2", "task-sig3", "sig test source2", edc_channel_adapter);
+    struct edc_task *target2 = edc_task_new(edc_test_id("task-sig3"), "sess-2", edc_test_id("task-sig3"), "sig test target2", edc_channel_adapter);
+    struct edc_task *source2 = edc_task_new(edc_test_id("task-sig4"), "sess-2", edc_test_id("task-sig3"), "sig test source2", edc_channel_adapter);
 
     edc_task_add_dependency(target2, source2, TASK_DEP_JOIN);
     CHECK(target2->deps_total == 1, "target2 waits for source2");
@@ -884,7 +884,7 @@ static void test_signals(void)
 static void test_output(void)
 {
     TEST("output set and get");
-    struct edc_task *t = edc_task_new("task-out", "sess-1", "task-out", "output test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-out"), "sess-1", edc_test_id("task-out"), "output test", edc_channel_adapter);
 
     CHECK(edc_task_get_output(t) == NULL, "initial output is NULL");
 
@@ -907,7 +907,7 @@ static void test_output(void)
 static void test_usage(void)
 {
     TEST("usage accumulates; the conversation size is remembered, not summed");
-    struct edc_task *t = edc_task_new("task-usage", "sess-1", "task-usage", "usage test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-usage"), "sess-1", edc_test_id("task-usage"), "usage test", edc_channel_adapter);
 
     CHECK(t->tokens_prompt == 0 && t->tokens_completion == 0 && t->tokens_total == 0 &&
               t->tokens_cached == 0 && t->last_total_tokens == 0,
@@ -958,7 +958,7 @@ static void test_usage(void)
 static void test_context_messages(void)
 {
     TEST("no config → nothing to build");
-    struct edc_task *t = edc_task_new("task-ctx2", "sess-1", "task-ctx2", "ctx test 2", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-ctx2"), "sess-1", edc_test_id("task-ctx2"), "ctx test 2", edc_channel_adapter);
     /* A per-task custom system prompt used to override this branch; it was a stub
      * (every caller passed a NULL body) and is gone -- see docs/prompt-library.md. */
     cJSON *msgs = edc_task_get_context_messages(t, NULL);
@@ -967,8 +967,8 @@ static void test_context_messages(void)
     edc_task_free(t);
 
     TEST("context includes dependency outputs");
-    struct edc_task *parent = edc_task_new("task-ctx-p", "sess-3", "task-ctx-p", "parent ctx", edc_channel_adapter);
-    struct edc_task *child = edc_task_new("task-ctx-c", "sess-3", "task-ctx-p", "child ctx", edc_channel_adapter);
+    struct edc_task *parent = edc_task_new(edc_test_id("task-ctx-p"), "sess-3", edc_test_id("task-ctx-p"), "parent ctx", edc_channel_adapter);
+    struct edc_task *child = edc_task_new(edc_test_id("task-ctx-c"), "sess-3", edc_test_id("task-ctx-p"), "child ctx", edc_channel_adapter);
 
     sds child_out = sdsnew("Analysis: found 3 bugs");
     edc_task_set_output(child, child_out);
@@ -996,8 +996,8 @@ static void test_scenario_fork_join(void)
 {
     TEST("scenario: fork + join + complete chain");
     /* Simulate: Task-Main forks Task-Sub, waits for it, Sub completes */
-    struct edc_task *main = edc_task_new("task-main", "sess-scenario", "task-main", "main task", edc_channel_adapter);
-    struct edc_task *sub = edc_task_fork(main, "task-sub", "sub task", 10, edc_channel_adapter);
+    struct edc_task *main = edc_task_new(edc_test_id("task-main"), "sess-scenario", edc_test_id("task-main"), "main task", edc_channel_adapter);
+    struct edc_task *sub = edc_task_fork(main, edc_test_id("task-sub"), "sub task", 10, edc_channel_adapter);
 
     CHECK(sub->forked_from == main, "sub forked from main");
     CHECK(edc_task_is_ready(sub), "sub starts READY");
@@ -1032,10 +1032,10 @@ static void test_scenario_fork_join(void)
 static void test_scenario_multi_deps(void)
 {
     TEST("scenario: multiple dependencies with partial completion");
-    struct edc_task *target = edc_task_new("task-tgt", "sess-multi", "task-tgt", "aggregator", edc_channel_adapter);
-    struct edc_task *a = edc_task_new("task-a", "sess-multi", "task-tgt", "worker A", edc_channel_adapter);
-    struct edc_task *b = edc_task_new("task-b", "sess-multi", "task-tgt", "worker B", edc_channel_adapter);
-    struct edc_task *c = edc_task_new("task-c", "sess-multi", "task-tgt", "worker C", edc_channel_adapter);
+    struct edc_task *target = edc_task_new(edc_test_id("task-tgt"), "sess-multi", edc_test_id("task-tgt"), "aggregator", edc_channel_adapter);
+    struct edc_task *a = edc_task_new(edc_test_id("task-a"), "sess-multi", edc_test_id("task-tgt"), "worker A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new(edc_test_id("task-b"), "sess-multi", edc_test_id("task-tgt"), "worker B", edc_channel_adapter);
+    struct edc_task *c = edc_task_new(edc_test_id("task-c"), "sess-multi", edc_test_id("task-tgt"), "worker C", edc_channel_adapter);
 
     edc_task_add_dependency(target, a, TASK_DEP_SEQUENCE);
     edc_task_add_dependency(target, b, TASK_DEP_SEQUENCE);
@@ -1088,9 +1088,9 @@ static void test_dep_failure_propagates(void)
 {
     TEST("scenario: 上游失败 → JOIN 依赖者级联失败 (递归), **边留着**");
 
-    struct edc_task *a = edc_task_new("f-a", "sess-fail", "f-a", "A", edc_channel_adapter);
-    struct edc_task *b = edc_task_new("f-b", "sess-fail", "f-b", "B waits for A", edc_channel_adapter);
-    struct edc_task *c = edc_task_new("f-c", "sess-fail", "f-c", "C waits for B", edc_channel_adapter);
+    struct edc_task *a = edc_task_new(edc_test_id("f-a"), "sess-fail", edc_test_id("f-a"), "A", edc_channel_adapter);
+    struct edc_task *b = edc_task_new(edc_test_id("f-b"), "sess-fail", edc_test_id("f-b"), "B waits for A", edc_channel_adapter);
+    struct edc_task *c = edc_task_new(edc_test_id("f-c"), "sess-fail", edc_test_id("f-c"), "C waits for B", edc_channel_adapter);
     edc_task_add_dependency(b, a, TASK_DEP_JOIN);
     edc_task_add_dependency(c, b, TASK_DEP_JOIN);
     CHECK(edc_task_awaits_deps(b) && edc_task_awaits_deps(c), "b/c 都在等");
@@ -1112,7 +1112,8 @@ static void test_dep_failure_propagates(void)
     CHECK(b->deps_total == 1 && b->deps && b->deps->source == a, "B 对 A 的边留着");
     CHECK(a->dependents != NULL && a->dependents->target == b, "A 那一侧也还挂着");
     CHECK(c->deps_total == 1 && c->deps && c->deps->source == b, "C 对 B 的边同样留着");
-    CHECK(b->output != NULL && strstr(b->output, "f-a") != NULL, "B 的失败原因点到是哪个依赖 (f-a)");
+    CHECK(b->output != NULL && strstr(b->output, edc_id_str(edc_test_id("f-a"))) != NULL,
+          "B 的失败原因点到是哪个依赖 (f-a)");
 
     int moved = 0;
     edc_task_drain_moves(a, count_move, &moved);
@@ -1127,8 +1128,8 @@ static void test_dep_failure_propagates(void)
     edc_task_free(c);
 
     TEST("scenario: 上游失败 → SEQUENCE 下游一起失败 (边保留, resume 后回到等依赖)");
-    struct edc_task *s = edc_task_new("f-s", "sess-seq", "f-s", "S", edc_channel_adapter);
-    struct edc_task *d = edc_task_new("f-d", "sess-seq", "f-d", "D runs after S", edc_channel_adapter);
+    struct edc_task *s = edc_task_new(edc_test_id("f-s"), "sess-seq", edc_test_id("f-s"), "S", edc_channel_adapter);
+    struct edc_task *d = edc_task_new(edc_test_id("f-d"), "sess-seq", edc_test_id("f-d"), "D runs after S", edc_channel_adapter);
     edc_task_add_dependency(d, s, TASK_DEP_SEQUENCE);
     CHECK(edc_task_awaits_deps(d), "D 等在顺序上");
     edc_task_await_exec(s);
@@ -1139,9 +1140,9 @@ static void test_dep_failure_propagates(void)
     edc_task_free(d);
 
     TEST("scenario: 失败不动任何边 (JOIN 与 SEQUENCE 都还在)");
-    struct edc_task *x = edc_task_new("f-x", "sess-mix", "f-x", "X fails", edc_channel_adapter);
-    struct edc_task *y = edc_task_new("f-y", "sess-mix", "f-y", "Y is alive", edc_channel_adapter);
-    struct edc_task *z = edc_task_new("f-z", "sess-mix", "f-z", "Z waits for both", edc_channel_adapter);
+    struct edc_task *x = edc_task_new(edc_test_id("f-x"), "sess-mix", edc_test_id("f-x"), "X fails", edc_channel_adapter);
+    struct edc_task *y = edc_task_new(edc_test_id("f-y"), "sess-mix", edc_test_id("f-y"), "Y is alive", edc_channel_adapter);
+    struct edc_task *z = edc_task_new(edc_test_id("f-z"), "sess-mix", edc_test_id("f-z"), "Z waits for both", edc_channel_adapter);
     edc_task_add_dependency(z, x, TASK_DEP_JOIN);
     edc_task_add_dependency(z, y, TASK_DEP_SEQUENCE);
     CHECK(z->deps_total == 2, "Z 有两条依赖");
@@ -1172,8 +1173,8 @@ static void test_dep_completion_releases(void)
 {
     TEST("scenario: 源产出 (完成通知) ⇒ 那条边完成 ⇒ 等依赖者自动转 READY");
 
-    struct edc_task *src = edc_task_new("rel-src", "sess-rel", "rel-src", "source", edc_channel_adapter);
-    struct edc_task *dst = edc_task_new("rel-dst", "sess-rel", "rel-dst", "waits for src", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("rel-src"), "sess-rel", edc_test_id("rel-src"), "source", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new(edc_test_id("rel-dst"), "sess-rel", edc_test_id("rel-dst"), "waits for src", edc_channel_adapter);
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
     CHECK(edc_task_awaits_deps(dst), "dst 在等");
     CHECK(!edc_task_is_ready(dst), "还在等 ⇒ 不是 READY");
@@ -1186,8 +1187,8 @@ static void test_dep_completion_releases(void)
     CHECK(edc_task_is_ready(dst), "dst 被自动放行 (AWAIT_DEPS → READY)");
 
     /* 反向: 源先取消 (边留着) ⇒ dst 取消; 之后源再完成, dst 的边同样满足 ⇒ 它也能被放行。 */
-    struct edc_task *s2 = edc_task_new("rel-src2", "sess-rel", "rel-src2", "source 2", edc_channel_adapter);
-    struct edc_task *d2 = edc_task_new("rel-dst2", "sess-rel", "rel-dst2", "waits for src2", edc_channel_adapter);
+    struct edc_task *s2 = edc_task_new(edc_test_id("rel-src2"), "sess-rel", edc_test_id("rel-src2"), "source 2", edc_channel_adapter);
+    struct edc_task *d2 = edc_task_new(edc_test_id("rel-dst2"), "sess-rel", edc_test_id("rel-dst2"), "waits for src2", edc_channel_adapter);
     edc_task_add_dependency(d2, s2, TASK_DEP_JOIN);
     edc_task_send_signal(s2, TASK_SIGTERM);
     CHECK(edc_task_is_cancelled(d2), "d2 级联取消");
@@ -1247,7 +1248,7 @@ static void test_end_reason(void)
 {
     TEST("end: every write point records its own reason");
 
-    struct edc_task *a = edc_task_new("end-a", "sess-end", "end-a", "A", edc_channel_adapter);
+    struct edc_task *a = edc_task_new(edc_test_id("end-a"), "sess-end", edc_test_id("end-a"), "A", edc_channel_adapter);
     CHECK(a->end == EDC_END_NONE, "a fresh task has no reason");
 
     edc_task_await_exec(a);
@@ -1277,19 +1278,20 @@ static void test_end_reason(void)
     edc_task_free(a);
 
     TEST("end: a cascade says BLOCKED and names the source");
-    struct edc_task *s = edc_task_new("end-s", "sess-end", "end-s", "S", edc_channel_adapter);
-    struct edc_task *d = edc_task_new("end-d", "sess-end", "end-d", "D runs after S", edc_channel_adapter);
+    struct edc_task *s = edc_task_new(edc_test_id("end-s"), "sess-end", edc_test_id("end-s"), "S", edc_channel_adapter);
+    struct edc_task *d = edc_task_new(edc_test_id("end-d"), "sess-end", edc_test_id("end-d"), "D runs after S", edc_channel_adapter);
     edc_task_add_dependency(d, s, TASK_DEP_SEQUENCE);
     edc_task_await_exec(s);
     CHECK(edc_task_mark_interrupted(s), "S is interrupted");
     CHECK(edc_task_has_failed(d), "D cascades into ERROR");
     CHECK(d->end == EDC_END_BLOCKED, "but the reason is BLOCKED, not FAILED");
-    CHECK(d->blocked_by && strcmp(d->blocked_by, "end-s") == 0, "the source is named");
+    CHECK(d->blocked_by && strcmp(d->blocked_by, edc_id_str(edc_test_id("end-s"))) == 0,
+          "the source is named");
     CHECK(d->blocked_end == EDC_END_INTERRUPTED, "and what became of it is kept");
 
     /* A cascade that came from a cancelled source lands in CANCELLED, still BLOCKED. */
-    struct edc_task *c = edc_task_new("end-c", "sess-end", "end-c", "C waits", edc_channel_adapter);
-    struct edc_task *src2 = edc_task_new("end-s2", "sess-end", "end-s2", "S2", edc_channel_adapter);
+    struct edc_task *c = edc_task_new(edc_test_id("end-c"), "sess-end", edc_test_id("end-c"), "C waits", edc_channel_adapter);
+    struct edc_task *src2 = edc_task_new(edc_test_id("end-s2"), "sess-end", edc_test_id("end-s2"), "S2", edc_channel_adapter);
     edc_task_add_dependency(c, src2, TASK_DEP_JOIN);
     edc_task_await_exec(src2);
     edc_task_send_signal(src2, TASK_SIGTERM);
@@ -1314,8 +1316,8 @@ static void test_end_reason(void)
     edc_task_free(src2);
 
     TEST("end: a `||` skip says SKIPPED, not STOPPED");
-    struct edc_task *l = edc_task_new("end-l", "sess-end2", "end-l", "L", edc_channel_adapter);
-    struct edc_task *r = edc_task_new("end-r", "sess-end2", "end-r", "R", edc_channel_adapter);
+    struct edc_task *l = edc_task_new(edc_test_id("end-l"), "sess-end2", edc_test_id("end-l"), "L", edc_channel_adapter);
+    struct edc_task *r = edc_task_new(edc_test_id("end-r"), "sess-end2", edc_test_id("end-r"), "R", edc_channel_adapter);
     edc_task_add_dependency(r, l, TASK_DEP_UNLESS);
     edc_task_await_exec(l);
     edc_task_mark_completed(l);
@@ -1336,8 +1338,8 @@ static void test_end_reason(void)
 static void test_free_deps_releases_dependents(void)
 {
     TEST("freeing a source re-decides its dependents");
-    struct edc_task *src = edc_task_new("fd-src", "sess-fd", "fd-src", "src", edc_channel_adapter);
-    struct edc_task *dep = edc_task_new("fd-dep", "sess-fd", "fd-src", "dep", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("fd-src"), "sess-fd", edc_test_id("fd-src"), "src", edc_channel_adapter);
+    struct edc_task *dep = edc_task_new(edc_test_id("fd-dep"), "sess-fd", edc_test_id("fd-src"), "dep", edc_channel_adapter);
     edc_task_add_dependency(dep, src, TASK_DEP_SEQUENCE);
     CHECK(edc_task_awaits_deps(dep), "dep waits for src");
     edc_task_free(src);
@@ -1346,9 +1348,9 @@ static void test_free_deps_releases_dependents(void)
     edc_task_free(dep);
 
     TEST("... but only when the LAST unsatisfied dependency is the one that went away");
-    struct edc_task *a = edc_task_new("fd-a", "sess-fd2", "fd-a", "a", edc_channel_adapter);
-    struct edc_task *b = edc_task_new("fd-b", "sess-fd2", "fd-a", "b", edc_channel_adapter);
-    struct edc_task *z = edc_task_new("fd-z", "sess-fd2", "fd-a", "z", edc_channel_adapter);
+    struct edc_task *a = edc_task_new(edc_test_id("fd-a"), "sess-fd2", edc_test_id("fd-a"), "a", edc_channel_adapter);
+    struct edc_task *b = edc_task_new(edc_test_id("fd-b"), "sess-fd2", edc_test_id("fd-a"), "b", edc_channel_adapter);
+    struct edc_task *z = edc_task_new(edc_test_id("fd-z"), "sess-fd2", edc_test_id("fd-a"), "z", edc_channel_adapter);
     edc_task_add_dependency(z, a, TASK_DEP_SEQUENCE);
     edc_task_add_dependency(z, b, TASK_DEP_SEQUENCE);
     edc_task_free(a);
@@ -1358,8 +1360,8 @@ static void test_free_deps_releases_dependents(void)
     edc_task_free(z);
 
     TEST("a task that already ENDED is not resurrected by its source disappearing");
-    struct edc_task *s2 = edc_task_new("fd-s2", "sess-fd3", "fd-s2", "s2", edc_channel_adapter);
-    struct edc_task *d2 = edc_task_new("fd-d2", "sess-fd3", "fd-s2", "d2", edc_channel_adapter);
+    struct edc_task *s2 = edc_task_new(edc_test_id("fd-s2"), "sess-fd3", edc_test_id("fd-s2"), "s2", edc_channel_adapter);
+    struct edc_task *d2 = edc_task_new(edc_test_id("fd-d2"), "sess-fd3", edc_test_id("fd-s2"), "d2", edc_channel_adapter);
     edc_task_add_dependency(d2, s2, TASK_DEP_SEQUENCE);
     edc_task_await_exec(s2);
     edc_task_mark_interrupted(s2); /* 级联: d2 变 BLOCKED */
@@ -1375,8 +1377,8 @@ static void test_free_deps_releases_dependents(void)
 static void test_drop_dep(void)
 {
     TEST("dropping a dependency voids the edge and re-decides");
-    struct edc_task *src = edc_task_new("dd-src", "sess-dd", "dd-src", "src", edc_channel_adapter);
-    struct edc_task *tgt = edc_task_new("dd-tgt", "sess-dd", "dd-src", "tgt", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("dd-src"), "sess-dd", edc_test_id("dd-src"), "src", edc_channel_adapter);
+    struct edc_task *tgt = edc_task_new(edc_test_id("dd-tgt"), "sess-dd", edc_test_id("dd-src"), "tgt", edc_channel_adapter);
     edc_task_add_dependency(tgt, src, TASK_DEP_SEQUENCE);
     CHECK(edc_task_awaits_deps(tgt), "tgt waits for src");
     CHECK(edc_task_drop_dep(tgt, src), "the drop lands");
@@ -1385,8 +1387,8 @@ static void test_drop_dep(void)
     CHECK(!edc_task_drop_dep(tgt, src), "dropping it twice is a no-op (nothing live)");
 
     TEST("a satisfied edge cannot be dropped");
-    struct edc_task *c_src = edc_task_new("dd-csrc", "sess-dd2", "dd-csrc", "src", edc_channel_adapter);
-    struct edc_task *c_tgt = edc_task_new("dd-ctgt", "sess-dd2", "dd-csrc", "tgt", edc_channel_adapter);
+    struct edc_task *c_src = edc_task_new(edc_test_id("dd-csrc"), "sess-dd2", edc_test_id("dd-csrc"), "src", edc_channel_adapter);
+    struct edc_task *c_tgt = edc_task_new(edc_test_id("dd-ctgt"), "sess-dd2", edc_test_id("dd-csrc"), "tgt", edc_channel_adapter);
     edc_task_add_dependency(c_tgt, c_src, TASK_DEP_JOIN);
     edc_task_await_exec(c_src);
     edc_task_mark_completed(c_src);
@@ -1395,9 +1397,9 @@ static void test_drop_dep(void)
     CHECK(!edc_task_drop_dep(c_tgt, c_src), "a completed edge is not droppable (the source produced)");
 
     TEST("dropping one of two outstanding dependencies does not release the task");
-    struct edc_task *a = edc_task_new("dd-a", "sess-dd3", "dd-a", "a", edc_channel_adapter);
-    struct edc_task *b = edc_task_new("dd-b", "sess-dd3", "dd-a", "b", edc_channel_adapter);
-    struct edc_task *z = edc_task_new("dd-z", "sess-dd3", "dd-a", "z", edc_channel_adapter);
+    struct edc_task *a = edc_task_new(edc_test_id("dd-a"), "sess-dd3", edc_test_id("dd-a"), "a", edc_channel_adapter);
+    struct edc_task *b = edc_task_new(edc_test_id("dd-b"), "sess-dd3", edc_test_id("dd-a"), "b", edc_channel_adapter);
+    struct edc_task *z = edc_task_new(edc_test_id("dd-z"), "sess-dd3", edc_test_id("dd-a"), "z", edc_channel_adapter);
     edc_task_add_dependency(z, a, TASK_DEP_SEQUENCE);
     edc_task_add_dependency(z, b, TASK_DEP_SEQUENCE);
     CHECK(edc_task_drop_dep(z, a), "drop a");
@@ -1425,7 +1427,7 @@ static void test_drop_dep(void)
 static void test_user_origin_payload(void)
 {
     TEST("edc_task_set_user_origin / edc_task_find_user_payload");
-    struct edc_task *t = edc_task_new("task-origin", "sess-1", "g", "origin test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("task-origin"), "sess-1", edc_test_id("g"), "origin test", edc_channel_adapter);
 
     /* No user message yet: nothing to park on, nothing to find. */
     edc_task_set_user_origin(t, "s1#1#1000", NULL);
@@ -1455,11 +1457,11 @@ static void test_user_origin_payload(void)
 
     /* And the fork path copies messages wholesale: the snapshot turn (what a fork replays)
      * carries the field too, because it is inside the message object. */
-    struct edc_turn *snap = edc_task_snapshot_turns(t, "sess-1", "g", "task-origin-fork", 0);
+    struct edc_turn *snap = edc_task_snapshot_turns(t, "sess-1", edc_test_id("g"), edc_test_id("task-origin-fork"), 0);
     CHECK(snap != NULL, "the fork snapshot copied the turn");
     if (snap)
     {
-        struct edc_task *tmp = edc_task_new("task-origin-tmp", "sess-1", "g", "tmp", edc_channel_adapter);
+        struct edc_task *tmp = edc_task_new(edc_test_id("task-origin-tmp"), "sess-1", edc_test_id("g"), "tmp", edc_channel_adapter);
         tmp->active_turn = snap; /* borrowed: the find only reads it */
         CHECK(edc_task_find_user_payload(tmp, "s1#1#1000") != NULL, "a forked snapshot carries the payload");
         tmp->active_turn = NULL;

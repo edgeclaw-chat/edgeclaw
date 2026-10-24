@@ -53,7 +53,7 @@ static void add_history(struct edc_task_group *g, cJSON *msg)
 static void test_anchor_plus_tail(void)
 {
     TEST("anchor: the provider's real usage, exact until something is appended");
-    struct edc_task *t = edc_task_new("ctx-1", "s-1", "ctx-1", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-1"), "s-1", edc_test_id("ctx-1"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40()); /* history[0] = system prompt 的位置 */
 
@@ -77,7 +77,7 @@ static void test_anchor_plus_tail(void)
 static void test_anchor_validity(void)
 {
     TEST("anchor: unusable once a fold lands, or without a position");
-    struct edc_task *t = edc_task_new("ctx-2", "s-2", "ctx-2", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-2"), "s-2", edc_test_id("ctx-2"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40());
     add_history(g, user_msg40());
@@ -108,13 +108,13 @@ static void test_anchor_validity(void)
 static void test_fold_task_excluded(void)
 {
     TEST("the fold task is not conversation: it never sets the width");
-    struct edc_task *t = edc_task_new("ctx-3", "s-3", "ctx-3", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-3"), "s-3", edc_test_id("ctx-3"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40());
     edc_task_add_usage(t, 900, 100, 1000, 0);
     long long base = edc_context_group_ctx_tokens(g, NULL);
 
-    struct edc_task *fold = edc_task_new("ctx-3-fold", "s-3", "ctx-3", "fold", edc_channel_adapter);
+    struct edc_task *fold = edc_task_new(edc_test_id("ctx-3-fold"), "s-3", edc_test_id("ctx-3"), "fold", edc_channel_adapter);
     edc_task_group_add_task(g, fold);
     fold->sink = EDC_SINK_GROUP_MEMORY;
     edc_task_add_usage(fold, 999900, 100, 1000000, 0);
@@ -128,12 +128,12 @@ static void test_fold_task_excluded(void)
 static void test_widest_member(void)
 {
     TEST("the group takes the widest member conversation");
-    struct edc_task *t = edc_task_new("ctx-4", "s-4", "ctx-4", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-4"), "s-4", edc_test_id("ctx-4"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40());
     edc_task_add_usage(t, 900, 100, 1000, 0);
 
-    struct edc_task *t2 = edc_task_new("ctx-4b", "s-4", "ctx-4", "B", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("ctx-4b"), "s-4", edc_test_id("ctx-4"), "B", edc_channel_adapter);
     edc_task_group_add_task(g, t2);
     edc_task_add_usage(t2, 1900, 100, 2000, 0);
 
@@ -149,7 +149,7 @@ static void test_widest_member(void)
 static void test_fallback_estimate(void)
 {
     TEST("no anchor: estimate the next request (memory + system + kept + the running turn)");
-    struct edc_task *t = edc_task_new("ctx-5", "s-5", "ctx-5", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-5"), "s-5", edc_test_id("ctx-5"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40()); /* system prompt: 19 */
 
@@ -182,7 +182,7 @@ static void test_fallback_estimate(void)
 static void test_turn_delta(void)
 {
     TEST("a running member's turn counts only what came after its last reply");
-    struct edc_task *t = edc_task_new("ctx-6", "s-6", "ctx-6", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-6"), "s-6", edc_test_id("ctx-6"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40());
 
@@ -211,18 +211,18 @@ static void test_turn_delta(void)
 static void test_fold_landing_invalidates(void)
 {
     TEST("a fold landing bumps the epoch, so every anchor from before it is stale");
-    struct edc_task *t = edc_task_new("ctx-8", "s-8", "ctx-8", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-8"), "s-8", edc_test_id("ctx-8"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     add_history(g, user_msg40());
     edc_task_add_usage(t, 900, 100, 1000, 0);
     CHECK(edc_context_group_ctx_tokens(g, NULL) == 1000, "baseline: the anchor is used");
 
     /* 折叠任务: sink_group 指向 g, 切点三元组记的是本轮折到哪。 */
-    struct edc_task *fold = edc_task_new("ctx-8-fold", "s-8", "ctx-8", "fold", edc_channel_adapter);
+    struct edc_task *fold = edc_task_new(edc_test_id("ctx-8-fold"), "s-8", edc_test_id("ctx-8"), "fold", edc_channel_adapter);
     edc_task_group_add_task(g, fold);
     fold->sink = EDC_SINK_GROUP_MEMORY;
     fold->sink_group = g;
-    fold->fold_cut_task_id = strdup("1");
+    fold->fold_cut_task_id = edc_test_id("1");
     fold->fold_cut_turn = 0;
     fold->fold_cut_prefix = 0;
     edc_group_fold_deliver_memory(fold, "## memory");
@@ -241,7 +241,7 @@ static void test_fold_landing_invalidates(void)
 static void test_empty_group(void)
 {
     TEST("an empty group has no context");
-    struct edc_task *t = edc_task_new("ctx-7", "s-7", "ctx-7", "L", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-7"), "s-7", edc_test_id("ctx-7"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     bool est = true;
     CHECK(edc_context_group_ctx_tokens(g, &est) == 0, "no history, no memory, no turns -> 0");

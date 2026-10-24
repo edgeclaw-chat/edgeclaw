@@ -139,7 +139,7 @@ extern size_t edc_session_get_message_count(struct edc_session *session);
 
 extern void edc_session_add_group(struct edc_session *session, struct edc_task_group *group);
 extern void edc_session_remove_group(struct edc_session *session, struct edc_task_group *group);
-extern struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id);
+extern struct edc_task_group *edc_session_find_group(struct edc_session *session, int64_t group_id);
 
 /** The session's SYSTEM group (kind == SYSTEM), or NULL when there is none.
  *
@@ -153,7 +153,7 @@ extern struct edc_task_group *edc_session_find_group(struct edc_session *session
  *  other reader is the display layer. */
 extern struct edc_task_group *edc_session_find_system_group(struct edc_session *session);
 
-extern struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id);
+extern struct edc_task *edc_session_find_task(struct edc_session *session, int64_t task_id);
 
 extern void edc_session_set_active_task(struct edc_session *session, struct edc_task *task);
 extern struct edc_task *edc_session_get_active_task(struct edc_session *session);

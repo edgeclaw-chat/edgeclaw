@@ -103,7 +103,7 @@ static void env_close(struct env *e)
 static void give_input(struct edc_task *t)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     edc_turn_add_user_message(turn, "input");
     t->active_turn = turn;
 }
@@ -138,14 +138,14 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     give_input(bt);
     edc_task_mark_interrupted(bt);
     edc_session_save_state(sb, sched);
-    *out_bt_id = sdsnew(bt->task_id);
+    *out_bt_id = sdsnew(edc_id_str(bt->task_id));
 
     /* A task in A that depends on B's task (cross-session edge). */
     struct edc_task *at = edc_scheduler_task_new(sched, sa, "a-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sa, at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, sched);
-    *out_at_id = sdsnew(at->task_id);
+    *out_at_id = sdsnew(edc_id_str(at->task_id));
 
     edc_scheduler_free(sched);
     edc_channel_actor_free(channel_actor);
@@ -177,8 +177,8 @@ static void scenario_restore(const char *ws)
     env_open(&e, ws);
     edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
 
-    struct edc_task *at = edc_session_manager_find_task_any(e.sm, at_id, NULL);
-    struct edc_task *bt = edc_session_manager_find_task_any(e.sm, bt_id, NULL);
+    struct edc_task *at = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(at_id, NULL, 10), 0);
+    struct edc_task *bt = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(bt_id, NULL, 10), 0);
     CHECK(at != NULL, "A's task restored");
     CHECK(bt != NULL, "B's task loaded on demand");
     CHECK(at && at->deps_total == 1, "cross-session edge restored");
@@ -210,12 +210,12 @@ static void scenario_unresolvable(const char *ws)
     env_open(&e, ws);
     edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
 
-    struct edc_task *at = edc_session_manager_find_task_any(e.sm, at_id, NULL);
+    struct edc_task *at = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(at_id, NULL, 10), 0);
     CHECK(at != NULL, "A's task restored");
-    CHECK(edc_session_manager_find_task_any(e.sm, bt_id, NULL) == NULL, "B's task unavailable");
+    CHECK(edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(bt_id, NULL, 10), 0) == NULL, "B's task unavailable");
     CHECK(at && edc_scheduler_task_has_unresolved_deps(e.sched, at), "task held by an unresolved dep");
-    const char *missing = at ? edc_scheduler_first_unresolved_dep(e.sched, at) : NULL;
-    CHECK(missing && bt_id && strcmp(missing, bt_id) == 0, "held on the missing source id");
+    int64_t missing = at ? edc_scheduler_first_unresolved_dep(e.sched, at) : 0;
+    CHECK(missing > 0 && bt_id && strcmp(edc_id_str(missing), bt_id) == 0, "held on the missing source id");
 
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
     send_cmd(&e, resume_cmd);
@@ -270,7 +270,8 @@ static void scenario_multihop(const char *ws)
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, sched);
 
-    sds at_id = sdsnew(at->task_id), bt_id = sdsnew(bt->task_id), ct_id = sdsnew(ct->task_id);
+    sds at_id = sdsnew(edc_id_str(at->task_id)), bt_id = sdsnew(edc_id_str(bt->task_id)),
+        ct_id = sdsnew(edc_id_str(ct->task_id));
 
     edc_scheduler_free(sched);
     edc_channel_actor_free(channel_actor);
@@ -281,9 +282,9 @@ static void scenario_multihop(const char *ws)
     struct env e;
     env_open(&e, ws);
     edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
-    struct edc_task *a2 = edc_session_manager_find_task_any(e.sm, at_id, NULL);
-    struct edc_task *b2 = edc_session_manager_find_task_any(e.sm, bt_id, NULL);
-    struct edc_task *c2 = edc_session_manager_find_task_any(e.sm, ct_id, NULL);
+    struct edc_task *a2 = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(at_id, NULL, 10), 0);
+    struct edc_task *b2 = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(bt_id, NULL, 10), 0);
+    struct edc_task *c2 = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(ct_id, NULL, 10), 0);
     CHECK(a2 && b2 && c2, "all three tasks loaded on demand");
     CHECK(a2 && a2->deps && a2->deps->source == b2, "A→B restored");
     CHECK(b2 && b2->deps && b2->deps->source == c2, "B→C restored");

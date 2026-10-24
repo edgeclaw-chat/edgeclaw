@@ -103,7 +103,7 @@ int main(void)
     cfg->tool_max_output_size = 10000;
 
     struct edc_session *session = edc_session_new(cfg, "s1", "S1");
-    struct edc_task *task = edc_task_new("100", "s1", "100", "把构建迁到 bazel", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("100"), "s1", edc_test_id("100"), "把构建迁到 bazel", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group); /* 这一步挂上 group->session (属主) */
 
@@ -261,7 +261,7 @@ int main(void)
     free_capture(&si);
 
     TEST("策展任务 (sink_group) 写条目: sources = 被折叠的组, 不是自己的系统组");
-    struct edc_task *curator = edc_task_new("300", "s1", "300", "curate", edc_channel_adapter);
+    struct edc_task *curator = edc_task_new(edc_test_id("300"), "s1", edc_test_id("300"), "curate", edc_channel_adapter);
     struct edc_task_group *cg = edc_task_group_new(curator);
     edc_session_add_group(session, cg); /* 挂上 group->session (属主) */
     curator->sink = EDC_SINK_SESSION_MEMORY;
@@ -295,7 +295,7 @@ int main(void)
     free_capture(&r2);
 
     TEST("没有属主 session 的调用: 报错而不是崩");
-    struct edc_task *orphan = edc_task_new("200", "s1", "200", "孤儿", edc_channel_adapter);
+    struct edc_task *orphan = edc_task_new(edc_test_id("200"), "s1", edc_test_id("200"), "孤儿", edc_channel_adapter);
     struct capture o = run_tool(tb, orphan, "memory_list", "{}");
     CHECK(o.error != NULL && o.result != NULL, "拿不到 session 记忆 ⇒ error + 说明");
     free_capture(&o);

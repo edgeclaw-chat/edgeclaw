@@ -68,15 +68,6 @@ static void free_config(struct edc_config *c)
 
 /* Remove the persisted task-id high-water file so a test starts from a clean
  * counter. Also make sure the workspace dir exists (writes need it). */
-static void clean_task_seq(struct edc_config *cfg)
-{
-    if (!cfg || !cfg->workspace) return;
-    mkdir(cfg->workspace, 0755); /* EEXIST is fine */
-    sds seq = sdscatprintf(sdsempty(), "%s/.task_seq", cfg->workspace);
-    remove(seq);
-    sdsfree(seq);
-}
-
 /* P3: 入站消息经 store 读口解析 session —— 定义在下面 (drive_input 附近), 这里
  * 只是前向声明 (第一个用它的测试在上面)。 */
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess);
@@ -87,13 +78,11 @@ static void test_scheduler_lifecycle(void)
 {
     TEST("scheduler_new / free");
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
 
     CHECK(sched != NULL, "scheduler_new returns non-NULL");
-    CHECK(sched->next_task_id == 1, "next_task_id starts at 1");
     CHECK(edc_scheduler_get_actor(sched) != NULL, "get_actor returns non-NULL");
     CHECK(edc_scheduler_get_foreground(sess) == NULL, "no foreground group initially");
 
@@ -121,9 +110,9 @@ static void test_scheduler_task_mgmt(void)
 
     CHECK(t1 != NULL, "task 1 created");
     CHECK(t2 != NULL, "task 2 created");
-    CHECK(t1->task_id != NULL, "task 1 id non-NULL");
-    CHECK(t2->task_id != NULL, "task 2 id non-NULL");
-    CHECK(strcmp(t1->task_id, t2->task_id) != 0, "task IDs are unique");
+    CHECK(t1->task_id != 0, "task 1 id non-NULL");
+    CHECK(t2->task_id != 0, "task 2 id non-NULL");
+    CHECK(t1->task_id != t2->task_id, "task IDs are unique");
     CHECK(edc_task_is_ready(t1), "task starts READY");
 
     TEST("find_task_by_id cross-group");
@@ -132,11 +121,11 @@ static void test_scheduler_task_mgmt(void)
 
     CHECK(edc_scheduler_find_task_by_id(sched, sess, t1->task_id) == t1, "find task-1 by ID");
     CHECK(edc_scheduler_find_task_by_id(sched, sess, t2->task_id) == t2, "find task-2 by ID");
-    CHECK(edc_scheduler_find_task_by_id(sched, sess, "nonexistent") == NULL, "find nonexistent → NULL");
+    CHECK(edc_scheduler_find_task_by_id(sched, sess, edc_test_id("nonexistent")) == NULL, "find nonexistent → NULL");
 
     TEST("find_task_by_id NULL safety");
-    CHECK(edc_scheduler_find_task_by_id(sched, sess, NULL) == NULL, "NULL id → NULL");
-    CHECK(edc_scheduler_find_task_by_id(NULL, sess, "x") == NULL, "NULL sched → NULL");
+    CHECK(edc_scheduler_find_task_by_id(sched, sess, 0) == NULL, "NULL id → NULL");
+    CHECK(edc_scheduler_find_task_by_id(NULL, sess, edc_test_id("x")) == NULL, "NULL sched → NULL");
 
     edc_scheduler_free(sched);
     free(sess);
@@ -166,7 +155,7 @@ static void test_task_history_pull(void)
     edc_task_group_add_task(g1, t1);
 
     TEST("a task's history comes back by id, with the input that created it");
-    char *json = edc_scheduler_task_history_json(sched, sess, NULL, t1->task_id);
+    char *json = edc_scheduler_task_history_json(sched, sess, 0, t1->task_id);
     CHECK(json != NULL, "got a payload");
     cJSON *root = cJSON_Parse(json);
     CHECK(root != NULL, "and it parses");
@@ -184,7 +173,7 @@ static void test_task_history_pull(void)
     free(json);
 
     TEST("a group's history is its members, one block each");
-    char *gjson = edc_scheduler_task_history_json(sched, sess, g1->group_id, NULL);
+    char *gjson = edc_scheduler_task_history_json(sched, sess, g1->group_id, 0);
     CHECK(gjson != NULL, "got a payload");
     root = cJSON_Parse(gjson);
     CHECK(root != NULL, "and it parses");
@@ -193,16 +182,16 @@ static void test_task_history_pull(void)
         CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(root, "kind")), "group") == 0, "kind=group");
         cJSON *blocks = cJSON_GetObjectItem(root, "tasks");
         CHECK(blocks && cJSON_GetArraySize(blocks) == 1, "one block per member");
-        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(blocks, 0), "id")), t1->task_id) == 0,
+        CHECK(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(blocks, 0), "id")), edc_id_str(t1->task_id)) == 0,
               "the block names the member");
         cJSON_Delete(root);
     }
     free(gjson);
 
     TEST("an id that is not there yields nothing (frontend shows nothing, not a wrong task)");
-    CHECK(edc_scheduler_task_history_json(sched, sess, NULL, "999999") == NULL, "no such task");
-    CHECK(edc_scheduler_task_history_json(sched, sess, "999999", NULL) == NULL, "no such group");
-    CHECK(edc_scheduler_task_history_json(sched, sess, NULL, NULL) == NULL, "no id at all");
+    CHECK(edc_scheduler_task_history_json(sched, sess, 0, edc_test_id("999999")) == NULL, "no such task");
+    CHECK(edc_scheduler_task_history_json(sched, sess, edc_test_id("999999"), 0) == NULL, "no such group");
+    CHECK(edc_scheduler_task_history_json(sched, sess, 0, 0) == NULL, "no id at all");
 
     edc_scheduler_free(sched);
     free(sess);
@@ -248,7 +237,7 @@ static void test_scheduler_group_mgmt(void)
     CHECK(g != NULL, "group created");
     CHECK(g->leader == leader, "leader set");
     CHECK(leader->is_group_leader == 1, "leader marked");
-    CHECK(strcmp(g->group_id, leader->task_id) == 0, "group_id = leader task_id");
+    CHECK(g->group_id == leader->task_id, "group_id = leader task_id");
 
     TEST("add_group appends");
     struct edc_task *l2 = edc_scheduler_task_new(sched, sess, "group 2 leader", edc_channel_adapter);
@@ -296,7 +285,6 @@ static void test_scheduler_fg_bg(void)
 static void test_task_placement(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -352,7 +340,7 @@ static void test_task_placement(void)
     memset(&spec, 0, sizeof(spec));
     spec.desc = "chained";
     spec.place = EDC_TASK_PLACE_GROUP;
-    spec.group_id = g1 ? g1->group_id : NULL;
+    spec.group_id = g1 ? g1->group_id : 0;
     struct edc_task *t4 = edc_scheduler_task_create(sched, sess, &spec);
     CHECK(t4 && t4->group == g1, "joined the named group");
     CHECK(edc_scheduler_get_foreground(sess) == g3, "foreground untouched");
@@ -362,7 +350,7 @@ static void test_task_placement(void)
     memset(&spec, 0, sizeof(spec));
     spec.desc = "orphan";
     spec.place = EDC_TASK_PLACE_GROUP;
-    spec.group_id = "999999";
+    spec.group_id = edc_test_id("999999");
     struct edc_task *t5 = edc_scheduler_task_create(sched, sess, &spec);
     CHECK(t5 && t5->group && t5->group->leader == t5, "led a group created on demand");
     CHECK(edc_scheduler_get_foreground(sess) == g3, "still no foreground change");
@@ -423,7 +411,6 @@ static void test_task_placement(void)
 static void test_current_task(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -473,7 +460,6 @@ static void test_current_task(void)
 static void test_resume_queues(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -535,7 +521,7 @@ static void test_scheduler_signals(void)
     CHECK(edc_task_is_cancelled(t), "task cancelled by SIGTERM");
 
     TEST("send_signal_to_task nonexistent");
-    edc_scheduler_send_signal_to_task(sched, sess, "nonexistent", TASK_SIGTERM);
+    edc_scheduler_send_signal_to_task(sched, sess, edc_test_id("nonexistent"), TASK_SIGTERM);
     CHECK(1, "signal to nonexistent task survived");
 
     TEST("send_signal_to_task triggers persist on cancel");
@@ -555,7 +541,7 @@ static void test_scheduler_signals(void)
     CHECK(edc_task_is_completed(t3), "completed task stays COMPLETED");
 
     /* nonexistent task → survived */
-    edc_scheduler_send_signal_to_task(sched, sess, "nonexistent", TASK_SIGTERM);
+    edc_scheduler_send_signal_to_task(sched, sess, edc_test_id("nonexistent"), TASK_SIGTERM);
     CHECK(1, "signal to a nonexistent task survived");
 
     edc_scheduler_free(sched);
@@ -593,7 +579,7 @@ static void test_scheduler_group_signals(void)
     CHECK(sched->dirty_count > 0 && sched->dirty[0].session == sess, "dirty entry is the owning session");
 
     TEST("send_signal_to_group nonexistent");
-    edc_scheduler_send_signal_to_group(sched, sess, "nonexistent-gid", TASK_SIGTERM);
+    edc_scheduler_send_signal_to_group(sched, sess, edc_test_id("nonexistent-gid"), TASK_SIGTERM);
     CHECK(1, "signal to nonexistent group survived");
 
     edc_scheduler_free(sched);
@@ -693,7 +679,6 @@ static void mock_send_llm(struct edc_scheduler *sched, struct edc_task *task, vo
 static void test_queue_advances_when_front_dies(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -792,7 +777,7 @@ static void test_failure_cascade_settles_dependents(void)
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
     /* 依赖者**带着 input 停在依赖上** (生产: `/task new """x""" -d <id>` 就是这样) */
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(dst->task_id);
+    turn->task_id = dst->task_id;
     edc_turn_add_user_message(turn, "queued input");
     dst->active_turn = turn;
 
@@ -883,7 +868,7 @@ static struct edc_task *add_ready_task_with_turn(struct edc_scheduler *sched, st
     else
         edc_scheduler_create_group(sched, sess, t);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     edc_turn_add_user_message(turn, desc);
     t->active_turn = turn;
     return t;
@@ -1116,7 +1101,7 @@ static void test_schedule_order_is_deterministic(void)
     struct edc_task *b = edc_scheduler_task_new(sched, sess, "second", edc_channel_adapter);
     edc_task_group_add_task(a->group, b);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(b->task_id);
+    turn->task_id = b->task_id;
     edc_turn_add_user_message(turn, "second");
     b->active_turn = turn;
 
@@ -1547,85 +1532,6 @@ static void test_snapshot_carries_no_chat_messages(void)
 
 /* ── Task 序号跨重启持久化 ────────────────────────────────── */
 
-static void test_task_id_survives_restart(void)
-{
-    TEST("task_id does not restart from 1 after a restart");
-    struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
-
-    /* 第一次运行: 连发 3 个编号, 随后把它们全部回收 (编号已发出但任务对象不再存活),
-     * 再"退出"。 */
-    {
-        struct edc_session *sess = make_session(cfg);
-        struct edc_scheduler *sched = edc_scheduler_new(cfg);
-        install_resolver(sched, sess);
-        struct edc_task *t1 = edc_scheduler_task_new(sched, sess, "a", edc_channel_adapter);
-        struct edc_task *t2 = edc_scheduler_task_new(sched, sess, "b", edc_channel_adapter);
-        struct edc_task *t3 = edc_scheduler_task_new(sched, sess, "c", edc_channel_adapter);
-        CHECK(t1 && strcmp(t1->task_id, "1") == 0, "first id is 1");
-        CHECK(t3 && strcmp(t3->task_id, "3") == 0, "third id is 3");
-        edc_task_free(t1);
-        edc_task_free(t2);
-        edc_task_free(t3);
-        edc_scheduler_free(sched);
-        free(sess);
-    }
-
-    /* 重启: 存活任务为空 (全部被回收), 发号器仍必须从 4 续, 不能退回 1。 */
-    {
-        struct edc_session *sess = make_session(cfg);
-        struct edc_scheduler *sched = edc_scheduler_new(cfg);
-        install_resolver(sched, sess);
-        struct edc_task *t = edc_scheduler_task_new(sched, sess, "d", edc_channel_adapter);
-        CHECK(t && strcmp(t->task_id, "4") == 0, "id continues at 4 after restart (no reuse)");
-        edc_task_free(t);
-        edc_scheduler_free(sched);
-        free(sess);
-    }
-
-    /* 收尾: 清掉高水位文件, 免得污染其它测试 / 重复运行。 */
-    clean_task_seq(cfg);
-    free_config(cfg);
-}
-
-/* 反序列化旧存档时, 存活任务的编号要 "喂" 进发号器 (并落盘高水位), 否则
- * 从没有 .task_seq 的旧版本升级上来会重复发号。 */
-static void test_observe_task_id_raises_high_water(void)
-{
-    TEST("observe_task_id raises and persists the high-water mark");
-    struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
-
-    {
-        struct edc_session *sess = make_session(cfg);
-        struct edc_scheduler *sched = edc_scheduler_new(cfg);
-        install_resolver(sched, sess);
-        CHECK(sched->next_task_id == 1, "fresh counter is 1");
-        edc_scheduler_observe_task_id(sched, "7");
-        CHECK(sched->next_task_id == 8, "observed id 7 raises counter to 8");
-        edc_scheduler_observe_task_id(sched, "task-3"); /* non-numeric: ignored */
-        CHECK(sched->next_task_id == 8, "non-numeric id is ignored");
-        edc_scheduler_free(sched);
-        free(sess);
-    }
-
-    /* 重启: 高水位从磁盘恢复。 */
-    {
-        struct edc_session *sess = make_session(cfg);
-        struct edc_scheduler *sched = edc_scheduler_new(cfg);
-        install_resolver(sched, sess);
-        CHECK(sched->next_task_id == 8, "high-water survives restart");
-        char *id = edc_scheduler_gen_task_id(sched);
-        CHECK(strcmp(id, "8") == 0, "next generated id is 8");
-        free(id);
-        edc_scheduler_free(sched);
-        free(sess);
-    }
-
-    clean_task_seq(cfg);
-    free_config(cfg);
-}
-
 /* 8. A cancelled task must receive a response after resume.
  * `cancelled_request` is set on cancel and cleared when a new request is registered
  * (edc_scheduler_register_task); without the clear, resume's own response is
@@ -1681,7 +1587,6 @@ static void test_cancelled_task_resume_accepts_reply(void)
 static void test_queue_edge_not_shadowed_by_prev_edge(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -1720,7 +1625,6 @@ static void test_queue_edge_not_shadowed_by_prev_edge(void)
 static void test_unblocked_dependent_is_announced(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
@@ -1756,7 +1660,7 @@ static void test_unblocked_dependent_is_announced(void)
     CHECK(edc_task_is_ready(down), "down 自动放行 (不再需要 /task resume)");
     CHECK(g_reply_type == EDC_CHANNEL_MESSAGE_SYS_TYPE && strstr(g_reply_content, "running again") != NULL,
           "而且发了一条 SYS: 告诉用户它又跑起来了");
-    CHECK(strstr(g_reply_content, up->task_id) != NULL && strstr(g_reply_content, down->task_id) != NULL,
+    CHECK(strstr(g_reply_content, edc_id_str(up->task_id)) != NULL && strstr(g_reply_content, edc_id_str(down->task_id)) != NULL,
           "两边都点名了");
 
     TEST("a queue advance is routine: it must NOT be announced");
@@ -1792,22 +1696,21 @@ static void test_unblocked_dependent_is_announced(void)
 static void test_pending_dep_drop(void)
 {
     struct edc_config *cfg = make_config();
-    clean_task_seq(cfg);
     struct edc_session *sess = make_session(cfg);
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, sess);
 
     TEST("a pending (unresolvable) dependency holds, is listed, and can be dropped");
-    struct edc_task *probe = edc_task_new("pend-t", "sess-pd", "g", "probe", edc_channel_adapter);
-    edc_scheduler_add_pending_dep(sched, "pend-t", "gone-src", TASK_DEP_SEQUENCE, false, false, false);
+    struct edc_task *probe = edc_task_new(edc_test_id("pend-t"), "sess-pd", edc_test_id("g"), "probe", edc_channel_adapter);
+    edc_scheduler_add_pending_dep(sched, edc_test_id("pend-t"), edc_test_id("gone-src"), TASK_DEP_SEQUENCE, false, false, false);
     CHECK(edc_scheduler_first_unresolved_dep(sched, probe) != NULL, "the task is held");
     {
-        const struct edc_pending_dep *pd = edc_scheduler_next_pending_dep(sched, "pend-t", NULL);
-        CHECK(pd && pd->source_task_id && strcmp(pd->source_task_id, "gone-src") == 0, "and listed with its source id");
+        const struct edc_pending_dep *pd = edc_scheduler_next_pending_dep(sched, edc_test_id("pend-t"), NULL);
+        CHECK(pd && pd->source_task_id && pd->source_task_id == edc_test_id("gone-src"), "and listed with its source id");
     }
-    CHECK(edc_scheduler_drop_pending_dep(sched, "pend-t", "gone-src") == 1, "the drop removes it");
+    CHECK(edc_scheduler_drop_pending_dep(sched, edc_test_id("pend-t"), edc_test_id("gone-src")) == 1, "the drop removes it");
     CHECK(edc_scheduler_first_unresolved_dep(sched, probe) == NULL, "the hold is gone");
-    CHECK(edc_scheduler_drop_pending_dep(sched, "pend-t", NULL) == 0, "dropping again finds nothing");
+    CHECK(edc_scheduler_drop_pending_dep(sched, edc_test_id("pend-t"), 0) == 0, "dropping again finds nothing");
 
     edc_task_free(probe);
     edc_scheduler_free(sched);
@@ -1851,8 +1754,6 @@ int main(void)
     test_input_routing();
     test_scheduler_max_iter_cap();
     test_snapshot_carries_no_chat_messages();
-    test_task_id_survives_restart();
-    test_observe_task_id_raises_high_water();
     test_cancelled_task_resume_accepts_reply();
 
     log_info("");

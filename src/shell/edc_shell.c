@@ -119,11 +119,12 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
         if (fg)
         {
             struct edc_task *leader = fg->leader;
-            out = sdscatprintf(out, "- **foreground group**: `%s` · %d tasks\n", fg->group_id, fg->member_count);
-            out = sdscatprintf(out, "  - **leader**: `%s`%s%s\n", leader ? leader->task_id : "?",
+            out = sdscatprintf(out, "- **foreground group**: `%s` · %d tasks\n", edc_id_str(fg->group_id),
+                               fg->member_count);
+            out = sdscatprintf(out, "  - **leader**: `%s`%s%s\n", leader ? edc_id_str(leader->task_id) : "?",
                                (leader && *leader->description) ? " — " : "",
                                (leader && *leader->description) ? leader->description : "");
-            out = sdscatprintf(out, "  - **active**: `%s`%s%s\n", active ? active->task_id : "none",
+            out = sdscatprintf(out, "  - **active**: `%s`%s%s\n", active ? edc_id_str(active->task_id) : "none",
                                (active && *active->description) ? " — " : "",
                                (active && *active->description) ? active->description : "");
         }
@@ -379,7 +380,7 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
         deps = calloc((size_t)opts->dep_count, sizeof(*deps));
         for (int i = 0; i < opts->dep_count; i++)
         {
-            deps[i] = edc_session_store_resolve_task(sm, sched, opts->dep_ids[i], NULL);
+            deps[i] = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(opts->dep_ids[i], NULL, 10), NULL);
             if (!deps[i])
             {
                 if (out_error)
@@ -439,14 +440,14 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     /* The receipt is emitted by the caller (edc_shell_ast.c announces the task it just
      * spawned). It cannot live here: `!cmd` and `/task new` create tasks too and must say
      * the same line. What is logged here stays for the trace. */
-    log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, task->task_id,
-             group ? group->group_id : "-", opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
+    log_info("%s created task=%s group=%s%s%s%s%s", reply_prefix, edc_id_str(task->task_id),
+             group ? edc_id_str(group->group_id) : "-", opts->bg ? " [bg]" : "", opts->dep_count > 0 ? " [chained]" : "",
              prev ? (prev->type == TASK_DEP_JOIN ? " [pipe]" : " [ordered]") : "",
              redirect_stdout ? (redirect_append ? " (>> redirect)" : " (> redirect)") : "");
 
     /* The turn is already attached (input is mandatory in this path); running it is
      * the message-end scan's job. */
-    log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, task->task_id,
+    log_info("%s spawn: task=%s state=%s deps_total=%zu input='%s'", reply_prefix, edc_id_str(task->task_id),
              edc_task_state_str(task), task->deps_total, opts->input);
 
     if (out_group)
@@ -545,7 +546,7 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
                      * sit on a task that already finished). Resolved NOW, as `$$` was. */
                     struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
                     if (front)
-                        result = sdscat(result, front->task_id);
+                        result = sdscat(result, edc_id_str(front->task_id));
                 }
                 else if (strcmp(body, "LAST") == 0)
                 {
@@ -555,7 +556,7 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
                 }
                 else if (edc_shell_all_digits(body, sdslen(body)))
                 {
-                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, body, NULL);
+                    struct edc_task *t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(body, NULL, 10), NULL);
                     if (!t)
                     {
                         *out_error = sdscatprintf(sdsempty(), "{{%s}}: task not found", body);

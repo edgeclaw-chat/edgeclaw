@@ -179,7 +179,7 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
     struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
     if (!own)
     {
-        log_warn("dropping %s from task %s: no owning session", "reply", task->task_id ? task->task_id : "?");
+        log_warn("dropping %s from task %s: no owning session", "reply", edc_id_str(task->task_id));
         return;
     }
 
@@ -187,7 +187,7 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
     /* Tag the message with its producing task so the frontend can show which
      * task a chat message belongs to (interleaved tasks in one session). */
     if (task->task_id)
-        reply->task_id = sdsnew(task->task_id);
+        reply->task_id = sdscatprintf(sdsempty(), "%lld", (long long)task->task_id);
     /* And with its owning session, so a background session's output lands in
      * that session's transcript rather than the one on screen. */
     reply->session_id = sdsnew(own->session_id);
@@ -214,7 +214,7 @@ void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task 
         edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
     reply->render_pref = render_pref;
     if (task->task_id)
-        reply->task_id = sdsnew(task->task_id);
+        reply->task_id = sdscatprintf(sdsempty(), "%lld", (long long)task->task_id);
     /* Owning session (see edc_channel_send_task_reply): routes a background
      * session's tool output into its own transcript. */
     {
