@@ -31,6 +31,7 @@
 #include "edc_platform.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
+#include "edc_tools_fs.h"
 #include "log.h"
 
 #include <cJSON.h>
@@ -768,6 +769,45 @@ static void test_edit_argument_validation(void)
 
 static void test_edit_preserves_untouched_bytes(void)
 {
+    /* The strip/report helper, asked with BOTH platform answers. This is the only way to
+     * exercise the Windows branch from a POSIX host, and that branch is exactly where
+     * edit_file was silently dropping BOMs: it read through the raw file reader, so had_bom
+     * was always false and the restore branch was dead code. */
+    TEST("strip_bom_for_tool: reports what it dropped, and only when the platform says so");
+    {
+        /* metadata platform + a BOM: stripped, and reported. */
+        sds with_bom = sdsnewlen("\xEF\xBB\xBF", 3);
+        with_bom = sdscatsds(with_bom, sdsnew("hello\n"));
+        bool had = false;
+        sds out = edc_fs_strip_bom_for_tool(sdsdup(with_bom), true, &had);
+        CHECK(had, "a BOM on a metadata platform is reported as dropped");
+        CHECK(out && strcmp(out, "hello\n") == 0, "and the content is BOM-less (got: %s)", out ? out : "(null)");
+        sdsfree(out);
+
+        /* same input, content platform: untouched and not reported. */
+        had = false;
+        out = edc_fs_strip_bom_for_tool(sdsdup(with_bom), false, &had);
+        CHECK(!had, "a content platform reports nothing");
+        CHECK(out && sdslen(out) == sdslen(with_bom) && memcmp(out, with_bom, sdslen(with_bom)) == 0,
+              "and the bytes stay exactly as they were");
+        sdsfree(out);
+        sdsfree(with_bom);
+
+        /* no BOM: nothing to drop on either platform. */
+        had = true;
+        out = edc_fs_strip_bom_for_tool(sdsnew("plain\n"), true, &had);
+        CHECK(!had, "a file without a BOM reports nothing");
+        CHECK(out && strcmp(out, "plain\n") == 0, "and is returned unchanged");
+        sdsfree(out);
+
+        /* a short file must not be read past its length. */
+        had = true;
+        out = edc_fs_strip_bom_for_tool(sdsnewlen("\xEF\xBB", 2), true, &had);
+        CHECK(!had, "a two-byte file is not mistaken for a BOM");
+        CHECK(out && sdslen(out) == 2, "and keeps both bytes");
+        sdsfree(out);
+    }
+
     TEST("edit_file: bytes the caller did not ask about survive -- including a UTF-8 BOM");
     struct harness h;
     harness_up(&h);

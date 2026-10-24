@@ -164,7 +164,8 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
  * allocation the process may not survive. */
 #define EDC_READ_MAX_BYTES_TOTAL ((size_t)8 * 1024 * 1024)
 
-static sds fs_read_for_tool_capped(const char *path, size_t max_bytes, bool *had_bom, EdcError **error);
+static sds fs_read_for_tool_capped_sized(const char *path, size_t max_bytes, size_t *size_out,
+                                        bool *had_bom, EdcError **error);
 
 /* ── A leading UTF-8 BOM: metadata on Windows, content elsewhere ─────────────
  *
@@ -185,17 +186,26 @@ static sds fs_read_for_tool(const char *path, bool *had_bom, EdcError **error)
      * something this process gets to trust (a 10 GB file used to be a 10 GB malloc). The
      * ceiling is checked before the read; read_file can still see any file by paging with
      * offset, and edit_file refuses and says why. */
-    return fs_read_for_tool_capped(path, EDC_READ_MAX_BYTES_TOTAL, had_bom, error);
+    return fs_read_for_tool_capped_sized(path, EDC_READ_MAX_BYTES_TOTAL, NULL, had_bom, error);
 }
 
-static sds fs_read_for_tool_capped(const char *path, size_t max_bytes, bool *had_bom, EdcError **error)
+/* |size_out| is the file's size as the reader saw it, which is what tells "over the limit"
+ * apart from "could not read": an unreadable file has no size worth reporting. */
+/* Strip a leading UTF-8 BOM when the platform treats one as metadata, reporting what was
+ * dropped so a rewrite can put it back.
+ *
+ * Pure, and it takes the platform's answer as an argument rather than asking for it, because
+ * edc_platform_bom_is_metadata() is a compile-time constant (true only on Windows). Without
+ * the parameter the stripping branch is unreachable on a POSIX host, which is how a broken
+ * caller -- edit_file reading through the raw reader, so had_bom was always false and the
+ * restore branch below was dead -- went unnoticed for as long as it did.
+ *
+ * |content| is owned by the caller and is either returned unchanged or freed. */
+sds edc_fs_strip_bom_for_tool(sds content, bool bom_is_metadata, bool *had_bom)
 {
     if (had_bom)
         *had_bom = false;
-
-    size_t size = 0;
-    sds content = edc_file_read_capped(path, max_bytes, &size, error);
-    if (!content || !edc_platform_bom_is_metadata())
+    if (!content || !bom_is_metadata)
         return content;
     if (sdslen(content) < 3 || memcmp(content, "\xEF\xBB\xBF", 3) != 0)
         return content;
@@ -203,6 +213,19 @@ static sds fs_read_for_tool_capped(const char *path, size_t max_bytes, bool *had
     if (had_bom)
         *had_bom = true;
     return edc_str_strip_utf8_bom(content);
+}
+
+static sds fs_read_for_tool_capped_sized(const char *path, size_t max_bytes, size_t *size_out,
+                                        bool *had_bom, EdcError **error)
+{
+    if (size_out)
+        *size_out = 0;
+
+    size_t size = 0;
+    sds content = edc_file_read_capped(path, max_bytes, &size, error);
+    if (size_out)
+        *size_out = size;
+    return edc_fs_strip_bom_for_tool(content, edc_platform_bom_is_metadata(), had_bom);
 }
 
 /* read_file's own ceilings. They exist because the tool has to bound itself: the toolbox's
@@ -736,7 +759,13 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     bool had_bom = false;
     {
         size_t size = 0;
-        content = edc_file_read_capped(safe_path, EDC_READ_MAX_BYTES_TOTAL, &size, &gerror);
+        /* Through the TOOL reader, not edc_file_read_capped(): only that one strips a leading
+         * BOM and reports it, and the report is what puts it back on write. Reading with the
+         * raw reader left had_bom permanently false, so the restore branch below was dead
+         * code and an edit silently dropped the BOM of any file that had one -- which on
+         * Windows is most files PowerShell created. It also means old_text now matches the
+         * same text read_file shows, which is the reason the strip exists at all. */
+        content = fs_read_for_tool_capped_sized(safe_path, EDC_READ_MAX_BYTES_TOTAL, &size, &had_bom, &gerror);
         if (!content)
         {
             if (size > EDC_READ_MAX_BYTES_TOTAL)
