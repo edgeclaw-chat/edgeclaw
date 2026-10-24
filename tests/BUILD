@@ -254,6 +254,18 @@ cc_test(
 )
 
 cc_test(
+    name = "test_toolbox_spill",
+    srcs = ["test_toolbox_spill.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_tools_fs",
     srcs = ["test_tools_fs.c", "test_ws.h"],
     deps = [
@@ -1595,3 +1607,4 @@ cc_binary(
     ],
     linkopts = LINK_OPTS,
 )
+

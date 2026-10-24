@@ -161,8 +161,9 @@ static sds edc_toolbox_actor_cap_result(edc_toolbox_actor_state_t *state, struct
     if (len <= cap && lines <= EDC_TOOL_OUTPUT_MAX_LINES)
         return result; /* within both: untouched */
 
-    /* spill_output names a DIRECTORY (<ws>/<session>/tool-output), so it wants the
-     * "s<id>" spelling -- the same one the session directory actually has. */
+    /* spill_output names a DIRECTORY (<ws>/<session>/tool-output), whose session segment is
+     * the session's directory name -- edc_id_str()'s bare "15", the one text form an id has
+     * (edc_session.h: the "s<id>" spelling is gone). */
     const char *session_id = NULL;
     if (tb_ctx->task && tb_ctx->task->group && tb_ctx->task->group->session)
         session_id = edc_id_str(tb_ctx->task->group->session->session_id);

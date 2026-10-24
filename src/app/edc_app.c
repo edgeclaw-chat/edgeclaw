@@ -14,6 +14,7 @@
 #include "edc_sandbox.h"
 #include "edc_secret.h"
 #include "edc_state_serializer.h"
+#include "edc_state_store.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -356,13 +357,20 @@ void edc_app_free(struct edc_app *app)
      * scheduler. */
     edc_app_shutdown(app);
 
-    /* Freeing the scheduler also frees the session store it created. */
+    /* Freeing the scheduler also frees the in-memory session manager it created. */
     edc_scheduler_free(app->scheduler);
 
     if (app->config)
         edc_config_free(app->config);
     if (app->toolbox)
         edc_toolbox_free(app->toolbox);
+
+    /* The SQLite connection is a process-wide singleton owned by the state store, so nothing
+     * above closes it. Leaving it open at exit loses more than the memory: the four fds
+     * (db, -wal, -shm, lock) stay open, the WAL is never checkpointed back into the one file
+     * that `edgeclaw db` inspects, and `PRAGMA optimize` never runs. Close it last, once every
+     * consumer is gone; the call is idempotent and a no-op if the store was never opened. */
+    edc_state_store_close();
 
     edc_secret_cleanup();
     free(app);

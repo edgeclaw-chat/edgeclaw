@@ -259,10 +259,15 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     shell_ctx_normalize_stream(&ctx->out, &converted_out);
     shell_ctx_normalize_stream(&ctx->err, &converted_err);
 
-    sds out = ctx->out.data ? ctx->out.data : sdsempty();
-    sds err = ctx->err.data ? ctx->err.data : sdsempty();
-    sdstrim(out, " \t\r\n");
-    sdstrim(err, " \t\r\n");
+    /* Borrowed, not owned: a stream that captured nothing has no buffer, and handing
+     * sdsempty() to a variable that is never freed is how the completion path leaked one
+     * empty sds per call. NULL means "nothing captured" everywhere below. */
+    sds out = ctx->out.data;
+    sds err = ctx->err.data;
+    if (out)
+        sdstrim(out, " \t\r\n");
+    if (err)
+        sdstrim(err, " \t\r\n");
 
     /* The notices go FIRST, and that placement is the whole point: the head is the only part
      * both readers keep -- the collapsed bubble draws just the first lines, and the model's
@@ -296,13 +301,13 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
         result = sdscatprintf(result, "[encoding: %zu line(s) converted from cp%u to utf-8]\n",
                               converted_out + converted_err, edc_platform_ansi_codepage());
 
-    if (sdslen(out) > 0)
+    if (out && sdslen(out) > 0)
         result = sdscatprintf(result, "%s\n", out);
     /* The command's error output follows its normal output with no label: a reader
      * (person or model) gets what the command produced, nothing prepended. The two
      * streams are already collected separately, so the interleaving was lost either
      * way; the label only told you where the switch happened. */
-    if (sdslen(err) > 0)
+    if (err && sdslen(err) > 0)
         result = sdscatprintf(result, "%s\n", err);
 
     edc_toolbox_emit_tool_message_plain(ctx->tb_ctx, ctx->command, result);

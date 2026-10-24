@@ -286,8 +286,13 @@ sds edc_toolbox_spill_output(struct edc_toolbox *tb, const char *tool_name, cons
     if (!tb || !tb->conf || !tb->conf->workspace || !content)
         return NULL;
 
-    sds dir = edc_path_join(tb->conf->workspace, session_id && *session_id,
-                            "tool-output", NULL);
+    /* Join "tool-output" whether or not there is a session, so the session segment has to be
+     * dropped by not passing it at all: edc_path_join stops at a NULL segment and would take
+     * "tool-output" with it. Passing the guard itself (a 0/1 int) is not an option -- the
+     * varargs are unchecked, so the compiler happily hands the callee (const char *)1. */
+    const char *session_dir = (session_id && *session_id) ? session_id : NULL;
+    sds dir = session_dir ? edc_path_join(tb->conf->workspace, session_dir, "tool-output", NULL)
+                          : edc_path_join(tb->conf->workspace, "tool-output", NULL);
     EdcError *error = NULL;
     bool made = edc_dir_create_with_parents(dir, 0755, &error);
     if (error)

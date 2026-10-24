@@ -413,6 +413,15 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     cJSON *choice = cJSON_GetArrayItem(choices, 0);
     if (!choice)
     {
+        /* Unreachable for a well-formed provider (the size check above already
+         * rejected an empty array), but "return false without setting error" is a
+         * contract violation: the caller prints resp->error->message, so a NULL here
+         * is a segfault with no log line to show for it. Say why instead. */
+        char *err_msg = cJSON_Print(response);
+        log_error("resp format error choice 0 is null (HTTP %d): %s", http_status, err_msg ? err_msg : "(unprintable)");
+        resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is null (HTTP %d): %s", http_status,
+                                   err_msg ? err_msg : "(unprintable)");
+        cJSON_free(err_msg);
         return false;
     }
 
@@ -582,6 +591,13 @@ static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *ms
     bool ok = edc_llm_actor_parse_resp(body, resp, req->status);
     if (!ok)
     {
+        /* Never dereference resp->error unguarded: every "return false" in the parser
+         * is supposed to set it, and one of them did not -- which turned a provider
+         * quirk into a segfault that logged nothing at all (the crash happened inside
+         * the log call itself). The consumer below is also told, so an unset error
+         * cannot masquerade as a successful-but-empty response. */
+        if (!resp->error)
+            resp->error = edc_error_new(EDC_ERR_FAILED, "resp parse failed without a reason (HTTP %d)", req->status);
         log_error("parse resp error: %s", resp->error->message);
         goto exit;
     }

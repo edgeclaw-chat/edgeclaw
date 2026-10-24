@@ -471,7 +471,17 @@ static void edc_https_client_on_tcp_write(uv_write_t *write_req, int status)
         sds message = sdscatprintf(sdsnew(NULL), "tcp write failed: %s", uv_strerror(status));
         req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
         sdsfree(message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        /* Do NOT close unconditionally: libuv delivers UV_ECANCELED right here when the
+         * write queue is flushed *because* the handle is closing (uv__stream_destroy ->
+         * uv__write_callbacks, which runs before close_cb). Calling uv_close() on the
+         * handle being finished re-queues it ('assert(!uv__is_closing(handle))' is
+         * compiled out under NDEBUG), so close_cb -- and with it one decrement of
+         * pending_closes -- would run twice and edc_https_request_release() would free
+         * the request twice. */
+        if (!uv_is_closing((uv_handle_t *)req))
+        {
+            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        }
         return;
     }
 
@@ -485,7 +495,10 @@ static void edc_https_client_on_tcp_write(uv_write_t *write_req, int status)
             sds message = sdscatprintf(sdsnew(NULL), "uv_write failed in on_tcp_write");
             req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
             sdsfree(message);
-            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            if (!uv_is_closing((uv_handle_t *)req))
+            {
+                uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            }
             return;
         }
     }
@@ -676,7 +689,10 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
         sds err_message = sdscatprintf(sdsnew(NULL), "tcp read failed: %s", uv_strerror((int)nread));
         req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
         sdsfree(err_message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        if (!uv_is_closing((uv_handle_t *)req))
+        {
+            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        }
     }
     else
     {
@@ -877,6 +893,13 @@ static void edc_https_request_cleanup_close(uv_handle_t *handle)
 static void edc_https_client_close_walk(uv_handle_t *handle, void *arg)
 {
     (void)arg;
+    /* A handle that is already closing is still in loop->handle_queue until its close
+     * callback runs -- uv_walk() sees it, so without this guard shutdown would close it a
+     * second time and the ledger below would be decremented twice (double free of the
+     * request). Its callback is already scheduled; leave it alone. */
+    if (uv_is_closing(handle))
+        return;
+
     /* Both of a request's handles are torn down by its own ledger (their close callbacks
      * wait for the other before free, see edc_https_request_release). At exit an in-flight
      * request also reaches here -- so the timer side must be given a callback, never NULL. */

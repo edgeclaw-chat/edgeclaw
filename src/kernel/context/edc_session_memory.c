@@ -1687,6 +1687,7 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         out = sdscatprintf(out, "[events up to seq %llu were compacted away — the index/search hold the full picture]\n",
                            (unsigned long long)m->pruned_before);
     out = sdscatsds(out, body);
+    sdsfree(body); /* copied into out: the per-event listing is not needed past this point */
     if (npick > shown)
         out = sdscatprintf(out, "\n… %zu more（memory_search <patterns> / memory_list [offset] [n] / memory_get <ids>）",
                            npick - shown);

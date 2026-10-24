@@ -298,9 +298,15 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
         if (task->active_turn)
         {
-            /* The final reply is rendered as Markdown. */
+            /* The final reply is rendered as Markdown. Delete-then-add, NOT
+             * ReplaceItemInObjectCaseSensitive: when the key is absent (a message that
+             * never carried "render") the replace path returns false and drops the new
+             * item on the floor, leaking it plus its strdup'd name. */
             if (e->msg)
-                cJSON_ReplaceItemInObjectCaseSensitive(e->msg, "render", cJSON_CreateString("markdown"));
+            {
+                cJSON_DeleteItemFromObjectCaseSensitive(e->msg, "render");
+                cJSON_AddStringToObject(e->msg, "render", "markdown");
+            }
             edc_turn_add_assistant_message(task->active_turn, e->msg);
             e->msg = NULL;
 
