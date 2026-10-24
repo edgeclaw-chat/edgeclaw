@@ -154,7 +154,7 @@ static void sched_drain_dirty(struct edc_scheduler *sched)
         const char *reason = sched->dirty[i].reason;
         /* The callbacks take a TEXT label (they are the UI's boundary), the id is a
          * number: render it once here. */
-        const char *sid = (session && session->session_id > 0) ? edc_session_id_str(session->session_id) : NULL;
+        const char *sid = (session && session->session_id > 0) ? edc_id_str(session->session_id) : NULL;
         sched_trace_notify(reason, sid);
         if (sched->snapshot_changed && sid)
             sched->snapshot_changed(sched, sid, reason);
@@ -1731,7 +1731,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
 
     cJSON *root = cJSON_CreateObject();
     struct edc_session *sess = session;
-    cJSON_AddStringToObject(root, "session_id", edc_session_id_str(sess->session_id));
+    cJSON_AddStringToObject(root, "session_id", edc_id_str(sess->session_id));
     cJSON_AddStringToObject(root, "session_name", edc_session_get_name(sess));
     /* session messages + every task's in-flight turn messages. */
     size_t msg_count = edc_session_get_message_count(sess);

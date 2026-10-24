@@ -73,7 +73,7 @@ static void test_current_session_status(void)
     CHECK(out != NULL, "status text built");
     {
         /* The header shows "[s<id>] <name>"; the id is a number now. */
-        sds want = sdscatprintf(sdsempty(), "[%s]", edc_session_id_str(s->session_id));
+        sds want = sdscatprintf(sdsempty(), "[%s]", edc_id_str(s->session_id));
         CHECK(strstr(out, want) != NULL, "id + name header");
         sdsfree(want);
     }

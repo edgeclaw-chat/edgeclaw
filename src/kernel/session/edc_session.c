@@ -140,17 +140,10 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
 
 sds edc_session_dir_name(int64_t session_id)
 {
-    return sdscatprintf(sdsempty(), "s%lld", (long long)session_id);
-}
-
-const char *edc_session_id_str(int64_t session_id)
-{
-    static char bufs[4][24];
-    static int next;
-    char *b = bufs[next];
-    next = (next + 1) % 4;
-    snprintf(b, sizeof(bufs[0]), "s%lld", (long long)session_id);
-    return b;
+    /* An sds copy of the id's text form. edc_id_str() returns a rotating buffer, so it
+     * cannot be stored; this is the storing variant, and it spells the id exactly the same
+     * way -- one representation, no prefix. */
+    return sdscatprintf(sdsempty(), "%lld", (long long)session_id);
 }
 
 struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id, const char *name,
@@ -159,10 +152,8 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int6
     struct edc_session *session = g_new0(struct edc_session, 1);
     session->session_id = session_id;
     {
-        /* The name falls back to the id, which is a number now, so it is rendered. */
-        char idbuf[32];
-        snprintf(idbuf, sizeof(idbuf), "s%lld", (long long)session_id);
-        session->name = sdsnew(name && strlen(name) > 0 ? name : idbuf);
+        /* The name falls back to the id, rendered the one way an id is rendered. */
+        session->name = sdsnew(name && strlen(name) > 0 ? name : edc_id_str(session_id));
     }
     session->created_at = (uint64_t)edc_datetime_now();
     session->last_active = session->created_at;
@@ -370,7 +361,7 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
         }
     }
 
-    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", edc_session_id_str(session->session_id),
+    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", edc_id_str(session->session_id),
                            edc_session_get_name(session), is_current ? " · current" : " · background");
     out = sdscatprintf(out, "- **State**: %s\n", is_current ? "current (live)" : "background");
     out = sdscatprintf(out, "- **Working Directory**: %s\n",
@@ -646,5 +637,5 @@ const char *edc_session_get_name(struct edc_session *session)
     if (session->name)
         return session->name;
     /* No name: show the id, which is a number. */
-    return edc_session_id_str(session->session_id);
+    return edc_id_str(session->session_id);
 }

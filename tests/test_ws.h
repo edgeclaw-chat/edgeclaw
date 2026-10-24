@@ -214,11 +214,12 @@ static int64_t edc_test_session_id(const char *name)
     return EDC_TEST_SESSION_ID_BASE - (int64_t)(n++);
 }
 
-/* The TEXT form of a fixture session id ("s<number>").
+/* The TEXT form of a fixture session id, as a string that stays put.
  *
  * edc_id_str() is a rotating buffer, so two calls in one expression can alias -- and these
- * tests do compare ids inside a single CHECK. This returns a string allocated once per
- * name, which is stable for the life of the process. */
+ * tests do compare ids inside a single CHECK. This returns a string allocated once per name,
+ * stable for the life of the process, spelling the id the same single way everything else
+ * does (the integer). */
 static const char *edc_test_session_id_str(const char *name)
 {
     static char *names[EDC_TEST_ID_MAX];
@@ -243,7 +244,7 @@ static const char *edc_test_session_id_str(const char *name)
         abort();
     }
     names[n] = strdup(name);
-    texts[n] = sdscatprintf(sdsempty(), "s%lld", (long long)edc_test_session_id(name));
+    texts[n] = sdscatprintf(sdsempty(), "%lld", (long long)edc_test_session_id(name));
     return texts[n++];
 }
 

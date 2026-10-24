@@ -98,23 +98,19 @@ extern struct edc_session *edc_session_new(struct edc_config *config, int64_t se
 extern struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id,
                                                         const char *name, const char *workdir);
 
-/* The session's directory name, WITHOUT the workspace prefix: "s<id>".
+/* The session's directory name, WITHOUT the workspace prefix: the id's text form, exactly
+ * as edc_id_str() renders it ("15"), but as a string the caller owns.
  *
- * Deliberately historical: the directories on disk are s7, s13, s15..., each holding a
- * chat.jsonl with real transcripts the TUI reads and appends. The id is a number now, but
- * renaming those directories would be a data migration in exchange for a cosmetic change,
- * so the prefix lives here and nowhere else. Caller frees with sdsfree. */
+ * There is deliberately ONE text form for an id. An earlier version prefixed session ids
+ * with an "s" (a leftover from the days when they were "s<N>" strings) while task and group
+ * ids were bare numbers -- so "which of the two renderers is right here?" became a question
+ * a developer had to remember, and getting it wrong compiled cleanly and silently wrote a
+ * session's transcript into a directory that did not exist. Now the database's own type
+ * decides: an id is an integer, so its text form is that integer.
+ *
+ * Caller frees with sdsfree. */
 extern sds edc_session_dir_name(int64_t session_id);
 
-/* The TEXT form of a session id: "s<id>".
- *
- * This is the spelling everything outside the database uses: the directory name, the UI's
- * label for a session, the label in a snapshot event, and what a user types. edc_id_str()
- * is NOT this -- it renders task/group ids, which are bare numbers.
- *
- * Borrowed pointer into a small rotating buffer: intended for a printf argument or a
- * comparison, not for storing. Use edc_session_dir_name() when you need to keep it. */
-extern const char *edc_session_id_str(int64_t session_id);
 
 /** The session's bound working directory as an absolute realpath, or NULL when
  *  the session is unbound (callers then fall back to the launch directory,

@@ -191,11 +191,11 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
     /* And with its owning session, so a background session's output lands in
      * that session's transcript rather than the one on screen.
      *
-     * edc_session_id_str(), NOT edc_id_str(): this string goes to the frontend, which
+     * edc_id_str(), NOT edc_id_str(): this string goes to the frontend, which
      * derives the transcript path from it (<ws>/<session_id>/chat.jsonl) and compares it
      * against the id it displays. A session's text form is "s<id>" -- a bare number would
      * point at a directory that does not exist. */
-    reply->session_id = sdsnew(edc_session_id_str(own->session_id));
+    reply->session_id = sdsnew(edc_id_str(own->session_id));
     /* Declare the fact: is this its session's active task (the frontend's display gate)? */
     reply->from_active_task = edc_session_get_active_task(own) == task;
     /* The sender explicitly declares the render preference; the renderer (CLI/TUI) no
@@ -225,7 +225,7 @@ void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task 
     {
         struct edc_session *own = (task->group && task->group->session) ? task->group->session : NULL;
         if (own && own->session_id > 0)
-            reply->session_id = sdsnew(edc_session_id_str(own->session_id));
+            reply->session_id = sdsnew(edc_id_str(own->session_id));
         reply->from_active_task = own && edc_session_get_active_task(own) == task;
     }
     if (header && *header)

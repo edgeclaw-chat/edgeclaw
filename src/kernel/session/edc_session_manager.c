@@ -123,7 +123,7 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     for (int i = 0; i < n; i++)
     {
         char idbuf[32];
-        snprintf(idbuf, sizeof(idbuf), "s%lld", (long long)rows[i].session_id);
+        snprintf(idbuf, sizeof(idbuf), "%lld", (long long)rows[i].session_id);
         struct edc_session *s = edc_session_new(sm->config, rows[i].session_id,
                                                 rows[i].name && *rows[i].name ? rows[i].name : idbuf);
         if (!s)
@@ -203,9 +203,11 @@ struct edc_session *edc_session_manager_get_active(struct edc_session_manager *s
 
 /* Does the TEXT the user typed name the session with this id?
  *
- * The id is a number now, while a command line carries text. Both spellings are accepted on
- * purpose: "13" (the id) and "s13" (what the directories are still called, and what has been
- * typed for months). Anything else is a name, handled by the caller. */
+ * OUTPUT has exactly one form (the id's integer, see edc_session_dir_name). INPUT is
+ * tolerant on purpose: "13" is what the UI shows and what the directories are called, but
+ * "s13" is what has been typed for months and what older notes still say, so both resolve.
+ * Being lenient about what we accept cannot create a second representation; only what we
+ * WRITE can. Anything that is not those forms is a name, handled by the caller. */
 static bool edc_sm_id_matches(int64_t session_id, const char *typed)
 {
     if (!typed || !*typed || session_id <= 0)
@@ -567,7 +569,7 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
         size_t msg_count = edc_session_get_message_count(s);
         bool active = (i == sm->active_index);
 
-        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", edc_session_id_str(s->session_id),
+        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", edc_id_str(s->session_id),
                               s->name ? s->name : "(unnamed)",
                               active ? " · **current**" : "");
         {

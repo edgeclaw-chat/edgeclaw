@@ -132,7 +132,7 @@ static void test_no_reuse_after_remove(void)
     char removed_dir[512] = {0};
     if (b)
     {
-        snprintf(removed_id, sizeof(removed_id), "%s", edc_session_id_str(b->session_id));
+        snprintf(removed_id, sizeof(removed_id), "%s", edc_id_str(b->session_id));
         snprintf(removed_dir, sizeof(removed_dir), "%s", b->history_dir);
     }
 
@@ -140,7 +140,7 @@ static void test_no_reuse_after_remove(void)
 
     struct edc_session *c = edc_session_manager_create_ex(sm, "C", NULL);
     CHECK(c != NULL, "session C created");
-    CHECK(c && strcmp(edc_session_id_str(c->session_id), removed_id) != 0,
+    CHECK(c && strcmp(edc_id_str(c->session_id), removed_id) != 0,
           "C does not reuse the removed id");
     CHECK(c && strcmp(c->history_dir, removed_dir) != 0, "C does not land on the removed directory");
 
@@ -164,7 +164,7 @@ static void test_no_reuse_across_restart(void)
     CHECK(b != NULL, "session B created");
     char removed_id[64] = {0};
     if (b)
-        snprintf(removed_id, sizeof(removed_id), "%s", edc_session_id_str(b->session_id));
+        snprintf(removed_id, sizeof(removed_id), "%s", edc_id_str(b->session_id));
     CHECK(edc_session_manager_stop(sm, removed_id), "B removed");
     edc_session_manager_free(sm);
 
@@ -174,7 +174,7 @@ static void test_no_reuse_across_restart(void)
     CHECK(sm2 != NULL, "restarted manager created");
     struct edc_session *c = edc_session_manager_create_ex(sm2, "C", NULL);
     CHECK(c != NULL, "session C created after restart");
-    CHECK(c && strcmp(edc_session_id_str(c->session_id), removed_id) != 0,
+    CHECK(c && strcmp(edc_id_str(c->session_id), removed_id) != 0,
           "C does not reuse the removed id after restart");
     CHECK(c && (long long)c->session_id > strtoll(removed_id + (removed_id[0] == 's' ? 1 : 0), NULL, 10),
           "C's id is beyond the removed one");
