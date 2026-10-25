@@ -193,6 +193,41 @@ edc_task_end edc_task_classify_end(const char *name)
     return EDC_END_NONE;
 }
 
+/* The persistence spelling of a dependency edge, and its inverse. Lives here rather than in
+ * the serializer because the STORE writes and reads these directly now; every other enum in
+ * this file already has the same name/classify pair. */
+const char *edc_task_dep_type_name(edc_task_dep_type t)
+{
+    switch (t)
+    {
+    case TASK_DEP_JOIN:
+        return "JOIN";
+    case TASK_DEP_SEQUENCE:
+        return "SEQUENCE";
+    case TASK_DEP_BARRIER:
+        return "BARRIER";
+    case TASK_DEP_UNLESS:
+        return "UNLESS";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+edc_task_dep_type edc_task_classify_dep_type(const char *name)
+{
+    if (!name)
+        return TASK_DEP_JOIN;
+    if (strcmp(name, "JOIN") == 0)
+        return TASK_DEP_JOIN;
+    if (strcmp(name, "SEQUENCE") == 0)
+        return TASK_DEP_SEQUENCE;
+    if (strcmp(name, "BARRIER") == 0)
+        return TASK_DEP_BARRIER;
+    if (strcmp(name, "UNLESS") == 0)
+        return TASK_DEP_UNLESS;
+    return TASK_DEP_JOIN;
+}
+
 const char *edc_task_fail_name(edc_task_fail fail)
 {
     switch (fail)

@@ -1069,24 +1069,35 @@ static const char *INSERT_SESSION =
 
 struct session_bind
 {
-    const cJSON *sj;
+    const struct edc_session *s;
     int64_t session_id;
 };
 
+/* Bind straight from the live struct. There is no intermediate document any more: the
+ * previous version went struct -> cJSON (edc_state_serializer.c) -> sqlite3_bind_*, which
+ * meant every field was written three times -- once in the struct, once in the serializer,
+ * once here -- and a new field that missed one of the three disappeared silently. */
 static void bind_session(sqlite3_stmt *st, void *ctx)
 {
     struct session_bind *b = ctx;
-    const cJSON *sj = b->sj;
+    const struct edc_session *s = b->s;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)b->session_id);
-    bind_str(st, 2, js_str(sj, "name") ? js_str(sj, "name") : "");
-    sqlite3_bind_int64(st, 3, (sqlite3_int64)js_num(sj, "created_at"));
-    sqlite3_bind_int64(st, 4, (sqlite3_int64)js_num(sj, "last_active"));
-    bind_str(st, 5, js_str(sj, "workdir"));
-    /* INTEGER columns: a number bound as text would be stored as text and read back as 0
-     * by sqlite3_column_int64, silently losing the pointer. */
-    sqlite3_bind_int64(st, 6, (sqlite3_int64)js_num(sj, "active_task_id"));
-    sqlite3_bind_int64(st, 7, (sqlite3_int64)js_num(sj, "foreground_group_id"));
-    bind_num(st, 8, js_num(sj, "next_completion_seq"));
+    bind_str(st, 2, (s->name && *s->name) ? s->name : "");
+    sqlite3_bind_int64(st, 3, (sqlite3_int64)s->created_at);
+    sqlite3_bind_int64(st, 4, (sqlite3_int64)s->last_active);
+    bind_str(st, 5, s->workdir);
+    /* INTEGER columns: a number bound as text is stored as text and reads back as 0 through
+     * sqlite3_column_int64, silently losing the pointer. NULL when there is none, which is
+     * what the tree used to leave behind. */
+    if (s->active_task && s->active_task->task_id > 0)
+        sqlite3_bind_int64(st, 6, (sqlite3_int64)s->active_task->task_id);
+    else
+        sqlite3_bind_null(st, 6);
+    if (s->foreground_group && s->foreground_group->group_id > 0)
+        sqlite3_bind_int64(st, 7, (sqlite3_int64)s->foreground_group->group_id);
+    else
+        sqlite3_bind_null(st, 7);
+    bind_num(st, 8, (double)s->next_completion_seq);
     sqlite3_bind_int64(st, 9, (sqlite3_int64)time(NULL));
 }
 
@@ -1102,7 +1113,7 @@ static const char *INSERT_GROUP =
 
 struct group_bind
 {
-    const cJSON *gj;
+    const struct edc_task_group *g;
     int64_t session_id;
     int ord;
 };
@@ -1110,16 +1121,16 @@ struct group_bind
 static void bind_group(sqlite3_stmt *st, void *ctx)
 {
     struct group_bind *b = ctx;
-    const cJSON *g = b->gj;
+    const struct edc_task_group *g = b->g;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)b->session_id);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)js_num(g, "group_id"));
-    sqlite3_bind_int(st, 3, js_bool(g, "is_orphaned"));
-    bind_str(st, 4, js_str(g, "kind") ? js_str(g, "kind") : "user");
-    bind_str(st, 5, js_str(g, "memory"));
-    bind_num(st, 6, js_num(g, "fold_epoch"));
-    bind_num(st, 7, js_num(g, "memory_created_at"));
-    bind_num(st, 8, js_num(g, "memory_updated_at"));
-    bind_num(st, 9, js_num(g, "memory_covers_to"));
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)g->group_id);
+    sqlite3_bind_int(st, 3, g->is_orphaned ? 1 : 0);
+    bind_str(st, 4, edc_task_group_kind_name(g->kind));
+    bind_str(st, 5, g->memory);
+    bind_num(st, 6, (double)g->fold_epoch);
+    bind_num(st, 7, (double)g->memory_created_at);
+    bind_num(st, 8, (double)g->memory_updated_at);
+    bind_num(st, 9, (double)g->memory_covers_to);
     sqlite3_bind_int(st, 10, b->ord);
 }
 
@@ -1155,7 +1166,7 @@ static const char *INSERT_TASK =
 
 struct task_bind
 {
-    const cJSON *tj;
+    const struct edc_task *t;
     int64_t session_id;
     int ord;
 };
@@ -1163,85 +1174,92 @@ struct task_bind
 static void bind_task(sqlite3_stmt *st, void *ctx)
 {
     struct task_bind *b = ctx;
-    const cJSON *t = b->tj;
+    const struct edc_task *t = b->t;
     int i = 1;
-    sqlite3_bind_int64(st, i++, (sqlite3_int64)js_num(t, "task_id"));
+    sqlite3_bind_int64(st, i++, (sqlite3_int64)t->task_id);
     sqlite3_bind_int64(st, i++, (sqlite3_int64)b->session_id);
-    sqlite3_bind_int64(st, i++, (sqlite3_int64)js_num(t, "group_id"));
+    sqlite3_bind_int64(st, i++, (sqlite3_int64)t->group_id);
     sqlite3_bind_int(st, i++, b->ord);
-    bind_str(st, i++, js_str(t, "description") ? js_str(t, "description") : "");
-    bind_str(st, i++, js_str(t, "raw_input"));
-    bind_str(st, i++, js_str(t, "step"));
-    bind_str(st, i++, js_str(t, "life"));
-    bind_str(st, i++, js_str(t, "end"));
-    bind_str(st, i++, js_str(t, "blocked_by"));
-    bind_str(st, i++, js_str(t, "blocked_end"));
-    bind_str(st, i++, js_str(t, "fail"));
-    sqlite3_bind_int(st, i++, js_bool(t, "is_group_leader"));
-    sqlite3_bind_int(st, i++, js_bool(t, "bg"));
-    sqlite3_bind_int(st, i++, js_bool(t, "tool_only"));
-    sqlite3_bind_int(st, i++, js_bool(t, "deferred_vars"));
-    bind_str(st, i++, js_str(t, "memo_kind") ? js_str(t, "memo_kind") : "curate");
-    bind_str(st, i++, js_str(t, "sink"));
-    bind_str(st, i++, js_str(t, "sink_group_id"));
-    /* 0 = no cut; NULL in the column, so add_num_or_omit reads it back the same way. */
-    {
-        const double c = js_num(t, "fold_cut_task");
-        if (c > 0)
-            sqlite3_bind_int64(st, i++, (sqlite3_int64)c);
-        else
-            sqlite3_bind_null(st, i++);
-    }
-    bind_num(st, i++, js_num(t, "fold_cut_turn"));
-    bind_num(st, i++, js_num(t, "fold_cut_prefix"));
-    {
-        const double c = js_num(t, "memo_cut_task");
-        if (c > 0)
-            sqlite3_bind_int64(st, i++, (sqlite3_int64)c);
-        else
-            sqlite3_bind_null(st, i++);
-    }
-    bind_num(st, i++, js_num(t, "memo_cut_turn"));
-    bind_num(st, i++, js_num(t, "memo_cut_prefix"));
-    /* 0 = not forked; the column is NULL then (add_num_or_omit on the way back treats both
-     * the same, and a 0 FK would point at no task). */
-    {
-        const double fk = js_num(t, "forked_from_task_id");
-        if (fk > 0)
-            sqlite3_bind_int64(st, i++, (sqlite3_int64)fk);
-        else
-            sqlite3_bind_null(st, i++);
-    }
-    bind_num(st, i++, js_num(t, "fork_point_completion_seq"));
-    bind_str(st, i++, js_str(t, "output"));
-    bind_num(st, i++, js_num(t, "completion_seq"));
-    bind_num(st, i++, js_num(t, "tokens_prompt"));
-    bind_num(st, i++, js_num(t, "tokens_completion"));
-    bind_num(st, i++, js_num(t, "tokens_total"));
-    bind_num(st, i++, js_num(t, "tokens_cached"));
-    bind_num(st, i++, js_num(t, "last_total_tokens"));
-    bind_num(st, i++, js_num(t, "last_fold_epoch"));
-    bind_num(st, i++, js_num(t, "last_hist_len"));
-    bind_num(st, i++, js_num(t, "last_turn_len"));
-    bind_num(st, i++, js_num(t, "memo_seen_seq"));
-    bind_num(st, i++, js_num(t, "last_prefix_tokens"));
-    bind_str(st, i++, js_str(t, "redirect_stdout"));
-    bind_str(st, i++, js_str(t, "redirect_stderr"));
-    sqlite3_bind_int(st, i++, js_bool(t, "redirect_append"));
-    sqlite3_bind_int(st, i++, js_bool(t, "redirect_stderr_append"));
+    bind_str(st, i++, t->description ? t->description : "");
+    bind_str(st, i++, t->raw_input);
+    bind_str(st, i++, edc_task_step_name(t->step));
+    bind_str(st, i++, edc_task_life_name(t->life));
+    bind_str(st, i++, edc_task_end_name(t->end));
+    bind_str(st, i++, t->blocked_by);
+    /* Only meaningful when end == BLOCKED; NULL otherwise, exactly where the tree used to
+     * omit the key. The reader looks at this column only on that branch anyway. */
+    if (t->end == EDC_END_BLOCKED)
+        bind_str(st, i++, edc_task_end_name(t->blocked_end));
+    else
+        sqlite3_bind_null(st, i++);
+    /* NULL, not the string "NONE": every row already on disk has NULL for "no failure",
+     * and a column holding both spellings is a column whose "IS NULL" query lies. */
+    if (t->fail != EDC_FAIL_NONE)
+        bind_str(st, i++, edc_task_fail_name(t->fail));
+    else
+        sqlite3_bind_null(st, i++);
+    sqlite3_bind_int(st, i++, t->is_group_leader ? 1 : 0);
+    sqlite3_bind_int(st, i++, t->is_background ? 1 : 0);
+    sqlite3_bind_int(st, i++, t->tool_only ? 1 : 0);
+    sqlite3_bind_int(st, i++, t->has_deferred_vars ? 1 : 0);
+    /* The column's default is 'curate' (lowercase) and every existing row spells it that
+     * way, while edc_task_memo_kind_name() answers "CURATE" because it is also a display
+     * spelling. Classify accepts either, so this is about not splitting the vocabulary in
+     * one column -- "WHERE memo_kind='curate'" has to keep meaning what it says. */
+    bind_str(st, i++, t->memo_kind == EDC_MEMO_KIND_CURATE ? "curate"
+                                                            : edc_task_memo_kind_name(t->memo_kind));
+    bind_str(st, i++, edc_task_sink_name(t->sink));
+    if (t->sink_group && t->sink_group->group_id > 0)
+        sqlite3_bind_int64(st, i++, (sqlite3_int64)t->sink_group->group_id);
+    else
+        sqlite3_bind_null(st, i++);
+    /* 0 = no cut; NULL in the column, so the reader treats both the same. */
+    if (t->fold_cut_task_id > 0)
+        sqlite3_bind_int64(st, i++, (sqlite3_int64)t->fold_cut_task_id);
+    else
+        sqlite3_bind_null(st, i++);
+    bind_num(st, i++, (double)t->fold_cut_turn);
+    bind_num(st, i++, (double)t->fold_cut_prefix);
+    if (t->memo_cut_task_id > 0)
+        sqlite3_bind_int64(st, i++, (sqlite3_int64)t->memo_cut_task_id);
+    else
+        sqlite3_bind_null(st, i++);
+    bind_num(st, i++, (double)t->memo_cut_turn);
+    bind_num(st, i++, (double)t->memo_cut_prefix);
+    /* 0 = not a fork; a 0 FK would point at no task, so the column stays NULL. */
+    if (t->forked_from && t->forked_from->task_id > 0)
+        sqlite3_bind_int64(st, i++, (sqlite3_int64)t->forked_from->task_id);
+    else
+        sqlite3_bind_null(st, i++);
+    bind_num(st, i++, (double)t->fork_point_completion_seq);
+    bind_str(st, i++, t->output);
+    bind_num(st, i++, (double)t->completion_seq);
+    bind_num(st, i++, (double)t->tokens_prompt);
+    bind_num(st, i++, (double)t->tokens_completion);
+    bind_num(st, i++, (double)t->tokens_total);
+    bind_num(st, i++, (double)t->tokens_cached);
+    bind_num(st, i++, (double)t->last_total_tokens);
+    bind_num(st, i++, (double)t->last_fold_epoch);
+    bind_num(st, i++, (double)t->last_hist_len);
+    bind_num(st, i++, (double)t->last_turn_len);
+    bind_num(st, i++, (double)t->memo_seen_seq);
+    bind_num(st, i++, (double)t->last_prefix_tokens);
+    bind_str(st, i++, t->redirect_stdout);
+    bind_str(st, i++, t->redirect_stderr);
+    sqlite3_bind_int(st, i++, t->redirect_append ? 1 : 0);
+    sqlite3_bind_int(st, i++, t->redirect_stderr_append ? 1 : 0);
     {
         /* todos is an opaque JSON document: store its text, not a re-encode of it. */
-        const cJSON *todos = cJSON_GetObjectItem((cJSON *)t, "todos");
-        if (todos)
+        if (t->todos)
         {
-            char *txt = cJSON_PrintUnformatted((cJSON *)todos);
+            char *txt = cJSON_PrintUnformatted(t->todos);
             bind_str(st, i++, txt);
             cJSON_free(txt);
         }
         else
             sqlite3_bind_null(st, i++);
     }
-    bind_num(st, i++, js_num(t, "todo_sync_gap"));
+    bind_num(st, i++, (double)t->todo_sync_gap);
     sqlite3_bind_int64(st, i, (sqlite3_int64)time(NULL));
 }
 
@@ -1252,19 +1270,20 @@ static const char *INSERT_DEP =
 struct dep_bind
 {
     int64_t target;
-    const cJSON *dj;
+    const struct edc_task_dep *d;
     int ord;
 };
 
 static void bind_dep(sqlite3_stmt *st, void *ctx)
 {
     struct dep_bind *b = ctx;
+    const struct edc_task_dep *d = b->d;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)b->target);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)js_num(b->dj, "source_task_id"));
-    bind_str(st, 3, js_str(b->dj, "type") ? js_str(b->dj, "type") : "JOIN");
-    sqlite3_bind_int(st, 4, js_bool(b->dj, "completed"));
-    sqlite3_bind_int(st, 5, js_bool(b->dj, "cancelled"));
-    sqlite3_bind_int(st, 6, js_bool(b->dj, "injected"));
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)(d->source ? d->source->task_id : 0));
+    bind_str(st, 3, edc_task_dep_type_name(d->type));
+    sqlite3_bind_int(st, 4, d->completed ? 1 : 0);
+    sqlite3_bind_int(st, 5, d->cancelled ? 1 : 0);
+    sqlite3_bind_int(st, 6, d->injected ? 1 : 0);
     sqlite3_bind_int(st, 7, b->ord);
 }
 
@@ -1274,29 +1293,27 @@ static const char *INSERT_TOOL_CALL =
 struct tool_call_bind
 {
     int64_t task_id;
-    const cJSON *cj;
+    const struct edc_tool_call_record *rec;
     int ord;
 };
 
 static void bind_tool_call(sqlite3_stmt *st, void *ctx)
 {
     struct tool_call_bind *b = ctx;
+    const struct edc_tool_call_record *r = b->rec;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)b->task_id);
     sqlite3_bind_int(st, 2, b->ord);
-    bind_str(st, 3, js_str(b->cj, "call_id"));
-    bind_str(st, 4, js_str(b->cj, "name"));
+    bind_str(st, 3, r->call_id);
+    bind_str(st, 4, r->name);
+    if (r->args)
     {
-        const cJSON *args = cJSON_GetObjectItem((cJSON *)b->cj, "args");
-        if (args)
-        {
-            char *txt = cJSON_PrintUnformatted((cJSON *)args);
-            bind_str(st, 5, txt);
-            cJSON_free(txt);
-        }
-        else
-            sqlite3_bind_null(st, 5);
+        char *txt = cJSON_PrintUnformatted(r->args);
+        bind_str(st, 5, txt);
+        cJSON_free(txt);
     }
-    bind_str(st, 6, js_str(b->cj, "status") ? js_str(b->cj, "status") : "pending");
+    else
+        sqlite3_bind_null(st, 5);
+    bind_str(st, 6, r->status == TOOL_CALL_EXECUTING ? "executing" : "pending");
 }
 
 static const char *INSERT_TURN =
@@ -1316,24 +1333,25 @@ struct turn_bind
 {
     int64_t task_id;
     int turn_ord;
-    const cJSON *tj;
+    const struct edc_turn *turn;
     int is_active;
 };
 
 static void bind_turn(sqlite3_stmt *st, void *ctx)
 {
     struct turn_bind *b = ctx;
+    const struct edc_turn *turn = b->turn;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)b->task_id);
     sqlite3_bind_int(st, 2, b->turn_ord);
-    bind_num(st, 3, js_num(b->tj, "folded_prefix"));
-    bind_num(st, 4, js_num(b->tj, "memo_prefix"));
+    bind_num(st, 3, (double)turn->folded_prefix);
+    bind_num(st, 4, (double)turn->memo_prefix);
     sqlite3_bind_int(st, 5, b->is_active);
 
-    /* The counts the runtime reads back. They arrive IN the snapshot (turn_to_json) and
-     * are maintained on the live path by edc_msg_append's recount; the snapshot path must
-     * not walk message bodies, which it no longer carries. */
-    sqlite3_bind_int(st, 6, (int)js_num(b->tj, "msg_count"));
-    sqlite3_bind_int64(st, 7, (sqlite3_int64)js_num(b->tj, "token_count"));
+    /* Counts the runtime reads back. On the live path edc_msg_append keeps them current;
+     * INSERT_TURN recomputes both from the rows anyway (see its comment), so these two
+     * bindings are a formality -- but they are the shape of the insert. */
+    sqlite3_bind_int(st, 6, turn->msg_count);
+    sqlite3_bind_int64(st, 7, (sqlite3_int64)edc_turn_tokens_from((struct edc_turn *)turn, 0));
 }
 
 static const char *INSERT_MESSAGE =
@@ -1478,95 +1496,72 @@ static bool delete_stale(int64_t session_id)
 }
 
 /* Write one turn (its row plus its messages) for |task_id|. */
-static bool flush_turn(sqlite3 *db, int64_t task_id, int turn_ord, const cJSON *tj, int is_active)
+static bool flush_turn(sqlite3 *db, int64_t task_id, int turn_ord, const struct edc_turn *turn,
+                      int is_active)
 {
-    struct turn_bind tb = {task_id, turn_ord, tj, is_active};
-    if (!run_stmt(db, INSERT_TURN, "turn", bind_turn, &tb))
-        return false;
-
-    const cJSON *msgs = cJSON_GetObjectItem((cJSON *)tj, "messages");
-    if (!msgs || !cJSON_IsArray(msgs))
-        return true;
-    int ord = 0;
-    const cJSON *m = NULL;
-    cJSON_ArrayForEach(m, (cJSON *)msgs)
-    {
-        struct message_bind mb = {task_id, turn_ord, m, ord++};
-        if (!run_stmt(db, INSERT_MESSAGE, "message", bind_message, &mb))
-            return false;
-    }
-    return true;
+    struct turn_bind tb = {task_id, turn_ord, turn, is_active};
+    /* No message loop any more: a turn's messages are already rows (edc_msg_append), and the
+     * snapshot never carried them. The loop that used to be here read a "messages" key that
+     * nothing ever wrote. */
+    return run_stmt(db, INSERT_TURN, "turn", bind_turn, &tb);
 }
 
 /* Write one task and everything hanging off it. */
-static bool flush_task(sqlite3 *db, int64_t session_id, const cJSON *tj, int ord)
+static bool flush_task(sqlite3 *db, int64_t session_id, const struct edc_task *t, int ord)
 {
-    const int64_t task_id = (int64_t)js_num(tj, "task_id");
-    if (task_id <= 0)
+    if (!t || t->task_id <= 0)
         return true; /* nothing to key on: skip rather than fail the whole flush */
 
-    struct task_bind tb = {tj, session_id, ord};
+    struct task_bind tb = {t, session_id, ord};
     if (!run_stmt(db, INSERT_TASK, "task", bind_task, &tb))
         return false;
-    if (!mark_seen_task(task_id))
+    if (!mark_seen_task(t->task_id))
         return false;
 
     /* deps (outgoing edges) */
-    const cJSON *deps = cJSON_GetObjectItem((cJSON *)tj, "deps");
-    if (deps && cJSON_IsArray(deps))
     {
         int i = 0;
-        const cJSON *d = NULL;
-        cJSON_ArrayForEach(d, (cJSON *)deps)
+        for (const struct edc_task_dep *d = t->deps; d; d = d->next)
         {
-            struct dep_bind db_ind = {task_id, d, i++};
+            struct dep_bind db_ind = {t->task_id, d, i++};
             if (!run_stmt(db, INSERT_DEP, "dep", bind_dep, &db_ind))
                 return false;
         }
     }
 
     /* the incomplete-tool-call ledger */
-    const cJSON *calls = cJSON_GetObjectItem((cJSON *)tj, "tool_calls");
-    if (calls && cJSON_IsArray(calls))
     {
         int i = 0;
-        const cJSON *c = NULL;
-        cJSON_ArrayForEach(c, (cJSON *)calls)
+        for (const struct edc_tool_call_record *c = t->tool_calls; c; c = c->next)
         {
-            struct tool_call_bind cb = {task_id, c, i++};
+            struct tool_call_bind cb = {t->task_id, c, i++};
             if (!run_stmt(db, INSERT_TOOL_CALL, "tool_call", bind_tool_call, &cb))
                 return false;
         }
     }
 
-    /* committed turns, then the in-flight one. Active turns get turn_ord = count, which
-     * is what the design doc calls the tail, so (task_id, turn_ord) stays unique. */
-    const cJSON *turns = cJSON_GetObjectItem((cJSON *)tj, "turns");
+    /* committed turns, then the in-flight one at the tail (so (task_id, turn_ord) stays
+     * unique). */
     int turn_ord = 0;
-    if (turns && cJSON_IsArray(turns))
+    for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
     {
-        const cJSON *t = NULL;
-        cJSON_ArrayForEach(t, (cJSON *)turns)
-        {
-            if (!flush_turn(db, task_id, turn_ord, t, 0))
-                return false;
-            turn_ord++;
-        }
+        if (!flush_turn(db, t->task_id, turn_ord, t->turns.data[qi], 0))
+            return false;
+        turn_ord++;
     }
-    const cJSON *active = cJSON_GetObjectItem((cJSON *)tj, "active_turn");
-    if (active && cJSON_IsObject(active))
+    if (t->active_turn)
     {
-        if (!flush_turn(db, task_id, turn_ord, active, 1))
+        if (!flush_turn(db, t->task_id, turn_ord, t->active_turn, 1))
             return false;
         turn_ord++;
     }
 
     /* Turns past the end no longer exist (a revert shortened the conversation). Dropping
      * them takes their message rows with them, which is the intent. */
-    return delete_turns_from(task_id, turn_ord);
+    return delete_turns_from(t->task_id, turn_ord);
 }
 
-static bool flush_memo(sqlite3 *db, int64_t session_id, const cJSON *memo)
+static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session_memory *memo)
 {
     if (!memo)
         return true;
@@ -1578,9 +1573,9 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const cJSON *memo)
                                "UPDATE sessions SET memo_next_seq=?, memo_next_entry_id=?, "
                                "memo_pruned_before=? WHERE session_id=?", -1, &st, NULL) != SQLITE_OK)
             return false;
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)js_num(memo, "next_seq"));
-        sqlite3_bind_int64(st, 2, (sqlite3_int64)js_num(memo, "next_entry_id"));
-        sqlite3_bind_int64(st, 3, (sqlite3_int64)js_num(memo, "pruned_before"));
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)memo->next_seq);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)memo->next_entry_id);
+        sqlite3_bind_int64(st, 3, (sqlite3_int64)memo->pruned_before);
         sqlite3_bind_int64(st, 4, (sqlite3_int64)session_id);
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
@@ -1588,61 +1583,53 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const cJSON *memo)
             return false;
     }
 
-    const cJSON *events = cJSON_GetObjectItem((cJSON *)memo, "events");
-    if (events && cJSON_IsArray(events))
+    for (size_t i = 0; i < memo->event_count; i++)
     {
-        const cJSON *e = NULL;
-        cJSON_ArrayForEach(e, (cJSON *)events)
-        {
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(db,
-                                   "INSERT OR REPLACE INTO memo_events(session_id,seq,ts,entry_id,"
-                                   "kind,title,summary) VALUES(?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
-                return false;
-            sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
-            bind_num(st, 2, js_num(e, "seq"));
-            bind_num(st, 3, js_num(e, "ts"));
-            bind_str(st, 4, js_str(e, "entry_id"));
-            bind_str(st, 5, js_str(e, "kind"));
-            bind_str(st, 6, js_str(e, "title"));
-            bind_str(st, 7, js_str(e, "summary"));
-            const bool ok = sqlite3_step(st) == SQLITE_DONE;
-            sqlite3_finalize(st);
-            if (!ok)
-                return false;
-        }
+        const struct edc_memo_event *e = &memo->events[i];
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db,
+                               "INSERT OR REPLACE INTO memo_events(session_id,seq,ts,entry_id,"
+                               "kind,title,summary) VALUES(?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
+            return false;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+        bind_num(st, 2, (double)e->seq);
+        bind_num(st, 3, (double)e->ts);
+        bind_str(st, 4, e->entry_id);
+        bind_str(st, 5, edc_memo_event_kind_name(e->kind));
+        bind_str(st, 6, e->title);
+        bind_str(st, 7, e->summary);
+        const bool ok = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+        if (!ok)
+            return false;
     }
 
-    const cJSON *entries = cJSON_GetObjectItem((cJSON *)memo, "entries");
-    if (entries && cJSON_IsArray(entries))
+    for (size_t i = 0; i < memo->entry_count; i++)
     {
-        const cJSON *e = NULL;
-        cJSON_ArrayForEach(e, (cJSON *)entries)
-        {
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(db,
-                                   "INSERT OR REPLACE INTO memo_entries(session_id,entry_id,title,"
-                                   "summary,detail,sources,proposed_by,created_seq,updated_seq,"
-                                   "created_at,updated_at,superseded) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                                   -1, &st, NULL) != SQLITE_OK)
-                return false;
-            sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
-            bind_str(st, 2, js_str(e, "id"));
-            bind_str(st, 3, js_str(e, "title"));
-            bind_str(st, 4, js_str(e, "summary"));
-            bind_str(st, 5, js_str(e, "detail"));
-            bind_str(st, 6, js_str(e, "sources"));
-            bind_str(st, 7, js_str(e, "proposed_by"));
-            bind_num(st, 8, js_num(e, "created_seq"));
-            bind_num(st, 9, js_num(e, "updated_seq"));
-            bind_num(st, 10, js_num(e, "created_at"));
-            bind_num(st, 11, js_num(e, "updated_at"));
-            sqlite3_bind_int(st, 12, js_bool(e, "superseded"));
-            const bool ok = sqlite3_step(st) == SQLITE_DONE;
-            sqlite3_finalize(st);
-            if (!ok)
-                return false;
-        }
+        const struct edc_memo_entry *e = &memo->entries[i];
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db,
+                               "INSERT OR REPLACE INTO memo_entries(session_id,entry_id,title,"
+                               "summary,detail,sources,proposed_by,created_seq,updated_seq,"
+                               "created_at,updated_at,superseded) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                               -1, &st, NULL) != SQLITE_OK)
+            return false;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+        bind_str(st, 2, e->id);
+        bind_str(st, 3, e->title);
+        bind_str(st, 4, e->summary);
+        bind_str(st, 5, e->detail);
+        bind_str(st, 6, e->sources);
+        bind_str(st, 7, e->proposed_by);
+        bind_num(st, 8, (double)e->created_seq);
+        bind_num(st, 9, (double)e->updated_seq);
+        bind_num(st, 10, (double)e->created_at);
+        bind_num(st, 11, (double)e->updated_at);
+        sqlite3_bind_int(st, 12, e->superseded ? 1 : 0);
+        const bool ok = sqlite3_step(st) == SQLITE_DONE;
+        sqlite3_finalize(st);
+        if (!ok)
+            return false;
     }
     return true;
 }
@@ -1687,21 +1674,11 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
     const long long pages_before = out ? pages_written_now(&page_size) : -1;
     const int rows_before = out ? sqlite3_total_changes(g_db) : 0;
 
-    cJSON *root = edc_state_serialize(session, sched);
-    if (!root)
-    {
-        log_error("state_store: serialize failed for %s", edc_id_str(session->session_id));
-        return false;
-    }
-
     const int64_t session_id = session->session_id;
     bool ok = false;
 
     if (!exec_sql(g_db, "BEGIN IMMEDIATE", "flush BEGIN"))
-    {
-        cJSON_Delete(root);
         return false;
-    }
 
     /* Fork chains make tasks reference each other, so their FK checks cannot be
      * satisfied in arbitrary insert order. Deferring them to COMMIT is exactly what that
@@ -1729,63 +1706,48 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
     }
 
     {
-        const cJSON *sj = cJSON_GetObjectItem(root, "session");
-        struct session_bind sb = {sj, session_id};
+        struct session_bind sb = {session, session_id};
         if (!run_stmt(g_db, INSERT_SESSION, "session row", bind_session, &sb))
             goto rollback;
     }
 
+    /* Walk the tree itself. The order is the session's own member order, which is the order
+     * the list was built in, so a reload reproduces the same sequence. */
     {
-        const cJSON *groups = cJSON_GetObjectItem(root, "groups");
-        if (groups && cJSON_IsArray(groups))
+        struct edc_task_group *g;
+        int ord = 0;
+        DL_FOREACH(session->groups, g)
         {
-            int ord = 0;
-            const cJSON *g = NULL;
-            cJSON_ArrayForEach(g, (cJSON *)groups)
-            {
-                struct group_bind gb = {g, session_id, ord++};
-                if (!run_stmt(g_db, INSERT_GROUP, "group", bind_group, &gb))
-                    goto rollback;
-                if (!mark_seen_group((int64_t)js_num(g, "group_id")))
-                    goto rollback;
-                /* The file list is replaced wholesale: a path dropped from the group must
-                 * not survive as a stale row. Its rows are not an ancestor of anything. */
-                if (!delete_group_fold_files(session_id, (int64_t)js_num(g, "group_id")))
-                    goto rollback;
+            struct group_bind gb = {g, session_id, ord++};
+            if (!run_stmt(g_db, INSERT_GROUP, "group", bind_group, &gb))
+                goto rollback;
+            if (!mark_seen_group(g->group_id))
+                goto rollback;
+            /* The file list is replaced wholesale: a path dropped from the group must not
+             * survive as a stale row. Its rows are not an ancestor of anything. */
+            if (!delete_group_fold_files(session_id, g->group_id))
+                goto rollback;
 
-                const cJSON *files = cJSON_GetObjectItem((cJSON *)g, "fold_files");
-                if (files && cJSON_IsArray(files))
-                {
-                    int ford = 0;
-                    const cJSON *f = NULL;
-                    cJSON_ArrayForEach(f, (cJSON *)files)
-                    {
-                        sqlite3_stmt *st = NULL;
-                        if (sqlite3_prepare_v2(g_db,
-                                               "INSERT OR REPLACE INTO group_fold_files(session_id,"
-                                               "group_id,ord,path) VALUES(?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
-                            goto rollback;
-                        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
-                        bind_str(st, 2, js_str(g, "group_id"));
-                        sqlite3_bind_int(st, 3, ford++);
-                        bind_str(st, 4, cJSON_IsString((cJSON *)f) ? cJSON_GetStringValue((cJSON *)f) : NULL);
-                        const bool okf = sqlite3_step(st) == SQLITE_DONE;
-                        sqlite3_finalize(st);
-                        if (!okf)
-                            goto rollback;
-                    }
-                }
-            }
+            /* The tracked-file lists are NOT written, and that is the behaviour this used to
+             * have too: the old loop read the "fold_files" key from the snapshot and tested
+             * cJSON_IsArray on it, but edc_fold_files_to_json() produces an OBJECT
+             * ({modified:[],read:[]}), so the branch never fired and group_fold_files has
+             * always been empty. Persisting it needs a `kind` column (a path is either read or
+             * modified, and the table only has room for one flat list) -- a schema change of
+             * its own, so it is recorded here instead of being smuggled in with this one. */
         }
     }
 
     {
-        const cJSON *tasks = cJSON_GetObjectItem(root, "tasks");
-        if (tasks && cJSON_IsArray(tasks))
+        /* ONE counter for the whole session, not one per group: `tasks.ord` is read back as
+         * "ORDER BY group_id, ord", so a per-group counter would renumber every group after
+         * the first and rewrite rows that did not change. */
+        struct edc_task_group *g;
+        int ord = 0;
+        DL_FOREACH(session->groups, g)
         {
-            int ord = 0;
-            const cJSON *t = NULL;
-            cJSON_ArrayForEach(t, (cJSON *)tasks)
+            struct edc_task *t;
+            LL_FOREACH2(g->members, t, group_next)
             {
                 if (!flush_task(g_db, session_id, t, ord++))
                     goto rollback;
@@ -1793,7 +1755,7 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
         }
     }
 
-    if (!flush_memo(g_db, session_id, cJSON_GetObjectItem(root, "session_memory")))
+    if (!flush_memo(g_db, session_id, session->memo))
         goto rollback;
 
     if (!delete_stale(session_id))
@@ -1816,7 +1778,6 @@ done:
                             : -1;
         out->rows = (long long)(sqlite3_total_changes(g_db) - rows_before);
     }
-    cJSON_Delete(root);
     return ok;
 }
 

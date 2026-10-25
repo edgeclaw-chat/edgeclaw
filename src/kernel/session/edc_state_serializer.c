@@ -40,38 +40,6 @@
  *  Internal helpers — dep type ↔ string
  *  ══════════════════════════════════════════════════════════════ */
 
-static const char *dep_type_name(edc_task_dep_type t)
-{
-    switch (t)
-    {
-    case TASK_DEP_JOIN:
-        return "JOIN";
-    case TASK_DEP_SEQUENCE:
-        return "SEQUENCE";
-    case TASK_DEP_BARRIER:
-        return "BARRIER";
-    case TASK_DEP_UNLESS:
-        return "UNLESS";
-    default:
-        return "UNKNOWN";
-    }
-}
-
-static edc_task_dep_type dep_type_from_name(const char *name)
-{
-    if (!name)
-        return TASK_DEP_JOIN;
-    if (strcmp(name, "JOIN") == 0)
-        return TASK_DEP_JOIN;
-    if (strcmp(name, "SEQUENCE") == 0)
-        return TASK_DEP_SEQUENCE;
-    if (strcmp(name, "BARRIER") == 0)
-        return TASK_DEP_BARRIER;
-    if (strcmp(name, "UNLESS") == 0)
-        return TASK_DEP_UNLESS;
-    return TASK_DEP_JOIN;
-}
-
 /* ══════════════════════════════════════════════════════════════
  *  Serialize a single turn
  *
@@ -202,7 +170,7 @@ static cJSON *task_to_json(struct edc_task *task)
     {
         cJSON *d = cJSON_CreateObject();
         cJSON_AddNumberToObject(d, "source_task_id", dep->source ? (double)dep->source->task_id : 0);
-        cJSON_AddStringToObject(d, "type", dep_type_name(dep->type));
+        cJSON_AddStringToObject(d, "type", edc_task_dep_type_name(dep->type));
         cJSON_AddBoolToObject(d, "completed", dep->completed);
         cJSON_AddBoolToObject(d, "cancelled", dep->cancelled);
         cJSON_AddBoolToObject(d, "injected", dep->injected);
@@ -1134,7 +1102,7 @@ static void deser_deps(cJSON *json, struct task_map_entry **id_map, struct edc_s
         {
             cJSON *dj = cJSON_GetArrayItem(deps_json, j);
             const int64_t src_id = js_id(dj, "source_task_id");
-            edc_task_dep_type dt = dep_type_from_name(cJSON_GetStringValue(cJSON_GetObjectItem(dj, "type")));
+            edc_task_dep_type dt = edc_task_classify_dep_type(cJSON_GetStringValue(cJSON_GetObjectItem(dj, "type")));
             struct edc_task *source = task_map_get(id_map, src_id);
             if (!source)
             {
