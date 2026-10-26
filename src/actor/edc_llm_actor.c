@@ -183,6 +183,70 @@ static bool llm_message_needs_strip(const cJSON *msg)
     return false;
 }
 
+/* Which store-only keys were dropped, accumulated for ONE log line per request.
+ *
+ * This used to log inside the per-message loop above: a request carries thousands of
+ * messages and each one drops `id`/`ts`, so a single request wrote thousands of identical
+ * lines -- 3.9 million in one day, 401 MB of log, all saying "dropping 'id'". What the line
+ * is trying to say is a property of the MESSAGE SHAPE, not of an individual message, so it
+ * only needs saying once per request.
+ *
+ * Callers reset it per request with llm_wire_report_begin(). */
+static sds g_wire_dropped = NULL;
+
+/* The set is stored as ",key1,key2," -- a comma on BOTH sides of every key. That is what
+ * makes a membership test a single strstr(",key,"): the leading comma stops "read" matching
+ * inside "xread", and the TRAILING comma stops the last key in the set from needing a special
+ * case. (Without the trailing one, appending "ts" to ",id,ts" and then testing ",ts," failed
+ * to find it -- the set grew a duplicate on every message, which a 3000-message probe caught.)
+ *
+ * Empty set is "," (not ""), so appending is always sdscat(key) then sdscat(","). */
+static void llm_wire_note_dropped(const char *key)
+{
+    if (!key || !*key)
+        return;
+    /* Re-seed on EMPTY, not on NULL: llm_wire_report_begin() clears the buffer between
+     * requests, and checking the pointer left the first key of every request appended
+     * without its leading comma (",a" then looked like "a", and the set read back as
+     * "d,id_extra,id" -- the first two characters eaten when the report stripped its
+     * sentinels). */
+    if (!g_wire_dropped || sdslen(g_wire_dropped) == 0)
+    {
+        if (!g_wire_dropped)
+            g_wire_dropped = sdsempty();
+        sdsclear(g_wire_dropped);
+        g_wire_dropped = sdscat(g_wire_dropped, ",");
+    }
+
+    sds needle = sdscatprintf(sdsempty(), ",%s,", key);
+    const bool seen = strstr(g_wire_dropped, needle) != NULL;
+    sdsfree(needle);
+    if (seen)
+        return; /* the same keys repeat on every message: that is the whole point */
+
+    g_wire_dropped = sdscat(g_wire_dropped, key);
+    g_wire_dropped = sdscat(g_wire_dropped, ",");
+}
+
+/* Reset the accumulated set. Called once when a request body is built. */
+static void llm_wire_report_begin(void)
+{
+    if (g_wire_dropped)
+        sdsclear(g_wire_dropped); /* back to "", which note_dropped re-seeds with "," */
+}
+
+/* Say it once, if anything was dropped. The set is ",a,b,"; report it as "a,b". */
+static void llm_wire_report_end(void)
+{
+    if (!g_wire_dropped || sdslen(g_wire_dropped) <= 2)
+        return; /* just the sentinels: nothing was dropped */
+    sds shown = sdsnewlen(g_wire_dropped + 1, sdslen(g_wire_dropped) - 2);
+    log_debug("llm wire: dropped store-only message key(s) [%s] from every message "
+              "(they live in columns, not in the wire copy)",
+              shown);
+    sdsfree(shown);
+}
+
 static void llm_add_wire_message(cJSON *messages, cJSON *item)
 {
     if (!item)
@@ -197,11 +261,6 @@ static void llm_add_wire_message(cJSON *messages, cJSON *item)
     if (!copy)
         return;
     const cJSON *child = NULL;
-    cJSON_ArrayForEach(child, copy)
-    {
-        if (!edc_llm_wire_key_is_standard(child->string))
-            log_debug("llm wire: dropping store-only message key '%s'", child->string ? child->string : "?");
-    }
     /* Collect first, delete after: mutating while iterating the same list is how children get
      * skipped. */
     sds drop = sdsempty();
@@ -209,6 +268,7 @@ static void llm_add_wire_message(cJSON *messages, cJSON *item)
     {
         if (!edc_llm_wire_key_is_standard(child->string))
         {
+            llm_wire_note_dropped(child->string);
             drop = sdscatprintf(drop, "%s\n", child->string ? child->string : "");
         }
     }
@@ -252,6 +312,10 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
     if (req->max_tokens > 0)
         cJSON_AddNumberToObject(body, "max_tokens", req->max_tokens);
 
+    /* One request = one report. The dropped-key set is a property of the message shape, so
+     * it is said once here instead of once per message (see llm_wire_note_dropped). */
+    llm_wire_report_begin();
+
     cJSON *messages = cJSON_AddArrayToObject(body, "messages");
     for (int i = 0; i < cJSON_GetArraySize(req->history); ++i)
     {
@@ -264,6 +328,8 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         cJSON *item = NULL;
         cJSON_ArrayForEach(item, req->turn_tail) llm_add_wire_message(messages, item);
     }
+
+    llm_wire_report_end();
 
     /* Absolute tail: runtime system reminders (e.g. the latest todo reminder) -- after
      * the committed history window and the current turn, right where the model starts
