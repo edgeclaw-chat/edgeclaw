@@ -8,7 +8,8 @@
  *     the design, so it must not silently half-load);
  *   - a symlinked database is REFUSED (the workspace is model-writable; this exact hole
  *     was exploited once with jobs.json);
- *   - the workspace lock is exclusive (two agent processes would overwrite each other);
+ *   - the workspace lock is exclusive and released on close (two agent processes would
+ *     overwrite each other; a stale lock would make the next start fail forever);
  *   - close() checkpoints the WAL away.
  *
  * Uses a temp directory under $TMPDIR. tmpfs is on the local-filesystem whitelist, so the
@@ -21,11 +22,9 @@
 #include "log.h"
 #include "sqlite3.h"
 
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -63,37 +62,32 @@ static void free_config(struct edc_config *cfg)
     free(cfg);
 }
 
-/* Read one integer PRAGMA from a freshly opened connection to the same file. Opening a
- * second connection for inspection also proves the file is readable by others (it is a
- * normal SQLite database, not something locked away). */
-static int inspect_int(const char *path, const char *sql)
+/* Run one read-only query against the store and return its first column.
+ *
+ * NOT a second connection: the store takes the database exclusively (see the Locking note
+ * in edc_state_store.c), so while an agent runs the file is genuinely closed to anything
+ * else -- a second connection here would only prove that we get SQLITE_BUSY. Inspection
+ * goes through the store's own handle instead, which still reads ROWS (never the
+ * in-memory tree), so these assertions stay assertions about what is on disk. */
+static int inspect_int(const char *sql)
 {
-    sqlite3 *db = NULL;
-    int out = -999;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-    {
-        if (db)
-            sqlite3_close(db);
+    sqlite3 *db = edc_state_store_handle();
+    if (!db)
         return -998;
-    }
+    int out = -999;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
         out = sqlite3_column_int(st, 0);
     sqlite3_finalize(st);
-    sqlite3_close(db);
     return out;
 }
 
-static char *inspect_text(const char *path, const char *sql)
+static char *inspect_text(const char *sql)
 {
-    sqlite3 *db = NULL;
-    char *out = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-    {
-        if (db)
-            sqlite3_close(db);
+    sqlite3 *db = edc_state_store_handle();
+    if (!db)
         return NULL;
-    }
+    char *out = NULL;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK && sqlite3_step(st) == SQLITE_ROW)
     {
@@ -102,7 +96,6 @@ static char *inspect_text(const char *path, const char *sql)
             out = strdup((const char *)t);
     }
     sqlite3_finalize(st);
-    sqlite3_close(db);
     return out;
 }
 
@@ -136,11 +129,17 @@ static void test_open_creates_schema(void)
 static void test_pragmas(void)
 {
     printf("\n── PRAGMAs ──\n");
-    const char *path = edc_state_store_path();
 
-    char *mode = inspect_text(path, "PRAGMA journal_mode");
+    char *mode = inspect_text("PRAGMA journal_mode");
     CHECK(mode && strcmp(mode, "wal") == 0, "journal_mode is WAL");
     free(mode);
+
+    /* The one-process-per-workspace guarantee, taken from SQLite instead of a second lock
+     * (see the Locking note in edc_state_store.c). Asserted here because a silently
+     * ignored pragma would mean no exclusion at all. */
+    char *locking = inspect_text("PRAGMA locking_mode");
+    CHECK(locking && strcmp(locking, "exclusive") == 0, "locking_mode is EXCLUSIVE");
+    free(locking);
 
     /* synchronous: 0=OFF 1=NORMAL 2=FULL 3=EXTRA. Asserted on the STORE's connection --
      * these settings are per-connection, so a second connection would only show its own
@@ -161,8 +160,8 @@ static void test_pragmas(void)
     CHECK(edc_state_store_pragma_int("wal_autocheckpoint") == 1000,
           "wal_autocheckpoint is 1000 on the store connection");
 
-    /* user_version is a property of the FILE, so either connection may read it. */
-    CHECK(inspect_int(path, "PRAGMA user_version") == EDC_DB_VERSION,
+    /* user_version is a property of the FILE, not of a connection. */
+    CHECK(inspect_int("PRAGMA user_version") == EDC_DB_VERSION,
           "user_version is EDC_DB_VERSION");
 
     /* The name is interpolated into SQL; a non-identifier must be refused, not passed
@@ -175,7 +174,6 @@ static void test_pragmas(void)
 static void test_schema_tables(void)
 {
     printf("\n── schema ──\n");
-    const char *path = edc_state_store_path();
     const char *tables[] = {"sessions", "groups", "group_fold_files", "tasks", "task_deps",
                             "task_tool_calls", "turns", "messages", "memo_entries",
                             "memo_events", NULL};
@@ -185,15 +183,14 @@ static void test_schema_tables(void)
         char sql[160];
         snprintf(sql, sizeof(sql),
                  "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='%s'", tables[i]);
-        const int n = inspect_int(path, sql);
+        const int n = inspect_int(sql);
         char msg[160];
         snprintf(msg, sizeof(msg), "table %s exists", tables[i]);
         CHECK(n == 1, msg);
     }
 
     /* The messages table is WITHOUT ROWID and keyed by (task_id, turn_ord, msg_ord). */
-    CHECK(inspect_int(path,
-                      "SELECT count(*) FROM pragma_index_list('messages') WHERE name IS NOT NULL") >= 1,
+    CHECK(inspect_int("SELECT count(*) FROM pragma_index_list('messages') WHERE name IS NOT NULL") >= 1,
           "messages has the mid index");
 
     /* Both message indexes: mid is present, task_id is deliberately ABSENT.
@@ -201,37 +198,30 @@ static void test_schema_tables(void)
      * `count(*) ... WHERE task_id=?` as a COVERING INDEX, without reading `json`.
      * (An earlier version of this table was WITHOUT ROWID, where that index was actively
      * harmful; see the long comment on the DDL. On a rowid table it is merely redundant.) */
-    CHECK(inspect_int(path,
-                      "SELECT count(*) FROM sqlite_master WHERE type='index' "
+    CHECK(inspect_int("SELECT count(*) FROM sqlite_master WHERE type='index' "
                       "AND name='messages_by_mid'") == 1,
           "messages_by_mid exists");
-    CHECK(inspect_int(path,
-                      "SELECT count(*) FROM sqlite_master WHERE type='index' "
+    CHECK(inspect_int("SELECT count(*) FROM sqlite_master WHERE type='index' "
                       "AND name='messages_by_task'") == 0,
           "no redundant messages(task_id) index (the PK index covers counts)");
 
     /* The messages table is a ROWID table, not WITHOUT ROWID -- a measured 44% difference
      * on the load path (see the DDL comment). pragma_table_list().wr is 1 for WITHOUT
      * ROWID tables and 0 otherwise, which asserts the property directly. */
-    CHECK(inspect_int(path,
-                      "SELECT wr FROM pragma_table_list WHERE name='messages'") == 0,
+    CHECK(inspect_int("SELECT wr FROM pragma_table_list WHERE name='messages'") == 0,
           "messages is a rowid table (not WITHOUT ROWID) -- 44% faster to load");
 
     /* id is the identity, and the positional key keeps its own index. Losing either one is
      * a silent correctness/perf regression: without the index the loader full-scans (a
      * measured 400x), and without the unique id a message has no name of its own. */
-    CHECK(inspect_int(path,
-                      "SELECT count(*) FROM pragma_table_info('messages') WHERE name='id'") == 1,
+    CHECK(inspect_int("SELECT count(*) FROM pragma_table_info('messages') WHERE name='id'") == 1,
           "messages has an id column");
-    CHECK(inspect_int(path,
-                      "SELECT pk FROM pragma_table_info('messages') WHERE name='id'") == 1,
+    CHECK(inspect_int("SELECT pk FROM pragma_table_info('messages') WHERE name='id'") == 1,
           "id is the primary key");
-    CHECK(inspect_int(path,
-                      "SELECT count(*) FROM sqlite_master WHERE type='index' "
+    CHECK(inspect_int("SELECT count(*) FROM sqlite_master WHERE type='index' "
                       "AND name='messages_natural'") == 1,
           "the positional key has its own unique index (else the loader full-scans)");
-    CHECK(inspect_int(path,
-                      "SELECT count(*) FROM pragma_index_info('messages_natural')") == 3,
+    CHECK(inspect_int("SELECT count(*) FROM pragma_index_info('messages_natural')") == 3,
           "messages_natural covers (task_id, turn_ord, msg_ord)");
 
     /* Every timestamp column is INTEGER seconds -- no TEXT dates, no mixed units. */
@@ -244,7 +234,7 @@ static void test_schema_tables(void)
             sscanf(stamp_cols[i], "%31[^.].%31s", tbl, col);
             snprintf(sql, sizeof(sql),
                      "SELECT type FROM pragma_table_info('%s') WHERE name='%s'", tbl, col);
-            char *type = inspect_text(path, sql);
+            char *type = inspect_text(sql);
             snprintf(msg, sizeof(msg), "%s is INTEGER, not TEXT (%s)", stamp_cols[i],
                      type ? type : "missing");
             CHECK(type && strcmp(type, "INTEGER") == 0, msg);
@@ -325,18 +315,43 @@ static void test_lock_is_exclusive(void)
     struct edc_config *cfg = make_config();
     CHECK(edc_state_store_open(cfg), "open succeeds");
 
-    /* The store holds LOCK_EX on the database file. A second, independent open file
-     * description (flock is per description, so this really tests the lock) must not get
-     * it. This is what a second agent process would attempt. */
+    /* The store takes the database EXCLUSIVELY (locking_mode=EXCLUSIVE). A second
+     * connection -- what a second agent process would attempt, and equally what a second
+     * connection in this one would attempt -- must not get in. Both a reader and a writer
+     * are refused: the guarantee is about the whole database, not about a writer lock. */
     const char *path = edc_state_store_path();
-    const int fd = open(path, O_RDWR);
-    CHECK(fd >= 0, "can open the file for the lock probe");
-    if (fd >= 0)
+    const struct
     {
-        const int got = flock(fd, LOCK_EX | LOCK_NB);
-        CHECK(got != 0, "a second locker is refused while the store holds the lock");
-        close(fd);
+        int flags;
+        const char *what;
+    } kAttempts[] = {{SQLITE_OPEN_READONLY, "a second read-only connection"},
+                     {SQLITE_OPEN_READWRITE, "a second read-write connection"}};
+    for (size_t i = 0; i < sizeof(kAttempts) / sizeof(kAttempts[0]); i++)
+    {
+        sqlite3 *other = NULL;
+        const int rc = sqlite3_open_v2(path, &other, kAttempts[i].flags, NULL);
+        int busy = rc;
+        if (rc == SQLITE_OK)
+        {
+            sqlite3_stmt *st = NULL;
+            busy = sqlite3_prepare_v2(other, "SELECT count(*) FROM sessions", -1, &st, NULL);
+            if (busy == SQLITE_OK)
+                busy = sqlite3_step(st);
+            sqlite3_finalize(st);
+        }
+        sqlite3_close(other);
+        char msg[160];
+        snprintf(msg, sizeof(msg), "%s is refused with SQLITE_BUSY (%d)",
+                 kAttempts[i].what, busy);
+        CHECK(busy == SQLITE_BUSY || busy == SQLITE_LOCKED, msg);
     }
+
+    /* And closing releases it: a stale lock would make the next start fail forever. */
+    edc_state_store_close();
+    sqlite3 *after = NULL;
+    CHECK(sqlite3_open_v2(path, &after, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK,
+          "one read-only connection is allowed once the store is closed");
+    sqlite3_close(after);
 
     free_config(cfg);
 }

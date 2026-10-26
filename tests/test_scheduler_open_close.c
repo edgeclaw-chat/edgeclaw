@@ -32,47 +32,37 @@ volatile sig_atomic_t _run_loop = 1;
 
 /* The state used to be one JSON file; it is now rows in <ws>/edgeclaw.db. These two
  * helpers keep the shape of the original assertions ("is there state?", "does the state
- * mention X?") without pretending the file is still there. */
-static void state_db_path(char *out, size_t n, const char *ws)
-{
-    snprintf(out, n, "%s/edgeclaw.db", ws);
-}
+ * mention X?") without pretending the file is still there.
+ *
+ * Both read through edc_state_store_handle(): the store holds the database exclusively,
+ * so a second connection -- which is what these helpers used to open -- is refused while
+ * the scheduler runs. They still ask SQLite for ROWS, never the in-memory tree. */
 
 /* How many task rows the database holds. The database FILE appears as soon as the store
  * is opened, so "has anything been persisted yet" is a question about ROWS, not files. */
 static int state_task_rows(const char *ws)
 {
-    char path[512];
-    state_db_path(path, sizeof(path), ws);
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-    {
-        if (db)
-            sqlite3_close(db);
+    (void)ws;
+    sqlite3 *db = edc_state_store_handle();
+    if (!db)
         return -1;
-    }
     int n = -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, "SELECT count(*) FROM tasks", -1, &st, NULL) == SQLITE_OK &&
         sqlite3_step(st) == SQLITE_ROW)
         n = sqlite3_column_int(st, 0);
     sqlite3_finalize(st);
-    sqlite3_close(db);
     return n;
 }
 
-/* Every description and every message body, concatenated: enough for a strstr. */
+/* Every description and every message body, concatenated: enough for a strstr. Read
+ * through the store's own handle, for the reason given on state_task_rows(). */
 static sds read_state_text(const char *ws)
 {
-    char path[512];
-    state_db_path(path, sizeof(path), ws);
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-    {
-        if (db)
-            sqlite3_close(db);
+    (void)ws;
+    sqlite3 *db = edc_state_store_handle();
+    if (!db)
         return NULL;
-    }
     sds out = sdsempty();
     const char *queries[] = {"SELECT ifnull(description,'') FROM tasks",
                              /* v3 split the message: `body` holds the wire fields, the
@@ -95,7 +85,6 @@ static sds read_state_text(const char *ws)
         }
         sqlite3_finalize(st);
     }
-    sqlite3_close(db);
     if (sdslen(out) == 0)
     {
         sdsfree(out);

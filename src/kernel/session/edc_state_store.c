@@ -30,20 +30,11 @@
 #include "sds.h"
 #include "sqlite3.h"
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#include <io.h>
 #include <sys/stat.h>
-#else
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 #if defined(__linux__)
 #include <sys/vfs.h>
@@ -60,8 +51,6 @@ static sqlite3 *g_db = NULL;
 static sds g_db_path = NULL;   /* resolved absolute path, owned */
 static sds g_ws_dir = NULL;    /* resolved workspace it was opened for, owned */
 static sds g_ws_raw = NULL;    /* the workspace string as the caller spelled it, owned */
-static sds g_lock_path = NULL; /* same file, held via flock; owned */
-static int g_lock_fd = -1;
 
 /* Identity of the database file this connection was opened on. If the file is later
  * removed or replaced (a test that wipes its workspace, or someone deleting the database
@@ -450,8 +439,8 @@ static bool fs_type_is_local(const char *dir, const char **why)
 {
     (void)dir;
     (void)why;
-    /* Windows (NTFS/ReFS) and macOS (APFS/HFS+) are local by construction here; flock-
-     * backed locking is replaced by SQLite's own Windows locking. Nothing to check. */
+    /* Windows (NTFS/ReFS) and macOS (APFS/HFS+) are local by construction here; SQLite's
+     * own locking is used on both. Nothing to check. */
     return true;
 }
 #endif
@@ -488,63 +477,84 @@ static sds resolve_dir(const char *path)
     return out;
 }
 
-/* ── Locking ────────────────────────────────────────────────────────────────
- * The database allows concurrent processes, but two agent processes holding two
- * divergent in-memory trees would overwrite each other's semantics. One process per
- * workspace, enforced with a non-blocking exclusive flock on the database file itself
- * (a separate .lock file would be one more thing to symlink).
+/* ── One process per workspace ──────────────────────────────────────────────
+ * WAL already does the locking that protects PAGES: readers and the writer never block
+ * each other, and SQLite schedules concurrent writers itself. What WAL cannot protect is
+ * MEANING. Two agent processes each hold a divergent in-memory tree and each write a
+ * whole-session snapshot; SQLite commits both, the last one wins, and the user's data is
+ * gone with no error anywhere. "One agent process per workspace" is therefore ours to
+ * enforce.
  *
- * The descriptor stays open for the process lifetime: closing it releases the lock. */
-static bool acquire_lock(const char *path)
-{
-#ifdef _WIN32
-    /* Windows: SQLite's own locking plus a sharing-mode open is the equivalent; the
-     * exclusive-open contract is enforced by the OS on the file handle below. */
-    g_lock_fd = _open(path, _O_RDWR | _O_CREAT | _O_BINARY, 0644);
-    if (g_lock_fd < 0)
-    {
-        log_error("state_store: cannot open %s for locking: %s", path, strerror(errno));
-        return false;
-    }
-    return true;
-#else
-    g_lock_fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0644);
-    if (g_lock_fd < 0)
-    {
-        log_error("state_store: cannot open %s for locking: %s", path, strerror(errno));
-        return false;
-    }
-    if (flock(g_lock_fd, LOCK_EX | LOCK_NB) != 0)
-    {
-        if (errno == EWOULDBLOCK)
-            log_error("state_store: another edgeclaw instance is using this workspace "
-                      "(%s is locked). Refusing to start -- two processes would overwrite "
-                      "each other's session state.",
-                      path);
-        else
-            log_error("state_store: flock(%s) failed: %s", path, strerror(errno));
-        close(g_lock_fd);
-        g_lock_fd = -1;
-        return false;
-    }
-    return true;
-#endif
-}
+ * It is enforced with SQLite's OWN lock, not a second mechanism: locking_mode=EXCLUSIVE
+ * says "this database belongs to this connection", and every other connection -- another
+ * process, or a second one in this process -- gets SQLITE_BUSY until we close it. One
+ * invariant, one lock.
+ *
+ * Deliberately NOT a flock:
+ *  - not on the database file: on macOS/BSD flock() and the fcntl() locks SQLite uses are
+ *    the same domain, so holding one there makes SQLite's own first read fail with
+ *    SQLITE_BUSY and startup dies in quick_check;
+ *  - not on a sidecar .lock file: the workspace is model-writable, so that is one more
+ *    path the model can see, one more symlink to defend against, one more file for tests
+ *    and users to clean up, and one more thing to get wrong -- for no gain, since SQLite
+ *    already has the lock we need;
+ *  - not on the workspace directory: same objection, one fewer file but still a second
+ *    lock to keep in step with this one.
+ *
+ * The cost, stated plainly: while an agent runs, nothing else can read the database --
+ * `sqlite3 edgeclaw.db` included. Anything that needs to look at the rows of a LIVE store
+ * goes through edc_state_store_handle(). Diagnostics that only need the file (backup,
+ * export, integrity check) run against a stopped agent. If a hot read ever becomes a hard
+ * requirement, this is the decision to revisit, and the replacement is one flock on the
+ * workspace directory -- still a single lock, still no new file. */
 
-static void release_lock(void)
+/* Take the database exclusively, and give "another instance has it" its own sentence.
+ *
+ * locking_mode=EXCLUSIVE is only a request: the lock is actually taken by the next
+ * statement that reads the file. So the check has to force a read, and that read is the
+ * same quick_check(1) startup wants anyway -- one statement, both answers. */
+static bool claim_exclusive(sqlite3 *db, const char *path)
 {
-    if (g_lock_fd >= 0)
+    if (!exec_sql(db, "PRAGMA locking_mode=EXCLUSIVE", "PRAGMA locking_mode"))
+        return false;
+
+    /* Verified, not assumed: a silently ignored pragma would mean no exclusion at all,
+     * which is the same class of failure as a silently unhardened SQLite build. */
+    char *mode = query_text(db, "PRAGMA locking_mode");
+    const bool is_exclusive = mode && strcmp(mode, "exclusive") == 0;
+    if (!is_exclusive)
+        log_error("state_store: locking_mode is '%s', expected 'exclusive' -- refusing to "
+                  "run without the one-process-per-workspace guarantee",
+                  mode ? mode : "(none)");
+    free(mode);
+    if (!is_exclusive)
+        return false;
+
+    /* Cheap corruption probe before anything else touches the file, and the statement
+     * that actually takes the lock. On failure the WAL is left in place for
+     * `edgeclaw db salvage` rather than silently discarded. */
+    char *integrity = query_text(db, "PRAGMA quick_check(1)");
+    if (integrity && strcmp(integrity, "ok") == 0)
     {
-#ifndef _WIN32
-        flock(g_lock_fd, LOCK_UN);
-#endif
-#ifdef _WIN32
-        _close(g_lock_fd);
-#else
-        close(g_lock_fd);
-#endif
-        g_lock_fd = -1;
+        free(integrity);
+        return true;
     }
+
+    /* Distinguish "somebody else is here" from "this file is damaged": they need
+     * different sentences and different fixes, and a bare SQLITE_BUSY is not a
+     * diagnosable error. */
+    const int rc = sqlite3_errcode(db);
+    if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED)
+        log_error("state_store: another edgeclaw instance is using this workspace (%s is "
+                  "locked). Refusing to start -- two processes would overwrite each other's "
+                  "session state.",
+                  path);
+    else
+        log_error("state_store: database %s failed quick_check: %s (keep the -wal file for "
+                  "salvage)",
+                  path, integrity ? integrity : "(no answer)");
+    free(integrity);
+    return false;
 }
 
 /* ── PRAGMAs ────────────────────────────────────────────────────────────────
@@ -575,6 +585,12 @@ static void release_lock(void)
  *                             commit.
  *
  *   busy_timeout=5000         the scheduler thread must not fail on a transient lock.
+ *
+ *   locking_mode=EXCLUSIVE    "this database belongs to this connection": the one-process-
+ *                             per-workspace guarantee, taken from SQLite instead of a
+ *                             second lock of our own (see the Locking note above). Applied
+ *                             FIRST in open(), before this set, because the statement that
+ *                             takes the lock is also the corruption probe.
  *   foreign_keys=ON           the ON DELETE CASCADE cleanup depends on it, and it is OFF
  *                             by default per connection.
  *   trusted_schema=OFF        the workspace is model-writable: if a model plants a view
@@ -803,17 +819,13 @@ bool edc_state_store_open(struct edc_config *cfg)
     {
         sds wal = sdscatprintf(sdsempty(), "%s-wal", g_db_path);
         sds shm = sdscatprintf(sdsempty(), "%s-shm", g_db_path);
-        const bool ok = refuse_symlink(wal, "write-ahead log") && refuse_symlink(shm, "shared memory");
+        const bool ok = refuse_symlink(wal, "write-ahead log") &&
+                        refuse_symlink(shm, "shared memory");
         sdsfree(wal);
         sdsfree(shm);
         if (!ok)
             goto fail;
     }
-
-    /* One process per workspace. */
-    g_lock_path = sdsdup(g_db_path);
-    if (!acquire_lock(g_lock_path))
-        goto fail;
 
     /* Open the connection. Serialized threading (the library default) is fine: one writer
      * thread, and SQLite serializes for us if a reader ever appears. */
@@ -826,19 +838,10 @@ bool edc_state_store_open(struct edc_config *cfg)
         goto fail;
     }
 
-    /* Cheap corruption probe before anything else touches the file. On failure the WAL
-     * is left in place for `edgeclaw db salvage` rather than silently discarded. */
-    {
-        char *integrity = query_text(g_db, "PRAGMA quick_check(1)");
-        const bool ok = integrity && strcmp(integrity, "ok") == 0;
-        if (!ok)
-            log_error("state_store: database %s failed quick_check: %s (keep the -wal file "
-                      "for salvage)",
-                      g_db_path, integrity ? integrity : "(no answer)");
-        free(integrity);
-        if (!ok)
-            goto fail;
-    }
+    /* One process per workspace, then a corruption probe -- one statement each, see
+     * claim_exclusive(). */
+    if (!claim_exclusive(g_db, g_db_path))
+        goto fail;
 
     if (!apply_pragmas(g_db))
         goto fail;
@@ -870,9 +873,6 @@ fail:
         sqlite3_close(g_db);
         g_db = NULL;
     }
-    release_lock();
-    sdsfree(g_lock_path);
-    g_lock_path = NULL;
     sdsfree(g_db_path);
     g_db_path = NULL;
     sdsfree(g_ws_dir);
@@ -906,9 +906,6 @@ void edc_state_store_close(void)
         g_db = NULL;
     }
 
-    release_lock();
-    sdsfree(g_lock_path);
-    g_lock_path = NULL;
     sdsfree(g_db_path);
     g_db_path = NULL;
     sdsfree(g_ws_dir);
@@ -927,6 +924,11 @@ bool edc_state_store_is_open(void)
 const char *edc_state_store_path(void)
 {
     return g_db_path;
+}
+
+struct sqlite3 *edc_state_store_handle(void)
+{
+    return g_db;
 }
 
 /* A PRAGMA name is interpolated into SQL, so it has to be a bare identifier. Without this

@@ -99,6 +99,19 @@ void edc_state_store_close(void);
 
 bool edc_state_store_is_open(void);
 
+/* The store's own connection. NULL when the store is closed.
+ *
+ * WHY THIS EXISTS: the store holds the database exclusively (see the Locking note in
+ * edc_state_store.c), so while it is open there is no second connection to inspect it
+ * with -- not from another process, and not from this one. Anything that wants to see the
+ * rows as they are on disk RIGHT NOW has to come through here. Diagnostics that only need
+ * the file itself (backup, export, integrity check) run against a stopped agent.
+ *
+ * READ-ONLY BY CONTRACT. The store owns the schema, the PRAGMAs and the transaction
+ * boundaries: do not sqlite3_close() it, do not write through it, do not change its
+ * PRAGMAs. It exists for inspection (tests, and a future `edgeclaw db` subcommand). */
+struct sqlite3 *edc_state_store_handle(void);
+
 /* Absolute path of the open database, or NULL when closed. Borrowed, not a copy. */
 const char *edc_state_store_path(void);
 

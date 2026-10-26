@@ -113,16 +113,15 @@ static bool dump_skip_column(const char *name)
     return strcmp(name, "updated_at") == 0 || strcmp(name, "last_active") == 0;
 }
 
-/* Column names of |st|'s statement, as a NUL-separated list in one string (small n). */
-static sds dump_rows(const char *db_path, const char *session_id)
+/* Everything the dump reads, as text. Read through the store's own handle: the store holds
+ * the database exclusively, so the second connection this used to open would only get
+ * SQLITE_BUSY. The comparison is still a comparison of ROWS -- SQLite's, not the in-memory
+ * tree's -- which is what makes it a check on the mapping rather than a tautology. */
+static sds dump_rows(const char *session_id)
 {
-    sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-    {
-        if (db)
-            sqlite3_close(db);
+    sqlite3 *db = edc_state_store_handle();
+    if (!db)
         return NULL;
-    }
 
     sds out = sdsempty();
     for (size_t t = 0; t < sizeof(kDumpTables) / sizeof(kDumpTables[0]); t++)
@@ -201,7 +200,6 @@ static sds dump_rows(const char *db_path, const char *session_id)
         }
         sdsfree(cols);
     }
-    sqlite3_close(db);
     return out;
 }
 
@@ -363,8 +361,7 @@ static void test_roundtrip(void)
 
     CHECK(edc_state_store_flush(s1, sched1), "flush into the database");
 
-    sds db_path = sdscatprintf(sdsempty(), "%s/edgeclaw.db", g_dir);
-    sds before = dump_rows(db_path, "s-diff");
+    sds before = dump_rows("s-diff");
     CHECK(before != NULL && sdslen(before) > 0, "dumped the rows after the first flush");
 
     /* Load into a FRESH session object: that is what a restart does. Then persist it again --
@@ -376,7 +373,7 @@ static void test_roundtrip(void)
     CHECK(edc_state_store_load(s2, sched2), "load back from the database");
     CHECK(edc_state_store_flush(s2, sched2), "flush the reloaded session");
 
-    sds after = dump_rows(db_path, "s-diff");
+    sds after = dump_rows("s-diff");
     CHECK(after != NULL, "dumped the rows after the round trip");
 
     const bool same = before && after && strcmp(before, after) == 0;
@@ -386,7 +383,6 @@ static void test_roundtrip(void)
 
     sdsfree(before);
     sdsfree(after);
-    sdsfree(db_path);
 
     edc_session_free(s1);
     edc_scheduler_free(sched1);
