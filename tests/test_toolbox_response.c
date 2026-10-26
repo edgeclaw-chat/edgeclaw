@@ -141,6 +141,20 @@ static void probe_finish(int i, const char *result)
     cb(c->ctx, sdsnew(result), NULL);
 }
 
+/* Finish with a result sds AND an error, which is what edc_tools_memory does
+ * (`callback(ctx, err, edc_error_new(...))` where `err` is the message it built). The
+ * actor's callback keeps the error and must release the result -- overwriting the variable
+ * leaked one sds per failed memory call. */
+static void probe_finish_with_result_and_error(int i, const char *result, const char *error_message)
+{
+    struct probe_call *c = &probe.call[i];
+    void (*cb)(struct edc_toolbox_call_ctx *, sds, EdcError *) = c->cb;
+    if (!cb)
+        return;
+    c->cb = NULL;
+    cb(c->ctx, sdsnew(result), edc_error_new(EDC_ERR_INVAL, "%s", error_message));
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  Ports the scheduler drives
  *  ══════════════════════════════════════════════════════════════ */
@@ -365,6 +379,46 @@ static void test_round_trip_two_nodes(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Case 1b: a tool that fails AND hands over a result sds
+ *
+ *  The memory tools do this: they build the error message as an sds, pass it as the
+ *  result, and wrap the same text in an EdcError. The actor keeps the error, so it has to
+ *  release the result -- it used to overwrite the variable and leak the string, once per
+ *  failed memory call. Run under valgrind, this case is the difference.
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_result_and_error_together(void)
+{
+    TEST("a call that returns BOTH a result and an error keeps the error and frees the result");
+    struct harness h;
+    harness_up(&h, 100000);
+
+    const char *ids[] = {"c1"};
+    struct edc_task *t = new_waiting_task("t1b", ids, 1);
+    edc_task_tool_call_add(t, "c1", "t_probe", cJSON_Parse("{}"));
+
+    void *rid = (void *)0x100b;
+    edc_scheduler_register_task(h.sched, t, rid);
+    edc_toolbox_actor_redispatch(h.tb_actor, h.sched, t, rid);
+    pump(&h);
+    CHECK(probe.calls == 1, "the tool was entered");
+
+    probe_finish_with_result_and_error(0, "the message the tool built", "session memory is not reachable");
+    pump(&h);
+
+    const char *content = turn_tool_content(t->active_turn, "c1");
+    CHECK(content != NULL, "the turn got a tool message");
+    CHECK(content && strstr(content, "session memory is not reachable") != NULL,
+          "the ERROR is what reaches the model, not the result it superseded");
+    CHECK(content && strstr(content, "the message the tool built") == NULL,
+          "and the superseded result is not duplicated into it");
+    CHECK(content && strstr(content, "Analyze the error above") != NULL, "with the retry hint");
+
+    edc_task_free(t);
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Case 2: a tool that cannot run still answers
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -508,6 +562,7 @@ static void test_started_after_cancel(void)
 
 int main(void)
 {
+    test_result_and_error_together();
     edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== toolbox actor response side tests ===");
     log_info("");

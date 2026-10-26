@@ -39,9 +39,8 @@ static UT_icd ut_uint_icd = {sizeof(unsigned int), NULL, NULL, NULL};
  *      is a use-after-free. Everything the pool needs is copied into the job on the
  *      runner.
  *   2. ctx is safe by contrast. call_ctx is managed by the toolbox's inflight registry
- *      and is freed only in the callback -- holding it across this hop is architecture
- *      the code already supports (the "TODO: async exec" note at the end of
- *      edc_toolbox_actor.c was its placeholder; the shell already does this).
+ *      and is freed only in the callback -- holding it across this hop is the architecture
+ *      every async tool uses (the shell does the same with its spawn/exit pair).
  *
  * Aside (no behaviour change): the pool defaults to 4. Four stuck fs ops make later ones
  * queue, but the runner stays alive -- exactly the goal of this change. No deadline for

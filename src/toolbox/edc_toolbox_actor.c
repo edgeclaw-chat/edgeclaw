@@ -104,9 +104,16 @@ static void edc_toolbox_actor_inflight_free(struct edc_toolbox_call_ctx *call)
     edc_toolbox_call_ctx_free(call);
 }
 
-static char *_HINT = "\n\n[Analyze the error above and try a different approach.]";
-
-// TODO: fix error handle
+/* Appended to a tool failure so the model reads it as a failed attempt rather than as
+ * output. It is constant text -- a `char *` pointing at a string literal said otherwise.
+ *
+ * Every error that reaches here is one the model can act on: a bad or missing parameter, a
+ * tool outside the task's scope, an unknown tool name, a path that does not exist, a file
+ * that already exists, an occurrence count out of range, a sandbox refusal. Cancellation and
+ * timeout are NOT among them -- the shell tool reports those as `[command timed out]` inside
+ * the result with no EdcError at all, so no hint is added for them and the model is not told
+ * to "try a different approach" when the right move is to run it again. */
+static const char _HINT[] = "\n\n[Analyze the error above and try a different approach.]";
 /* Two ceilings, whichever comes first: bytes (tool_max_output_size, configurable) and lines
  * (EDC_TOOL_OUTPUT_MAX_LINES). Both are needed -- a log of very long lines and a file of
  * very many short ones hit different ones first, and a single number cannot describe both. */
@@ -194,19 +201,16 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
 {
     if (error)
     {
-        if (error->message)
+        /* A caller may hand over a result sds AND an error (edc_tools_memory does: it passes
+         * the message it built as the result and wraps the same text in an EdcError). The
+         * error supersedes it, so the result has to be released here -- overwriting the
+         * variable leaked one sds per failed memory call. */
+        if (result)
         {
-            log_error("DEBUG actor_callback: error->message='%s', error->code=%d, error ptr=%p, sdslen=%zu",
-                      error->message, error->code, (void *)error, sdslen(error->message));
-            result = sdsnew(error->message);
+            sdsfree(result);
+            result = NULL;
         }
-        else
-        {
-            log_error("DEBUG actor_callback: error->message=NULL, error->code=%d, error ptr=%p", error->code,
-                      (void *)error);
-            result = sdsnew("unknown error");
-        }
-        log_error("DEBUG actor_callback: after sdsnew, result='%s', len=%zu", result, sdslen(result));
+        result = sdsnew(error->message ? error->message : "unknown error");
         result = sdscat(result, _HINT);
         edc_error_free(error);
     }
@@ -270,7 +274,14 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     }
 }
 
-// TODO: async exec
+/* Every tool that can block already runs off this thread: the shell tool uv_spawn()s and
+ * completes from its exit callback, the fs tools uv_queue_work() their I/O, the device tools
+ * are uv_tcp/uv_timer state machines. edc_toolbox_exec() therefore DISPATCHES and returns --
+ * the only tools that answer synchronously are the in-memory ones (memory_*, todo), whose
+ * work is a few string operations.
+ *
+ * (A "TODO: async exec" used to sit here, from the initial commit. It was done in fff7b15
+ * "fix(fs): move the tool file I/O off the runner thread" and the note outlived it.) */
 static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;

@@ -147,7 +147,7 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcE
     if (!fout)
     {
         const char *s = strerror(errno);
-        edc_error_set(error, EDC_ERR_INVAL, "open %s for writting failed: %s", jobs_path, s);
+        edc_error_set(error, EDC_ERR_INVAL, "open %s for writing failed: %s", jobs_path, s);
         sdsfree(jobs_path);
         return false;
     }
