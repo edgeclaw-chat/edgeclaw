@@ -16,7 +16,6 @@
 #include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_token_estimate.h"
@@ -152,6 +151,15 @@ static int count_folded(struct edc_task_group *group)
         if (edc_task_has_folded_turns(t))
             n++;
     }
+    return n;
+}
+
+static int count_groups_in(struct edc_session *session)
+{
+    int n = 0;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+        n++;
     return n;
 }
 
@@ -494,15 +502,16 @@ static void test_fold_task_is_persisted(void)
     CHECK(fold != NULL, "折叠在飞");
     pump_schedule(sched);
 
-    cJSON *j = edc_state_serialize(session, sched);
-    CHECK(j != NULL, "可序列化");
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "tasks")) == 4, "tasks 块含折叠任务与策展任务 (落盘)");
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "groups")) == 2, "groups 块含系统组 (落盘)");
+    CHECK(edc_state_store_flush(session, sched), "可落盘");
 
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-disk"), "Disk");
     struct edc_scheduler *s2s = edc_scheduler_new(cfg);
     install_resolver(s2s, s2);
-    CHECK(edc_state_deserialize(j, s2, s2s), "读回成功");
+    CHECK(edc_state_store_load(s2, s2s), "读回成功");
+    /* The counts the document used to be inspected for: folding task, curation task and
+     * the user's own are all reachable from the loaded tree. */
+    CHECK(count_groups_in(s2) == 2, "两个组都落盘了 (用户组 + 系统组)");
+    CHECK(count_tasks_in(s2) == 4, "四个任务都落盘了 (含折叠与策展)");
     struct edc_task_group *sg2 = edc_session_find_system_group(s2);
     CHECK(sg2 != NULL && edc_task_group_is_system(sg2), "系统组读回来");
     struct edc_task *fold2 = sg2 ? sg2->members : NULL;
@@ -512,7 +521,6 @@ static void test_fold_task_is_persisted(void)
     CHECK(fold2 && fold2->sink_group && fold2->sink_group->group_id == group->group_id,
           "sink_group 解析回目标组");
 
-    cJSON_Delete(j);
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(s2);

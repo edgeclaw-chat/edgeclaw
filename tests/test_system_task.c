@@ -12,7 +12,6 @@
 #include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -275,17 +274,16 @@ static void test_system_task_persisted(void)
     fold->fold_cut_turn = 3;
     fold->fold_cut_prefix = 42;
 
-    cJSON *j = edc_state_serialize(s, sch);
-    CHECK(j != NULL, "可序列化");
-    cJSON *tasks = cJSON_GetObjectItem(j, "tasks");
-    CHECK(cJSON_GetArraySize(tasks) == 2, "tasks 块含用户任务 + 折叠任务");
-    cJSON *groups = cJSON_GetObjectItem(j, "groups");
-    CHECK(cJSON_GetArraySize(groups) == 2, "groups 块含用户组 + 系统组");
+    CHECK(edc_state_store_flush(s, sch), "可落盘");
 
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-p"), "P");
     struct edc_scheduler *sch2 = edc_scheduler_new(cfg);
     install_resolver(sch2, s2);
-    CHECK(edc_state_deserialize(j, s2, sch2), "反序列化成功");
+    CHECK(edc_state_store_load(s2, sch2), "读回成功");
+    /* The counts that used to be read out of the document: the user's task and the fold
+     * task, the user's group and the system group. */
+    CHECK(count_tasks(s2) == 2, "用户任务 + 折叠任务都落盘了");
+    CHECK(count_groups(s2) == 2, "用户组 + 系统组都落盘了");
     struct edc_task_group *sg2 = edc_session_find_system_group(s2);
     CHECK(sg2 != NULL && edc_task_group_is_system(sg2), "系统组读回来 (kind 由 leader 的 sink 派生)");
     struct edc_task *fold2 = sg2 ? sg2->members : NULL;
@@ -303,7 +301,6 @@ static void test_system_task_persisted(void)
         CHECK(fold2->active_turn != NULL, "折叠 prompt 的 active_turn 也读回来了");
     }
 
-    cJSON_Delete(j);
     edc_session_free(s);
     edc_scheduler_free(sch);
     edc_session_free(s2);

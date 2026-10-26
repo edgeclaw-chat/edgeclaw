@@ -18,7 +18,6 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_session_memory.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -454,13 +453,12 @@ static void test_serialization_tristate_and_v7(void)
     edc_task_mark_interrupted(leader);
     leader->memo_kind = EDC_MEMO_KIND_COMPACT;
 
-    cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize returns non-NULL");
+    CHECK(edc_state_store_flush(session, sched), "flush returns ok");
 
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, s2);
-    CHECK(edc_state_deserialize(json, s2, sched2), "v8 round-trips");
+    CHECK(edc_state_store_load(s2, sched2), "round-trips through the store");
     struct edc_task *r = edc_session_find_task(s2, edc_test_id("1"));
     CHECK(r != NULL, "task restored");
     CHECK(r && r->memo_kind == EDC_MEMO_KIND_COMPACT, "memo_kind=COMPACT round-trips");
@@ -469,49 +467,14 @@ static void test_serialization_tristate_and_v7(void)
     edc_session_free(s2);
     edc_scheduler_free(sched2);
 
-    /* A v7 archive: the task carries the old `memo_compact` bool and the turn has no
-     * `memo_prefix` at all. The loader must read COMPACT and normalize the turn's
-     * memo_prefix up to folded_prefix (what the old binary implicitly assumed). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(7));
-    cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
-    cJSON *tj = NULL;
-    cJSON_ArrayForEach(tj, tasks)
-    {
-        if (cJSON_GetObjectItem(tj, "memo_kind"))
-        {
-            cJSON_DeleteItemFromObject(tj, "memo_kind");
-            cJSON_AddBoolToObject(tj, "memo_compact", true);
-        }
-        cJSON *turns = cJSON_GetObjectItem(tj, "turns");
-        cJSON *turnj = NULL;
-        cJSON_ArrayForEach(turnj, turns)
-        {
-            cJSON_DeleteItemFromObject(turnj, "memo_prefix");
-        }
-    }
+    /* The v7-archive case is gone with the format it described: there is no JSON snapshot to
+     * hand-edit any more, and an old DATABASE is handled by tools/migrate_edgeclaw_db_*.py,
+     * not by the loader. What the old test checked here -- "memo_compact reads as COMPACT",
+     * "a turn without memo_prefix normalizes it up to folded_prefix" -- is now a property of
+     * those migrations. */
 
-    struct edc_session *s3 = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
-    struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
-    install_resolver(sched3, s3);
-    CHECK(edc_state_deserialize(json, s3, sched3), "v7 archive loads");
-    struct edc_task *r3 = edc_session_find_task(s3, edc_test_id("1"));
-    CHECK(r3 != NULL, "v7 task restored");
-    CHECK(r3 && r3->memo_kind == EDC_MEMO_KIND_COMPACT, "v7 memo_compact=true reads as COMPACT");
-    CHECK(r3 && ((struct edc_turn *)r3->turns.data[r3->turns.head])->memo_prefix ==
-                    ((struct edc_turn *)r3->turns.data[r3->turns.head])->folded_prefix,
-          "v7 missing memo_prefix normalizes to folded_prefix");
-    edc_session_free(s3);
-    edc_scheduler_free(sched3);
-
-    cJSON_Delete(json);
-    edc_session_free(session);
-    edc_scheduler_free(sched);
     edc_config_free(cfg);
 }
-
-/* ══════════════════════════════════════════════════════════════
- *  Test 9: the material keeps assistant tool calls (name + arguments)
- *  ══════════════════════════════════════════════════════════════ */
 
 static void test_material_keeps_tool_calls(void)
 {

@@ -9,7 +9,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
+#include "edc_state_store.h"
 #include "log.h"
 #include <ctype.h>
 #include <limits.h>
@@ -195,16 +195,15 @@ static void test_persist_roundtrip(void)
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
     struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-p"), "P", dir);
 
-    cJSON *json = edc_state_serialize(s, NULL);
-    CHECK(json != NULL, "serialize");
+    /* Through the store, which is the path production takes -- there is no intermediate
+     * document to inspect any more. */
+    CHECK(edc_state_store_flush(s, NULL), "save");
 
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-p"), "P");
     CHECK(edc_session_get_workdir(s2) == NULL, "fresh session starts unbound");
-    bool ok = edc_state_deserialize(json, s2, NULL);
-    CHECK(ok, "deserialize");
+    bool ok = edc_state_store_load(s2, NULL);
+    CHECK(ok, "load");
     CHECK(s2->workdir && strcmp(s2->workdir, real) == 0, "workdir restored from state");
-
-    cJSON_Delete(json);
     edc_session_free(s);
     edc_session_free(s2);
     edc_config_free(cfg);

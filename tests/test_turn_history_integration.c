@@ -1,4 +1,4 @@
-#include "edc_state_serializer.h"
+#include "edc_state_store.h"
 #include "test_ws.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -166,38 +166,29 @@ static void test_single_mode_roundtrip(void)
     struct edc_task_group *group = edc_task_group_new(task);
     edc_session_add_group(session, group);
 
-    cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize succeeds");
-
-    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
-    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
-
-    /* The snapshot carries the turn's SHAPE, not its message bodies: the bodies are rows
-     * in the store and are read on demand (see edc_state_store.h). */
-    CHECK(cJSON_GetObjectItem(turn_j, "messages") == NULL, "the snapshot does not embed messages");
-    CHECK(cJSON_GetNumberValue(cJSON_GetObjectItem(turn_j, "msg_count")) == 2, "msg_count = 2");
+    /* A turn's messages are ROWS in their own table; the turn carries only the shape
+     * (msg_count). Round-tripping through the store is what proves that now -- there is no
+     * document to inspect, which is the point. */
+    CHECK(edc_state_store_flush(session, sched), "flush succeeds");
 
     struct edc_session *session2 = edc_session_new(cfg, edc_test_session_id("sess-cpt2"), "Compact2");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, session2);
 
-    bool ok = edc_state_deserialize(json, session2, sched2);
-    CHECK(ok, "deserialize succeeds");
+    bool ok = edc_state_store_load(session2, sched2);
+    CHECK(ok, "load succeeds");
 
     struct edc_task *rt = find_task(session2, "task-1");
     CHECK(rt != NULL, "task restored");
     CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
 
     struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
-    CHECK(rturn->msg_count == 2, "2 messages restored in turn");
+    CHECK(rturn->msg_count == 2, "the turn kept its msg_count");
 
     cJSON *rm0 = edc_turn_msg_at(rturn, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(rm0, "content")),
                 "flush query", "msg0 content correct");
 
-    cJSON_Delete(json);
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(session2);
@@ -251,18 +242,20 @@ static void test_multi_turns(void)
 
     CHECK(edc_session_get_message_count(session) == 7, "session count = 7 (sum of turns)");
 
-    cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize succeeds");
+    CHECK(edc_state_store_flush(session, sched), "flush");
 
-    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    cJSON *t0j = cJSON_GetArrayItem(tasks_j, 0);
-    cJSON *turns_j = cJSON_GetObjectItem(t0j, "turns");
-    CHECK(cJSON_GetArraySize(turns_j) == 3, "3 turns in JSON");
-
-    for (int i = 0; i < 3; i++) {
-        cJSON *tj = cJSON_GetArrayItem(turns_j, i);
-        CHECK(cJSON_GetObjectItem(tj, "messages") == NULL, "the snapshot does not embed messages");
-        CHECK(cJSON_GetObjectItem(tj, "msg_count") != NULL, "msg_count present");
+    /* The turns are rows. What used to be read out of a document is now read back from the
+     * store, which is the only shape that exists. */
+    {
+        struct edc_session *rs = edc_session_new(cfg, edc_test_session_id("sess-mt"), "MultiTurn");
+        struct edc_scheduler *rsched = edc_scheduler_new(cfg);
+        install_resolver(rsched, rs);
+        CHECK(edc_state_store_load(rs, rsched), "load");
+        struct edc_task *rtask = find_task(rs, "task-mt");
+        CHECK(rtask != NULL, "the task came back");
+        CHECK(rtask && edc_queue_length(&rtask->turns) == 3, "3 turns came back");
+        edc_session_free(rs);
+        edc_scheduler_free(rsched);
     }
 
     /* 内容直接从 turn 队列读 */
@@ -273,7 +266,6 @@ static void test_multi_turns(void)
     m = edc_turn_msg_at(t2, 0);
     CHECK_STREQ(cJSON_GetStringValue(cJSON_GetObjectItem(m, "content")), "turn2-user", "turn2 msg0");
 
-    cJSON_Delete(json);
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_config_free(cfg);
@@ -305,14 +297,25 @@ static void test_empty_turn(void)
     CHECK(turn->msg_count == 0, "empty turn has 0 messages");
     CHECK(edc_session_get_message_count(session) == 0, "session count 0");
 
-    cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize succeeds");
-    cJSON *tasks_j = cJSON_GetObjectItem(json, "tasks");
-    cJSON *t0 = cJSON_GetArrayItem(tasks_j, 0);
-    cJSON *turns_j = cJSON_GetObjectItem(t0, "turns");
-    cJSON *turn_j = cJSON_GetArrayItem(turns_j, 0);
-    CHECK(cJSON_GetObjectItem(turn_j, "messages") == NULL, "empty turn has no messages array");
-    cJSON_Delete(json);
+    CHECK(edc_state_store_flush(session, sched), "flush");
+    /* An empty turn keeps msg_count 0 through the store -- there is nothing to embed. */
+    {
+        struct edc_session *rs = edc_session_new(cfg, edc_test_session_id("sess-etf"), "EmptyFlush");
+        struct edc_scheduler *rsched = edc_scheduler_new(cfg);
+        install_resolver(rsched, rs);
+        CHECK(edc_state_store_load(rs, rsched), "load");
+        struct edc_task *rtask = find_task(rs, "task-etf");
+        CHECK(rtask != NULL, "the task came back");
+        if (rtask && edc_queue_length(&rtask->turns) == 1)
+        {
+            struct edc_turn *rt = (struct edc_turn *)rtask->turns.data[rtask->turns.head];
+            CHECK(rt->msg_count == 0, "the empty turn still has 0 messages");
+        }
+        else
+            CHECK(false, "one turn came back");
+        edc_session_free(rs);
+        edc_scheduler_free(rsched);
+    }
 
     edc_session_free(session);
     edc_scheduler_free(sched);

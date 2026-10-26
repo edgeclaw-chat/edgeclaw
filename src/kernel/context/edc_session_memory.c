@@ -145,6 +145,52 @@ static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_
     return e;
 }
 
+/* ── Restore (load path) ───────────────────────────────────────
+ *
+ * The store reads rows and must reproduce what was saved EXACTLY -- the seq that orders the
+ * notice, the timestamps the index shows, the entry's created_seq/updated_seq which are the
+ * optimistic-concurrency "rev". The mutators above assign those themselves (add_event stamps
+ * "now", upsert_entry leaves them to the caller), so restoring through them would renumber
+ * the log on every restart. These take the values as stored.
+ *
+ * They live here, not in the store, because this module owns the shape: whoever else needs
+ * to read or write these tables calls these rather than touching the arrays. */
+struct edc_memo_event *edc_session_memory_restore_event(struct edc_session_memory *m, uint64_t seq, uint64_t ts,
+                                                       const char *entry_id, const char *kind_name,
+                                                       const char *title, const char *summary)
+{
+    return append_event(m, seq, ts, entry_id, edc_memo_event_classify_kind(kind_name), title, summary);
+}
+
+struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
+                                                       const char *title, const char *summary, const char *detail,
+                                                       const char *sources, const char *proposed_by,
+                                                       uint64_t created_seq, uint64_t updated_seq,
+                                                       uint64_t created_at, uint64_t updated_at, bool superseded)
+{
+    if (!m || !id)
+        return NULL;
+    void *grown = grow_array(m->entries, &m->entry_cap, sizeof(*m->entries), m->entry_count + 1);
+    if (!grown)
+        return NULL;
+    m->entries = grown;
+
+    struct edc_memo_entry *e = &m->entries[m->entry_count++];
+    memset(e, 0, sizeof(*e));
+    e->id = dup_or_null(id);
+    e->title = dup_or_null(title);
+    e->summary = dup_or_null(summary);
+    e->detail = detail ? sdsnew(detail) : NULL;
+    e->sources = dup_or_null(sources);
+    e->proposed_by = dup_or_null(proposed_by);
+    e->created_seq = created_seq;
+    e->updated_seq = updated_seq;
+    e->created_at = created_at;
+    e->updated_at = updated_at;
+    e->superseded = superseded;
+    return e;
+}
+
 uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
                                       enum edc_memo_event_kind kind, const char *title, const char *summary)
 {

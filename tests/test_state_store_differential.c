@@ -19,6 +19,7 @@
  * rules get their own assertions at the bottom of this file.
  */
 
+#include "sqlite3.h"
 #include "cJSON.h"
 #include "test_ws.h"
 #include "edc_compat.h"
@@ -27,7 +28,6 @@
 #include "edc_session_memory.h"
 #include "edc_scheduler.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -91,90 +91,149 @@ static void report_diff(const char *path, const char *what)
         fprintf(stderr, "        DIFF at %s: %s\n", path, what);
 }
 
-static void cmp_json(const cJSON *a, const cJSON *b, const char *path)
+/* The oracle is the DATABASE, because it is the only representation left.
+ *
+ * This test used to serialize the live tree and the reloaded tree and compare the two
+ * documents; with no document, "did every field survive" is answered by dumping the session's
+ * rows before and after the round trip. Two columns are excluded on purpose: `updated_at` is
+ * "now" by definition, and `last_active` moves when a session is touched -- neither is state
+ * the loader is supposed to restore.
+ *
+ * Rows are sorted so the comparison is about CONTENT. Ordering is covered separately by the
+ * ord-bearing tables, whose values are part of the dump. */
+static const char *const kDumpTables[] = {
+    "sessions", "groups", "tasks", "turns", "messages",
+    "task_deps", "task_tool_calls", "memo_entries", "memo_events", "group_fold_files",
+};
+
+static int cmp_sds_line(const void *a, const void *b);
+
+static bool dump_skip_column(const char *name)
 {
-    if (a == b)
-        return;
-    if (!a || !b)
+    return strcmp(name, "updated_at") == 0 || strcmp(name, "last_active") == 0;
+}
+
+/* Column names of |st|'s statement, as a NUL-separated list in one string (small n). */
+static sds dump_rows(const char *db_path, const char *session_id)
+{
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
     {
-        report_diff(path, a ? "missing in B" : "missing in A");
-        return;
+        if (db)
+            sqlite3_close(db);
+        return NULL;
     }
 
-    if (a->type != b->type)
+    sds out = sdsempty();
+    for (size_t t = 0; t < sizeof(kDumpTables) / sizeof(kDumpTables[0]); t++)
     {
-        /* A number written as 3 and read back as 3.0 is fine; anything else is not. */
-        if (!(cJSON_IsNumber(a) && cJSON_IsNumber(b)))
-        {
-            report_diff(path, "type differs");
-            return;
-        }
-    }
+        const char *table = kDumpTables[t];
 
-    if (cJSON_IsObject(a))
-    {
-        const cJSON *child = NULL;
-        cJSON_ArrayForEach(child, (cJSON *)a)
+        /* Which columns exist, and which of them to skip. */
+        sds cols = sdsempty();
+        int kept = 0;
         {
-            if (key_is_varying(child->string))
-                continue;
-            char sub[512];
-            snprintf(sub, sizeof(sub), "%s.%s", path, child->string ? child->string : "?");
-            cmp_json(child, cJSON_GetObjectItem((cJSON *)b, child->string), sub);
-        }
-        cJSON_ArrayForEach(child, (cJSON *)b)
-        {
-            if (key_is_varying(child->string))
-                continue;
-            if (!cJSON_GetObjectItem((cJSON *)a, child->string))
+            sds sql = sdscatprintf(sdsempty(), "PRAGMA table_info(%s)", table);
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK)
             {
-                char sub[512];
-                snprintf(sub, sizeof(sub), "%s.%s", path, child->string ? child->string : "?");
-                report_diff(sub, "present in B but not in A");
+                while (sqlite3_step(st) == SQLITE_ROW)
+                {
+                    const char *name = (const char *)sqlite3_column_text(st, 1);
+                    if (!name || dump_skip_column(name))
+                        continue;
+                    if (kept++)
+                        cols = sdscat(cols, ",");
+                    cols = sdscat(cols, name);
+                }
             }
+            sqlite3_finalize(st);
+            sdsfree(sql);
         }
-        return;
-    }
 
-    if (cJSON_IsArray(a))
-    {
-        const int na = cJSON_GetArraySize((cJSON *)a);
-        const int nb = cJSON_GetArraySize((cJSON *)b);
-        if (na != nb)
+        if (kept > 0)
         {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "length %d vs %d", na, nb);
-            report_diff(path, buf);
-            return;
+            sds sql = sdscatprintf(sdsempty(), "SELECT %s FROM %s", cols, table);
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK)
+            {
+                /* Collect the rows first so they can be sorted: a dump compared line by line
+                 * must not depend on the order the query happened to return. */
+                sds *lines = NULL;
+                size_t n = 0, cap = 0;
+                while (sqlite3_step(st) == SQLITE_ROW)
+                {
+                    sds line = sdscatprintf(sdsempty(), "%s|", table);
+                    for (int i = 0; i < kept; i++)
+                    {
+                        if (i)
+                            line = sdscat(line, "|");
+                        if (sqlite3_column_type(st, i) == SQLITE_NULL)
+                            line = sdscat(line, "\x01NULL");
+                        else
+                        {
+                            const unsigned char *txt = sqlite3_column_text(st, i);
+                            line = sdscat(line, txt ? (const char *)txt : "");
+                        }
+                    }
+                    if (n == cap)
+                    {
+                        cap = cap ? cap * 2 : 64;
+                        sds *grown = realloc(lines, cap * sizeof(*grown));
+                        if (!grown)
+                            break;
+                        lines = grown;
+                    }
+                    lines[n++] = line;
+                }
+                if (n > 1)
+                    qsort(lines, n, sizeof(*lines), cmp_sds_line);
+                for (size_t i = 0; i < n; i++)
+                {
+                    out = sdscat(out, lines[i]);
+                    out = sdscat(out, "\n");
+                    sdsfree(lines[i]);
+                }
+                free(lines);
+            }
+            sqlite3_finalize(st);
+            sdsfree(sql);
         }
-        for (int i = 0; i < na; i++)
-        {
-            char sub[512];
-            snprintf(sub, sizeof(sub), "%s[%d]", path, i);
-            cmp_json(cJSON_GetArrayItem((cJSON *)a, i), cJSON_GetArrayItem((cJSON *)b, i), sub);
-        }
-        return;
+        sdsfree(cols);
     }
+    sqlite3_close(db);
+    return out;
+}
 
-    if (cJSON_IsString(a))
+static int cmp_sds_line(const void *a, const void *b)
+{
+    const sds *x = a;
+    const sds *y = b;
+    return strcmp(*x, *y);
+}
+
+/* Report the first differences between two dumps, one line each. */
+static void report_dump_diff(const sds before, const sds after)
+{
+    int reported = 0;
+    char *tmp_a = sdsdup(before ? before : sdsempty());
+    char *tmp_b = sdsdup(after ? after : sdsempty());
+    char *save_a = NULL, *save_b = NULL;
+    for (char *la = strtok_r(tmp_a, "\n", &save_a), *lb = strtok_r(tmp_b, "\n", &save_b);
+         (la || lb) && reported < 25;
+         la = strtok_r(NULL, "\n", &save_a), lb = strtok_r(NULL, "\n", &save_b))
     {
-        const char *sa = cJSON_GetStringValue((cJSON *)a);
-        const char *sb = cJSON_GetStringValue((cJSON *)b);
-        if ((sa == NULL) != (sb == NULL) || (sa && strcmp(sa, sb) != 0))
-            report_diff(path, "string differs");
-        return;
+        if (la && lb && strcmp(la, lb) == 0)
+            continue;
+        if (!la || !lb || strcmp(la, lb) != 0)
+        {
+            fprintf(stderr, "        DIFF before: %.200s\n", la ? la : "(end)");
+            fprintf(stderr, "        DIFF after : %.200s\n", lb ? lb : "(end)");
+            reported++;
+        }
     }
-    if (cJSON_IsNumber(a))
-    {
-        if (cJSON_GetNumberValue((cJSON *)a) != cJSON_GetNumberValue((cJSON *)b))
-            report_diff(path, "number differs");
-        return;
-    }
-    if (cJSON_IsBool(a))
-    {
-        if (cJSON_IsTrue((cJSON *)a) != cJSON_IsTrue((cJSON *)b))
-            report_diff(path, "bool differs");
-    }
+    sdsfree(tmp_a);
+    sdsfree(tmp_b);
 }
 
 /* ── Fixture: one session that exercises every persisted structure ─────────── */
@@ -269,8 +328,14 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     g2->is_orphaned = false;
     edc_session_add_group(s, g2);
 
-    /* In-flight turn on the system task: the active_turn key. */
-    struct edc_turn *t3 = edc_turn_new();
+    /* In-flight turn on the system task: the active_turn key.
+     *
+     * Bound to the task's REAL key at creation. `edc_turn_new()` is the test helper, which
+     * keys the turn on a placeholder id; the messages it writes then live under that id, and
+     * a turn assigned to active_turn afterwards is never re-keyed (nothing calls
+     * edc_task_add_turn on it), so it would claim a message the store cannot find -- a
+     * msg_count with no rows behind it. The dump-based oracle below is what caught it. */
+    struct edc_turn *t3 = edc_turn_new_for(s->session_id, sys->group_id, sys->task_id, 0);
     add_msg(t3, "user", "in flight", "mid-c");
     sys->active_turn = t3;
 
@@ -296,35 +361,32 @@ static void test_roundtrip(void)
     install_sessions(sched1, s1);
     build_fixture(s1, sched1);
 
-    cJSON *j1 = edc_state_serialize(s1, sched1);
-    CHECK(j1 != NULL, "serialize the original");
     CHECK(edc_state_store_flush(s1, sched1), "flush into the database");
 
-    /* Load into a FRESH session object: that is what a restart does. */
+    sds db_path = sdscatprintf(sdsempty(), "%s/edgeclaw.db", g_dir);
+    sds before = dump_rows(db_path, "s-diff");
+    CHECK(before != NULL && sdslen(before) > 0, "dumped the rows after the first flush");
+
+    /* Load into a FRESH session object: that is what a restart does. Then persist it again --
+     * a load that lost a field would write the loss back, so the second dump is what proves
+     * the round trip carried everything. */
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("s-diff"), "Differential");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_sessions(sched2, s2);
     CHECK(edc_state_store_load(s2, sched2), "load back from the database");
+    CHECK(edc_state_store_flush(s2, sched2), "flush the reloaded session");
 
-    cJSON *j2 = edc_state_serialize(s2, sched2);
-    CHECK(j2 != NULL, "serialize the reloaded session");
+    sds after = dump_rows(db_path, "s-diff");
+    CHECK(after != NULL, "dumped the rows after the round trip");
 
-    g_diff_reported = 0;
-    cmp_json(j1, j2, "$");
-    CHECK(g_diff_reported == 0, "every field survived the round trip");
+    const bool same = before && after && strcmp(before, after) == 0;
+    if (!same)
+        report_dump_diff(before, after);
+    CHECK(same, "every row survived the round trip byte for byte");
 
-    if (g_diff_reported)
-    {
-        char *a = cJSON_PrintUnformatted(j1);
-        char *b = cJSON_PrintUnformatted(j2);
-        fprintf(stderr, "        --- original ---\n%.2000s\n", a ? a : "");
-        fprintf(stderr, "        --- reloaded ---\n%.2000s\n", b ? b : "");
-        cJSON_free(a);
-        cJSON_free(b);
-    }
-
-    cJSON_Delete(j1);
-    cJSON_Delete(j2);
+    sdsfree(before);
+    sdsfree(after);
+    sdsfree(db_path);
 
     edc_session_free(s1);
     edc_scheduler_free(sched1);

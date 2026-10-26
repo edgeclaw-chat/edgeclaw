@@ -34,7 +34,6 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_state_probe.h"
-#include "edc_state_serializer.h"
 #include "edc_task_group.h"
 #include "log.h"
 #include "sds.h"

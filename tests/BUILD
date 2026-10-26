@@ -488,19 +488,6 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
-cc_test(
-    name = "test_state_serializer",
-    srcs = ["test_state_serializer.c", "test_ws.h"],
-    deps = [
-        "//src/actor:actors",
-        "//src/common:common",
-        "//src/common:utlist_fix",
-        "//src/kernel:kernel",
-        "@log.c//:log.c",
-    ],
-    linkopts = LINK_OPTS,
-)
-
 # End-to-end cost through the public door (edc_session_save_state/load_state). Manual:
 #   EDGECLAW_STATE_PROBE=/tmp/probe/shell.csv \
 #     bazel run //tests:bench_shell -- <workspace> 40000 3
@@ -551,6 +538,7 @@ cc_test(
         "@cjson//:cjson",
         "@log.c//:log.c",
         "@sds//:sds",
+        "@sqlite3//:sqlite3",
     ],
     linkopts = LINK_OPTS,
 )
@@ -1588,23 +1576,3 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
-
-# One-shot importer: <workspace>/<session_id>/session.json -> edgeclaw.db.
-# Manual, obvious reason: it rewrites a real workspace. Usage:
-#   ./bazel-bin/tests/import_session_json <workspace> <session_id> [--dry-run]
-cc_binary(
-    name = "import_session_json",
-    srcs = ["import_session_json.c"],
-    tags = ["manual"],
-    deps = [
-        "//src/actor:actors",
-        "//src/common:common",
-        "//src/common:utlist_fix",
-        "//src/kernel:kernel",
-        "@cjson//:cjson",
-        "@log.c//:log.c",
-        "@sds//:sds",
-    ],
-    linkopts = LINK_OPTS,
-)
-

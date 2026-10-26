@@ -31,7 +31,6 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"

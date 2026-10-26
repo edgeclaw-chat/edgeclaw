@@ -1,4 +1,3 @@
-#include "edc_state_serializer.h"
 #include "test_ws.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"

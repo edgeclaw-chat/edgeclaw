@@ -23,7 +23,6 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -235,13 +234,14 @@ static void test_ledger_serialize(void)
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
 
-    cJSON *json = edc_state_serialize(s, sched);
-    CHECK(json != NULL, "serialize ok");
+    /* Through the store: there is no document to serialize any more, and flush/load is
+     * what a restart actually does. */
+    CHECK(edc_state_store_flush(s, sched), "flush ok");
 
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-l"), "L");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, s2);
-    CHECK(edc_state_deserialize(json, s2, sched2), "deserialize ok");
+    CHECK(edc_state_store_load(s2, sched2), "load ok");
 
     struct edc_task *rt = find_task(s2, "lt");
     CHECK(rt != NULL, "task restored");
@@ -262,7 +262,6 @@ static void test_ledger_serialize(void)
     CHECK(edc_task_tool_call_find(rt, "c1") != NULL && edc_task_tool_call_find(rt, "c2") != NULL,
           "ledger count == 2 (order c1,c2)");
 
-    cJSON_Delete(json);
     edc_session_free(s);
     edc_scheduler_free(sched);
     edc_session_free(s2);

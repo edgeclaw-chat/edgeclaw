@@ -7,7 +7,6 @@
 #include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
-#include "edc_state_serializer.h"
 #include "edc_state_probe.h"
 #include "edc_state_store.h"
 #include "edc_string_utils.h"
@@ -492,25 +491,20 @@ bool edc_session_save_state_tagged(struct edc_session *session, struct edc_sched
 
     if (probe)
     {
-        /* Everything below happens AFTER t1. The "bytes" half of the baseline needs the
-         * tree serialized a second time, which costs about as much as the flush itself --
-         * and charging it to dur_ms is exactly what made the first baseline read 0.32 ms
-         * for a 268-byte session. Instrumentation must never be what the timer sees. */
-        size_t doc_bytes = 0;
+        /* Everything below happens AFTER t1: instrumentation must never be what the timer
+         * sees.
+         *
+         * doc_bytes used to be "the tree serialized a second time". There is no tree any
+         * more -- flush binds the structs directly -- so there is no document whose size
+         * could be reported, and the number it produced described a copy that no longer
+         * exists. It is reported as 0 and the CSV column is documented as retired; the
+         * column that still means something is `io_bytes` (pages the pager actually wrote),
+         * which is measured inside the transaction. Re-deriving an equivalent figure here
+         * would be a second estimator to keep in step with the writer, which is the same
+         * mistake in a smaller form. */
+        const size_t doc_bytes = 0;
         long n_tasks = 0;
         long n_msgs = 0;
-
-        cJSON *tree = edc_state_serialize(session, sched);
-        if (tree)
-        {
-            char *txt = cJSON_PrintUnformatted(tree);
-            if (txt)
-            {
-                doc_bytes = strlen(txt);
-                cJSON_free(txt);
-            }
-            cJSON_Delete(tree);
-        }
 
         if (session)
         {

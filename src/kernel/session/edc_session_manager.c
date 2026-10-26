@@ -4,8 +4,12 @@
 #include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
 #include "edc_session.h"
-#include "edc_state_serializer.h"
 #include "edc_state_store.h"
+/* Both were pulled in transitively through edc_state_serializer.h until that file went
+ * away; include what this file actually uses rather than relying on the next header to
+ * do it. */
+#include "edc_task.h"
+#include "edc_task_group.h"
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"

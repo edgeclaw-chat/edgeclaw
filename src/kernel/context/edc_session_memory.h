@@ -126,6 +126,18 @@ extern struct edc_session_memory *edc_session_memory_new(void);
 extern void edc_session_memory_free(struct edc_session_memory *m);
 
 /* Append one event (returns its seq; 0 when allocation failed). */
+/* Restore one row verbatim (the load path). These take the stored seq / timestamps because
+ * the mutators above assign them; restoring through those would renumber the log. */
+extern struct edc_memo_event *edc_session_memory_restore_event(struct edc_session_memory *m, uint64_t seq, uint64_t ts,
+                                                              const char *entry_id, const char *kind_name,
+                                                              const char *title, const char *summary);
+extern struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
+                                                              const char *title, const char *summary,
+                                                              const char *detail, const char *sources,
+                                                              const char *proposed_by, uint64_t created_seq,
+                                                              uint64_t updated_seq, uint64_t created_at,
+                                                              uint64_t updated_at, bool superseded);
+
 extern uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
                                              enum edc_memo_event_kind kind, const char *title, const char *summary);
 

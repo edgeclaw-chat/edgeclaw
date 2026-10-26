@@ -10,6 +10,7 @@
  *  - the startup checks exist because the workspace is a MODEL-WRITABLE directory.
  */
 
+#include "edc_scheduler.h"
 #include "edc_state_store.h"
 
 #include "edc_config.h"
@@ -19,7 +20,6 @@
 #include "edc_path.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -1802,18 +1802,6 @@ static const char *col_str(sqlite3_stmt *st, int i)
     return sqlite3_column_type(st, i) == SQLITE_NULL ? NULL : (const char *)sqlite3_column_text(st, i);
 }
 
-static void add_display_ts(cJSON *o, const char *key, sqlite3_stmt *st, int i)
-{
-    if (sqlite3_column_type(st, i) == SQLITE_NULL)
-        return;
-    const sqlite3_int64 t = sqlite3_column_int64(st, i);
-    if (t <= 0)
-        return; /* 0 = unknown: omit, so the reader sees the same absence it always did */
-    sds disp = ts_to_display(t);
-    cJSON_AddStringToObject(o, key, disp ? disp : "");
-    sdsfree(disp);
-}
-
 static void add_num_or_omit(cJSON *o, const char *key, sqlite3_stmt *st, int i)
 {
     if (sqlite3_column_type(st, i) != SQLITE_NULL)
@@ -1851,163 +1839,8 @@ struct load_task_ctx
     cJSON *task;
 };
 
-/* Build the task object plus deps, tool_calls, turns and active_turn. */
-static cJSON *load_task_row(sqlite3_stmt *st)
-{
-    cJSON *tj = cJSON_CreateObject();
-    const sqlite3_int64 task_id = sqlite3_column_int64(st, 0);
-    if (task_id <= 0)
-    {
-        cJSON_Delete(tj);
-        return NULL;
-    }
-
-    cJSON_AddNumberToObject(tj, "task_id", (double)task_id);
-    cJSON_AddNumberToObject(tj, "group_id", (double)sqlite3_column_int64(st, 1));
-    add_str(tj, "session_id", col_str(st, 2));
-    add_str(tj, "description", col_str(st, 3));
-    add_str(tj, "raw_input", col_str(st, 4));
-    add_str(tj, "step", col_str(st, 5));
-    add_str(tj, "life", col_str(st, 6));
-    add_str(tj, "end", col_str(st, 7));
-    add_str(tj, "blocked_by", col_str(st, 8));
-    add_str(tj, "blocked_end", col_str(st, 9));
-    add_str(tj, "fail", col_str(st, 10));
-    cJSON_AddBoolToObject(tj, "is_group_leader", sqlite3_column_int(st, 11) != 0);
-    cJSON_AddBoolToObject(tj, "bg", sqlite3_column_int(st, 12) != 0);
-    cJSON_AddBoolToObject(tj, "tool_only", sqlite3_column_int(st, 13) != 0);
-    cJSON_AddBoolToObject(tj, "deferred_vars", sqlite3_column_int(st, 14) != 0);
-    add_str(tj, "memo_kind", col_str(st, 15));
-    add_str(tj, "sink", col_str(st, 16));
-    add_num_or_omit(tj, "sink_group_id", st, 17);
-    add_num_or_omit(tj, "fold_cut_task", st, 18);
-    add_num_or_omit(tj, "fold_cut_turn", st, 19);
-    add_num_or_omit(tj, "fold_cut_prefix", st, 20);
-    add_num_or_omit(tj, "memo_cut_task", st, 21);
-    add_num_or_omit(tj, "memo_cut_turn", st, 22);
-    add_num_or_omit(tj, "memo_cut_prefix", st, 23);
-    add_num_or_omit(tj, "forked_from_task_id", st, 24);
-    cJSON_AddNumberToObject(tj, "fork_point_completion_seq", (double)sqlite3_column_int64(st, 25));
-    add_str(tj, "output", col_str(st, 26));
-    cJSON_AddNumberToObject(tj, "completion_seq", (double)sqlite3_column_int64(st, 27));
-    cJSON_AddNumberToObject(tj, "tokens_prompt", (double)sqlite3_column_int64(st, 28));
-    cJSON_AddNumberToObject(tj, "tokens_completion", (double)sqlite3_column_int64(st, 29));
-    cJSON_AddNumberToObject(tj, "tokens_total", (double)sqlite3_column_int64(st, 30));
-    cJSON_AddNumberToObject(tj, "tokens_cached", (double)sqlite3_column_int64(st, 31));
-    cJSON_AddNumberToObject(tj, "last_total_tokens", (double)sqlite3_column_int64(st, 32));
-    cJSON_AddNumberToObject(tj, "last_fold_epoch", (double)sqlite3_column_int64(st, 33));
-    cJSON_AddNumberToObject(tj, "last_hist_len", (double)sqlite3_column_int64(st, 34));
-    cJSON_AddNumberToObject(tj, "last_turn_len", (double)sqlite3_column_int64(st, 35));
-    cJSON_AddNumberToObject(tj, "memo_seen_seq", (double)sqlite3_column_int64(st, 36));
-    cJSON_AddNumberToObject(tj, "last_prefix_tokens", (double)sqlite3_column_int64(st, 37));
-    add_str(tj, "redirect_stdout", col_str(st, 38));
-    add_str(tj, "redirect_stderr", col_str(st, 39));
-    cJSON_AddBoolToObject(tj, "redirect_append", sqlite3_column_int(st, 40) != 0);
-    cJSON_AddBoolToObject(tj, "redirect_stderr_append", sqlite3_column_int(st, 41) != 0);
-    {
-        const char *todos = col_str(st, 42);
-        if (todos)
-        {
-            cJSON *parsed = cJSON_Parse(todos);
-            if (parsed)
-                cJSON_AddItemToObject(tj, "todos", parsed);
-        }
-    }
-    cJSON_AddNumberToObject(tj, "todo_sync_gap", (double)sqlite3_column_int64(st, 43));
-
-    /* deps */
-    {
-        cJSON *deps = cJSON_CreateArray();
-        sqlite3_stmt *d = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT source_task_id,type,completed,cancelled,injected "
-                                     "FROM task_deps WHERE target_task_id=? ORDER BY ord",
-                               -1, &d, NULL) == SQLITE_OK)
-        {
-            sqlite3_bind_int64(d, 1, task_id);
-            while (sqlite3_step(d) == SQLITE_ROW)
-            {
-                cJSON *o = cJSON_CreateObject();
-                cJSON_AddNumberToObject(o, "source_task_id", (double)sqlite3_column_int64(d, 0));
-                add_str(o, "type", col_str(d, 1));
-                cJSON_AddBoolToObject(o, "completed", sqlite3_column_int(d, 2) != 0);
-                cJSON_AddBoolToObject(o, "cancelled", sqlite3_column_int(d, 3) != 0);
-                cJSON_AddBoolToObject(o, "injected", sqlite3_column_int(d, 4) != 0);
-                cJSON_AddItemToArray(deps, o);
-            }
-        }
-        sqlite3_finalize(d);
-        cJSON_AddItemToObject(tj, "deps", deps);
-    }
-
-    /* the resume ledger */
-    {
-        sqlite3_stmt *c = NULL;
-        cJSON *calls = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT call_id,name,args,status FROM task_tool_calls "
-                                     "WHERE task_id=? ORDER BY ord", -1, &c, NULL) == SQLITE_OK)
-        {
-            sqlite3_bind_int64(c, 1, task_id);
-            while (sqlite3_step(c) == SQLITE_ROW)
-            {
-                if (!calls)
-                    calls = cJSON_CreateArray();
-                cJSON *o = cJSON_CreateObject();
-                add_str(o, "call_id", col_str(c, 0));
-                add_str(o, "name", col_str(c, 1));
-                {
-                    const char *args = col_str(c, 2);
-                    if (args)
-                    {
-                        cJSON *parsed = cJSON_Parse(args);
-                        if (parsed)
-                            cJSON_AddItemToObject(o, "args", parsed);
-                    }
-                }
-                add_str(o, "status", col_str(c, 3));
-                cJSON_AddItemToArray(calls, o);
-            }
-        }
-        sqlite3_finalize(c);
-        if (calls)
-            cJSON_AddItemToObject(tj, "tool_calls", calls);
-    }
-
-    /* turns: committed ones, plus the active one as its own key */
-    {
-        cJSON *turns = cJSON_CreateArray();
-        cJSON *active = NULL;
-        sqlite3_stmt *t = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT turn_ord,folded_prefix,memo_prefix,is_active,"
-                                     "msg_count,token_count "
-                                     "FROM turns WHERE task_id=? ORDER BY turn_ord",
-                               -1, &t, NULL) == SQLITE_OK)
-        {
-            sqlite3_bind_int64(t, 1, task_id);
-            while (sqlite3_step(t) == SQLITE_ROW)
-            {
-                cJSON *o = cJSON_CreateObject();
-                /* The shape only: the bodies stay in the rows and are read on demand. */
-                cJSON_AddNumberToObject(o, "msg_count", (double)sqlite3_column_int(t, 4));
-                cJSON_AddNumberToObject(o, "token_count", (double)sqlite3_column_int64(t, 5));
-                cJSON_AddNumberToObject(o, "folded_prefix", (double)sqlite3_column_int(t, 1));
-                cJSON_AddNumberToObject(o, "memo_prefix", (double)sqlite3_column_int(t, 2));
-                if (sqlite3_column_int(t, 3) != 0)
-                    active = o;
-                else
-                    cJSON_AddItemToArray(turns, o);
-            }
-        }
-        sqlite3_finalize(t);
-        cJSON_AddItemToObject(tj, "turns", turns);
-        if (active)
-            cJSON_AddItemToObject(tj, "active_turn", active);
-    }
-
-    return tj;
-}
-
-/* The column list has to match the index order used by load_task_row. Kept in one place
- * so the two cannot drift silently. */
+/* The task columns, in the order `edc_state_store_load` reads them by index. Kept in one
+ * place so the SELECT and the index arithmetic in load() cannot drift silently. */
 static const char *SELECT_TASK_COLS =
     "task_id,group_id,session_id,description,raw_input,step,life,end_state,blocked_by,"
     "blocked_end,fail,is_group_leader,bg,tool_only,deferred_vars,memo_kind,sink,sink_group_id,"
@@ -2028,6 +1861,197 @@ static bool session_exists(int64_t session_id)
     return found;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ *  load: rows -> live structs, directly
+ *
+ *  This used to assemble a cJSON document from the columns and hand it to
+ *  edc_state_deserialize(), which mapped every field a second time (columns -> JSON ->
+ *  struct) and kept the restart rules somewhere other than the store that owns the data.
+ *  What the document was really carrying is the ORDER of the steps below and their
+ *  normalization; both are kept, the document is not.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+struct load_task_slot
+{
+    int64_t id;
+    struct edc_task *task;
+    struct load_task_slot *next;
+};
+
+struct load_group_slot
+{
+    int64_t id;
+    struct edc_task_group *group;
+    struct load_group_slot *next;
+};
+
+#define LOAD_MAP_BUCKETS 128
+
+static unsigned load_map_bucket(int64_t id)
+{
+    unsigned long long x = (unsigned long long)id;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return (unsigned)(x % LOAD_MAP_BUCKETS);
+}
+
+static void load_task_put(struct load_task_slot **map, int64_t id, struct edc_task *task)
+{
+    unsigned b = load_map_bucket(id);
+    struct load_task_slot *e = calloc(1, sizeof(*e));
+    e->id = id;
+    e->task = task;
+    e->next = map[b];
+    map[b] = e;
+}
+
+static struct edc_task *load_task_get(struct load_task_slot **map, int64_t id)
+{
+    if (id <= 0)
+        return NULL;
+    for (struct load_task_slot *e = map[load_map_bucket(id)]; e; e = e->next)
+        if (e->id == id)
+            return e->task;
+    return NULL;
+}
+
+static void load_task_map_free(struct load_task_slot **map)
+{
+    for (int i = 0; i < LOAD_MAP_BUCKETS; i++)
+    {
+        struct load_task_slot *e = map[i];
+        while (e)
+        {
+            struct load_task_slot *next = e->next;
+            free(e);
+            e = next;
+        }
+    }
+}
+
+static void load_group_put(struct load_group_slot **map, int64_t id, struct edc_task_group *group)
+{
+    unsigned b = load_map_bucket(id);
+    struct load_group_slot *e = calloc(1, sizeof(*e));
+    e->id = id;
+    e->group = group;
+    e->next = map[b];
+    map[b] = e;
+}
+
+static struct edc_task_group *load_group_get(struct load_group_slot **map, int64_t id)
+{
+    if (id <= 0)
+        return NULL;
+    for (struct load_group_slot *e = map[load_map_bucket(id)]; e; e = e->next)
+        if (e->id == id)
+            return e->group;
+    return NULL;
+}
+
+static void load_group_map_free(struct load_group_slot **map)
+{
+    for (int i = 0; i < LOAD_MAP_BUCKETS; i++)
+    {
+        struct load_group_slot *e = map[i];
+        while (e)
+        {
+            struct load_group_slot *next = e->next;
+            free(e);
+            e = next;
+        }
+    }
+}
+
+static int64_t col_i64(sqlite3_stmt *st, int i)
+{
+    return sqlite3_column_type(st, i) == SQLITE_NULL ? 0 : sqlite3_column_int64(st, i);
+}
+
+/* Detach |task| from every group's member list, so a task that two groups both claim ends up
+ * in exactly one. The member chain runs on `group_next` (not `next`) -- scanning with the
+ * wrong field silently does nothing, which is how the same object once ended up on two lists
+ * and got freed twice. */
+static void load_detach_from_groups(struct edc_session *session, struct edc_task *task, int64_t task_id,
+                                   struct edc_task_group *only_group)
+{
+    if (!session || !task)
+        return;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        if (only_group && g != only_group)
+            continue;
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t != task)
+                continue;
+            LL_DELETE2(g->members, t, group_next);
+            if (g->member_count > 0)
+                g->member_count--;
+            log_warn("load: task %lld detached from group %lld (a task belongs to one group only)",
+                     (long long)task_id, (long long)g->group_id);
+            break;
+        }
+    }
+}
+
+/* Final reconciliation of the dependency graph.
+ *
+ * The runtime fires cancel/complete events in time order; rows have no such order, so
+ * replaying them one by one would leave states the running process never had. This converges
+ * once, and it also mirrors a cascade the rows may not have recorded (a source that ended
+ * without producing takes its dependent with it -- the source's end can be newer than the
+ * last save). BARRIER and UNLESS both RELEASE instead: an order satisfied, or a source that
+ * did not succeed, is exactly why those two exist. */
+static void load_reconcile_deps(struct edc_task **tasks, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        struct edc_task *task = tasks[i];
+        if (!task)
+            continue;
+
+        struct edc_task_dep *dep;
+        LL_FOREACH(task->deps, dep)
+        {
+            if (dep->cancelled || dep->completed || !dep->source)
+                continue;
+            if (edc_task_is_finished(dep->source) && !edc_task_is_completed(dep->source))
+            {
+                if (edc_task_is_cancelled(dep->source))
+                    edc_task_on_dep_cancelled(task, dep->source);
+                else
+                    /* ERROR and INTERRUPTED: the loop did not finish the source, and an
+                     * interrupt is a manufactured error -- both cascade as a failure. */
+                    edc_task_on_dep_failed(task, dep->source);
+            }
+            else if (edc_task_is_completed(dep->source) && dep->type == TASK_DEP_UNLESS)
+            {
+                /* The inverse rule needs the same mirror: the source DID produce, so a `||`
+                 * dependent must be skipped even though the rows still say the edge is out. */
+                edc_task_on_dep_completed(task, dep->source);
+            }
+        }
+
+        size_t total = 0, completed = 0;
+        LL_FOREACH(task->deps, dep)
+        {
+            if (dep->cancelled)
+                continue;
+            total++;
+            if (dep->completed)
+                completed++;
+        }
+        task->deps_total = total;
+        task->deps_completed = completed;
+        if (edc_task_awaits_deps(task) && completed >= total)
+            edc_task_mark_ready(task);
+    }
+}
+
 bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sched)
 {
     if (!g_db || !session || session->session_id <= 0)
@@ -2037,205 +2061,524 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     if (!session_exists(session_id))
         return false; /* a brand-new session: nothing on disk, not a failure */
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "version", edc_state_schema_version());
+    /* The loader BUILDS the tree; it does not merge into whatever the session carried. */
+    session->groups = NULL;
+    session->active_task = NULL;
+    session->foreground_group = NULL;
 
-    /* ── session block ── */
+    struct load_task_slot *task_map[LOAD_MAP_BUCKETS] = {0};
+    struct load_group_slot *group_map[LOAD_MAP_BUCKETS] = {0};
+    struct edc_task **tasks = NULL;
+    size_t task_count = 0, task_cap = 0;
+    int64_t active_task_id = 0;
+    int64_t foreground_group_id = 0;
+    bool ok = false;
+
+    /* ── 1. the session row ─────────────────────────────────────────────── */
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db,
-                               "SELECT session_id,name,created_at,last_active,workdir,active_task_id,"
+                               "SELECT name,created_at,last_active,workdir,active_task_id,"
                                "foreground_group_id,next_completion_seq,memo_next_seq,"
                                "memo_next_entry_id,memo_pruned_before FROM sessions WHERE session_id=?",
                                -1, &st, NULL) != SQLITE_OK)
-        {
-            cJSON_Delete(root);
-            return false;
-        }
+            goto done;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
         if (sqlite3_step(st) != SQLITE_ROW)
         {
             sqlite3_finalize(st);
-            cJSON_Delete(root);
-            return false;
+            goto done;
         }
-        cJSON *sj = cJSON_CreateObject();
-        add_str(sj, "session_id", col_str(st, 0));
-        add_str(sj, "name", col_str(st, 1));
-        /* Integers all the way through: the deserializer reads numbers now, so there is no
-         * display-string round trip in the middle of a load. */
-        cJSON_AddNumberToObject(sj, "created_at", (double)sqlite3_column_int64(st, 2));
-        cJSON_AddNumberToObject(sj, "last_active", (double)sqlite3_column_int64(st, 3));
-        add_str(sj, "workdir", col_str(st, 4));
-        /* INTEGER columns: read them as numbers, or the deserializer sees nothing (a
-         * NULL text column would silently drop the pointer). */
-        add_num_or_omit(sj, "active_task_id", st, 5);
-        add_num_or_omit(sj, "foreground_group_id", st, 6);
-        cJSON_AddNumberToObject(sj, "next_completion_seq", (double)sqlite3_column_int64(st, 7));
-        cJSON_AddItemToObject(root, "session", sj);
+        const char *name = col_str(st, 0);
+        if (name && *name)
+        {
+            if (session->name)
+                sdsfree(session->name);
+            session->name = sdsnew(name);
+        }
+        session->created_at = (uint64_t)col_i64(st, 1);
+        session->last_active = (uint64_t)col_i64(st, 2);
+        active_task_id = col_i64(st, 4);
+        foreground_group_id = col_i64(st, 5);
+        session->next_completion_seq = (uint32_t)col_i64(st, 6);
 
-        /* The three memo counters belong to the session_memory block, not the session. */
-        cJSON *memo = cJSON_CreateObject();
-        cJSON_AddNumberToObject(memo, "next_seq", (double)sqlite3_column_int64(st, 8));
-        cJSON_AddNumberToObject(memo, "next_entry_id", (double)sqlite3_column_int64(st, 9));
-        cJSON_AddNumberToObject(memo, "pruned_before", (double)sqlite3_column_int64(st, 10));
-        cJSON_AddItemToObject(root, "session_memory", memo);
+        /* Through the API, so the sandbox grant happens with it. A path that no longer
+         * resolves leaves the session unbound rather than failing the whole load. */
+        const char *workdir = col_str(st, 3);
+        if (workdir && *workdir)
+        {
+            EdcError *werr = NULL;
+            if (!edc_session_set_workdir(session, workdir, &werr))
+            {
+                log_warn("load: session %s cannot restore working directory '%s': %s",
+                         edc_id_str(session_id), workdir, werr ? werr->message : "unknown");
+                if (werr)
+                    edc_error_free(werr);
+            }
+        }
+
+        /* Session memory: a fresh table carrying the stored counters. */
+        edc_session_memory_free(session->memo);
+        session->memo = edc_session_memory_new();
+        if (!session->memo)
+        {
+            sqlite3_finalize(st);
+            goto done;
+        }
+        session->memo->next_seq = (uint64_t)col_i64(st, 7);
+        session->memo->next_entry_id = (uint64_t)col_i64(st, 8);
+        session->memo->pruned_before = (uint64_t)col_i64(st, 9);
         sqlite3_finalize(st);
     }
 
-    /* ── groups ── */
+    /* ── 2. tasks ────────────────────────────────────────────────────────
+     *
+     * The restart rules, and why they are exactly these:
+     *
+     *   - `step` is kept VERBATIM. It says where the task was, and resume has to know.
+     *   - `life` converges: nothing runs after a restart, so ALIVE becomes INTERRUPTED --
+     *     except a fold/curation task, which goes back to READY so the end-of-message scan
+     *     redispatch it (it keeps its active_turn, sink group and cut).
+     *   - `end` NONE is derived from `life`: a CANCELLED task is treated as the user's stop
+     *     and an ERROR one as its own failure, never a cascade -- auto-releasing on a guess
+     *     is what this axis exists to prevent.
+     */
     {
-        cJSON *groups = cJSON_CreateArray();
+        char sql[1024];
+        snprintf(sql, sizeof(sql), "SELECT %s FROM tasks WHERE session_id=? ORDER BY task_id",
+                 SELECT_TASK_COLS);
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,"
-                                     "fold_epoch,memory_created_at,memory_updated_at,"
-                                     "memory_covers_to FROM groups WHERE session_id=? ORDER BY ord",
+        if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
+            goto done;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+        while (sqlite3_step(st) == SQLITE_ROW)
+        {
+            const int64_t task_id = col_i64(st, 0);
+            if (task_id <= 0)
+                continue;
+
+            const char *desc = col_str(st, 3);
+            struct edc_task *task = edc_task_new(task_id, session_id, col_i64(st, 1), desc ? desc : "",
+                                                 edc_channel_adapter);
+            if (!task)
+                continue;
+
+            const char *raw_input = col_str(st, 4);
+            if (raw_input && *raw_input)
+                task->raw_input = sdsnew(raw_input);
+
+            task->step = edc_task_classify_step(col_str(st, 5));
+            task->life = edc_task_classify_life(col_str(st, 6));
+            task->sink = edc_task_classify_sink(col_str(st, 16));
+            if (task->life == EDC_LIFE_ALIVE)
+            {
+                if (edc_task_is_memory_sink(task))
+                    task->step = EDC_TASKSTEP_READY;
+                else
+                    task->life = EDC_LIFE_INTERRUPTED;
+            }
+
+            task->end = edc_task_classify_end(col_str(st, 7));
+            if (task->end == EDC_END_NONE)
+            {
+                if (task->life == EDC_LIFE_INTERRUPTED)
+                    task->end = EDC_END_INTERRUPTED;
+                else if (task->life == EDC_LIFE_CANCELLED)
+                    task->end = EDC_END_STOPPED;
+                else if (task->life == EDC_LIFE_ERROR)
+                    task->end = EDC_END_FAILED;
+            }
+            if (task->end == EDC_END_BLOCKED)
+            {
+                const char *by = col_str(st, 8);
+                if (by && *by)
+                    task->blocked_by = strdup(by);
+                task->blocked_end = edc_task_classify_end(col_str(st, 9));
+            }
+            task->fail = edc_task_classify_fail(col_str(st, 10));
+
+            task->is_group_leader = sqlite3_column_int(st, 11) != 0;
+            task->is_background = sqlite3_column_int(st, 12) != 0;
+            task->tool_only = sqlite3_column_int(st, 13) != 0;
+            task->has_deferred_vars = sqlite3_column_int(st, 14) != 0;
+            task->memo_kind = edc_task_classify_memo_kind(col_str(st, 15));
+            task->fold_cut_task_id = col_i64(st, 18);
+            task->fold_cut_turn = (uint32_t)col_i64(st, 19);
+            task->fold_cut_prefix = (uint32_t)col_i64(st, 20);
+            task->memo_cut_task_id = col_i64(st, 21);
+            task->memo_cut_turn = (uint32_t)col_i64(st, 22);
+            task->memo_cut_prefix = (uint32_t)col_i64(st, 23);
+            task->fork_point_completion_seq = (uint32_t)col_i64(st, 25);
+            {
+                const char *output = col_str(st, 26);
+                if (output)
+                    task->output = sdsnew(output);
+            }
+            task->completion_seq = (uint32_t)col_i64(st, 27);
+            task->tokens_prompt = (long long)col_i64(st, 28);
+            task->tokens_completion = (long long)col_i64(st, 29);
+            task->tokens_total = (long long)col_i64(st, 30);
+            task->tokens_cached = (long long)col_i64(st, 31);
+            task->last_total_tokens = (long long)col_i64(st, 32);
+            task->last_fold_epoch = (uint32_t)col_i64(st, 33);
+            task->last_hist_len = (int)col_i64(st, 34);
+            task->last_turn_len = (int)col_i64(st, 35);
+            task->memo_seen_seq = (uint64_t)col_i64(st, 36);
+            task->last_prefix_tokens = (uint64_t)col_i64(st, 37);
+            {
+                const char *rout = col_str(st, 38);
+                if (rout)
+                    task->redirect_stdout = sdsnew(rout);
+                const char *rerr = col_str(st, 39);
+                if (rerr)
+                    task->redirect_stderr = sdsnew(rerr);
+            }
+            task->redirect_append = sqlite3_column_int(st, 40) != 0;
+            task->redirect_stderr_append = sqlite3_column_int(st, 41) != 0;
+            {
+                const char *todos = col_str(st, 42);
+                if (todos)
+                {
+                    cJSON *parsed = cJSON_Parse(todos);
+                    if (parsed)
+                        task->todos = parsed;
+                }
+            }
+            task->todo_sync_gap = (int)col_i64(st, 43);
+
+            load_task_put(task_map, task_id, task);
+            if (task_count == task_cap)
+            {
+                size_t ncap = task_cap ? task_cap * 2 : 16;
+                struct edc_task **grown = realloc(tasks, ncap * sizeof(*grown));
+                if (!grown)
+                {
+                    edc_task_free(task);
+                    continue;
+                }
+                tasks = grown;
+                task_cap = ncap;
+            }
+            tasks[task_count++] = task;
+        }
+        sqlite3_finalize(st);
+    }
+
+    /* ── 3. fork chains ─────────────────────────────────────────────────
+     * A parent pointer, so it only needs the tasks to exist. */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                               "SELECT task_id,forked_from_task_id FROM tasks "
+                               "WHERE session_id=? AND forked_from_task_id IS NOT NULL",
                                -1, &st, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
             while (sqlite3_step(st) == SQLITE_ROW)
             {
-                cJSON *gj = cJSON_CreateObject();
-                cJSON_AddNumberToObject(gj, "group_id", (double)sqlite3_column_int64(st, 0));
-                /* The leader is the task whose id equals group_id -- no column for it. */
-                cJSON_AddBoolToObject(gj, "is_orphaned", sqlite3_column_int(st, 1) != 0);
-                add_str(gj, "kind", col_str(st, 2));
-                add_str(gj, "memory", col_str(st, 3));
-                cJSON_AddNumberToObject(gj, "fold_epoch", (double)sqlite3_column_int64(st, 4));
-                cJSON_AddNumberToObject(gj, "memory_created_at", (double)sqlite3_column_int64(st, 5));
-                cJSON_AddNumberToObject(gj, "memory_updated_at", (double)sqlite3_column_int64(st, 6));
-                cJSON_AddNumberToObject(gj, "memory_covers_to", (double)sqlite3_column_int64(st, 7));
-
-                /* fold file list */
-                {
-                    sqlite3_stmt *f = NULL;
-                    cJSON *files = NULL;
-                    if (sqlite3_prepare_v2(g_db, "SELECT path FROM group_fold_files WHERE session_id=? "
-                                                 "AND group_id=? ORDER BY ord", -1, &f, NULL) == SQLITE_OK)
-                    {
-                        sqlite3_bind_int64(f, 1, (sqlite3_int64)session_id);
-                        sqlite3_bind_int64(f, 2, sqlite3_column_int64(st, 0));
-                        while (sqlite3_step(f) == SQLITE_ROW)
-                        {
-                            const char *path = col_str(f, 0);
-                            if (!path)
-                                continue;
-                            if (!files)
-                                files = cJSON_CreateArray();
-                            cJSON_AddItemToArray(files, cJSON_CreateString(path));
-                        }
-                    }
-                    sqlite3_finalize(f);
-                    if (files)
-                        cJSON_AddItemToObject(gj, "fold_files", files);
-                }
-
-                /* members, in group order */
-                {
-                    sqlite3_stmt *m = NULL;
-                    cJSON *members = cJSON_CreateArray();
-                    if (sqlite3_prepare_v2(g_db, "SELECT task_id FROM tasks WHERE session_id=? AND "
-                                                 "group_id=? ORDER BY ord", -1, &m, NULL) == SQLITE_OK)
-                    {
-                        sqlite3_bind_int64(m, 1, (sqlite3_int64)session_id);
-                        sqlite3_bind_int64(m, 2, sqlite3_column_int64(st, 0));
-                        while (sqlite3_step(m) == SQLITE_ROW)
-                            cJSON_AddItemToArray(members, cJSON_CreateNumber(
-                                (double)sqlite3_column_int64(m, 0)));
-                    }
-                    sqlite3_finalize(m);
-                    cJSON_AddItemToObject(gj, "member_task_ids", members);
-                }
-
-                cJSON_AddItemToArray(groups, gj);
+                struct edc_task *task = load_task_get(task_map, col_i64(st, 0));
+                struct edc_task *parent = load_task_get(task_map, col_i64(st, 1));
+                if (task && parent)
+                    task->forked_from = parent;
             }
         }
         sqlite3_finalize(st);
-        cJSON_AddItemToObject(root, "groups", groups);
     }
 
-    /* ── tasks ── */
+    /* ── 4. groups ──────────────────────────────────────────────────────
+     *
+     * The leader IS the task whose id equals group_id. An ORPHANED group has no such task
+     * (its ex-leader belongs to no group any more, so it was not written), and then the
+     * first member stands in -- but the group keeps the id from its own row. Deriving the id
+     * from whichever task we fell back to would silently rename the group, and every message
+     * row keyed on the old id would point at a group that no longer answers to it. */
     {
-        cJSON *tasks = cJSON_CreateArray();
-        char sql[1024];
-        snprintf(sql, sizeof(sql), "SELECT %s FROM tasks WHERE session_id=? ORDER BY group_id, ord",
-                 SELECT_TASK_COLS);
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
+        if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,fold_epoch,"
+                                     "memory_created_at,memory_updated_at,memory_covers_to "
+                                     "FROM groups WHERE session_id=? ORDER BY ord",
+                               -1, &st, NULL) != SQLITE_OK)
+            goto done;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+        while (sqlite3_step(st) == SQLITE_ROW)
+        {
+            const int64_t group_id = col_i64(st, 0);
+            const bool is_orph = sqlite3_column_int(st, 1) != 0;
+
+            struct edc_task *leader = load_task_get(task_map, group_id);
+            if (!leader && is_orph)
+            {
+                /* The first member, in the stored order. */
+                sqlite3_stmt *m = NULL;
+                if (sqlite3_prepare_v2(g_db,
+                                       "SELECT task_id FROM tasks WHERE session_id=? AND group_id=? "
+                                       "ORDER BY ord LIMIT 1", -1, &m, NULL) == SQLITE_OK)
+                {
+                    sqlite3_bind_int64(m, 1, (sqlite3_int64)session_id);
+                    sqlite3_bind_int64(m, 2, (sqlite3_int64)group_id);
+                    if (sqlite3_step(m) == SQLITE_ROW)
+                        leader = load_task_get(task_map, col_i64(m, 0));
+                }
+                sqlite3_finalize(m);
+            }
+            if (!leader)
+            {
+                log_warn("load: group %lld has no member to lead it -- skipped",
+                         (long long)group_id);
+                continue;
+            }
+
+            /* One task, one group: detach it from any other before attaching. */
+            load_detach_from_groups(session, leader, leader->task_id, NULL);
+
+            struct edc_task_group *group = edc_task_group_new(leader);
+            if (!group)
+                continue;
+
+            if (group_id > 0 && group->group_id != group_id)
+            {
+                group->group_id = group_id;
+                struct edc_task *m;
+                LL_FOREACH2(group->members, m, group_next)
+                    m->group_id = group_id;
+            }
+            if (is_orph)
+                group->is_orphaned = true;
+            group->kind = edc_task_group_classify_kind(col_str(st, 2));
+            {
+                const char *mem = col_str(st, 3);
+                if (mem)
+                    group->memory = sdsnew(mem);
+            }
+            group->fold_epoch = (uint32_t)col_i64(st, 4);
+            group->memory_created_at = (uint64_t)col_i64(st, 5);
+            group->memory_updated_at = (uint64_t)col_i64(st, 6);
+            group->memory_covers_to = (uint64_t)col_i64(st, 7);
+
+            /* members, in the stored order; the leader is already on the list */
+            {
+                sqlite3_stmt *m = NULL;
+                if (sqlite3_prepare_v2(g_db, "SELECT task_id FROM tasks WHERE session_id=? AND "
+                                             "group_id=? ORDER BY ord", -1, &m, NULL) == SQLITE_OK)
+                {
+                    sqlite3_bind_int64(m, 1, (sqlite3_int64)session_id);
+                    sqlite3_bind_int64(m, 2, (sqlite3_int64)group_id);
+                    while (sqlite3_step(m) == SQLITE_ROW)
+                    {
+                        const int64_t mid = col_i64(m, 0);
+                        if (mid <= 0 || mid == leader->task_id)
+                            continue;
+                        struct edc_task *mt = load_task_get(task_map, mid);
+                        if (!mt)
+                            continue;
+                        load_detach_from_groups(session, mt, mid, group);
+                        edc_task_group_add_task(group, mt);
+                    }
+                }
+                sqlite3_finalize(m);
+            }
+
+            edc_session_add_group(session, group);
+            load_group_put(group_map, group_id, group);
+        }
+        sqlite3_finalize(st);
+    }
+
+    /* ── 5. a fold task's sink group is a pointer; the row carries its id ──── */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                               "SELECT task_id,sink_group_id FROM tasks "
+                               "WHERE session_id=? AND sink_group_id IS NOT NULL", -1, &st, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
             while (sqlite3_step(st) == SQLITE_ROW)
             {
-                cJSON *tj = load_task_row(st);
-                if (tj)
-                    cJSON_AddItemToArray(tasks, tj);
+                struct edc_task *task = load_task_get(task_map, col_i64(st, 0));
+                if (task)
+                    task->sink_group = load_group_get(group_map, col_i64(st, 1));
             }
         }
         sqlite3_finalize(st);
-        cJSON_AddItemToObject(root, "tasks", tasks);
     }
 
-    /* ── memo events + entries ── */
+    /* ── 6. dependency edges ────────────────────────────────────────────
+     *
+     * A source in another session is not in our map. It is recorded as a PENDING edge for
+     * the app-level reconcile instead of being dropped: without it the target's deps_total
+     * would omit the dependency and it could be resumed before the source completes. */
     {
-        cJSON *memo = cJSON_GetObjectItem(root, "session_memory");
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                               "SELECT target_task_id,source_task_id,type,completed,cancelled,injected "
+                               "FROM task_deps WHERE target_task_id IN "
+                               "(SELECT task_id FROM tasks WHERE session_id=?) ORDER BY target_task_id,ord",
+                               -1, &st, NULL) != SQLITE_OK)
+            goto done;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+        while (sqlite3_step(st) == SQLITE_ROW)
         {
-            cJSON *events = cJSON_CreateArray();
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(g_db, "SELECT seq,ts,entry_id,kind,title,summary FROM memo_events "
-                                         "WHERE session_id=? ORDER BY seq", -1, &st, NULL) == SQLITE_OK)
+            const int64_t tid = col_i64(st, 0);
+            const int64_t src_id = col_i64(st, 1);
+            const edc_task_dep_type dt = edc_task_classify_dep_type(col_str(st, 2));
+            const bool completed = sqlite3_column_int(st, 3) != 0;
+            const bool cancelled = sqlite3_column_int(st, 4) != 0;
+            const bool injected = sqlite3_column_int(st, 5) != 0;
+
+            struct edc_task *target = load_task_get(task_map, tid);
+            if (!target)
+                continue;
+            struct edc_task *source = load_task_get(task_map, src_id);
+            if (!source)
             {
-                sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
-                while (sqlite3_step(st) == SQLITE_ROW)
+                if (sched)
+                    edc_scheduler_add_pending_dep(sched, tid, src_id, dt, completed, cancelled, injected);
+                continue;
+            }
+
+            edc_task_add_dependency(target, source, dt);
+            if (completed)
+                edc_task_on_dep_completed(target, source);
+            if (cancelled)
+                edc_task_on_dep_cancelled(target, source);
+            if (injected)
+            {
+                struct edc_task_dep *dep;
+                LL_FOREACH(target->deps, dep)
                 {
-                    cJSON *o = cJSON_CreateObject();
-                    cJSON_AddNumberToObject(o, "seq", (double)sqlite3_column_int64(st, 0));
-                    cJSON_AddNumberToObject(o, "ts", (double)sqlite3_column_int64(st, 1));
-                    add_str(o, "entry_id", col_str(st, 2));
-                    add_str(o, "kind", col_str(st, 3));
-                    add_str(o, "title", col_str(st, 4));
-                    add_str(o, "summary", col_str(st, 5));
-                    cJSON_AddItemToArray(events, o);
+                    if (dep->source == source)
+                    {
+                        dep->injected = true;
+                        break;
+                    }
                 }
             }
-            sqlite3_finalize(st);
-            cJSON_AddItemToObject(memo, "events", events);
         }
-        {
-            cJSON *entries = cJSON_CreateArray();
-            sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(g_db, "SELECT entry_id,title,summary,detail,sources,proposed_by,"
-                                         "created_seq,updated_seq,created_at,updated_at,superseded "
-                                         "FROM memo_entries WHERE session_id=? ORDER BY entry_id",
-                                   -1, &st, NULL) == SQLITE_OK)
-            {
-                sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
-                while (sqlite3_step(st) == SQLITE_ROW)
-                {
-                    cJSON *o = cJSON_CreateObject();
-                    add_str(o, "id", col_str(st, 0));
-                    add_str(o, "title", col_str(st, 1));
-                    add_str(o, "summary", col_str(st, 2));
-                    add_str(o, "detail", col_str(st, 3));
-                    add_str(o, "sources", col_str(st, 4));
-                    add_str(o, "proposed_by", col_str(st, 5));
-                    cJSON_AddNumberToObject(o, "created_seq", (double)sqlite3_column_int64(st, 6));
-                    cJSON_AddNumberToObject(o, "updated_seq", (double)sqlite3_column_int64(st, 7));
-                    cJSON_AddNumberToObject(o, "created_at", (double)sqlite3_column_int64(st, 8));
-                    cJSON_AddNumberToObject(o, "updated_at", (double)sqlite3_column_int64(st, 9));
-                    cJSON_AddBoolToObject(o, "superseded", sqlite3_column_int(st, 10) != 0);
-                    cJSON_AddItemToArray(entries, o);
-                }
-            }
-            sqlite3_finalize(st);
-            cJSON_AddItemToObject(memo, "entries", entries);
-        }
+        sqlite3_finalize(st);
     }
 
-    /* Hand the assembled tree to the ONE implementation of the restart normalization. */
-    const bool ok = edc_state_deserialize(root, session, sched);
-    cJSON_Delete(root);
+    load_reconcile_deps(tasks, task_count);
+
+    /* ── 7. the resume ledger ───────────────────────────────────────────── */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                               "SELECT task_id,call_id,name,args,status FROM task_tool_calls "
+                               "WHERE task_id IN (SELECT task_id FROM tasks WHERE session_id=?) "
+                               "ORDER BY task_id,ord", -1, &st, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+            while (sqlite3_step(st) == SQLITE_ROW)
+            {
+                struct edc_task *task = load_task_get(task_map, col_i64(st, 0));
+                if (!task)
+                    continue;
+                const char *args = col_str(st, 3);
+                cJSON *parsed = args ? cJSON_Parse(args) : NULL;
+                struct edc_tool_call_record *rec =
+                    edc_task_tool_call_add(task, col_str(st, 1), col_str(st, 2), parsed);
+                if (rec)
+                {
+                    const char *status = col_str(st, 4);
+                    rec->status = (status && strcmp(status, "executing") == 0) ? TOOL_CALL_EXECUTING
+                                                                              : TOOL_CALL_PENDING;
+                }
+                else if (parsed)
+                {
+                    cJSON_Delete(parsed);
+                }
+            }
+        }
+        sqlite3_finalize(st);
+    }
+
+    /* ── 8. turns ───────────────────────────────────────────────────────
+     * The ordinal IS the storage key the message rows were written under, so it is taken
+     * from the row rather than re-derived. is_active marks the in-flight turn, which hangs
+     * off the task as active_turn instead of the queue. */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db,
+                               "SELECT t.task_id,t.turn_ord,t.folded_prefix,t.memo_prefix,t.is_active,"
+                               "t.msg_count FROM turns t JOIN tasks k ON k.task_id=t.task_id "
+                               "WHERE k.session_id=? ORDER BY t.task_id,t.turn_ord", -1, &st, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+            while (sqlite3_step(st) == SQLITE_ROW)
+            {
+                struct edc_task *task = load_task_get(task_map, col_i64(st, 0));
+                if (!task)
+                    continue;
+                const int ord = (int)col_i64(st, 1);
+                struct edc_turn *turn = edc_turn_new_for(session_id, task->group_id, task->task_id, ord);
+                if (!turn)
+                    continue;
+                turn->folded_prefix = (int)col_i64(st, 2);
+                turn->memo_prefix = (int)col_i64(st, 3);
+                turn->msg_count = (int)col_i64(st, 5);
+
+                if (sqlite3_column_int(st, 4) != 0)
+                    task->active_turn = turn;
+                else
+                    edc_task_add_turn(task, turn);
+            }
+        }
+        sqlite3_finalize(st);
+    }
+
+    /* ── 9. the session's pointers ──────────────────────────────────────── */
+    session->active_task = load_task_get(task_map, active_task_id);
+    /* The foreground group is a session attribute; the scheduler keeps no copy, so there is
+     * no "current view" to restore here. */
+    session->foreground_group = load_group_get(group_map, foreground_group_id);
+
+    /* ── 10. the derived view, built the same way every other path builds it ── */
+    {
+        struct edc_task_group *g;
+        DL_FOREACH(session->groups, g)
+            edc_task_group_rebuild_history(g);
+    }
+
+    /* ── 11. session memory rows ────────────────────────────────────────── */
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db, "SELECT seq,ts,entry_id,kind,title,summary FROM memo_events "
+                                     "WHERE session_id=? ORDER BY seq", -1, &st, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+            while (sqlite3_step(st) == SQLITE_ROW)
+                edc_session_memory_restore_event(session->memo, (uint64_t)col_i64(st, 0),
+                                                 (uint64_t)col_i64(st, 1), col_str(st, 2), col_str(st, 3),
+                                                 col_str(st, 4), col_str(st, 5));
+        }
+        sqlite3_finalize(st);
+    }
+    {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(g_db, "SELECT entry_id,title,summary,detail,sources,proposed_by,"
+                                     "created_seq,updated_seq,created_at,updated_at,superseded "
+                                     "FROM memo_entries WHERE session_id=? ORDER BY entry_id",
+                               -1, &st, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+            while (sqlite3_step(st) == SQLITE_ROW)
+                edc_session_memory_restore_entry(session->memo, col_str(st, 0), col_str(st, 1),
+                                                 col_str(st, 2), col_str(st, 3), col_str(st, 4),
+                                                 col_str(st, 5), (uint64_t)col_i64(st, 6),
+                                                 (uint64_t)col_i64(st, 7), (uint64_t)col_i64(st, 8),
+                                                 (uint64_t)col_i64(st, 9), sqlite3_column_int(st, 10) != 0);
+        }
+        sqlite3_finalize(st);
+    }
+
+    ok = true;
+
+done:
+    load_task_map_free(task_map);
+    load_group_map_free(group_map);
+    free(tasks);
     if (!ok)
-        log_error("state_store: deserialize failed for %s", edc_id_str(session_id));
+        log_error("state_store: load failed for %s", edc_id_str(session_id));
     return ok;
 }
 

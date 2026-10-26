@@ -26,7 +26,6 @@
 #include "edc_session_store.h"
 #include "edc_state_store.h"
 #include "edc_shell.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
