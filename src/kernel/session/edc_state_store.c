@@ -156,9 +156,13 @@ static const char *const EDC_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS group_fold_files ("
     "  session_id INTEGER NOT NULL,"
     "  group_id   INTEGER NOT NULL,"
-    "  ord        INTEGER NOT NULL,"
+    /* Which list a path belongs to. v7: without it the two lists had to share one flat
+     * column, and the flush wrote NEITHER because it mistook the {"modified","read"} object
+     * for a flat array -- the table was empty on every workspace since the store landed. */
+    "  kind       TEXT NOT NULL,"
+    "  ord        INTEGER NOT NULL,"  /* per (group, kind) */
     "  path       TEXT NOT NULL,"
-    "  PRIMARY KEY (session_id, group_id, ord),"
+    "  PRIMARY KEY (session_id, group_id, kind, ord),"
     "  FOREIGN KEY (session_id, group_id) REFERENCES groups(session_id, group_id) ON DELETE CASCADE"
     ");"
 
@@ -1431,6 +1435,42 @@ static bool mark_seen_task(int64_t task_id)
     return ok;
 }
 
+/* Write one tracked-file list. |at| is the module's read-only accessor, so the caller does
+ * not need to know how many entries there are beyond the count it passes. */
+static bool bind_fold_files(sqlite3 *db, int64_t session_id, int64_t group_id, const char *kind,
+                            const struct edc_fold_files *files, size_t count,
+                            const char *(*at)(const struct edc_fold_files *, size_t))
+{
+    if (!count)
+        return true; /* an empty list writes nothing; the delete already cleared the group */
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+                           "INSERT OR REPLACE INTO group_fold_files(session_id,group_id,kind,ord,path) "
+                           "VALUES(?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
+        return false;
+
+    bool ok = true;
+    for (size_t i = 0; i < count; i++)
+    {
+        const char *path = at(files, i);
+        if (!path)
+            continue;
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+        sqlite3_bind_int64(st, 2, (sqlite3_int64)group_id);
+        bind_str(st, 3, kind);
+        sqlite3_bind_int(st, 4, (int)i);
+        bind_str(st, 5, path);
+        if (sqlite3_step(st) != SQLITE_DONE)
+            ok = false;
+        sqlite3_reset(st);
+        if (!ok)
+            break;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool delete_group_fold_files(int64_t session_id, int64_t group_id)
 {
     sqlite3_stmt *st = NULL;
@@ -1717,18 +1757,25 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
                 goto rollback;
             if (!mark_seen_group(g->group_id))
                 goto rollback;
-            /* The file list is replaced wholesale: a path dropped from the group must not
-             * survive as a stale row. Its rows are not an ancestor of anything. */
+            /* The tracked-file rows are replaced wholesale: a path dropped from the group
+             * must not survive as a stale row. They are not an ancestor of anything. */
             if (!delete_group_fold_files(session_id, g->group_id))
                 goto rollback;
 
-            /* The tracked-file lists are NOT written, and that is the behaviour this used to
-             * have too: the old loop read the "fold_files" key from the snapshot and tested
-             * cJSON_IsArray on it, but edc_fold_files_to_json() produces an OBJECT
-             * ({modified:[],read:[]}), so the branch never fired and group_fold_files has
-             * always been empty. Persisting it needs a `kind` column (a path is either read or
-             * modified, and the table only has room for one flat list) -- a schema change of
-             * its own, so it is recorded here instead of being smuggled in with this one. */
+            /* Two lists, two kinds, each numbered from 0 -- the order is the list order.
+             * Written through edc_fold_files_*() so this file does not carry a second copy of
+             * how the lists are shaped; the first version read them as one flat array, which
+             * is why this table was empty for its whole life. */
+            if (g->fold_files &&
+                !bind_fold_files(g_db, session_id, g->group_id, "modified", g->fold_files,
+                                 edc_fold_files_modified_count(g->fold_files),
+                                 edc_fold_files_modified_at))
+                goto rollback;
+            if (g->fold_files &&
+                !bind_fold_files(g_db, session_id, g->group_id, "read", g->fold_files,
+                                 edc_fold_files_read_count(g->fold_files),
+                                 edc_fold_files_read_at))
+                goto rollback;
         }
     }
 
@@ -2358,6 +2405,37 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                     }
                 }
                 sqlite3_finalize(m);
+            }
+
+            /* The tracked-file lists, in the order they were written. Restored through
+             * edc_fold_files_add_*(), not by filling the arrays here: the module owns what
+             * "read" and "modified" mean (a path edited after being read belongs ONLY in
+             * modified), and a second copy of that rule is how the persistence layer got the
+             * shape wrong in the first place. */
+            {
+                sqlite3_stmt *f = NULL;
+                if (sqlite3_prepare_v2(g_db,
+                                       "SELECT kind,path FROM group_fold_files "
+                                       "WHERE session_id=? AND group_id=? ORDER BY kind,ord",
+                                       -1, &f, NULL) == SQLITE_OK)
+                {
+                    sqlite3_bind_int64(f, 1, (sqlite3_int64)session_id);
+                    sqlite3_bind_int64(f, 2, (sqlite3_int64)group_id);
+                    while (sqlite3_step(f) == SQLITE_ROW)
+                    {
+                        const char *kind = col_str(f, 0);
+                        const char *path = col_str(f, 1);
+                        if (!kind || !path || !*path)
+                            continue;
+                        if (!group->fold_files)
+                            group->fold_files = edc_fold_files_new();
+                        if (strcmp(kind, "modified") == 0)
+                            edc_fold_files_add_modified(group->fold_files, path);
+                        else if (strcmp(kind, "read") == 0)
+                            edc_fold_files_add_read(group->fold_files, path);
+                    }
+                }
+                sqlite3_finalize(f);
             }
 
             edc_session_add_group(session, group);

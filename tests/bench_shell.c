@@ -10,6 +10,7 @@
 
 #include "cJSON.h"
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_log.h"
 #include "edc_session.h"
@@ -79,8 +80,8 @@ int main(int argc, char **argv)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_sessions(sched, s);
 
-    struct edc_task *leader = edc_task_new("b-1", s->session_id, "bg-1", "bench task",
-                                           edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("b-1"), s->session_id, edc_test_id("bg-1"),
+                                           "bench task", edc_channel_adapter);
     leader->is_group_leader = 1;
     leader->step = EDC_TASKSTEP_DONE;
     leader->life = EDC_LIFE_COMPLETED;

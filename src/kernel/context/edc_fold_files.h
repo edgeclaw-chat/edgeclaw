@@ -37,6 +37,14 @@ extern size_t edc_fold_files_count(const struct edc_fold_files *f);
 
 /* Insert if absent (whole-string compare). A NULL or empty path is ignored; a NULL `f`
  * allocates on first use via the *f form below, so callers never branch. */
+/* Read-only access, in list order. The store persists through these rather than touching the
+ * arrays: the shape (two lists, not one) belongs to this module, and a second copy of it is
+ * how the first persistence attempt read the wrong thing. */
+extern size_t edc_fold_files_modified_count(const struct edc_fold_files *f);
+extern size_t edc_fold_files_read_count(const struct edc_fold_files *f);
+extern const char *edc_fold_files_modified_at(const struct edc_fold_files *f, size_t i);
+extern const char *edc_fold_files_read_at(const struct edc_fold_files *f, size_t i);
+
 extern void edc_fold_files_add_modified(struct edc_fold_files *f, const char *path);
 extern void edc_fold_files_add_read(struct edc_fold_files *f, const char *path);
 

@@ -126,31 +126,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* ── 2. cost split of one flush ──────────────────────────────────────── */
-    const double t_ser0 = now_ms();
-    cJSON *root = edc_state_serialize(s, sched);
-    const double ser_ms = now_ms() - t_ser0;
-
-    double print_ms = 0.0;
-    size_t json_bytes = 0;
-    if (root)
-    {
-        const double t_print0 = now_ms();
-        char *js = cJSON_PrintUnformatted(root);
-        print_ms = now_ms() - t_print0;
-        if (js)
-        {
-            json_bytes = strlen(js);
-            cJSON_free(js);
-        }
-        cJSON_Delete(root);
-    }
-
-    printf("\n── one flush, split by stage ──────────────────────────────\n");
-    printf("  serialize   : %9.1f ms\n", ser_ms);
-    printf("  print       : %9.1f ms   (%zu bytes = %.1f MB)\n", print_ms, json_bytes,
-           (double)json_bytes / (1024.0 * 1024.0));
-    printf("  (write+rename is included in the full save below)\n");
+    /* ── 2. the flush itself ───────────────────────────────────────────────
+     *
+     * There is no "serialize" stage to time any more: flush binds the live structs straight
+     * into SQLite (edc_state_store.c). What is still worth splitting out is how much of the
+     * cost is the pager, which the probe reports as io_bytes -- so this stage just states
+     * that and leaves the number to the full save below. */
+    printf("\n── the flush, no intermediate document ────────────────────\n");
+    printf("  (a flush binds the structs directly; the cost is the write, measured below)\n");
 
     /* ── 3. repeated full saves (steady state: nothing changed) ──────────── */
     printf("\n── %d x full save_state (unchanged tree) ───────────────────\n", iters);
@@ -173,11 +156,12 @@ int main(int argc, char **argv)
     if (ok_count)
         printf("  min %.1f / mean %.1f / max %.1f ms\n", best, total / (double)iters, worst);
 
-    printf("\n── per tool boundary (today) ──────────────────────────────\n");
-    printf("  snapshot size per flush : %.1f MB (the whole session, every time)\n",
-           (double)json_bytes / (1024.0 * 1024.0));
-    printf("  (real bytes written: see the io_bytes column of the probe CSV)\n");
-    printf("  target for stage 2      : < 0.0625 MB (< 64 KB) and < 5 ms P95\n");
+    /* No "snapshot size per flush" line any more: a flush no longer builds a document. The
+     * number that still means something is io_bytes -- pages the pager actually wrote, which
+     * the probe reports per save (see the CSV), and which is what the old line was trying to
+     * approximate. */
+    printf("\n── per tool boundary ──────────────────────────────────────\n");
+    printf("  bytes written per flush : see the io_bytes column of the probe CSV\n");
 
     edc_state_probe_summary();
     edc_log_close();

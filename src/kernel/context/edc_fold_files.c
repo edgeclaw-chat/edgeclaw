@@ -96,6 +96,32 @@ static void list_remove(char ***list, size_t *n, const char *path)
     (*n)--;
 }
 
+/* Read-only access to the two lists, in stored order.
+ *
+ * The first version of the persistence layer iterated the struct's arrays itself and got the
+ * SHAPE wrong (it treated the tracked lists as one flat array of paths, while the module
+ * keeps two). Another copy of "how this is laid out" is how that happens, so readers outside
+ * this file go through here. */
+size_t edc_fold_files_modified_count(const struct edc_fold_files *f)
+{
+    return f ? f->modified_n : 0;
+}
+
+size_t edc_fold_files_read_count(const struct edc_fold_files *f)
+{
+    return f ? f->read_n : 0;
+}
+
+const char *edc_fold_files_modified_at(const struct edc_fold_files *f, size_t i)
+{
+    return (f && i < f->modified_n) ? f->modified[i] : NULL;
+}
+
+const char *edc_fold_files_read_at(const struct edc_fold_files *f, size_t i)
+{
+    return (f && i < f->read_n) ? f->read[i] : NULL;
+}
+
 void edc_fold_files_add_modified(struct edc_fold_files *f, const char *path)
 {
     if (!f)

@@ -69,7 +69,15 @@ struct edc_scheduler;
  *     The on-disk DIRECTORY still says "s<id>" (edc_session_dir_name): those directories
  *     hold live chat.jsonl transcripts, and renaming them would be a data migration for a
  *     formatting decision. */
-#define EDC_DB_VERSION 6
+/* v7: group_fold_files gained a `kind` column.
+ *
+ *     A group's tracked-file state is TWO lists (read, modified) and the table only had room
+ *     for one flat sequence of paths. Combined with a flush that tested cJSON_IsArray on a
+ *     {"modified":[...],"read":[...]} object, that meant the table was never written at all
+ *     since the store landed -- and the load, which built a flat array, could not have read it
+ *     back either. Both sides now go through edc_fold_files_*, so the shape lives in one
+ *     place. */
+#define EDC_DB_VERSION 7
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

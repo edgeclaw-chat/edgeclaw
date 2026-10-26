@@ -493,7 +493,7 @@ cc_test(
 #     bazel run //tests:bench_shell -- <workspace> 40000 3
 cc_binary(
     name = "bench_shell",
-    srcs = ["bench_shell.c"],
+    srcs = ["bench_shell.c", "test_ws.h"],
     tags = ["manual"],
     deps = [
         "//src/actor:actors",
@@ -512,7 +512,7 @@ cc_binary(
 #     bazel run //tests:bench_store -- <workspace> 40000 3
 cc_binary(
     name = "bench_store",
-    srcs = ["bench_store.c"],
+    srcs = ["bench_store.c", "test_ws.h"],
     tags = ["manual"],
     deps = [
         "//src/actor:actors",
@@ -624,6 +624,20 @@ cc_test(
     srcs = ["test_fold_files.c"],
     deps = [
         "//src/kernel:kernel",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# The JOIN between edc_fold_files and the store -- the layer that was broken in both
+# directions while each side's own tests were green.
+cc_test(
+    name = "test_fold_files_persist",
+    srcs = ["test_fold_files_persist.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )
