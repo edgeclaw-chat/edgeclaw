@@ -87,7 +87,7 @@ static struct edc_task *find_task(struct edc_session *s, const char *tid)
 
 static void test_exit_save(void)
 {
-    TEST("exit save: state persisted to session.json");
+    TEST("exit save: state persisted to the database");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
@@ -147,7 +147,7 @@ static void test_exit_save(void)
 
 static void test_startup_load(void)
 {
-    TEST("startup load: state restored from persisted files");
+    TEST("startup load: state restored from the database");
     clean_workspace();
 
     struct edc_config *cfg = make_config();
@@ -207,7 +207,7 @@ static void test_startup_load(void)
         CHECK(s2->active_task == rt, "active_task restored");
         CHECK(edc_scheduler_get_foreground(s2) != NULL, "foreground_group restored");
 
-        /* Verify turn messages restored from session.json */
+        /* Verify the turn and its messages came back from the store */
         CHECK(edc_queue_length(&rt->turns) == 1, "1 turn restored");
         struct edc_turn *rturn = (struct edc_turn *)rt->turns.data[rt->turns.head];
         CHECK(rturn->msg_count == 1, "1 message in restored turn");
@@ -283,7 +283,7 @@ static void test_switch_save(void)
     CHECK_STREQ(rtA->output, "output from A", "session A output intact");
 
     /* Switch-back regression: A's foreground group must survive the round trip
-     * through session.json, and a task created afterwards must join it instead
+     * through the store, and a task created afterwards must join it instead
      * of spawning its own group (the old bug dropped foreground_group_id when
      * the outgoing session was saved without a scheduler, so create_task fell
      * back to gid == tid, i.e. a brand-new group). */

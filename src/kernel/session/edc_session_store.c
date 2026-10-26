@@ -12,9 +12,8 @@
 /* ── Cross-session task resolution (S2) ──────────────────────
  * A task id is globally unique (edc_session_manager_find_task_any), so a hit is
  * unambiguous. The in-memory lookup covers only sessions activated this run; when a
- * task belongs to a disk-only, not-yet-activated session, the session_manager index
- * (task_id -> session_id, parsed once from each unloaded session.json) locates the
- * owner, which is then loaded on demand. */
+ * task belongs to a not-yet-activated session, one primary-key lookup in the tasks table
+ * (edc_state_store_session_for_task) names the owner, which is then loaded on demand. */
 struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                                 int64_t task_id, struct edc_session **owner_out)
 {
@@ -33,8 +32,7 @@ struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, 
         return t;
     }
 
-    /* 2. Miss: use the session_manager index to locate the owning session (parsing
-     *    each unloaded session.json once); on a hit, load it on demand. */
+    /* 2. Miss: ask the database which session holds the task, then load it on demand. */
     struct edc_session *s = edc_session_manager_session_for_task(sm, task_id);
     if (!s)
         return NULL;

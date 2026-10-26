@@ -17,20 +17,16 @@ struct edc_session_manager
     int session_count;
     int active_index; /* index into sessions[] */
 
-    /* Monotonic high-water for session ids, advanced by every creation and
-     * persisted in <workspace>/.session_seq, so an id is NEVER reused -- reuse
-     * would make a new session inherit a removed one's directory and its
-     * session.json / chat.jsonl / tasks.idx. */
-    long long next_session_id;
+    /* Session ids come from the database now (sessions.session_id is an INTEGER PRIMARY KEY
+     * AUTOINCREMENT, see edc_state_store_insert_session_new): there is no counter here and
+     * no <workspace>/.session_seq. AUTOINCREMENT is what guarantees an id is never reused --
+     * reuse would make a new session inherit a removed one's directory and its chat.jsonl. */
     sds sessions_dir; /* workspace/ -- session dirs live here */
     struct edc_config *config;
 
-    /* task_id -> session_id for sessions NOT loaded this run, built lazily by
-     * parsing each unloaded session.json once. It only ever describes the frozen
-     * on-disk state of unloaded sessions, so loaded sessions win via the
-     * in-memory lookup and no write-side sync is needed. */
-    struct edc_task_index_entry *task_index;
-    bool task_index_built;
+    /* No task_id -> session_id index: it was a uthash filled by parsing every unloaded
+     * session's state file, and the database answers the same question with one primary-key
+     * lookup (edc_state_store_session_for_task). Nothing here to keep in sync after a save. */
 };
 
 extern struct edc_session_manager *edc_session_manager_new(struct edc_config *config);

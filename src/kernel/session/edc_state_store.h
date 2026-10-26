@@ -282,7 +282,8 @@ long long edc_msg_tokens_by_ids(const char *const *ids, int n);
 bool edc_msg_role_by_id(const char *id, char *buf, size_t n);
 
 /* Which session owns a task: one primary-key lookup, replacing the old
- * parse-every-session.json index. Returns a malloc'd copy (caller frees) or NULL. */
+ * index that used to be built by parsing every unloaded session's state file.
+ * Returns a malloc'd copy (caller frees) or NULL. */
 char *edc_state_store_session_for_task(int64_t task_id);
 
 /* Does the database hold any row for this session?

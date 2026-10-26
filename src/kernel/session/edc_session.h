@@ -46,29 +46,28 @@ struct edc_session
     struct edc_task_group *foreground_group;
 
     /* Whether the in-memory groups/tasks are ready. First activation (startup, or
-     * switching to a never-loaded session) deserializes session.json once; after
-     * that memory is authoritative and a switch back must never load_state again
-     * (that would overwrite live objects with a disk copy). */
+     * switching to a never-loaded session) reads the session's rows once; after that this
+     * tree is the working copy and a switch back must never load again (that would rebuild
+     * live objects from the database and discard unsaved changes). */
     bool state_loaded;
 
-    /* Quarantine flag: set when load_state found an existing session.json it could
-     * not read (unknown version / bad JSON) and renamed it to
-     * session.json.broken. While set, this process REFUSES to persist -- else the
-     * in-memory empty shell would be written into the session.json slot, creating a
-     * seemingly-valid fake state that a later recovered file dropped in would be
-     * overwritten by on the next exit. */
+    /* Quarantine flag: set when the session HAS rows but they could not be read (a version
+     * mismatch, a corrupt page, a SQL error). While set, this process REFUSES to persist --
+     * otherwise the half-built shell would be flushed over the real rows, turning a
+     * recoverable database into a plausibly-shaped empty one. See
+     * edc_session_load_state() for where it is set. */
     bool state_quarantined;
 
-    /* The legacy session.json warning was already emitted for this session. Persistence
-     * moved to <workspace>/edgeclaw.db; an old file is ignored with ONE warn rather than
-     * one per tool boundary. */
+    /* The legacy session.json warning was already emitted for this session. Nothing reads
+     * that file any more; a leftover one is reported ONCE per session per process rather
+     * than at every tool boundary. */
     bool legacy_state_warned;
 
     struct edc_config *config;
 
     /* L2: session-level memory (event table + entry table + digest watermark).
-     * Never NULL (built at construction); persisted at session.json's top-level
-     * `session_memory` key (schema v7). See docs/l2-session-memory.md. */
+     * Never NULL (built at construction); persisted in the memo_events / memo_entries
+     * tables plus a few counters on the session row. */
     struct edc_session_memory *memo;
 
     sds history_dir; /* workspace/<session_id> -- per-session history */
@@ -179,13 +178,17 @@ extern struct edc_task *edc_session_get_active_task(struct edc_session *session)
 
 struct edc_scheduler;
 
-/** Save complete session state to workspace/<session_id>/session.json.
- *  Atomic: writes to .tmp then rename().
+/** Save the session's state into <workspace>/edgeclaw.db (see edc_state_store.h).
+ *
+ *  Not a file write any more: the flush upserts the rows that changed, in one transaction.
+ *  (This used to say "writes to workspace/<session_id>/session.json, atomic via .tmp then
+ *  rename()" -- that file is not written or read by anything now, only warned about when a
+ *  leftover one is found. <session_id>/ holds the chat transcript and tool output.)
+ *
  *  The caller must only save a session whose state was loaded in this run
- *  (session->state_loaded): an unloaded session is just an id/name shell built
- *  from sessions.json, so writing it would clobber the newer on-disk state
- *  (groups, tasks, and the bound working directory). See
- *  edc_session_manager_save_loaded_states() for the exit path.
+ *  (session->state_loaded): an unloaded session is just an id/name shell built from the
+ *  sessions table, so writing it would clobber the newer rows (groups, tasks, and the bound
+ *  working directory). See edc_session_manager_save_loaded_states() for the exit path.
  *  Returns true on success. */
 extern bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched);
 

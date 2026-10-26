@@ -305,17 +305,6 @@ void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_sessio
     }
 }
 
-/* ── task id index (unloaded sessions) ───────────────────────
- * When looking up a task id across sessions and the owner is unloaded, all we need
- * is "which session it is in". There is no tasks.idx sidecar (single source of truth
- * = session.json): the first lookup parses each unloaded session's session.json once
- * into a uthash, then locates in O(1).
- *
- * Invariant: an unloaded session is never modified during the whole run (changing it
- * requires loading it first), so this table always equals "the disk-frozen state of
- * unloaded sessions"; loaded sessions are covered by the in-memory lookup and new
- * tasks are always in a loaded session, so no write-side sync is needed. */
-
 /* ── Locating the owner of a task ──────────────────────────────────────────
  * This used to be a uthash cache filled by parsing every unloaded session's session.json
  * (sm_task_index_*: ~80 lines). With SQLite there is nothing to cache -- the owner is one

@@ -16,6 +16,7 @@ import pty
 import re
 import shutil
 import signal
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -54,18 +55,25 @@ def mask_ts(s: str) -> str:
 
 
 def session_workdirs(ws: Path, sessions):
-    """会话的工作目录在 `<session>/session.json` 的 `session.workdir`（绝对路径）。
+    """会话的工作目录现在是 `edgeclaw.db` 里 `sessions.workdir`（绝对路径）。
+
+    以前读 `<session>/session.json`，但那个文件既不写也不读了，所以这里改成查库。
     必须加进沙箱 rw_paths，否则工具会被拒（拒绝也要确定性地发生）。"""
     out = []
-    for s in sessions:
-        p = ws / s / "session.json"
-        if not p.exists():
-            continue
-        try:
-            d = json.loads(p.read_text())
-        except Exception:
-            continue
-        wd = (d.get("session") or {}).get("workdir")
+    db = ws / "edgeclaw.db"
+    if not db.exists():
+        return out
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT workdir FROM sessions WHERE session_id IN (%s)"
+            % ",".join("?" * len(sessions)),
+            list(sessions),
+        ).fetchall()
+        con.close()
+    except Exception:
+        return out
+    for (wd,) in rows:
         if wd:
             out.append(wd)
     return out
