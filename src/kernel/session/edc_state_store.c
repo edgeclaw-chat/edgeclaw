@@ -978,12 +978,6 @@ static const char *js_str(const cJSON *o, const char *key)
     return (v && cJSON_IsString(v)) ? cJSON_GetStringValue((cJSON *)v) : NULL;
 }
 
-static double js_num(const cJSON *o, const char *key)
-{
-    const cJSON *v = cJSON_GetObjectItem((cJSON *)o, key);
-    return (v && cJSON_IsNumber(v)) ? cJSON_GetNumberValue((cJSON *)v) : 0;
-}
-
 static int js_bool(const cJSON *o, const char *key)
 {
     const cJSON *v = cJSON_GetObjectItem((cJSON *)o, key);
@@ -1791,21 +1785,9 @@ bool edc_state_store_flush(struct edc_session *session, struct edc_scheduler *sc
  *  load: columns -> tree -> edc_state_deserialize
  * ══════════════════════════════════════════════════════════════════════════ */
 
-static void add_str(cJSON *o, const char *key, const char *val)
-{
-    if (val)
-        cJSON_AddStringToObject(o, key, val);
-}
-
 static const char *col_str(sqlite3_stmt *st, int i)
 {
     return sqlite3_column_type(st, i) == SQLITE_NULL ? NULL : (const char *)sqlite3_column_text(st, i);
-}
-
-static void add_num_or_omit(cJSON *o, const char *key, sqlite3_stmt *st, int i)
-{
-    if (sqlite3_column_type(st, i) != SQLITE_NULL)
-        cJSON_AddNumberToObject(o, key, (double)sqlite3_column_int64(st, i));
 }
 
 /* ── messages of one turn ─────────────────────────────────────────────────── */
