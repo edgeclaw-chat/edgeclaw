@@ -374,8 +374,11 @@ static void test_strip_utf8_bom(void)
     T_CHECK((unsigned char)s[0] == 0xFF, "a UTF-16LE BOM is NOT stripped: that file is not UTF-8");
     sdsfree(s);
 
-    s = edc_str_strip_utf8_bom(sdsnew("mid\xEF\xBB\xBFdle"));
-    T_STREQ(s, "mid\xEF\xBB\xBFdle", "only a LEADING BOM is a BOM");
+    /* The BOM literal is closed and reopened on purpose: \x eats every hex digit that
+     * follows, so "\xEF\xBB\xBFdle" asks for \xBFd (= 0xBFD, out of range for one byte)
+     * and does not compile. Same idiom as test_tools_fs.c's BOM fixtures. */
+    s = edc_str_strip_utf8_bom(sdsnew("mid\xEF\xBB\xBF" "dle"));
+    T_STREQ(s, "mid\xEF\xBB\xBF" "dle", "only a LEADING BOM is a BOM");
     sdsfree(s);
 
     T_CHECK(edc_str_strip_utf8_bom(NULL) == NULL, "NULL is passed through");
