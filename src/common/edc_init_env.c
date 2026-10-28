@@ -755,8 +755,23 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
     /* Build JSON config */
     cJSON *config = cJSON_CreateObject();
 
-    sds encrypted_api_key =
-        (env_result.api_key && sdslen(env_result.api_key) > 0) ? edc_secret_encrypt(env_result.api_key) : NULL;
+    /* An empty API key is legitimate here (it can be set later via /connect), but a
+     * FAILED encryption is not: writing "" in that case would make setup look successful
+     * while silently dropping the key the user just typed, and the next start would report
+     * no key configured. Abort instead. */
+    sds encrypted_api_key = NULL;
+    if (env_result.api_key && sdslen(env_result.api_key) > 0)
+    {
+        encrypted_api_key = edc_secret_encrypt(env_result.api_key);
+        if (!encrypted_api_key)
+        {
+            log_error("Cannot encrypt the API key (is the master key loaded?); aborting "
+                      "before %s is written",
+                      conf_file);
+            cJSON_Delete(config);
+            goto exit_free_env;
+        }
+    }
     cJSON_AddStringToObject(config, "api_key", encrypted_api_key ? encrypted_api_key : "");
     sdsfree(encrypted_api_key);
 

@@ -437,6 +437,70 @@ static void test_no_terminal(void)
           "and tells the user to set EDGECLAW_MASTER_KEY for scripting");
 }
 
+/* ── 13. a config write must not silently lose the stored key ────────────── */
+static void test_update_llm_refuses_without_key(void)
+{
+    printf("\n── /connect with no master key loaded ──\n");
+    reset_dir();
+
+    /* A config the way the product leaves it: a real encrypted key on disk. */
+    if (!init_with_input(true, g_dir, "key five\nkey five\n"))
+    {
+        printf("    (skipped: setup failed)\n");
+        return;
+    }
+    sds enc = edc_secret_encrypt(sdsnew("sk-ORIGINAL-KEY"));
+    sds cfg_path = edc_path_join(g_dir, "config.json", NULL);
+    {
+        FILE *f = fopen(cfg_path, "w");
+        if (!f || !enc)
+        {
+            printf("    (skipped: cannot write a config)\n");
+            if (f)
+                fclose(f);
+            sdsfree(enc);
+            sdsfree(cfg_path);
+            return;
+        }
+        fprintf(f, "{\"api_url\":\"https://old.example\",\"model\":\"m1\",\"api_key\":\"%s\"}", enc);
+        fclose(f);
+    }
+
+    /* Read the file back so the comparison is against bytes, not assumptions. */
+    EdcError *e = NULL;
+    sds before = edc_file_read(cfg_path, &e);
+    if (e)
+        edc_error_free(e);
+    CHECK(before && strstr(before, enc) != NULL, "the config starts with the original ciphertext");
+
+    /* Now the master key is gone -- key never initialised, failed to load, whatever. This
+     * is the state that used to make the next /connect overwrite the key with "". */
+    edc_secret_cleanup();
+
+    g_log[0] = '\0';
+    const bool ok = edc_config_update_llm(g_dir, "https://new.example", "m2", "sk-NEW-KEY");
+    printf("    log: %s\n", g_log);
+    CHECK(!ok, "the update is refused instead of reporting success");
+
+    e = NULL;
+    sds after = edc_file_read(cfg_path, &e);
+    if (e)
+        edc_error_free(e);
+    CHECK(after && before && strcmp(after, before) == 0,
+          "the config file is byte-for-byte unchanged, so the stored key survives");
+    /* Checked by looking for the ORIGINAL ciphertext rather than for an empty "api_key":
+     * cJSON prints with tabs, so a literal `"api_key":""` match silently succeeded even on
+     * the buggy code -- which is exactly the kind of assertion that makes a regression test
+     * look useful while proving nothing. */
+    CHECK(after && enc && strstr(after, enc) != NULL,
+          "the original ciphertext is still in the file");
+
+    sdsfree(after);
+    sdsfree(before);
+    sdsfree(cfg_path);
+    sdsfree(enc);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -460,6 +524,7 @@ int main(void)
     test_prompt_eof();
     test_init_idempotent();
     test_no_terminal();
+    test_update_llm_refuses_without_key();
 
     edc_secret_cleanup();
     char cmd[1400];

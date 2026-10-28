@@ -876,11 +876,26 @@ bool edc_config_update_llm(const char *edc_home, const char *api_url, const char
     }
     if (api_key && api_key[0])
     {
+        /* Encrypt BEFORE touching the document. The old ciphertext is deleted below, so a
+         * failure here has to abort the whole write: encrypting first and writing whatever
+         * came back is how the saved key used to be silently replaced with an empty string
+         * when the master key was unavailable (edc_secret_encrypt returns NULL then), with
+         * the call still reporting success. Nothing is persisted on this path -- the caller
+         * (edc_app_set_llm_config) treats false as "leave memory and disk in agreement". */
         sds plain = sdsnew(api_key);
         sds enc = edc_secret_encrypt(plain);
         sdsfree(plain);
+        if (!enc)
+        {
+            log_error("edc_config: cannot encrypt the API key (is the master key loaded?); "
+                      "refusing to write %s so the stored key is not lost",
+                      path);
+            cJSON_Delete(conf);
+            sdsfree(path);
+            return false;
+        }
         cJSON_DeleteItemFromObject(conf, "api_key");
-        cJSON_AddStringToObject(conf, "api_key", enc ? enc : "");
+        cJSON_AddStringToObject(conf, "api_key", enc);
         sdsfree(enc);
     }
 
