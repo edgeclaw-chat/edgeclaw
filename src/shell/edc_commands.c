@@ -32,6 +32,7 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <cJSON.h>
+#include <inttypes.h> /* PRId64 */
 #include <log.h>
 #include <string.h>
 
@@ -771,21 +772,23 @@ sds edc_commands_session_info_text(struct edc_session *sess)
     sds info =
         sdscatprintf(sdsempty(),
                      "## Current Session\n\n"
-                     "- **ID**: %lld\n"
+                     "- **ID**: %" PRId64 "\n"
                      "- **Name**: %s\n"
                      "- **Created**: %s\n"
                      "- **Last Active**: %s\n"
                      "- **Messages**: %zu\n"
                      "- **Directory**: %s\n"
                      "- **Working Directory**: %s\n",
-                     /* session_id is an int64_t, so it needs an integer conversion (%lld with
-                      * the (long long) cast the rest of this file uses), not %s -- as %s it
-                      * was dereferenced as a pointer and /session info crashed. Not
-                      * edc_id_str(): that helper exists to keep LOG format strings at %s,
-                      * and its rotating static buffer would collide if a second id were
-                      * ever added to this line, while its id<=0 spelling ("(none)") is a
-                      * logging policy this text should not inherit. */
-                     (long long)sess->session_id, edc_session_get_name(sess), created ? created : "unknown",
+                     /* session_id is an int64_t, and an integer conversion is what it needs --
+                      * as %s it was dereferenced as a pointer and /session info crashed.
+                      * PRId64 rather than %lld + a cast: the macro expands to "lld" where
+                      * int64_t is long long (macOS) and "ld" where it is long (LP64 Linux),
+                      * so the argument's type matches the format on both without a cast.
+                      * Not edc_id_str(): that helper exists to keep LOG format strings at
+                      * %s, its rotating static buffer would collide if a second id were
+                      * added to this line, and its id<=0 spelling ("(none)") is a logging
+                      * policy this user-facing text should not inherit. */
+                     sess->session_id, edc_session_get_name(sess), created ? created : "unknown",
                      active ? active : "unknown", edc_session_get_message_count(sess),
                      sess->history_dir ? sess->history_dir : "",
                      edc_session_get_workdir(sess) ? edc_session_get_workdir(sess) : "(default)");

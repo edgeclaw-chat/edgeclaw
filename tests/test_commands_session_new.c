@@ -25,6 +25,7 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "log.h"
+#include <inttypes.h> /* PRId64 */
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -269,7 +270,9 @@ int main(void)
     sds info_text = edc_commands_session_info_text(active);
     CHECK(info_text != NULL, "the info body was built");
     char id_line[64];
-    snprintf(id_line, sizeof(id_line), "- **ID**: %lld", (long long)active->session_id);
+    /* Same conversion the production text uses: PRId64, so the expectation is built from
+     * the session's number rather than from a cast that happens to agree on this platform. */
+    snprintf(id_line, sizeof(id_line), "- **ID**: %" PRId64, active->session_id);
     CHECK(info_text && strstr(info_text, id_line) != NULL, "the id line carries the session's number");
     CHECK(info_text && strstr(info_text, "## Current Session") != NULL, "and the heading");
     sdsfree(info_text);
