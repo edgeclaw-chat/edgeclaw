@@ -15,7 +15,13 @@
 #include <termios.h>
 #include <sys/wait.h>
 #include <signal.h>
+/* openpty() is declared in <util.h> on macOS (in libSystem) and in <pty.h> on Linux
+ * (in libutil). Same function, same signature; only the header and the library differ. */
+#if defined(__APPLE__)
+#include <util.h>
+#elif defined(__linux__)
 #include <pty.h>
+#endif
 
 #define AGENT_IP   "192.168.4.1"
 #define CLIENT_IP  "192.168.4.2"

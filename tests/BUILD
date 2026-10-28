@@ -26,6 +26,14 @@ LINK_OPTS = select({
 # 在 src/tui/BUILD 里靠它自己的 LINK_OPTS 补 -lstdc++；搬过来后按同一手法补）。
 TUI_TEST_LINK_OPTS = LINK_OPTS + ["-lstdc++"]
 
+# 用 openpty() 的测试。macOS 把它放在 libSystem 里（不需要额外的库，声明在 <util.h>），
+# Linux 放在单独的 libutil 里（声明在 <pty.h>），所以库这一半要按平台给；头文件那一半在
+# 各个 .c 里按 __APPLE__ 选。
+PTY_LINK_OPTS = LINK_OPTS + select({
+    "//:linux": ["-lutil"],
+    "//conditions:default": [],
+})
+
 cc_test(
     name = "test_containers",
     srcs = ["test_containers.c", "test_ws.h"],
@@ -67,7 +75,7 @@ cc_test(
         "//thirdparty/lwip:sys_arch",
         "@lwip//:lwip",
     ],
-    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+    linkopts = PTY_LINK_OPTS,
 )
 
 # pppos 压力测试：宿主机上会不定期跑满 300s 超时（flaky），不纳入默认测试集。
@@ -91,7 +99,7 @@ cc_test(
         "//thirdparty/lwip:sys_arch",
         "@lwip//:lwip",
     ],
-    linkopts = LINUX_LINK_OPTS + ["-lutil"],
+    linkopts = PTY_LINK_OPTS,
 )
 
 # 宿主机上固定失败（`echo $HOME` 断言与环境白名单不符），排除出默认测试集。
@@ -119,7 +127,7 @@ cc_binary(
         "@cjson//:cjson",
         "@lwip//:lwip",
     ],
-    linkopts = LINUX_LINK_OPTS,
+    linkopts = LINK_OPTS,
 )
 
 cc_test(
@@ -1117,7 +1125,7 @@ cc_test(
         "//src/common:common",
     ],
     # openpty() drives the passphrase prompt through a real terminal.
-    linkopts = LINK_OPTS + ["-lutil"],
+    linkopts = PTY_LINK_OPTS,
 )
 
 cc_test(

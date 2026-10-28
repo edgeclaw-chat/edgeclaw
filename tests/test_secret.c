@@ -33,7 +33,11 @@
 #include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
-#if defined(__linux__) || defined(__APPLE__)
+/* openpty() is declared in <util.h> on macOS (in libSystem) and in <pty.h> on Linux
+ * (in libutil). Same function, same signature; only the header and the library differ. */
+#if defined(__APPLE__)
+#include <util.h>
+#elif defined(__linux__)
 #include <pty.h>
 #endif
 
