@@ -27,12 +27,20 @@
 static EdcGroupToolsFn g_group_tools = NULL;
 static void *g_group_tools_ctx = NULL;
 
-/* Splice the dependency material INTO the task's own input: rewrite the active turn's
- * first user message in place -- so it persists with the turn (no longer a derived block
- * that appears in one request only). Returns false when there is no user message to
- * splice into (an abnormal shape; the caller falls back to appending a system message so
- * the material is not lost). */
-static bool append_to_task_input(struct edc_task *task, const char *block)
+/* Splice the dependency material INTO the task's own input, IN FRONT of what the user
+ * wrote: rewrite the active turn's first user message in place -- so it persists with the
+ * turn (no longer a derived block that appears in one request only).
+ *
+ * Front, not tail: the instruction is written against the material ("summarize the above",
+ * "now fix it"), so the material has to be the text the instruction follows. Appending it
+ * left the row reading "instruction ... then the thing it refers to", and for a memory-sink
+ * material (the curator's group memory) it contradicted the prompt's own "the material
+ * above". Order inside the row is: material, blank line, what the user typed -- so the
+ * user's own words stay the last thing read (recency) and stay contiguous.
+ *
+ * Returns false when there is no user message to splice into (an abnormal shape; the caller
+ * falls back to a system message so the material is not lost). */
+static bool prepend_to_task_input(struct edc_task *task, const char *block)
 {
     if (!task || !task->active_turn || !block || !*block)
         return false;
@@ -49,7 +57,7 @@ static bool append_to_task_input(struct edc_task *task, const char *block)
             continue;
         }
         const char *old = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
-        sds joined = sdscatprintf(sdsempty(), "%s%s%s", old ? old : "", (old && *old) ? "\n\n" : "", block);
+        sds joined = sdscatprintf(sdsempty(), "%s%s%s", block, (old && *old) ? "\n\n" : "", old ? old : "");
         cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(joined));
         sdsfree(joined);
         /* The row is the truth: write the edit back at the same position, then drop the
@@ -244,7 +252,11 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         }
     }
 
-    /* Inject completed dependency tasks' output (user inputs + final output) */
+    /* Inject completed dependency tasks' output (user inputs + final output).
+     *
+     * Collected in dependency order and spliced ONCE: prepending per edge would reverse the
+     * order of the blocks (each one would land in front of the previous). */
+    sds material = NULL;
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
     {
@@ -268,7 +280,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
              * fold prompt can be hundreds of KB) that says the same thing as its output
              * => splice only its output (for L2 curation, the just-landed group
              * memory). */
-            if (dep->source->output)
+            if (dep->source->output && *dep->source->output)
             {
                 const bool source_is_memory = edc_task_is_memory_sink(dep->source);
                 sds block = source_is_memory
@@ -276,19 +288,32 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
                                 : sdscatprintf(sdsempty(), "[subtask %s result]:\n%s",
                                                dep->source->description ? dep->source->description : "(task)",
                                                dep->source->output);
-                if (!append_to_task_input(task, block))
-                {
-                    log_warn("  -> task %s has no input message to splice into; appending a system message instead",
-                             edc_id_str(task->task_id));
-                    cJSON *sys = cJSON_CreateObject();
-                    cJSON_AddStringToObject(sys, "role", "system");
-                    cJSON_AddStringToObject(sys, "content", block);
-                    cJSON_AddItemToArray(msgs, sys);
-                }
+                if (!material)
+                    material = sdsempty();
+                else
+                    material = sdscat(material, "\n\n");
+                material = sdscatsds(material, block);
                 sdsfree(block);
             }
-            log_info("  -> spliced the output of task %s into the task input", edc_id_str(dep->source->task_id));
+            log_info("  -> queued the output of task %s for the splice", edc_id_str(dep->source->task_id));
         }
+    }
+    if (material)
+    {
+        if (prepend_to_task_input(task, material))
+        {
+            log_info("  -> spliced the JOIN material in front of task %s's input", edc_id_str(task->task_id));
+        }
+        else
+        {
+            log_warn("  -> task %s has no input message to splice into; appending a system message instead",
+                     edc_id_str(task->task_id));
+            cJSON *sys = cJSON_CreateObject();
+            cJSON_AddStringToObject(sys, "role", "system");
+            cJSON_AddStringToObject(sys, "content", material);
+            cJSON_AddItemToArray(msgs, sys);
+        }
+        sdsfree(material);
     }
 
     /* expand deferred {{…}} references in the current turn's user messages */
