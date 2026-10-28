@@ -44,7 +44,7 @@ bool edc_sandbox_init(struct edc_config *conf)
          * the rules are irreversible and inherited (Landlock/seccomp on Linux,
          * a Seatbelt profile on macOS), so applying them here would sandbox the
          * app itself. In-process enforcement is the tool-layer path
-         * verification in edc_sandbox_verify_path(). */
+         * verification in edc_sandbox_verify_path_at(). */
         log_info("edc_sandbox: kernel isolation runs in the per-command helper; "
                  "path validation is the in-process enforcement");
     }
@@ -186,11 +186,6 @@ static sds sandbox_verify(struct edc_config *conf, const char *base, const char 
         return NULL;
     }
     return resolved;
-}
-
-sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error)
-{
-    return sandbox_verify(conf, NULL, path, writable, error);
 }
 
 sds edc_sandbox_verify_path_at(struct edc_config *conf, const char *base, const char *path, bool writable,

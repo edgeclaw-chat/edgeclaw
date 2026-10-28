@@ -41,8 +41,6 @@ static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *
 static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid);
 static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_session *session, const char *reason);
 static void sched_trace_notify(const char *reason, const char *session_id);
-static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
-                                  edc_task_life life);
 /* The executor's outbound ops table (defined later in the file; forward-declared for init in new). */
 static const struct edc_executor_ops sched_executor_ops;
 
@@ -1173,14 +1171,6 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
  * snapshot-driven. Writes always state the target (step, life). */
 
 /* Force a phase, skipping the transition table: a fallback exit, landing at READY. */
-static void sched_force_move_task(struct edc_scheduler *sched, struct edc_task *task, edc_task_step step,
-                                  edc_task_life life)
-{
-    edc_task_force_move(task, step, life);
-    if (sched)
-        sched_mark_dirty(sched, edc_task_session(task), "state");
-}
-
 /* ── Internals: message routing ────────────────────────────── */
 
 static void sched_handle_input(struct edc_scheduler *sched, struct edc_actor_msg *msg)

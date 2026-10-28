@@ -324,37 +324,6 @@ static int cmp_tools_by_name(const void *a, const void *b)
     return strcmp(ta->name, tb_->name);
 }
 
-/* The declared tools of |scope|, name-ordered. Caller frees the array (not the tools). */
-static struct edc_tool **declared_tools(struct edc_toolbox *tb, uint32_t scope, size_t *out_n)
-{
-    struct edc_tool **list = NULL;
-    size_t n = 0;
-    *out_n = 0;
-    if (!tb)
-        return NULL;
-
-    size_t total = (size_t)HASH_COUNT(tb->tools);
-    if (total == 0)
-        return NULL;
-    list = (struct edc_tool **)malloc(sizeof(*list) * total);
-    if (!list)
-        return NULL;
-
-    struct edc_tool *tool, *tmp;
-    HASH_ITER(hh, tb->tools, tool, tmp)
-    {
-        if (tool->exposure != EDC_TOOL_EXPOSURE_DIRECT)
-            continue;
-        if ((tool->scope & scope) == 0)
-            continue;
-        list[n++] = tool;
-    }
-    if (n > 1)
-        qsort(list, n, sizeof(*list), cmp_tools_by_name);
-    *out_n = n;
-    return list;
-}
-
 /* Is |name| in a declaration set? */
 static bool decl_has(cJSON *decl, const char *name)
 {

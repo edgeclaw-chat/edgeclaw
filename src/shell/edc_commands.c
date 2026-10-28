@@ -35,40 +35,6 @@
 #include <log.h>
 #include <string.h>
 
-static bool edc_commands_is_target(const char *content, const char *target)
-{
-    sds cmd = sdsnew(content);
-    cmd = sdstrim(cmd, " \t\r\n");
-    bool is = strcmp(cmd, target) == 0;
-    sdsfree(cmd);
-    return is;
-}
-
-static bool edc_commands_is_prefix(const char *content, const char *prefix)
-{
-    sds cmd = sdsnew(content);
-    cmd = sdstrim(cmd, " \t\r\n");
-    bool is = strncmp(cmd, prefix, strlen(prefix)) == 0;
-    sdsfree(cmd);
-    return is;
-}
-
-/* Strict command prefix: content equals the prefix, or starts with prefix + space.
- * A loose prefix would swallow "/tasks" into "/task". */
-static bool edc_commands_is_command(const char *content, const char *prefix)
-{
-    sds cmd = sdstrim(sdsnew(content), " \t\r\n");
-    bool is = strcmp(cmd, prefix) == 0;
-    if (!is)
-    {
-        size_t plen = strlen(prefix);
-        is = strncmp(cmd, prefix, plen) == 0 && cmd[plen] == ' ';
-    }
-    sdsfree(cmd);
-    return is;
-}
-
-
 void edc_commands_reply(struct edc_reply_to to, const char *text)
 {
     struct edc_channel_message *reply = edc_channel_message_new(to.type, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
@@ -203,14 +169,6 @@ sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t count)
     sdsfree(ids);
     sdsfree(group_id);
     return out;
-}
-
-void edc_commands_announce_tasks(struct edc_reply_to to, struct edc_task *const *tasks, size_t count)
-{
-    sds text = edc_commands_tasks_receipt_text(tasks, count);
-    if (sdslen(text) > 0)
-        edc_commands_reply(to, text);
-    sdsfree(text);
 }
 
 void edc_commands_announce_task(struct edc_reply_to to, const struct edc_task *task)

@@ -19,7 +19,7 @@
  *       have a second name (st_nlink > 1: a hardlink is invisible to lstat).
  *
  *   POLICY (the caller's): does the sandbox allow these bytes out?
- *     - the tool layer asks "inside ro/rw and outside deny" -> edc_sandbox_verify_path();
+ *     - the tool layer asks "inside ro/rw and outside deny" -> edc_sandbox_verify_path_at();
  *     - model-facing reads (a template body, a SKILL.md) ask ONLY "outside deny", because
  *       their resource roots (~/.claude, ~/.pi/agent, ...) are outside the rw/ro lists by
  *       design and must stay readable -> apply_deny below.

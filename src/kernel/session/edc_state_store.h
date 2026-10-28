@@ -218,18 +218,13 @@ bool edc_msg_append(int64_t task_id, int turn_ord, int msg_ord, const struct cJS
  * NULL when the row does not exist. */
 struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord);
 
-/* How many messages the turn has, straight from the rows (0 when none / store closed). */
-int edc_msg_turn_len(int64_t task_id, int turn_ord);
-
 /* Sum of the token estimates of messages [from, len). One indexed range scan; this
  * replaces walking every message in C. Returns -1 when the store is closed. */
 long long edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from);
 
-/* Drop messages with msg_ord >= |new_len| (revert / rollback). */
+/* Drop messages with msg_ord >= |new_len| (revert / rollback). |new_len| 0 drops the
+ * whole turn. */
 bool edc_msg_turn_truncate(int64_t task_id, int turn_ord, int new_len);
-
-/* Drop the whole turn's messages (turn removed). */
-bool edc_msg_turn_clear(int64_t task_id, int turn_ord);
 
 /* Re-key a turn: move its message rows from (old_task, old_ord) to (new_task, new_ord).
  *
@@ -240,9 +235,10 @@ bool edc_msg_turn_move(int64_t old_task, int old_ord, int64_t new_session,
                        int64_t new_group, int64_t new_task, int new_ord);
 
 /* A range of messages loaded in one query: the query RESULT, not a cache. The caller
- * owns |items| and every element, and must call edc_msg_span_free. |to| < 0 means "to the
- * end of the turn". The array is dense: a missing position yields a NULL entry so indices
- * keep matching msg_ord. */
+ * owns |items| and every element. `edc_turn_msgs` moves the non-NULL entries into its own
+ * array and frees |items| itself, so a caller that hands the entries on still owns (and
+ * must free) whatever it took. |to| < 0 means "to the end of the turn". The array is
+ * dense: a missing position yields a NULL entry so indices keep matching msg_ord. */
 struct edc_msg_span
 {
     struct cJSON **items;
@@ -250,7 +246,6 @@ struct edc_msg_span
 };
 bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to,
                        struct edc_msg_span *out);
-void edc_msg_span_free(struct edc_msg_span *span);
 
 /* ── Addressing messages by id ──────────────────────────────────────────────
  *
@@ -332,9 +327,6 @@ void edc_session_rows_free(struct edc_session_row *rows, int n);
  * transaction: the partial unique index would reject a half-applied switch. */
 bool edc_state_store_set_active_session(int64_t session_id);
 
-/* Which session was active in the previous process, or NULL. */
-char *edc_state_store_active_session(void);
-
 /* Insert a session row if it does not exist yet (creation path, before any state is
  * flushed for it). */
 bool edc_state_store_ensure_session(int64_t session_id, const char *name, uint64_t created_at);
@@ -374,10 +366,8 @@ bool edc_state_store_has_session(int64_t session_id);
  * |pragma_name| must be a bare identifier ([A-Za-z0-9_]+, e.g. "synchronous"): anything
  * else is refused, because the name is interpolated into the PRAGMA statement.
  *
- * Both return -1 / NULL when the store is closed or the pragma yields no row. The text
- * form returns a malloc'd copy the caller frees. */
+ * Returns -1 when the store is closed or the pragma yields no row. */
 int edc_state_store_pragma_int(const char *pragma_name);
-char *edc_state_store_pragma_text(const char *pragma_name);
 
 #ifdef __cplusplus
 }

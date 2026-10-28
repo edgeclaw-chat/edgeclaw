@@ -38,24 +38,6 @@ static void device_shell_ctx_free(struct device_shell_ctx *ctx)
     free(ctx);
 }
 
-#ifndef _WIN32
-static err_t recv_until_close(struct netconn *c, sds *buf)
-{
-    struct netbuf *nb;
-    u8_t *p;
-    u16_t chunk;
-    err_t err;
-
-    while ((err = netconn_recv(c, &nb)) == ERR_OK)
-    {
-        netbuf_data(nb, (void **)&p, &chunk);
-        *buf = sdscatlen(*buf, (char *)p, chunk);
-        netbuf_delete(nb);
-    }
-    return err;
-}
-#endif
-
 static void process_shell_response(sds resp_buf, sds *result, EdcError **error)
 {
     char *body = strstr(resp_buf, "\r\n\r\n");

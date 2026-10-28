@@ -89,11 +89,6 @@ void edc_log_init(void)
     log_add_callback(edc_log_file_callback, NULL, level);
 }
 
-void edc_log_check_rotate(void)
-{
-    edc_log_rotate();
-}
-
 /* Close the log file handle. Must be called after all actor threads have stopped (else
  * a concurrent log writes to a closed FILE*). Once g_log_file is NULLed, a late log
  * callback safely no-ops -- so the mutex is kept (not destroyed), or a late callback

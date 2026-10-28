@@ -19,11 +19,9 @@ extern const char *edc_sandbox_get_root(struct edc_config *conf);
  * the path is simply not allowed -- so a typo there cannot open anything.
  * Called from edc_sandbox_init(); returns 0 when the sandbox is off or there are none. */
 extern size_t edc_sandbox_report_unresolved_paths(struct edc_config *conf);
-extern sds edc_sandbox_verify_path(struct edc_config *conf, const char *path, bool writable, EdcError **error);
-/* Like edc_sandbox_verify_path, but a relative |path| is resolved against
- * |base| (the session's bound working directory) instead of the process cwd.
- * |base| NULL/empty, or an absolute |path|, behaves exactly like
- * edc_sandbox_verify_path. */
+/* Resolve and check |path| against the sandbox rules. A relative |path| is resolved
+ * against |base| (the session's bound working directory); |base| NULL/empty, or an
+ * absolute |path|, resolves against the process cwd. */
 extern sds edc_sandbox_verify_path_at(struct edc_config *conf, const char *base, const char *path, bool writable,
                                       EdcError **error);
 

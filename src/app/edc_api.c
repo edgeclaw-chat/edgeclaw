@@ -277,14 +277,6 @@ int edc_app_models_model_is_chat(const char *model_id)
 {
     return edc_models_is_chat_model(model_id);
 }
-int edc_app_models_provider_matches(const char *provider_id, const char *query)
-{
-    return edc_models_provider_matches(provider_id, query);
-}
-int edc_app_models_model_matches(const char *model_id, const char *query)
-{
-    return edc_models_model_matches(model_id, query);
-}
 
 /* The command surface, straight from the shell's table (static data, no app). */
 size_t edc_app_cmd_count(void)

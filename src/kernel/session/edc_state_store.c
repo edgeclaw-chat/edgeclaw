@@ -956,15 +956,6 @@ int edc_state_store_pragma_int(const char *pragma_name)
     return query_int(g_db, sql, -1);
 }
 
-char *edc_state_store_pragma_text(const char *pragma_name)
-{
-    if (!g_db || !pragma_name_is_bare(pragma_name))
-        return NULL;
-    char sql[128];
-    snprintf(sql, sizeof(sql), "PRAGMA %s", pragma_name);
-    return query_text(g_db, sql);
-}
-
 /* ══════════════════════════════════════════════════════════════════════════
  *  Reading the serialized tree
  *
@@ -977,18 +968,6 @@ char *edc_state_store_pragma_text(const char *pragma_name)
  *  NULL where the serializer would have written a value, and a load must not crash on
  *  data a previous version wrote.
  * ══════════════════════════════════════════════════════════════════════════ */
-
-static const char *js_str(const cJSON *o, const char *key)
-{
-    const cJSON *v = cJSON_GetObjectItem((cJSON *)o, key);
-    return (v && cJSON_IsString(v)) ? cJSON_GetStringValue((cJSON *)v) : NULL;
-}
-
-static int js_bool(const cJSON *o, const char *key)
-{
-    const cJSON *v = cJSON_GetObjectItem((cJSON *)o, key);
-    return (v && cJSON_IsTrue(v)) ? 1 : 0;
-}
 
 static void bind_str(sqlite3_stmt *st, int i, const char *s)
 {
@@ -1352,62 +1331,6 @@ static void bind_turn(sqlite3_stmt *st, void *ctx)
      * bindings are a formality -- but they are the shape of the insert. */
     sqlite3_bind_int(st, 6, turn->msg_count);
     sqlite3_bind_int64(st, 7, (sqlite3_int64)edc_turn_tokens_from((struct edc_turn *)turn, 0));
-}
-
-static const char *INSERT_MESSAGE =
-    "INSERT OR REPLACE INTO messages(id,session_id,group_id,task_id,turn_ord,msg_ord,"
-    "role,mid,ts,render,synthetic,payload,tokens,body) "
-    "VALUES(?1,"
-    " (SELECT session_id FROM tasks WHERE task_id=?2),"
-    " (SELECT group_id   FROM tasks WHERE task_id=?2),"
-    " ?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)";
-
-struct message_bind
-{
-    int64_t task_id;
-    int turn_ord;
-    const cJSON *mj;
-    int msg_ord;
-};
-
-/* A message with no id gets a POSITIONAL one. It has to be deterministic: the store keys
- * on id, so a regenerated id would make every flush insert a second copy of the same
- * message. Only rows written by something other than edc_turn_add_message can lack one. */
-static sds message_id_for(const cJSON *mj, int64_t task_id, int turn_ord, int msg_ord)
-{
-    const char *own = js_str(mj, "id");
-    if (own && *own)
-        return sdsnew(own);
-    return sdscatprintf(sdsempty(), "pos_%lld_%d_%d", (long long)task_id, turn_ord, msg_ord);
-}
-
-static void bind_message(sqlite3_stmt *st, void *ctx)
-{
-    struct message_bind *b = ctx;
-    sds id = message_id_for(b->mj, b->task_id, b->turn_ord, b->msg_ord);
-    bind_str(st, 1, id);
-    sdsfree(id);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)b->task_id);
-    sqlite3_bind_int(st, 3, b->turn_ord);
-    sqlite3_bind_int(st, 4, b->msg_ord);
-    bind_str(st, 5, js_str(b->mj, "role"));
-    bind_str(st, 6, js_str(b->mj, "mid"));
-    sqlite3_bind_int64(st, 7, ts_from_display(js_str(b->mj, "ts")));
-    bind_str(st, 8, js_str(b->mj, "render"));
-    sqlite3_bind_int(st, 9, js_bool(b->mj, "synthetic"));
-    {
-        char *p = msg_payload_text(b->mj);
-        bind_str(st, 10, p);
-        if (p)
-            cJSON_free(p);
-    }
-    sqlite3_bind_int64(st, 11, edc_token_estimate_msg(b->mj));
-    {
-        char *body = msg_body_text(b->mj);
-        bind_str(st, 12, body);
-        if (body)
-            cJSON_free(body);
-    }
 }
 
 /* ── flush bookkeeping ──────────────────────────────────────────────────────
@@ -1837,30 +1760,6 @@ bool edc_state_store_flush(struct edc_session *session, struct edc_scheduler *sc
 static const char *col_str(sqlite3_stmt *st, int i)
 {
     return sqlite3_column_type(st, i) == SQLITE_NULL ? NULL : (const char *)sqlite3_column_text(st, i);
-}
-
-/* ── messages of one turn ─────────────────────────────────────────────────── */
-
-static cJSON *load_turn_messages(const char *task_id, int turn_ord)
-{
-    cJSON *arr = cJSON_CreateArray();
-    char sql[256];
-    snprintf(sql, sizeof(sql),
-             "SELECT " MSG_SELECT_COLS
-             " FROM messages WHERE task_id=? AND turn_ord=? ORDER BY msg_ord");
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
-        return arr;
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
-    sqlite3_bind_int(st, 2, turn_ord);
-    while (sqlite3_step(st) == SQLITE_ROW)
-    {
-        cJSON *msg = msg_from_row(st, 0);
-        if (msg)
-            cJSON_AddItemToArray(arr, msg);
-    }
-    sqlite3_finalize(st);
-    return arr;
 }
 
 /* ── one task, with its child collections ─────────────────────────────────── */
@@ -2851,26 +2750,6 @@ bool edc_state_store_set_active_session(int64_t session_id)
     return true;
 }
 
-char *edc_state_store_active_session(void)
-{
-    if (!g_db)
-        return NULL;
-    sqlite3_stmt *st = NULL;
-    char *out = NULL;
-    if (sqlite3_prepare_v2(g_db, "SELECT session_id FROM sessions WHERE is_active=1 LIMIT 1", -1, &st,
-                           NULL) == SQLITE_OK)
-    {
-        if (sqlite3_step(st) == SQLITE_ROW)
-        {
-            const char *id = col_str(st, 0);
-            if (id)
-                out = strdup(id);
-        }
-        sqlite3_finalize(st);
-    }
-    return out;
-}
-
 bool edc_state_store_insert_session_new(const char *name, int64_t *out_session_id)
 {
     if (out_session_id)
@@ -3194,8 +3073,8 @@ bool edc_msg_append(int64_t task_id, int turn_ord, int msg_ord, const struct cJS
         sds fallback = NULL;
         if (!id || !*id)
         {
-            /* No identity on the message: a deterministic positional one (same rule the
-             * snapshot writer uses, see bind_message). */
+            /* No identity on the message: a deterministic positional one, so a re-flush
+             * cannot insert a second copy of the same message. */
             fallback = sdscatprintf(sdsempty(), "%s#%d.%d", edc_id_str(task_id), turn_ord, msg_ord);
             id = fallback;
         }
@@ -3249,25 +3128,6 @@ struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord)
     return out;
 }
 
-int edc_msg_turn_len(int64_t task_id, int turn_ord)
-{
-    if (!g_db || task_id <= 0)
-        return 0;
-
-    sqlite3_stmt *st = NULL;
-    int n = 0;
-    if (sqlite3_prepare_v2(g_db, "SELECT count(*) FROM messages WHERE task_id=? AND turn_ord=?", -1, &st,
-                           NULL) == SQLITE_OK)
-    {
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
-        sqlite3_bind_int(st, 2, turn_ord);
-        if (sqlite3_step(st) == SQLITE_ROW)
-            n = sqlite3_column_int(st, 0);
-        sqlite3_finalize(st);
-    }
-    return n;
-}
-
 long long edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from)
 {
     if (!g_db || task_id <= 0)
@@ -3312,15 +3172,6 @@ bool edc_msg_turn_truncate(int64_t task_id, int turn_ord, int new_len)
 {
     const bool ok = msg_run_delete("DELETE FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=?",
                                    task_id, turn_ord, new_len < 0 ? 0 : new_len);
-    if (ok)
-        turn_recount(task_id, turn_ord);
-    return ok;
-}
-
-bool edc_msg_turn_clear(int64_t task_id, int turn_ord)
-{
-    const bool ok = msg_run_delete("DELETE FROM messages WHERE task_id=? AND turn_ord=?", task_id,
-                                   turn_ord, -1);
     if (ok)
         turn_recount(task_id, turn_ord);
     return ok;
@@ -3454,18 +3305,6 @@ bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to, struct e
     sqlite3_finalize(st);
     out->n = n;
     return true;
-}
-
-void edc_msg_span_free(struct edc_msg_span *span)
-{
-    if (!span || !span->items)
-        return;
-    for (int i = 0; i < span->n; i++)
-        if (span->items[i])
-            cJSON_Delete(span->items[i]);
-    free(span->items);
-    span->items = NULL;
-    span->n = 0;
 }
 
 /* ── Addressing messages by id ─────────────────────────────────────────────── */

@@ -766,7 +766,7 @@ exit_free_path:
  * sandbox_rw_paths. Used when a session binds a working directory: the bound
  * directory must be admissible under the kernel sandbox (the helper receives
  * sandbox_rw_paths as its --rw set) and under the in-process path validation
- * (edc_sandbox_verify_path), exactly like the launch directory is.
+ * (edc_sandbox_verify_path_at), exactly like the launch directory is.
  *
  * Deduplicated by realpath, so binding the launch directory (or a directory
  * already in the set) is a no-op. Prepending keeps the most recently bound

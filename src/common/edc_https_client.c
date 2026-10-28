@@ -6,7 +6,6 @@
 #include "mbedtls/error.h"
 #include "mbedtls/ssl.h"
 #include "sds.h"
-#include "utarray.h"
 #include "utlist.h"
 #include "uv.h"
 #include "yuarel.h"
@@ -38,23 +37,6 @@ struct edc_work
     void *priv;
     struct edc_work *next;
 };
-
-static void edc_https_client_uv_buf_copy(void *src, const void *dst)
-{
-    *(uv_buf_t *)src = *(uv_buf_t *)dst;
-}
-
-static void edc_https_client_uv_buf_free(void *p)
-{
-    uv_buf_t *buf = p;
-    if (buf->base)
-    {
-        free(buf->base);
-    }
-}
-
-static UT_icd ut_uv_buf_icd = {sizeof(struct uv_buf_t), NULL, edc_https_client_uv_buf_copy,
-                               edc_https_client_uv_buf_free};
 
 struct edc_https_buf_list
 {

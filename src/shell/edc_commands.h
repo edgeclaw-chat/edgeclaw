@@ -103,7 +103,6 @@ extern sds edc_commands_tasks_receipt_text(struct edc_task *const *tasks, size_t
 
 /** Send that receipt to the user (no-op when the text is empty). */
 extern void edc_commands_announce_task(struct edc_reply_to to, const struct edc_task *task);
-extern void edc_commands_announce_tasks(struct edc_reply_to to, struct edc_task *const *tasks, size_t count);
 
 /* ── Ports: the command layer provides `handle_command` ──────
  *

@@ -37,7 +37,6 @@ typedef enum
                                    * the timer callback never mutates state itself. */
 } edc_actor_msg_type_t;
 
-extern const char *edc_actor_msg_type_s(edc_actor_msg_type_t type);
 typedef void (*edc_actor_data_free_fn)(void *);
 
 struct edc_actor_msg
