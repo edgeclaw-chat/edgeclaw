@@ -142,9 +142,11 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
         return NULL;
     }
 
-    /* The master key is intentionally NOT wiped here: the /connect command
-     * re-encrypts the API key when the user updates the provider at runtime,
-     * so the key must stay available (it remains mlock()ed). */
+    /* The master key is deliberately NOT wiped here, and stays resident until shutdown:
+     * /connect re-encrypts the API key when the user updates the provider at runtime, and
+     * the write path stores whatever encryption returns -- with the key gone it would
+     * overwrite the saved key with an empty string and still report success. This is the
+     * documented contract in edc_secret.h; read that before adding a wipe. */
 
     /* The master switch was loaded from config.json (default on). The CLI flag,
      * when given, overrides it for this run only: sandbox_override < 0 keeps the

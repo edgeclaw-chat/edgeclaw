@@ -353,6 +353,8 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
     return true;
 }
 
+/* Wipes the key. The only such path: the key is deliberately resident for the whole
+ * process because /connect re-encrypts at runtime (see the note in edc_secret.h). */
 void edc_secret_cleanup(void)
 {
     if (g_key_mlocked)
@@ -362,22 +364,6 @@ void edc_secret_cleanup(void)
     }
     memset(g_master_key, 0, BC_KEY_SIZE);
     g_secret_ready = false;
-}
-
-void edc_secret_lockdown(void)
-{
-    if (!g_secret_ready)
-        return;
-
-    if (g_key_mlocked)
-    {
-        edc_platform_unlock_memory(g_master_key, BC_KEY_SIZE);
-        g_key_mlocked = false;
-    }
-    memset(g_master_key, 0, BC_KEY_SIZE);
-    g_secret_ready = false;
-
-    log_info("Master key wiped — secret module locked down");
 }
 
 sds edc_secret_encrypt(sds plaintext)
