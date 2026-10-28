@@ -771,17 +771,21 @@ sds edc_commands_session_info_text(struct edc_session *sess)
     sds info =
         sdscatprintf(sdsempty(),
                      "## Current Session\n\n"
-                     "- **ID**: %s\n"
+                     "- **ID**: %lld\n"
                      "- **Name**: %s\n"
                      "- **Created**: %s\n"
                      "- **Last Active**: %s\n"
                      "- **Messages**: %zu\n"
                      "- **Directory**: %s\n"
                      "- **Working Directory**: %s\n",
-                     /* session_id is an int64_t: it needs edc_id_str(), which is what every
-                      * other id-printing site in this tree uses. As %s it was read as a
-                      * pointer, so the reply was garbage or a segfault. */
-                     edc_id_str(sess->session_id), edc_session_get_name(sess), created ? created : "unknown",
+                     /* session_id is an int64_t, so it needs an integer conversion (%lld with
+                      * the (long long) cast the rest of this file uses), not %s -- as %s it
+                      * was dereferenced as a pointer and /session info crashed. Not
+                      * edc_id_str(): that helper exists to keep LOG format strings at %s,
+                      * and its rotating static buffer would collide if a second id were
+                      * ever added to this line, while its id<=0 spelling ("(none)") is a
+                      * logging policy this text should not inherit. */
+                     (long long)sess->session_id, edc_session_get_name(sess), created ? created : "unknown",
                      active ? active : "unknown", edc_session_get_message_count(sess),
                      sess->history_dir ? sess->history_dir : "",
                      edc_session_get_workdir(sess) ? edc_session_get_workdir(sess) : "(default)");
