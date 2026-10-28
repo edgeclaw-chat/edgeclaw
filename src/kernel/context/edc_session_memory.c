@@ -1162,58 +1162,6 @@ size_t edc_task_group_extractable_msg_count(struct edc_task_group *group)
     return total;
 }
 
-/* Parse a message's wall-clock timestamp ("%Y-%m-%d %H:%M:%S", local time, see
- * edc_turn_add_message). 0 when absent or unparseable. sscanf instead of strptime:
- * the latter is POSIX but not declared without an XOPEN macro. */
-static time_t parse_wall_clock(const char *s)
-{
-    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
-    if (!s || sscanf(s, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6)
-        return 0;
-
-    struct tm tm;
-    memset(&tm, 0, sizeof(tm));
-    tm.tm_year = y - 1900;
-    tm.tm_mon = mo - 1;
-    tm.tm_mday = d;
-    tm.tm_hour = h;
-    tm.tm_min = mi;
-    tm.tm_sec = sec;
-    tm.tm_isdst = -1;
-    return mktime(&tm);
-}
-
-/* Newest committed message timestamp in the group (the last time anything happened). */
-static time_t group_last_activity(struct edc_task_group *group)
-{
-    time_t best = 0;
-    struct edc_task *t;
-    LL_FOREACH2(group->members, t, group_next)
-    {
-        if (edc_task_is_memory_sink(t))
-            continue;
-        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
-        {
-            struct edc_turn *turn = t->turns.data[qi];
-            for (int mi = 0; mi < turn->msg_count; mi++)
-            {
-                cJSON *m = edc_turn_msg_at(turn, mi);
-                if (!m)
-                    continue;
-                cJSON *ts = cJSON_GetObjectItem(m, "ts");
-                if (ts && cJSON_IsString(ts))
-                {
-                    time_t v = parse_wall_clock(ts->valuestring);
-                    if (v > best)
-                        best = v;
-                }
-                cJSON_Delete(m);
-            }
-        }
-    }
-    return best;
-}
-
 bool edc_session_memory_extract_due(struct edc_task_group *group, const struct edc_config *conf, time_t now)
 {
     if (!group || edc_task_group_is_system(group))
@@ -1224,15 +1172,23 @@ bool edc_session_memory_extract_due(struct edc_task_group *group, const struct e
     if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
         return false;
 
-    /* Idle: every member (memory sinks aside) is finished -- nobody is running. */
-    struct edc_task *t;
-    LL_FOREACH2(group->members, t, group_next)
-    {
-        if (edc_task_is_memory_sink(t))
-            continue;
-        if (!edc_task_is_finished(t))
-            return false;
-    }
+    /* Idle: no member (memory sinks aside) can still advance on its own, AND it has been
+     * that way long enough. The window is measured from the moment the group BECAME idle
+     * (busy_members dropped to zero), never from the newest message: a task that ran for
+     * fifteen minutes and was then stopped leaves a group that is idle only now, and its
+     * silence says nothing about whether the user has walked away. The reverse case -- a
+     * group that has been idle since long before its last message -- is the same rule:
+     * what matters is how long nobody has been working, not how old the text is.
+     *
+     * busy_members == 0 with idle_since == 0 means nobody has observed this group idle in
+     * this process yet (it was just loaded); refuse rather than guess -- the next scan's
+     * recount stamps it, so extraction starts one full window later instead of early. */
+    if (group->busy_members > 0)
+        return false;
+    if (group->idle_since == 0)
+        return false;
+    if (now < group->idle_since + EDC_MEMO_EXTRACT_IDLE_SECS)
+        return false;
 
     if (edc_task_group_extractable_msg_count(group) == 0)
         return false;
@@ -1242,12 +1198,6 @@ bool edc_session_memory_extract_due(struct edc_task_group *group, const struct e
     if (edc_group_fold_due(group, conf))
         return false;
     if (edc_group_fold_in_flight(group))
-        return false;
-
-    time_t last = group_last_activity(group);
-    if (last == 0)
-        return false; /* no usable timestamp -- do not guess */
-    if (now < last + EDC_MEMO_EXTRACT_IDLE_SECS)
         return false;
 
     return true;
@@ -1320,6 +1270,12 @@ bool edc_session_memory_extract_try(struct edc_scheduler *sched, struct edc_sess
         struct edc_task_group *g;
         DL_FOREACH(sess->groups, g)
         {
+            /* Reconcile the busy count before reading it. Every life change already
+             * notifies the group (edc_task_move / force_move / attach / load), so this is
+             * normally a no-op; it is here so a path that changes a life some other way can
+             * only cost one delayed window, never a group stuck "busy" forever. It is also
+             * where a freshly loaded group (idle_since == 0) gets its stamp. */
+            edc_task_group_refresh_busy(g, now);
             if (!edc_session_memory_extract_due(g, conf, now))
                 continue;
             log_info("L2 memo extract trigger: group %s idle, %zu msgs pending", edc_id_str(g->group_id),

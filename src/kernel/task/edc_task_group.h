@@ -6,6 +6,7 @@
 #include "sds.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 struct edc_session;
 
@@ -110,6 +111,28 @@ struct edc_task_group
      * successful landing / new committed content. In-memory only. */
     int memo_extract_failures;
 
+    /* ── "Is anybody still working?" -- the clock the L2 extraction windows run on ──
+     *
+     * `busy_members` counts the members that can still advance on their own: not
+     * terminal and not a memory sink (a fold/curation round is not user work, and the
+     * extraction predicate must not deadlock on its own siblings). 0 = the group is
+     * idle, i.e. nobody is running.
+     *
+     * `idle_since` is the wall-clock moment that count last DROPPED TO zero (epoch
+     * seconds; 0 = "not known to be idle"). The extraction predicate measures its idle
+     * window from here, never from the newest message's timestamp: a task that runs for
+     * fifteen minutes and is then stopped leaves a group that became idle only NOW,
+     * while the newest message is fifteen minutes old -- the message clock called that
+     * "long silent" and started a round while the user was typing their next line.
+     *
+     * Both fields are derived and in-memory: edc_task_group_refresh_busy() recounts from
+     * the member list on every terminal transition, on (de)attachment and once per
+     * extraction scan, so no writer has to keep a delta in step and a load that restores
+     * a different set cannot leave them stale. A restart stamps `idle_since` afresh --
+     * the same "a restart counts as new" rule as fold_failures above. */
+    int busy_members;
+    time_t idle_since;
+
     struct edc_task_group *prev, *next; /* session's group list */
 };
 
@@ -119,6 +142,16 @@ extern void edc_task_group_free(struct edc_task_group *group);
 extern void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task);
 extern void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *task);
 extern struct edc_task *edc_task_group_find_task(struct edc_task_group *group, int64_t task_id);
+
+/* Recount busy_members from the member list and (re)stamp or clear idle_since.
+ *
+ * Call it after anything that can move a member between "can still advance" and
+ * terminal -- a life change (wired into edc_task_move), an attachment, or a load -- with
+ * |now| = time(NULL) at the call site. Idempotent and O(members): the recount is the
+ * source of truth, so a missed notification self-heals on the next call instead of
+ * leaving the two fields out of step. The stamp only moves when the group crosses into
+ * idle (or is seen idle for the first time); staying idle keeps the original moment. */
+extern void edc_task_group_refresh_busy(struct edc_task_group *group, time_t now);
 
 /* ── Group history: a slot list, not a copy of the conversation ───────────────
  *

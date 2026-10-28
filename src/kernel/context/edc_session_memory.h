@@ -308,9 +308,12 @@ extern const char *edc_session_memory_extract_prompt(void);
 extern size_t edc_task_group_extractable_msg_count(struct edc_task_group *group);
 
 /* Is |group| due for extraction at wall-clock |now|? Conditions: a USER group, at least
- * one member, every member finished (idle), something extractable, a fold not due (fold
- * has priority), no fold/curation in flight for it, and its failure streak under the cap.
- * The idle clock is the newest committed message's timestamp. */
+ * one member, every member finished and it has been so for EDC_MEMO_EXTRACT_IDLE_SECS,
+ * something extractable, a fold not due (fold has priority), no fold/curation in flight
+ * for it, and its failure streak under the cap. The idle clock starts when the group
+ * BECOMES idle (group->idle_since, maintained by edc_task_group_refresh_busy) -- NOT at
+ * the newest message's timestamp: a long-running task that was just stopped makes the
+ * group idle only now. */
 extern bool edc_session_memory_extract_due(struct edc_task_group *group, const struct edc_config *conf, time_t now);
 
 /* Scan every session and start at most one extraction. When one started, `*out_session`

@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 /* The old state-name mapping is retired (R3b): the display name has one source,
  * edc_task_state_str, derived from (step, life). */
@@ -321,6 +322,11 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
         return false;
     if (!edc_task_is_valid_transition(task->step, task->life, step, life))
         return false;
+    /* Read the old "can still advance" answer before the write, so the group's idle clock
+     * is only touched when that answer actually changed. ALIVE -> ALIVE (a step change
+     * inside a running task) leaves busy_members alone, and so does every terminal ->
+     * terminal rewrite. */
+    const bool was_finished = edc_task_is_finished(task);
     task->step = step;
     task->life = life;
     /* The reason for a past end belongs to that end: a task that can move again has no
@@ -336,6 +342,12 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
             task->blocked_by = NULL;
         }
     }
+    /* The one place a member's terminal-ness changes: tell the group, so `idle_since`
+     * says when the group actually BECAME idle. Every runtime transition comes through
+     * here (mark_completed / failed / cancelled / skipped / blocked / interrupted are
+     * wrappers), which is why the recount can live in one spot. */
+    if (task->group && !edc_task_is_memory_sink(task) && was_finished != edc_task_is_finished(task))
+        edc_task_group_refresh_busy(task->group, time(NULL));
     return true;
 }
 
@@ -529,8 +541,13 @@ void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_lif
 {
     if (!task)
         return;
+    const bool was_finished = edc_task_is_finished(task);
     task->step = step;
     task->life = life;
+    /* Same bookkeeping as edc_task_move: `/task resume` comes through here (INTERRUPTED
+     * -> ALIVE via edc_task_resume), and a resumed member makes its group busy again. */
+    if (task->group && !edc_task_is_memory_sink(task) && was_finished != edc_task_is_finished(task))
+        edc_task_group_refresh_busy(task->group, time(NULL));
 }
 
 /* ── Lifetime ──────────────────────────────────────────────── */

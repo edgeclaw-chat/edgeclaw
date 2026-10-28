@@ -40,7 +40,38 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     leader->group = group;
     leader->group_id = group->group_id;
 
+    /* The leader starts ALIVE (a fresh task's default), so this group is busy: no idle
+     * stamp yet. Recounting here rather than assuming also covers a caller that hands
+     * over an already-terminal leader. */
+    edc_task_group_refresh_busy(group, time(NULL));
+
     return group;
+}
+
+/* ── "Is anybody still working?" ───────────────────────────── */
+
+void edc_task_group_refresh_busy(struct edc_task_group *group, time_t now)
+{
+    if (!group)
+        return;
+
+    int busy = 0;
+    struct edc_task *t;
+    LL_FOREACH2(group->members, t, group_next)
+    {
+        if (edc_task_is_memory_sink(t))
+            continue;
+        if (!edc_task_is_finished(t))
+            busy++;
+    }
+
+    const int was = group->busy_members;
+    group->busy_members = busy;
+    if (busy > 0)
+        group->idle_since = 0; /* somebody can still move: the idle clock is not running */
+    else if (was > 0 || group->idle_since == 0)
+        group->idle_since = now; /* it went idle now, or was first seen idle now */
+    /* else: already idle with a stamp -- keep the moment it started, not "still idle". */
 }
 
 void edc_task_group_free(struct edc_task_group *group)
@@ -492,6 +523,7 @@ void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task
 
     LL_APPEND2(group->members, task, group_next);
     group->member_count++;
+    edc_task_group_refresh_busy(group, time(NULL));
 }
 
 void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *task)
@@ -507,6 +539,7 @@ void edc_task_group_remove_task(struct edc_task_group *group, struct edc_task *t
             LL_DELETE2(group->members, m, group_next);
             task->group = NULL;
             group->member_count--;
+            edc_task_group_refresh_busy(group, time(NULL));
 
             if (task == group->leader && group->member_count > 0)
             {

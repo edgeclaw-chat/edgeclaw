@@ -70,7 +70,7 @@ static int test_passed = 0;
  *  Helpers
  *  ══════════════════════════════════════════════════════════════ */
 
-#define OLD_TS "2000-01-01 00:00:00"    /* far in the past: definitely idle */
+#define OLD_TS "2000-01-01 00:00:00"    /* far in the past: old material, not old silence */
 #define RECENT_TS "2099-01-01 00:00:00" /* in the future: definitely not idle */
 
 static struct edc_config *make_config(void)
@@ -96,8 +96,23 @@ static void give_turn(struct edc_task *t, const char *text, const char *ts, int 
     edc_task_add_turn(t, turn);
 }
 
+/* Pretend the group has been idle for longer than the extraction window.
+ *
+ * The idle clock starts when the last member goes terminal (`idle_since`), NOT at the
+ * newest message: a helper that finishes its member now leaves a group that is idle for
+ * ~0s, whatever the messages say. Tests that want "this group has been sitting idle for
+ * a while" say so here instead of backdating message timestamps. */
+static void idle_long_ago(struct edc_task_group *group)
+{
+    if (!group)
+        return;
+    group->busy_members = 0;
+    group->idle_since = time(NULL) - (EDC_MEMO_EXTRACT_IDLE_SECS + 60);
+}
+
 /* A user group whose single (leader) member is finished and holds one |n|-message
- * committed turn. */
+ * committed turn. It starts out idle-for-a-while, which is the state most tests are
+ * about; the ones that care about the clock set it themselves. */
 static struct edc_task_group *make_finished_user_group(struct edc_session *session, const char *gid, const char *text,
                                                        const char *ts, int n)
 {
@@ -108,6 +123,7 @@ static struct edc_task_group *make_finished_user_group(struct edc_session *sessi
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
     leader->completion_seq = 1;
+    idle_long_ago(group);
     return group;
 }
 
@@ -161,16 +177,19 @@ static void test_due_predicate(void)
     time_t now = time(NULL);
 
     CHECK(edc_session_memory_extract_due(group, cfg, now), "idle + pending => due");
-    CHECK(edc_session_memory_extract_due(group, cfg, now - 1000), "idle clock not yet elapsed => not due");
+    CHECK(!edc_session_memory_extract_due(group, cfg, now - 1000), "before the idle window elapses => not due");
     CHECK(!edc_session_memory_extract_due(NULL, cfg, now), "NULL group => not due");
 
     /* Not idle: a member still running. */
     struct edc_task *busy = edc_task_new(edc_test_id("2"), session->session_id, edc_test_id("g1"), "busy", edc_channel_adapter);
     edc_task_group_add_task(group, busy);
+    CHECK(group->busy_members == 1, "attaching a live member makes the group busy");
     CHECK(!edc_session_memory_extract_due(group, cfg, now), "a running member => not due");
     edc_task_await_exec(busy);
     edc_task_mark_completed(busy);
     busy->completion_seq = 2;
+    CHECK(group->busy_members == 0, "the last member finishing empties the busy count");
+    idle_long_ago(group); /* finishing it now restarts the clock; say it was long ago */
     CHECK(edc_session_memory_extract_due(group, cfg, now), "member finished => due again");
 
     /* Nothing extractable: the watermark covers every committed message. */
@@ -274,6 +293,7 @@ static void test_cap_multi_round_and_idempotence(void)
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
     leader->completion_seq = 1;
+    idle_long_ago(group); /* idle long enough for the window; the material is what this test checks */
 
     /* One committed turn with two ~75k-token messages: together over the 131k cap,
      * each comfortably under it => round 1 takes the first, round 2 the second. */
@@ -512,6 +532,7 @@ static void test_material_keeps_tool_calls(void)
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
     leader->completion_seq = 1;
+    idle_long_ago(group);
 
     struct edc_session *out = NULL;
     CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "extraction started");
@@ -555,6 +576,73 @@ static void test_extract_scan_service(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Test 9: the idle clock starts when the group BECOMES idle
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_idle_clock_starts_when_the_group_goes_idle(void)
+{
+    TEST("idle: the window runs from the last member going terminal, not from the newest message");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-clock"), "Clock");
+    time_t now = time(NULL);
+
+    /* Ancient messages, member finished just now: the group became idle NOW, so the
+     * window has not elapsed. The old message clock would have said "silent for 25
+     * years" and started a round immediately. */
+    struct edc_task_group *group = make_finished_user_group(session, "g1", "ancient work", OLD_TS, 2);
+    group->idle_since = now; /* make_finished_user_group backdates; this test is about the clock */
+    CHECK(edc_task_group_extractable_msg_count(group) == 2, "there IS material waiting");
+    CHECK(!edc_session_memory_extract_due(group, cfg, now), "ancient messages, freshly idle => NOT due");
+    CHECK(!edc_session_memory_extract_due(group, cfg, now + EDC_MEMO_EXTRACT_IDLE_SECS - 1), "one second early => NOT due");
+    CHECK(edc_session_memory_extract_due(group, cfg, now + EDC_MEMO_EXTRACT_IDLE_SECS), "the window elapsed => due");
+
+    /* The case the message clock got wrong: one member runs for the whole window with no
+     * messages coming in. The group is BUSY the entire time, so nothing is extracted no
+     * matter how old the newest message is. */
+    struct edc_task *long_runner =
+        edc_task_new(edc_test_id("2"), session->session_id, edc_test_id("g1"), "long tool call", edc_channel_adapter);
+    edc_task_group_add_task(group, long_runner);
+    edc_task_await_exec(long_runner);
+    CHECK(group->busy_members == 1, "one live member => busy");
+    CHECK(group->idle_since == 0, "busy => the idle clock is not running");
+    const time_t long_after = now + EDC_MEMO_EXTRACT_IDLE_SECS * 10;
+    CHECK(!edc_session_memory_extract_due(group, cfg, long_after), "a task that has been running for 10 windows => NOT due");
+
+    /* Now it stops -- at |long_after| the group only BECOMES idle. The clock starts here,
+     * so the window has to elapse again from this moment. */
+    edc_task_mark_cancelled(long_runner);
+    CHECK(group->busy_members == 0, "cancelled => nobody running");
+    CHECK(group->idle_since != 0, "the stop stamped the idle clock");
+    CHECK(!edc_session_memory_extract_due(group, cfg, time(NULL)), "just stopped => NOT due (the user may still be there)");
+
+    idle_long_ago(group); /* ... and only a full window later does it become due */
+    CHECK(edc_session_memory_extract_due(group, cfg, time(NULL)), "a full window after the stop => due");
+
+    /* Nobody has observed this group idle yet (a mid-load group): refuse rather than
+     * guess. The next scan's recount stamps it. */
+    group->busy_members = 0;
+    group->idle_since = 0;
+    CHECK(!edc_session_memory_extract_due(group, cfg, now), "no idle stamp => NOT due (do not guess)");
+
+    /* Consistency of the two fields, driven only through the real transitions. */
+    struct edc_task *again =
+        edc_task_new(edc_test_id("3"), session->session_id, edc_test_id("g1"), "another", edc_channel_adapter);
+    edc_task_group_add_task(group, again);
+    CHECK(group->busy_members == 1 && group->idle_since == 0, "attach => busy, clock cleared");
+    edc_task_await_exec(again);
+    CHECK(group->busy_members == 1, "a step change inside a running member keeps it busy");
+    edc_task_mark_completed(again);
+    CHECK(group->busy_members == 0, "the last member finishing empties the count");
+    CHECK(group->idle_since != 0, "and stamps the clock");
+    edc_task_group_remove_task(group, again);
+    CHECK(group->busy_members == 0, "detaching a finished member keeps the count at zero");
+
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Test 7: the recency rule is in every memory prompt
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -583,6 +671,7 @@ int main(void)
     test_serialization_tristate_and_v7();
     test_extract_scan_service();
     test_material_keeps_tool_calls();
+    test_idle_clock_starts_when_the_group_goes_idle();
     test_prompts_have_recency_rule();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
