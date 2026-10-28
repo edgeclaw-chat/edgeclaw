@@ -17,6 +17,15 @@ struct edc_session_manager;
 struct edc_task;
 struct edc_task_group;
 
+/* The channel type a command-originated reply or task carries.
+ *
+ * `struct edc_reply_to.type` is a MESSAGE type (which kind of reply this is), while
+ * edc_channel_type answers "which adapter" -- and the two enums only coincide at 0. They
+ * were being passed for each other at every task-creating site, so a task born from a
+ * non-USER inbound message got a bogus channel_type (4/8) that went into the database's
+ * `channel` column. One name, used wherever the channel type is what is meant. */
+#define EDC_COMMANDS_CHANNEL edc_channel_adapter
+
 /* The command handler (the userland entry). It takes exactly the few things its
  * downstream really needs (signature = reader roster) -- borrowing no umbrella object:
  * cfg for displays like /model, sm/sched for the task graph and store,
@@ -46,6 +55,12 @@ extern void edc_commands_reply(struct edc_reply_to to, const char *text);
  *  arithmetic by hand. `group` may be NULL (nothing to describe). Exposed for tests. */
 extern sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_group *group,
                                         const struct edc_config *conf);
+
+/** The `/session info` body: the active session's id, name, timestamps, message count and
+ *  directories. |session| may be NULL (the "no active session" line). Exposed for tests:
+ *  the reply path goes through the channel actor, which the command tests do not run --
+ *  which is how a `%s` in front of the session's int64 id survived until now. Caller frees. */
+extern sds edc_commands_session_info_text(struct edc_session *session);
 
 /** The `/group files` body: the tracked-file lists the group's memory carries (the files
  *  the folded work read / modified), each with the caveat that it is a snapshot taken at

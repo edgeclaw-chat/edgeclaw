@@ -190,7 +190,7 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
             sds spawn_err = NULL;
             /* 前一个任务和"怎么等它"是一个整体：没有前一个就没有这一类边（见 edc_prev_dep）。 */
             const struct edc_prev_dep link = {prev, dep};
-            struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, prev ? &link : NULL,
+            struct edc_task *task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, prev ? &link : NULL,
                                                          group, ast->new_group ? "+" : "task", &out_group, r_out,
                                                          r_out_app, r_err, &spawn_err);
             if (spawn_err)

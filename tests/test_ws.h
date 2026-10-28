@@ -135,9 +135,14 @@ static struct edc_turn *edc_test_turn_new(void)
     edc_test_workspace();
     /* A DISTINCT key per turn. Two turns sharing (task_id, turn_ord) would write to the
      * same rows and the second would silently overwrite the first -- which is what makes
-     * a multi-turn test see "0 messages" instead of 4. */
+     * a multi-turn test see "0 messages" instead of 4.
+     *
+     * The pre-increment is its own statement: inside the call it read and modified `seq` in
+     * one expression with no sequence point, so the two ids drawn from it could disagree
+     * (and a compiler is free to do that). */
     static int64_t seq = 100000;
-    return edc_turn_new_for(EDC_TEST_SESSION_ID_BASE - 1, 90000 + (seq % 1000), ++seq, 0);
+    ++seq;
+    return edc_turn_new_for(EDC_TEST_SESSION_ID_BASE - 1, 90000 + (seq % 1000), seq, 0);
 }
 
 /* The ids a task/group carries are NUMBERS now (INTEGER PRIMARY KEYs), while fixtures name

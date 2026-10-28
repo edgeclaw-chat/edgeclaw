@@ -110,7 +110,7 @@ static void redir_add(const edc_tok *target, const edc_tok *spec)
      * 不静默丢弃：旧的写法必须停下来，并告诉用户换成什么。 */
     if (spec && spec->fd == 0)
     {
-        set_err("input redirect `\<` is gone — put the file in the message as `@file` "
+        set_err("input redirect `<` is gone — put the file in the message as `@file` "
                 "(it is read the same way, through the sandbox)");
         return;
     }

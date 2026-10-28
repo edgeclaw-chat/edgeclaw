@@ -681,7 +681,7 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
 
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
-    struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task",
+    struct edc_task *task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, NULL, group, "task",
                                                  &out_group, NULL, false, NULL, &spawn_err);
     if (spawn_err)
     {

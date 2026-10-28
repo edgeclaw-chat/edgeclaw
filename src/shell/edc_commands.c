@@ -37,7 +37,11 @@
 
 void edc_commands_reply(struct edc_reply_to to, const char *text)
 {
-    struct edc_channel_message *reply = edc_channel_message_new(to.type, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
+    /* Arguments are (channel type, MESSAGE type, content): the channel type is which
+     * adapter, the message type is what kind of reply this is. `to.type` is the latter,
+     * so it must NOT go in the first slot -- that is the mix-up this macro exists for. */
+    struct edc_channel_message *reply =
+        edc_channel_message_new(EDC_COMMANDS_CHANNEL, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
     edc_actor_send(to.channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, to.actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));
@@ -46,7 +50,7 @@ void edc_commands_reply(struct edc_reply_to to, const char *text)
 void edc_commands_send_history(struct edc_reply_to to, const char *payload)
 {
     struct edc_channel_message *reply =
-        edc_channel_message_new(to.type, EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE, sdsnew(payload));
+        edc_channel_message_new(EDC_COMMANDS_CHANNEL, EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE, sdsnew(payload));
     edc_actor_send(to.channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, to.actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));
@@ -306,7 +310,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Session", "/session new [name] <dir>",
      "start a new session bound to <dir> (the name is optional, the directory is not)",
      "Command arguments are split like a shell splits them, so a value containing spaces has to "
-     "be quoted: `/session new dev 'D:\my repo'`."},
+     "be quoted: `/session new dev 'D:\\my repo'`."},
     {"Session", "/session switch <name>", "switch to another session", NULL},
     {"Session", "/session list", "list all sessions", NULL},
     {"Session", "/session info", "show the current session's details (name, id, directory)", NULL},
@@ -756,14 +760,11 @@ static bool edc_commands_handle_session_rename(struct edc_session_manager *sm, s
     return true;
 }
 
-static bool edc_commands_handle_session_info(struct edc_session_manager *sm, struct edc_reply_to to)
+sds edc_commands_session_info_text(struct edc_session *sess)
 {
-    struct edc_session *sess = edc_session_manager_get_active(sm);
     if (!sess)
-    {
-        edc_commands_reply(to, "**Session** — no active session.");
-        return true;
-    }
+        return sdsnew("**Session** — no active session.");
+
     /* The timestamps are integers; this is the presentation edge, so format them here. */
     sds created = sess->created_at ? edc_datetime_format((time_t)sess->created_at) : NULL;
     sds active = sess->last_active ? edc_datetime_format((time_t)sess->last_active) : NULL;
@@ -777,14 +778,23 @@ static bool edc_commands_handle_session_info(struct edc_session_manager *sm, str
                      "- **Messages**: %zu\n"
                      "- **Directory**: %s\n"
                      "- **Working Directory**: %s\n",
-                     sess->session_id, edc_session_get_name(sess), created ? created : "unknown",
+                     /* session_id is an int64_t: it needs edc_id_str(), which is what every
+                      * other id-printing site in this tree uses. As %s it was read as a
+                      * pointer, so the reply was garbage or a segfault. */
+                     edc_id_str(sess->session_id), edc_session_get_name(sess), created ? created : "unknown",
                      active ? active : "unknown", edc_session_get_message_count(sess),
                      sess->history_dir ? sess->history_dir : "",
                      edc_session_get_workdir(sess) ? edc_session_get_workdir(sess) : "(default)");
-    edc_commands_reply(to, info);
-    sdsfree(info);
     sdsfree(created);
     sdsfree(active);
+    return info;
+}
+
+static bool edc_commands_handle_session_info(struct edc_session_manager *sm, struct edc_reply_to to)
+{
+    sds info = edc_commands_session_info_text(edc_session_manager_get_active(sm));
+    edc_commands_reply(to, info);
+    sdsfree(info);
     return true;
 }
 
@@ -1192,7 +1202,9 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
      * not the same string once the prompt is longer than EDC_TASK_DESC_MAX. Non-empty:
      * the guard above rejected an empty input. */
     spec.desc = opts.desc;
-    spec.channel_type = to.type;
+    /* The task's channel type is which adapter it belongs to (edc_channel_type), NOT
+     * to.type -- that is a message type. See EDC_COMMANDS_CHANNEL in edc_commands.h. */
+    spec.channel_type = EDC_COMMANDS_CHANNEL;
     spec.input = opts.input;
     spec.deps = deps;
     spec.dep_count = (size_t)opts.dep_count;
@@ -1645,7 +1657,6 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
     }
     /* Borrowed from the caller's AST -- never freed here. */
     sds *tokens = args->argv;
-    const int count = args->argc;
 
     /* `session` is a parameter: the session THIS INPUT belongs to (resolved from the
      * message's tag -- no more "ask the active session and assume it is this input's
@@ -1690,7 +1701,7 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
         sdsfree(desc);
         return;
     }
-    struct edc_task *child = edc_task_fork(parent, child_id, desc, fork_point_seq, to.type);
+    struct edc_task *child = edc_task_fork(parent, child_id, desc, fork_point_seq, EDC_COMMANDS_CHANNEL);
 
     /* The child starts its own group (as leader) and takes the foreground; desc is the
      * input, as in /task new. Which group and who owns the foreground is the
@@ -3002,7 +3013,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
 
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
-    struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task", &out_group,
+    struct edc_task *task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, NULL, group, "task", &out_group,
                                                 NULL, false, NULL, &spawn_err);
     if (spawn_err)
     {
@@ -3210,7 +3221,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
 
     struct edc_task_group *out_group = NULL;
     sds spawn_err = NULL;
-    struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, NULL, group, "task", &out_group,
+    struct edc_task *task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, NULL, group, "task", &out_group,
                                                  NULL, false, NULL, &spawn_err);
     if (spawn_err)
     {
@@ -3894,8 +3905,12 @@ static bool edc_commands_cb_handle_command(struct edc_scheduler *sched, struct e
     if (!msg)
         return false;
 
-    /* The inbound message's sender is the channel actor -- reply straight back to it. */
-    struct edc_reply_to to = {.channel_actor = actor, .actor = actor, .type = msg->type};
+    /* The inbound message's sender is the channel actor -- reply straight back to it.
+     * `to.type` is a MESSAGE type (the routing key the reply is published with), so it
+     * comes from msg->message_type. msg->type is the CHANNEL type (which adapter the
+     * message arrived on) and the two enums only coincide at 0 -- every command reply was
+     * being tagged USER for that reason. */
+    struct edc_reply_to to = {.channel_actor = actor, .actor = actor, .type = msg->message_type};
     return edc_commands_handler(sched->config, sched->sessions, sched, to, msg);
 }
 

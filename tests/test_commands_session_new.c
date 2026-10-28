@@ -209,7 +209,10 @@ int main(void)
 
     /* ── ⑦b 未闭合引号 = 语法错误，不建 session ───────────── */
     TEST("unterminated quote: syntax error, no session");
-    drive(cfg, sm, sched, "/session new broken 'D:\github\edgeclaw");
+    /* Backslashes doubled: as written ("D:\github\edgeclaw") the \g dropped its separator
+     * and the \e became 0x1B, so the fixture fed a raw ESC byte into the parser. The path
+     * is Windows-shaped on purpose -- it is only ever parsed, never touched on disk. */
+    drive(cfg, sm, sched, "/session new broken 'D:\\github\\edgeclaw");
     CHECK(sm->session_count == base + 6, "session count unchanged");
     CHECK(edc_session_manager_find(sm, "broken") == NULL, "no session created");
 
@@ -255,6 +258,26 @@ int main(void)
         if (strcmp(cfg->sandbox_rw_paths[i], real_dir) == 0)
             granted = true;
     CHECK(granted, "bound dir present in sandbox rw paths");
+
+    /* ── ⑩ `/session info` 渲染 ─────────────────────────────────
+     * The reply goes through the channel actor, which this test does not run, so the body
+     * is asserted through its pure function. The point is the id line: session_id is an
+     * int64_t and was being formatted with %s, i.e. dereferenced as a pointer -- garbage
+     * or a segfault, and nothing here ever looked. */
+    TEST("/session info: the id is rendered, not dereferenced");
+    struct edc_session *active = edc_session_manager_get_active(sm);
+    sds info_text = edc_commands_session_info_text(active);
+    CHECK(info_text != NULL, "the info body was built");
+    char id_line[64];
+    snprintf(id_line, sizeof(id_line), "- **ID**: %lld", (long long)active->session_id);
+    CHECK(info_text && strstr(info_text, id_line) != NULL, "the id line carries the session's number");
+    CHECK(info_text && strstr(info_text, "## Current Session") != NULL, "and the heading");
+    sdsfree(info_text);
+
+    TEST("/session info with no active session: says so");
+    sds none_text = edc_commands_session_info_text(NULL);
+    CHECK(none_text && strstr(none_text, "no active session") != NULL, "NULL session has its own line");
+    sdsfree(none_text);
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;
