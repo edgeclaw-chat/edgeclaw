@@ -189,7 +189,7 @@ static void test_mixed_scenario(void)
 
     /* Create 3 groups, each with 2-3 tasks */
     struct edc_task_group *g[3];
-    struct edc_task *tasks[8];
+    struct edc_task *tasks[9];
     int t_idx = 0;
 
     for (int i = 0; i < 3; i++) {
