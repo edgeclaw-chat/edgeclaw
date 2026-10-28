@@ -115,7 +115,7 @@ bool edc_turn_add_message(struct edc_turn *turn, cJSON *msg)
          * introduce. */
         log_error("turn: message NOT persisted (task=%s turn=%d ord=%d) -- is the state "
                   "store open?",
-                  (long long)edc_id_str(turn->task_id), turn->turn_ord, ord);
+                  edc_id_str(turn->task_id), turn->turn_ord, ord);
     }
 
     cJSON_Delete(msg); /* the row owns the JSON now */

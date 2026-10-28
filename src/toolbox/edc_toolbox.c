@@ -360,7 +360,7 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
                           want == 0 ? " (it declares no tools)" : "",
                           sdslen(available) > 0 ? available : "(none)");
             log_info("toolbox: refused %s for task %s (scope %u)", name,
-                     ctx->task && edc_id_str(ctx->task->task_id), want);
+                     ctx->task ? edc_id_str(ctx->task->task_id) : "(no task)", want);
             sdsfree(available);
             callback(ctx, NULL, error);
             return;
