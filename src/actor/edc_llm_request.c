@@ -19,6 +19,7 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <cJSON.h>
+#include <inttypes.h> /* PRId64 */
 #include <string.h>
 
 /* The per-group declaration set resolver, installed by the assembly root: the registry lives
@@ -96,7 +97,7 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (strcmp(name, "SELF") == 0)
     {
         struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sched->sessions));
-        return front ? sdscatprintf(sdsempty(), "%lld", (long long)front->task_id) : NULL;
+        return front ? sdscatprintf(sdsempty(), "%" PRId64, front->task_id) : NULL;
     }
 
     /* {{LAST}} -> the last completed task's output */
@@ -382,7 +383,7 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      * B0): every request of one conversation then shares a cache shard. Only a normal reply --
      * a fold or curator call is one-shot and would just take space in someone else's shard. */
     if (!is_memory_sink && task->group && task->group->group_id)
-        req->cache_key = sdscatprintf(sdsempty(), "%lld", (long long)task->group->group_id);
+        req->cache_key = sdscatprintf(sdsempty(), "%" PRId64, task->group->group_id);
     /* The summary's output budget (a): paired with the corpus cap
      * EDC_FOLD_MAX_CORPUS_TOKENS, keeping a single fold's compression ratio achievable
      * (<= 4:1). This is the only exception to "requests never send max_tokens". */

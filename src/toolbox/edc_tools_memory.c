@@ -12,6 +12,7 @@
 #include "edc_tools.h"
 #include "sds.h"
 #include <cJSON.h>
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -285,7 +286,7 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
         }
         /* Surface the entry's rev: memory_update needs it as expected_rev, so a write
          * built on this read cannot clobber a newer edit. */
-        out = sdscatprintf(out, "- [%s] rev %llu\n%s", id, (unsigned long long)(e ? e->updated_seq : 0), detail);
+        out = sdscatprintf(out, "- [%s] rev %" PRIu64 "\n%s", id, e ? e->updated_seq : 0, detail);
         sdsfree(detail);
     }
     sds header = edc_tools_memory_call_header("memory_get", args);
@@ -344,7 +345,7 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
     }
 
     sds when = edc_datetime_format_min((time_t)(e ? e->created_at : 0));
-    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %llu, %s). Other tasks see it on their next request.", id,
+    sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %" PRIu64 ", %s). Other tasks see it on their next request.", id,
                            (unsigned long long)seq, when);
     sdsfree(when);
     if (related)
@@ -441,7 +442,7 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         else if (!has_rev)
             bad = sdscatprintf(bad, "%s%s: missing expected_rev", pfx, id), ok = false;
         else if (rev != e->updated_seq)
-            bad = sdscatprintf(bad, "%s%s: stale expected_rev (now %llu)", pfx, id, (unsigned long long)e->updated_seq),
+            bad = sdscatprintf(bad, "%s%s: stale expected_rev (now %" PRIu64 ")", pfx, id, e->updated_seq),
             ok = false;
         else if (dup)
             bad = sdscatprintf(bad, "%s%s: duplicate id in batch", pfx, id), ok = false;

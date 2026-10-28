@@ -15,6 +15,7 @@
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <dirent.h>
+#include <inttypes.h> /* PRId64 */
 #include <errno.h>
 #include <string.h>
 
@@ -127,7 +128,7 @@ bool edc_session_manager_load(struct edc_session_manager *sm)
     for (int i = 0; i < n; i++)
     {
         char idbuf[32];
-        snprintf(idbuf, sizeof(idbuf), "%lld", (long long)rows[i].session_id);
+        snprintf(idbuf, sizeof(idbuf), "%" PRId64, rows[i].session_id);
         struct edc_session *s = edc_session_new(sm->config, rows[i].session_id,
                                                 rows[i].name && *rows[i].name ? rows[i].name : idbuf);
         if (!s)
@@ -391,7 +392,7 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
         }
         /* Taken by a removed session's leftovers: give this id back and ask for the next. */
         edc_state_store_delete_session(id);
-        log_info("session create: id %lld is taken by an existing directory, trying the next",
+        log_info("session create: id %" PRId64 " is taken by an existing directory, trying the next",
                  (long long)id);
     }
     if (!allocated)

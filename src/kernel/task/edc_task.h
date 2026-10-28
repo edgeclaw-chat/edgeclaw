@@ -8,6 +8,7 @@
 #include "edc_turn.h"
 #include "sds.h"
 #include <cJSON.h>
+#include <inttypes.h> /* PRId64 */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -157,7 +158,7 @@ static inline const char *edc_id_str(int64_t id)
     char *b = bufs[next];
     next = (next + 1) % 4;
     if (id > 0)
-        snprintf(b, sizeof(bufs[0]), "%lld", (long long)id);
+        snprintf(b, sizeof(bufs[0]), "%" PRId64, id);
     else
         snprintf(b, sizeof(bufs[0]), "(none)");
     return b;

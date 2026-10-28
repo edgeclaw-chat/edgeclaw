@@ -30,6 +30,7 @@
 #include "sds.h"
 #include "sqlite3.h"
 
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1921,7 +1922,7 @@ static void load_detach_from_groups(struct edc_session *session, struct edc_task
             LL_DELETE2(g->members, t, group_next);
             if (g->member_count > 0)
                 g->member_count--;
-            log_warn("load: task %lld detached from group %lld (a task belongs to one group only)",
+            log_warn("load: task %" PRId64 " detached from group %" PRId64 " (a task belongs to one group only)",
                      (long long)task_id, (long long)g->group_id);
             break;
         }
@@ -2253,7 +2254,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             }
             if (!leader)
             {
-                log_warn("load: group %lld has no member to lead it -- skipped",
+                log_warn("load: group %" PRId64 " has no member to lead it -- skipped",
                          (long long)group_id);
                 continue;
             }
@@ -2790,7 +2791,7 @@ bool edc_state_store_ensure_session(int64_t session_id, const char *name, uint64
     {
         /* A session with no name shows its id, which is a number now. */
         char idbuf[32];
-        snprintf(idbuf, sizeof(idbuf), "%lld", (long long)session_id);
+        snprintf(idbuf, sizeof(idbuf), "%" PRId64, session_id);
         bind_str(st, 2, (name && *name) ? name : idbuf);
     }
     sqlite3_bind_int64(st, 3, (sqlite3_int64)created_at);

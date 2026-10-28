@@ -9,6 +9,7 @@
 #include "edc_token_estimate.h"
 #include "edc_turn.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -433,7 +434,7 @@ bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const stru
     if (source && source->task_id > 0)
     {
         char idbuf[32];
-        snprintf(idbuf, sizeof(idbuf), "%lld", (long long)source->task_id);
+        snprintf(idbuf, sizeof(idbuf), "%" PRId64, source->task_id);
         task->blocked_by = strdup(idbuf);
     }
     /* A cascaded task will not produce either, so it passes the cascade on -- through the
@@ -1257,7 +1258,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
      *   - only when the source completing NOW is the one that blocked it (blocked_by):
      *     some OTHER dependency finishing says nothing about whether it may run again. */
     char source_id_text[32];
-    snprintf(source_id_text, sizeof(source_id_text), "%lld", (long long)source->task_id);
+    snprintf(source_id_text, sizeof(source_id_text), "%" PRId64, source->task_id);
     if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id > 0 &&
         strcmp(target->blocked_by, source_id_text) == 0 && !edc_task_awaits_deps(target))
     {
@@ -1274,7 +1275,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
              * again because the dependency it was blocked on produced. A queue advance and
              * a cascade are routine / already announced, so they carry no notice. */
             task_record_move(source, target, EDC_MOVE_UNBLOCKED,
-                             sdscatprintf(sdsempty(), "`%lld` is running again — its dependency `%lld` produced.",
+                             sdscatprintf(sdsempty(), "`%" PRId64 "` is running again — its dependency `%" PRId64 "` produced.",
                                           (long long)target->task_id, (long long)source->task_id));
     }
 

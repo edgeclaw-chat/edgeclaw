@@ -16,6 +16,7 @@
 #include "utlist_fix.h"
 
 #include <ctype.h>
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #ifdef _WIN32
 /* Windows ships no POSIX <regex.h>; PCRE2 provides a drop-in wrapper. */
 #include <pcre2posix.h>
@@ -480,7 +481,7 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
 {
     if (!m || !title)
         return NULL;
-    sds id = sdscatprintf(sdsempty(), "m%llu", (unsigned long long)(m->next_entry_id + 1));
+    sds id = sdscatprintf(sdsempty(), "m%" PRIu64, m->next_entry_id + 1);
     struct edc_memo_entry *e = edc_session_memory_upsert_entry(m, id, title, summary, detail, NULL);
     if (!e)
     {
@@ -561,7 +562,7 @@ static sds build_compact_prompt(struct edc_session *session)
     {
         const struct edc_memo_entry *e = &m->entries[i];
         sds when = edc_datetime_format_min((time_t)(e->updated_at ? e->updated_at : e->created_at));
-        out = sdscatprintf(out, "\n- id: %s  rev: %llu  updated: %s%s\n", e->id, (unsigned long long)e->updated_seq,
+        out = sdscatprintf(out, "\n- id: %s  rev: %" PRIu64 "  updated: %s%s\n", e->id, e->updated_seq,
                            when, e->superseded ? "  (retired)" : "");
         sdsfree(when);
         out = sdscatprintf(out, "  title: %s\n", e->title ? e->title : "(untitled)");
@@ -1686,8 +1687,8 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
 
     sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n", m->entry_count);
     if (seen < m->pruned_before)
-        out = sdscatprintf(out, "[events up to seq %llu were compacted away — the index/search hold the full picture]\n",
-                           (unsigned long long)m->pruned_before);
+        out = sdscatprintf(out, "[events up to seq %" PRIu64 " were compacted away — the index/search hold the full picture]\n",
+                           m->pruned_before);
     out = sdscatsds(out, body);
     sdsfree(body); /* copied into out: the per-event listing is not needed past this point */
     if (npick > shown)

@@ -17,6 +17,7 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <errno.h>
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -142,7 +143,7 @@ sds edc_session_dir_name(int64_t session_id)
     /* An sds copy of the id's text form. edc_id_str() returns a rotating buffer, so it
      * cannot be stored; this is the storing variant, and it spells the id exactly the same
      * way -- one representation, no prefix. */
-    return sdscatprintf(sdsempty(), "%lld", (long long)session_id);
+    return sdscatprintf(sdsempty(), "%" PRId64, session_id);
 }
 
 struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id, const char *name,

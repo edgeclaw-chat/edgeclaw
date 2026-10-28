@@ -17,6 +17,7 @@
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <errno.h>
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -599,7 +600,7 @@ bool edc_scheduler_task_adopt(struct edc_scheduler *sched, struct edc_session *s
     {
         task->tool_only = true;
 
-        sds call_id = sdscatprintf(sdsempty(), "call_local_%lld", (long long)task->task_id);
+        sds call_id = sdscatprintf(sdsempty(), "call_local_%" PRId64, task->task_id);
         if (task->active_turn)
             edc_turn_add_assistant_tool_call(task->active_turn, call_id, spec->initial_tool_name,
                                              spec->initial_tool_args);

@@ -10,6 +10,7 @@
 #include "edc_task_group.h"
 #include "log.h"
 #include "sds.h"
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -187,7 +188,7 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
     /* Tag the message with its producing task so the frontend can show which
      * task a chat message belongs to (interleaved tasks in one session). */
     if (task->task_id)
-        reply->task_id = sdscatprintf(sdsempty(), "%lld", (long long)task->task_id);
+        reply->task_id = sdscatprintf(sdsempty(), "%" PRId64, task->task_id);
     /* And with its owning session, so a background session's output lands in
      * that session's transcript rather than the one on screen.
      *
@@ -219,7 +220,7 @@ void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task 
         edc_channel_message_new(task->channel_type, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sdsnew(content));
     reply->render_pref = render_pref;
     if (task->task_id)
-        reply->task_id = sdscatprintf(sdsempty(), "%lld", (long long)task->task_id);
+        reply->task_id = sdscatprintf(sdsempty(), "%" PRId64, task->task_id);
     /* Owning session (see edc_channel_send_task_reply): routes a background
      * session's tool output into its own transcript. */
     {

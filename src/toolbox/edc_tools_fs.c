@@ -10,6 +10,7 @@
 #include "sds.h"
 #include "utarray.h"
 #include <edc_param_types.h>
+#include <inttypes.h> /* PRId64 */
 #include <string.h>
 
 static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
@@ -269,8 +270,7 @@ sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t l
         offset = 1;
 
     if (total == 0 || offset > total)
-        return sdscatprintf(sdsempty(), "[no line %lld: the file has %lld line(s)]\n", (long long)offset,
-                            (long long)total);
+        return sdscatprintf(sdsempty(), "[no line %" PRId64 ": the file has %" PRId64 " line(s)]\n", offset, total);
 
     /* One pass to locate [start, stop): from `offset`, take lines while both budgets allow.
      * Always on a line boundary, so the model never gets half a line to guess at. */
@@ -311,7 +311,7 @@ sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t l
     const bool whole = (offset == 1) && (taken == total) && (stop == len) && !line_cut;
     sds out = sdsempty();
     if (!whole)
-        out = sdscatprintf(out, "[lines %lld-%lld of %lld%s]\n", (long long)offset, (long long)(offset + taken - 1),
+        out = sdscatprintf(out, "[lines %" PRId64 "-%" PRId64 " of %" PRId64 "%s]\n", offset, offset + taken - 1,
                            (long long)total, line_cut ? ", cut at 64 KiB" : "");
     out = sdscatlen(out, p + start, body_len);
 
@@ -319,7 +319,7 @@ sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t l
     if (line_cut)
         out = sdscat(out, "\n[that line is longer than 64 KiB and was cut]\n");
     else if (!whole && (offset + taken - 1) < total)
-        out = sdscatprintf(out, "\n[more lines follow: pass offset=%lld to continue]\n", (long long)(offset + taken));
+        out = sdscatprintf(out, "\n[more lines follow: pass offset=%" PRId64 " to continue]\n", offset + taken);
 
     return out;
 }
