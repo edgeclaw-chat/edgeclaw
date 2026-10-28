@@ -97,6 +97,113 @@ static sds edc_shell_append_provider_models(sds out, const char *pid, const char
     return out;
 }
 
+/* ── Builtin bodies, as pure text ───────────────────────────────────────────
+ * Each of these used to be built inline and handed straight to edc_commands_reply(),
+ * which means the only way to see the text was a live channel actor -- so none of the
+ * four was ever asserted. They are extracted here, with the reply moved to the caller,
+ * for the same reason edc_commands_help_text() is a function: the body IS the feature.
+ * Exposed for tests; keep them pure (no replies, no config writes). */
+
+/* `/whoami`: who the current session/task pairing actually is. */
+sds edc_shell_whoami_text(struct edc_config *cfg, struct edc_session_manager *sm)
+{
+    struct edc_session *sess = edc_session_manager_get_active(sm);
+    struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
+    struct edc_task *active = sess ? sess->active_task : NULL;
+    sds out = sdscatprintf(sdsempty(),
+                           "## Whoami\n\n"
+                           "- **session**: `%s`\n"
+                           "- **model**: `%s`\n",
+                           sess ? edc_session_get_name(sess) : "none",
+                           cfg->llm_api_conf.model ? cfg->llm_api_conf.model : "default");
+    if (fg)
+    {
+        struct edc_task *leader = fg->leader;
+        out = sdscatprintf(out, "- **foreground group**: `%s` · %d tasks\n", edc_id_str(fg->group_id),
+                           fg->member_count);
+        out = sdscatprintf(out, "  - **leader**: `%s`%s%s\n", leader ? edc_id_str(leader->task_id) : "?",
+                           (leader && *leader->description) ? " — " : "",
+                           (leader && *leader->description) ? leader->description : "");
+        out = sdscatprintf(out, "  - **active**: `%s`%s%s\n", active ? edc_id_str(active->task_id) : "none",
+                           (active && *active->description) ? " — " : "",
+                           (active && *active->description) ? active->description : "");
+    }
+    else
+    {
+        out = sdscat(out, "- **foreground group**: _(none)_\n");
+    }
+    return out;
+}
+
+/* `/model` with no argument: the current model and, when the catalog knows it, that
+ * provider's chat models. */
+sds edc_shell_model_text(struct edc_config *cfg)
+{
+    const char *cur = cfg->llm_api_conf.model;
+    const char *pid = edc_shell_provider_of_model(cur);
+    sds out = sdscatprintf(sdsempty(), "**Model** — `%s`\n", cur ? cur : "default");
+    if (pid)
+    {
+        out = sdscatprintf(out, "\n`%s` models:\n", pid);
+        out = edc_shell_append_provider_models(out, pid, cur);
+    }
+    else
+    {
+        out = sdscat(out, "\n_(the current model is not in the catalog; `/model <id>` sets one)_\n");
+    }
+    out = sdscat(out, "\n`/model <id>` switches · `/model search <q>` searches all providers.");
+    return out;
+}
+
+/* `/model search <q>`: chat models across every provider, capped so a broad query cannot
+ * dump the whole catalog into one reply. */
+sds edc_shell_model_search_text(const char *query)
+{
+    const char *q = query ? query : "";
+    sds out = sdscatprintf(sdsempty(), "**Model search** — `%s`\n", q);
+    size_t np = edc_models_provider_count();
+    size_t hits = 0;
+    for (size_t i = 0; i < np; i++)
+    {
+        const char *pid = edc_models_provider_id(i);
+        size_t nm = edc_models_model_count(pid);
+        for (size_t j = 0; j < nm && hits < 40; j++)
+        {
+            const char *mid = edc_models_model_id_at(pid, j);
+            if (!mid || !edc_models_is_chat_model(mid) || !edc_models_model_matches(mid, q))
+                continue;
+            struct edc_model_info f;
+            edc_models_model_info(mid, &f);
+            /* Name first, then the id in parentheses -- see append_provider_models. */
+            if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
+                out = sdscatprintf(out, "- `%s` — %s (%s) · %lld ctx\n", mid, f.name, pid, f.context);
+            else
+                out = sdscatprintf(out, "- `%s` (%s) · %lld ctx\n", mid, pid, f.context);
+            hits++;
+        }
+    }
+    if (hits == 0)
+        out = sdscat(out, "_(no chat model matches)_");
+    else if (hits >= 40)
+        out = sdscat(out, "… (more; narrow the query)");
+    return out;
+}
+
+/* `/sandbox` with no argument: the switch state and the three path lists. A platform
+ * without a backend is NOT "off" -- the switch cannot be turned on at all, and that is
+ * what the state line says. */
+sds edc_shell_sandbox_text(struct edc_config *conf)
+{
+    const char *state = conf->enable_sandbox ? "on"
+                        : edc_platform_has_sandbox() ? "off"
+                                                     : "off (not supported on this platform)";
+    sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", state);
+    reply = edc_shell_sandbox_paths_md(reply, conf);
+    reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
+                          "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
+    return reply;
+}
+
 bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
                               const struct edc_ast_cmd *cmd)
 {
@@ -107,31 +214,7 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 
     if (strcmp(cmd->name, "whoami") == 0)
     {
-        struct edc_session *sess = edc_session_manager_get_active(sm);
-        struct edc_task_group *fg = edc_scheduler_get_foreground(sess);
-        struct edc_task *active = sess ? sess->active_task : NULL;
-        sds out = sdscatprintf(sdsempty(),
-                               "## Whoami\n\n"
-                               "- **session**: `%s`\n"
-                               "- **model**: `%s`\n",
-                               sess ? edc_session_get_name(sess) : "none",
-                               cfg->llm_api_conf.model ? cfg->llm_api_conf.model : "default");
-        if (fg)
-        {
-            struct edc_task *leader = fg->leader;
-            out = sdscatprintf(out, "- **foreground group**: `%s` · %d tasks\n", edc_id_str(fg->group_id),
-                               fg->member_count);
-            out = sdscatprintf(out, "  - **leader**: `%s`%s%s\n", leader ? edc_id_str(leader->task_id) : "?",
-                               (leader && *leader->description) ? " — " : "",
-                               (leader && *leader->description) ? leader->description : "");
-            out = sdscatprintf(out, "  - **active**: `%s`%s%s\n", active ? edc_id_str(active->task_id) : "none",
-                               (active && *active->description) ? " — " : "",
-                               (active && *active->description) ? active->description : "");
-        }
-        else
-        {
-            out = sdscat(out, "- **foreground group**: _(none)_\n");
-        }
+        sds out = edc_shell_whoami_text(cfg, sm);
         edc_commands_reply(to, out);
         sdsfree(out);
         return true;
@@ -148,23 +231,10 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             argtext = sdscatsds(argtext, cmd->argv[i]);
         }
         const char *arg = argtext;
-        const char *cur = cfg->llm_api_conf.model;
 
         if (*arg == '\0')
         {
-            /* List the current provider's chat models (switch with `/model <id>`). */
-            const char *pid = edc_shell_provider_of_model(cur);
-            sds out = sdscatprintf(sdsempty(), "**Model** — `%s`\n", cur ? cur : "default");
-            if (pid)
-            {
-                out = sdscatprintf(out, "\n`%s` models:\n", pid);
-                out = edc_shell_append_provider_models(out, pid, cur);
-            }
-            else
-            {
-                out = sdscat(out, "\n_(the current model is not in the catalog; `/model <id>` sets one)_\n");
-            }
-            out = sdscat(out, "\n`/model <id>` switches · `/model search <q>` searches all providers.");
+            sds out = edc_shell_model_text(cfg);
             edc_commands_reply(to, out);
             sdsfree(out);
         }
@@ -173,32 +243,7 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             const char *q = arg + 7;
             while (*q == ' ' || *q == '\t')
                 q++;
-            sds out = sdscatprintf(sdsempty(), "**Model search** — `%s`\n", q);
-            size_t np = edc_models_provider_count();
-            size_t hits = 0;
-            for (size_t i = 0; i < np; i++)
-            {
-                const char *pid = edc_models_provider_id(i);
-                size_t nm = edc_models_model_count(pid);
-                for (size_t j = 0; j < nm && hits < 40; j++)
-                {
-                    const char *mid = edc_models_model_id_at(pid, j);
-                    if (!mid || !edc_models_is_chat_model(mid) || !edc_models_model_matches(mid, q))
-                        continue;
-                    struct edc_model_info f;
-                    edc_models_model_info(mid, &f);
-                    /* Name first, then the id in parentheses -- see append_provider_models. */
-                    if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
-                        out = sdscatprintf(out, "- `%s` — %s (%s) · %lld ctx\n", mid, f.name, pid, f.context);
-                    else
-                        out = sdscatprintf(out, "- `%s` (%s) · %lld ctx\n", mid, pid, f.context);
-                    hits++;
-                }
-            }
-            if (hits == 0)
-                out = sdscat(out, "_(no chat model matches)_");
-            else if (hits >= 40)
-                out = sdscat(out, "… (more; narrow the query)");
+            sds out = edc_shell_model_search_text(q);
             edc_commands_reply(to, out);
             sdsfree(out);
         }
@@ -236,15 +281,7 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
 
         if (*verb == '\0')
         {
-            /* A platform without a backend is not "off": the switch cannot be turned on
-             * at all, and the user should see that instead of hunting for the reason. */
-            const char *state = conf->enable_sandbox ? "on"
-                                : edc_platform_has_sandbox() ? "off"
-                                                             : "off (not supported on this platform)";
-            sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", state);
-            reply = edc_shell_sandbox_paths_md(reply, conf);
-            reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
-                                  "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
+            sds reply = edc_shell_sandbox_text(conf);
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }

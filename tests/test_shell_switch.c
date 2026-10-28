@@ -22,6 +22,7 @@
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
+#include "edc_models.h"
 #include "edc_scheduler.h"
 #include "edc_shell.h"
 #include "edc_session.h"
@@ -210,6 +211,245 @@ static void test_input_kind_table(void)
     printf("  (each row counts once; the last message above is the failing one)\n");
 }
 
+/* ── The builtin bodies: the four blocks that used to be unassertable ────────
+ *
+ * Every one of these used to be built inline next to edc_commands_reply(), so the text
+ * only ever left through a channel actor and no test could see it. The bodies are now
+ * pure functions (see edc_shell.h); the reply still happens in handle_builtin().
+ *
+ * The models catalog is a GENERATED build input, not committed (tools/gen_models.py), so
+ * the embedded copy is empty on a clean checkout -- these cases point
+ * EDGECLAW_MODELS_CATALOG at a fixture, the way test_models_catalog does, instead of
+ * assuming what the catalog contains.
+ */
+
+static const char *kCatalogFixture = "{\n"
+                                     "  \"models\": {\n"
+                                     "    \"fixture-chat\": {\"name\":\"Fixture Chat\",\"context\":4096,"
+                                     "\"output\":512,\"tool_call\":true},\n"
+                                     "    \"fixture-hidden\": {\"name\":\"Fixture Hidden\",\"context\":2048,"
+                                     "\"output\":256}\n"
+                                     "  },\n"
+                                     "  \"providers\": {\n"
+                                     "    \"fixtureprov\": {\"id\":\"fixtureprov\",\"name\":\"Fixture\","
+                                     "\"api\":\"https://fixture/v1\",\"env\":[\"FIXTURE_KEY\"],"
+                                     "\"models\":[\"fixture-chat\"]}\n"
+                                     "  }\n"
+                                     "}\n";
+
+static void test_builtin_bodies(struct edc_config *cfg, struct edc_session_manager *sm,
+                                struct edc_scheduler *sched)
+{
+    /* Point the catalog at the fixture and load it. */
+    const char *fixture = "/tmp/test_shell_switch_catalog.json";
+    FILE *ff = fopen(fixture, "w");
+    if (ff)
+    {
+        fputs(kCatalogFixture, ff);
+        fclose(ff);
+    }
+    setenv("EDGECLAW_MODELS_CATALOG", fixture, 1);
+    edc_models_reset();
+    (void)edc_models_load();
+
+    /* ── /whoami ─────────────────────────────────────────────────────────── */
+    TEST("/whoami names the session and the model");
+    {
+        char *saved = cfg->llm_api_conf.model ? strdup(cfg->llm_api_conf.model) : NULL;
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = sdsnew("fixture-chat");
+
+        /* The no-foreground arm, deterministically: a freshly created manager has an
+         * active session and no groups, so this does not depend on what the rest of the
+         * test has spawned. (Leaked on purpose -- same "lives as long as the test"
+         * convention as the harness's own manager.) */
+        struct edc_session_manager *fresh = edc_session_manager_new(cfg);
+        sds empty_text = edc_shell_whoami_text(cfg, fresh);
+        CHECK(empty_text && strstr(empty_text, "foreground group**: _(none)_") != NULL,
+              "no foreground group -> says so");
+        sdsfree(empty_text);
+
+        /* The other arm: whatever this session's state actually is, assert the matching
+         * one rather than skipping the check. */
+        struct edc_session *active = edc_session_manager_get_active(sm);
+        sds text = edc_shell_whoami_text(cfg, sm);
+        CHECK(text && strstr(text, "## Whoami") != NULL, "it has a heading");
+        CHECK(text && active && strstr(text, edc_session_get_name(active)) != NULL, "it names the active session");
+        CHECK(text && strstr(text, "- **model**: `fixture-chat`") != NULL, "it names the model");
+        if (edc_scheduler_get_foreground(active))
+            CHECK(text && strstr(text, "foreground group**: `") != NULL, "a foreground group is named");
+        else
+            CHECK(text && strstr(text, "foreground group**: _(none)_") != NULL, "no foreground -> says so");
+        sdsfree(text);
+
+        /* A model the catalog does not know must still print, as the raw id. */
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = sdsnew("model-not-in-catalog");
+        text = edc_shell_whoami_text(cfg, sm);
+        CHECK(text && strstr(text, "model-not-in-catalog") != NULL, "an unknown model prints verbatim");
+        sdsfree(text);
+
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = saved ? sdsnew(saved) : NULL;
+        free(saved);
+    }
+
+    /* ── /model (no argument) ────────────────────────────────────────────── */
+    TEST("/model lists the current provider's chat models");
+    {
+        char *saved = cfg->llm_api_conf.model ? strdup(cfg->llm_api_conf.model) : NULL;
+
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = sdsnew("fixture-chat");
+        sds text = edc_shell_model_text(cfg);
+        CHECK(text && strstr(text, "**Model** — `fixture-chat`") != NULL, "it states the current model");
+        CHECK(text && strstr(text, "`fixtureprov` models:") != NULL, "it names the provider the catalog resolved");
+        CHECK(text && strstr(text, "fixture-chat") != NULL, "and lists that model");
+        CHECK(text && strstr(text, "/model search <q>") != NULL, "and points at search");
+        sdsfree(text);
+
+        /* Unknown model -> the catalog cannot place it, and the text says how to set one. */
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = sdsnew("nowhere-model");
+        text = edc_shell_model_text(cfg);
+        CHECK(text && strstr(text, "not in the catalog") != NULL, "an unplaceable model says so");
+        sdsfree(text);
+
+        /* No model at all -> "default", still a complete body. */
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = NULL;
+        text = edc_shell_model_text(cfg);
+        CHECK(text && strstr(text, "**Model** — `default`") != NULL, "no model prints default");
+        CHECK(text && strstr(text, "not in the catalog") != NULL, "and is treated as unplaceable");
+        sdsfree(text);
+
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = saved ? sdsnew(saved) : NULL;
+        free(saved);
+    }
+
+    /* ── /model search ───────────────────────────────────────────────────── */
+    TEST("/model search finds a chat model and reports a miss");
+    {
+        sds text = edc_shell_model_search_text("fixture-chat");
+        CHECK(text && strstr(text, "**Model search** — `fixture-chat`") != NULL, "the query is echoed");
+        CHECK(text && strstr(text, "fixture-chat") != NULL && strstr(text, "fixtureprov") != NULL,
+              "the hit names the model and its provider");
+        sdsfree(text);
+
+        /* A miss: no chat model matches, and the text says exactly that. */
+        text = edc_shell_model_search_text("zzz-no-such-model");
+        CHECK(text && strstr(text, "_(no chat model matches)_") != NULL, "a miss says so");
+        sdsfree(text);
+
+        /* NULL query is treated as empty, not dereferenced. */
+        text = edc_shell_model_search_text(NULL);
+        CHECK(text && strstr(text, "**Model search**") != NULL, "a NULL query still renders");
+        sdsfree(text);
+    }
+
+    /* ── /sandbox (no argument) ──────────────────────────────────────────── */
+    TEST("/sandbox shows the switch state and the three path lists");
+    {
+        const bool saved_sandbox = cfg->enable_sandbox;
+
+        cfg->enable_sandbox = false;
+        sds text = edc_shell_sandbox_text(cfg);
+        CHECK(text && strstr(text, "## Sandbox") != NULL, "it has a heading");
+        /* Either "off" or "off (not supported on this platform)" -- both are correct and
+         * which one depends on the host, so assert the prefix, not the whole line. */
+        CHECK(text && strstr(text, "`off") != NULL, "an off switch reads as off");
+        CHECK(text && strstr(text, "Manage: `/sandbox add-rw") != NULL, "and it lists the verbs");
+        sdsfree(text);
+
+        cfg->enable_sandbox = true;
+        text = edc_shell_sandbox_text(cfg);
+        CHECK(text && strstr(text, "## Sandbox `on`") != NULL, "an on switch reads as on");
+        sdsfree(text);
+
+        /* A path in each list must actually be listed. The directory has to EXIST:
+         * edc_config_set_sandbox_path() realpath()s it and persists to config.json, and
+         * the listed form is the RESOLVED path -- on macOS /tmp is a symlink to
+         * /private/tmp, so assert the basename rather than the path we passed in. */
+        (void)system("mkdir -p /tmp/fixture-rw");
+        sds add_msg = NULL;
+        const bool added = edc_config_set_sandbox_path(cfg, "/tmp/fixture-rw", EDC_SANDBOX_PATH_RW, true, &add_msg);
+        CHECK(added, "an rw path can be added (needs a real directory)");
+        if (added)
+        {
+            text = edc_shell_sandbox_text(cfg);
+            /* A path bullet, not just the word: `- `<path>`` is what the renderer emits. */
+            CHECK(text && strstr(text, "fixture-rw`") != NULL, "the rw path is listed as a bullet");
+            sdsfree(text);
+            (void)edc_config_set_sandbox_path(cfg, "/tmp/fixture-rw", EDC_SANDBOX_PATH_RW, false, NULL);
+        }
+        if (add_msg)
+            sdsfree(add_msg);
+
+        cfg->enable_sandbox = saved_sandbox;
+    }
+
+    /* ── Through the dispatcher: the side effects the bodies do not cover ── */
+    TEST("`/model <id>` sets the model, and the dispatcher reports it handled");
+    {
+        char *saved = cfg->llm_api_conf.model ? strdup(cfg->llm_api_conf.model) : NULL;
+        struct edc_ast_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.name = sdsnew("model");
+        cmd.argv = calloc(1, sizeof(sds));
+        cmd.argv[0] = sdsnew("fixture-chat");
+        cmd.argc = 1;
+        CHECK(edc_shell_handle_builtin(cfg, sm, (struct edc_reply_to){}, &cmd), "`/model <id>` is a builtin");
+        CHECK(cfg->llm_api_conf.model && strcmp(cfg->llm_api_conf.model, "fixture-chat") == 0,
+              "the live config carries the new model");
+        sdsfree(cmd.name);
+        sdsfree(cmd.argv[0]);
+        free(cmd.argv);
+
+        if (cfg->llm_api_conf.model)
+            sdsfree(cfg->llm_api_conf.model);
+        cfg->llm_api_conf.model = saved ? sdsnew(saved) : NULL;
+        free(saved);
+    }
+
+    TEST("`/sandbox <unknown verb>` is handled but rejected with usage");
+    {
+        struct edc_ast_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.name = sdsnew("sandbox");
+        cmd.argv = calloc(1, sizeof(sds));
+        cmd.argv[0] = sdsnew("frobnicate");
+        cmd.argc = 1;
+        CHECK(edc_shell_handle_builtin(cfg, sm, (struct edc_reply_to){}, &cmd), "an unknown verb is still handled");
+        sdsfree(cmd.name);
+        sdsfree(cmd.argv[0]);
+        free(cmd.argv);
+    }
+
+    TEST("an unknown builtin name is NOT handled");
+    {
+        struct edc_ast_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.name = sdsnew("not-a-builtin");
+        CHECK(!edc_shell_handle_builtin(cfg, sm, (struct edc_reply_to){}, &cmd), "it falls through");
+        sdsfree(cmd.name);
+
+        /* A NULL command is likewise not ours. */
+        CHECK(!edc_shell_handle_builtin(cfg, sm, (struct edc_reply_to){}, NULL), "NULL cmd falls through");
+    }
+
+    unsetenv("EDGECLAW_MODELS_CATALOG");
+    edc_models_reset();
+    (void)sched;
+}
+
 int main(void)
 {
     const char *ws = "/tmp/test_shell_switch_ws";
@@ -386,6 +626,10 @@ int main(void)
     CHECK(off_tool != NULL && off_tool->tool_only, "it is tool-only (one exec_shell call, no model)");
     CHECK(find_task_by_desc(sess, "!git status") == NULL, "the `!` never becomes part of a description");
     CHECK(g_llm_calls == 0, "no LLM request was made for it");
+
+    /* The builtin bodies: /whoami, /model (list + search), /sandbox. Last, because it
+     * swaps the models catalog and the sandbox config. */
+    test_builtin_bodies(cfg, sm, sched);
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

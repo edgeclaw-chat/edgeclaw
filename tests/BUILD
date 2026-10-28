@@ -137,6 +137,12 @@ cc_test(
     deps = [
         "//src/common:common",
     ],
+    # Live network: two real TLS round trips to https://example.com (one 200, one 404 --
+    # the second exists so a hardcoded status cannot pass). Kept out of the default set so
+    # "121 green" does not silently require an internet connection. To bring it back
+    # offline, extract the mbedtls server from tests/test_endpoint_probe.c into a shared
+    # test header and point this at 127.0.0.1, the way test_endpoint_probe already does.
+    tags = ["manual"],
     linkopts = LINK_OPTS,
 )
 
