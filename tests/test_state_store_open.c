@@ -344,7 +344,13 @@ static void test_lock_is_exclusive(void)
      * connection -- what a second agent process would attempt, and equally what a second
      * connection in this one would attempt -- must not get in. Both a reader and a writer
      * are refused: the guarantee is about the whole database, not about a writer lock. */
-    const char *path = edc_state_store_path();
+    /* Copied, not borrowed: edc_state_store_close() does `sdsfree(g_db_path)`, so a pointer
+     * from edc_state_store_path() DIES with the store -- and this test uses the path after
+     * closing it (the "lock is released" assertion below). The borrowed pointer there read
+     * freed memory, which happened to still spell the path, so the test only ever passed by
+     * luck; a clean rebuild was enough to change what the freed bytes held. */
+    char path[1024];
+    snprintf(path, sizeof(path), "%s", edc_state_store_path());
     const struct
     {
         int flags;
