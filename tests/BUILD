@@ -1105,6 +1105,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_secret",
+    srcs = ["test_secret.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    # openpty() drives the passphrase prompt through a real terminal.
+    linkopts = LINK_OPTS + ["-lutil"],
+)
+
+cc_test(
     name = "test_endpoint_probe",
     srcs = ["test_endpoint_probe.c", "test_ws.h"],
     deps = [
