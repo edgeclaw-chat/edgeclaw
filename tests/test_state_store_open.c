@@ -105,6 +105,31 @@ static bool file_exists(const char *path)
     return stat(path, &st) == 0;
 }
 
+/* Capturing the store's own error lines.
+ *
+ * Two of the refusals below differ ONLY in their sentence -- "another edgeclaw instance
+ * is using this workspace" vs "failed quick_check ... keep the -wal file for salvage" --
+ * and telling those apart is the whole reason claim_exclusive() looks at the error code
+ * instead of reporting a bare busy. Asserting just `open() == false` would pass even if
+ * both cases produced the wrong sentence, so the message is captured and checked. */
+static char g_log[4096];
+
+static void capture_log(log_Event *ev)
+{
+    if (ev->level != LOG_ERROR)
+        return;
+    const size_t used = strlen(g_log);
+    if (used + 1 >= sizeof(g_log))
+        return;
+    vsnprintf(g_log + used, sizeof(g_log) - used, ev->fmt, ev->ap);
+    const size_t n = strlen(g_log);
+    if (n + 1 < sizeof(g_log))
+    {
+        g_log[n] = '\n';
+        g_log[n + 1] = '\0';
+    }
+}
+
 /* ── 1. opening a fresh workspace ──────────────────────────────────────────── */
 static void test_open_creates_schema(void)
 {
@@ -356,7 +381,108 @@ static void test_lock_is_exclusive(void)
     free_config(cfg);
 }
 
-/* ── 7. close() folds the WAL away ─────────────────────────────────────────── */
+/* ── 7. another instance holds the workspace ───────────────────────────────── */
+static void test_busy_refused(void)
+{
+    printf("\n── another instance holds the workspace ──\n");
+    edc_state_store_close();
+    reset_dir();
+
+    /* Build a real database first: the case under test is a second instance meeting a
+     * VALID database that somebody else has taken, not a missing file. */
+    struct edc_config *cfg = make_config();
+    CHECK(edc_state_store_open(cfg), "first open builds the database");
+
+    char path[600];
+    snprintf(path, sizeof(path), "%s", edc_state_store_path() ? edc_state_store_path() : "");
+    edc_state_store_close();
+
+    /* Stand in for the other agent process. It takes the lock the same way the store
+     * does, because locking_mode=EXCLUSIVE is only a request -- the read below is what
+     * actually takes it. */
+    sqlite3 *other = NULL;
+    CHECK(sqlite3_open_v2(path, &other, SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK,
+          "the stand-in instance opens the database");
+    char *err = NULL;
+    const int mode_rc = sqlite3_exec(other, "PRAGMA locking_mode=EXCLUSIVE", NULL, NULL, &err);
+    sqlite3_free(err);
+    err = NULL;
+    const int lock_rc = sqlite3_exec(other, "SELECT count(*) FROM sqlite_master", NULL, NULL, &err);
+    sqlite3_free(err);
+    CHECK(mode_rc == SQLITE_OK && lock_rc == SQLITE_OK, "the stand-in takes the exclusive lock");
+
+    g_log[0] = '\0';
+    CHECK(!edc_state_store_open(cfg), "open refuses while another instance holds the database");
+    CHECK(!edc_state_store_is_open(), "store stays closed after the refusal");
+    printf("    log: %s", g_log);
+    CHECK(strstr(g_log, "another edgeclaw instance") != NULL,
+          "the refusal names the other instance instead of surfacing a bare busy");
+
+    sqlite3_close(other);
+
+    /* Not sticky: the same workspace opens once the other instance is gone. */
+    g_log[0] = '\0';
+    CHECK(edc_state_store_open(cfg), "open succeeds once the other instance is gone");
+
+    free_config(cfg);
+}
+
+/* ── 8. a corrupt database is refused ──────────────────────────────────────── */
+static void test_corrupt_refused(void)
+{
+    printf("\n── corrupt database ──\n");
+    edc_state_store_close();
+    reset_dir();
+
+    char path[600], wal[640];
+    snprintf(path, sizeof(path), "%s/edgeclaw.db", g_dir);
+    snprintf(wal, sizeof(wal), "%s-wal", path);
+
+    /* Deliberately not a zero-length file: SQLite treats that as a valid empty database,
+     * so the garbage has to be real bytes to reach the corruption path at all. */
+    FILE *f = fopen(path, "wb");
+    if (!f)
+    {
+        printf("    (skipped: cannot write %s)\n", path);
+        return;
+    }
+    for (int i = 0; i < 4096; i++)
+        fputc(0xA5, f);
+    fclose(f);
+
+    /* A stale -wal, the state a crashed run leaves behind. It is planted so the refusal is
+     * exercised with one present, but it is NOT asserted on afterwards: measured here,
+     * SQLite's own recovery discards a WAL it cannot use against a file that is not a
+     * database, so its fate is SQLite's call and not something this code promises. */
+    f = fopen(wal, "wb");
+    if (f)
+    {
+        fputs("not really a wal", f);
+        fclose(f);
+    }
+
+    struct edc_config *cfg = make_config();
+    g_log[0] = '\0';
+    CHECK(!edc_state_store_open(cfg), "open refuses a corrupt database");
+    CHECK(!edc_state_store_is_open(), "store stays closed after the refusal");
+    printf("    log: %s", g_log);
+    CHECK(strstr(g_log, "another edgeclaw instance") == NULL,
+          "a corrupt file is not reported as another instance");
+    /* The corrupt file itself must survive: it is the evidence salvage works from, so a
+     * refusal must not tidy it away. (The -wal is NOT asserted here: SQLite's own recovery
+     * discards a WAL it cannot use against a file that is not a database, so whether it
+     * survives is SQLite's call, not this code's -- see the note in the handover doc.) */
+    CHECK(file_exists(path), "the damaged database is kept, not deleted");
+    free_config(cfg);
+
+    /* And a clean workspace still opens afterwards (the refusal is not sticky). */
+    reset_dir();
+    cfg = make_config();
+    CHECK(edc_state_store_open(cfg), "a fresh database opens after the refusal");
+    free_config(cfg);
+}
+
+/* ── 9. close() folds the WAL away ─────────────────────────────────────────── */
 static void test_close_checkpoints(void)
 {
     printf("\n── close ──\n");
@@ -378,6 +504,8 @@ static void test_close_checkpoints(void)
 int main(void)
 {
     edc_test_workspace(); /* disposable store for anything that writes state */
+    /* Every message this file asserts on is a log_error from the store. */
+    log_add_callback(capture_log, NULL, LOG_TRACE);
     const char *tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_state_store_%ld",
              (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
@@ -390,6 +518,8 @@ int main(void)
     test_version_mismatch_refused();
     test_symlink_refused();
     test_lock_is_exclusive();
+    test_busy_refused();
+    test_corrupt_refused();
     test_close_checkpoints();
 
     edc_state_store_close();
