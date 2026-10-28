@@ -1767,10 +1767,10 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         size_t g_msg_count = (size_t)edc_task_group_history_count(g);
         if (g_msg_count > 0)
             g_msg_count -= 1;
-        long long g_tokens_total = 0;
-        long long g_tokens_prompt = 0;
-        long long g_tokens_completion = 0;
-        long long g_tokens_cached = 0;
+        int64_t g_tokens_total = 0;
+        int64_t g_tokens_prompt = 0;
+        int64_t g_tokens_completion = 0;
+        int64_t g_tokens_cached = 0;
         {
             struct edc_task *mt;
             LL_FOREACH2(g->members, mt, group_next)
@@ -1789,7 +1789,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
          * travels with the number -- the sidebar marks it, it never passes for a
          * provider measurement. */
         bool g_ctx_estimated = false;
-        long long g_ctx_tokens = edc_context_group_ctx_tokens(g, &g_ctx_estimated);
+        int64_t g_ctx_tokens = edc_context_group_ctx_tokens(g, &g_ctx_estimated);
         cJSON_AddNumberToObject(gj, "msg_count", (double)g_msg_count);
         cJSON_AddNumberToObject(gj, "tokens_total", (double)g_tokens_total);
         cJSON_AddNumberToObject(gj, "tokens_prompt", (double)g_tokens_prompt);

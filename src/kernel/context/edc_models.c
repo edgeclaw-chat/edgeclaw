@@ -243,9 +243,9 @@ bool edc_models_model_info(const char *model_id, struct edc_model_info *out)
         out->id = model_id;
         out->name = cJSON_GetStringValue(cJSON_GetObjectItem(m, "name"));
         const cJSON *c = cJSON_GetObjectItem(m, "context");
-        out->context = cJSON_IsNumber(c) ? (long long)c->valuedouble : 0;
+        out->context = cJSON_IsNumber(c) ? (int64_t)c->valuedouble : 0;
         const cJSON *o = cJSON_GetObjectItem(m, "output");
-        out->output = cJSON_IsNumber(o) ? (long long)o->valuedouble : 0;
+        out->output = cJSON_IsNumber(o) ? (int64_t)o->valuedouble : 0;
         out->tool_call = cJSON_IsTrue(cJSON_GetObjectItem(m, "tool_call"));
         out->reasoning = cJSON_IsTrue(cJSON_GetObjectItem(m, "reasoning"));
         out->attachment = cJSON_IsTrue(cJSON_GetObjectItem(m, "attachment"));

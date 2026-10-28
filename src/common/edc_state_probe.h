@@ -55,8 +55,8 @@ bool edc_state_probe_enabled(void);
  *  rows      rows inserted or deleted by the transaction (FK cascades included); -1 = unknown
  *  n_tasks / n_msgs  size of the tree at flush time
  */
-void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, long long io_bytes, long long rows,
-                          long n_tasks, long n_msgs, bool ok, const char *session_id,
+void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, int64_t io_bytes, int64_t rows,
+                          int64_t n_tasks, int64_t n_msgs, bool ok, const char *session_id,
                           const char *tag);
 
 /* One load ATTEMPT of a session -- attempts, not successes, so that "we activated 40
@@ -68,7 +68,7 @@ void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, long long io_bytes,
  *          (a brand-new session) -- not a failure.
  *  n_tasks / n_msgs  what the loader produced
  */
-void edc_state_probe_load(uint64_t dur_ns, long long rows, bool ok, long n_tasks, long n_msgs,
+void edc_state_probe_load(uint64_t dur_ns, int64_t rows, bool ok, int64_t n_tasks, int64_t n_msgs,
                           const char *session_id, const char *tag);
 
 /* Write the percentile summary to <EDGECLAW_STATE_PROBE>.summary and stderr.

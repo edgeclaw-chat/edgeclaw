@@ -71,7 +71,7 @@ void edc_platform_unlock_memory(void *addr, size_t len)
     (void)len;
 }
 
-void edc_platform_kill_process_group(long pid)
+void edc_platform_kill_process_group(int64_t pid)
 {
     (void)pid; /* no process groups here; the caller terminates the child itself */
 }
@@ -276,7 +276,7 @@ void edc_platform_unlock_memory(void *addr, size_t len)
     munlock(addr, len);
 }
 
-void edc_platform_kill_process_group(long pid)
+void edc_platform_kill_process_group(int64_t pid)
 {
     if (pid > 0)
         kill(-(pid_t)pid, SIGKILL);

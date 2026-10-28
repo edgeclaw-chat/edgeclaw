@@ -2,6 +2,7 @@
 #define __BC_GROUP_FOLD_H__
 
 #include "sds.h"
+#include <stdint.h>
 #include <stdbool.h>
 
 struct edc_scheduler;

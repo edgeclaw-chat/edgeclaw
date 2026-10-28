@@ -346,7 +346,7 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
 
     sds when = edc_datetime_format_min((time_t)(e ? e->created_at : 0));
     sds out = sdscatprintf(sdsempty(), "Stored as %s (rev %" PRIu64 ", %s). Other tasks see it on their next request.", id,
-                           (unsigned long long)seq, when);
+                           (uint64_t)seq, when);
     sdsfree(when);
     if (related)
         out = sdscatprintf(out,

@@ -351,7 +351,7 @@ const char *edc_task_group_history_role(struct edc_task_group *group, int i)
     return NULL;
 }
 
-long long edc_task_group_history_tokens(struct edc_task_group *group, int from, int to){
+int64_t edc_task_group_history_tokens(struct edc_task_group *group, int from, int to){
     if (!group)
         return 0;
     if (to < 0 || to > group->history_count)
@@ -366,7 +366,7 @@ long long edc_task_group_history_tokens(struct edc_task_group *group, int from, 
     if (!ids)
         return 0;
     int n_ids = 0;
-    long long owned_tokens = 0;
+    int64_t owned_tokens = 0;
     for (int i = from; i < to; i++)
     {
         if (group->history[i].msg_id)
@@ -374,7 +374,7 @@ long long edc_task_group_history_tokens(struct edc_task_group *group, int from, 
         else if (group->history[i].owned)
             owned_tokens += edc_token_estimate_msg(group->history[i].owned);
     }
-    long long db_tokens = n_ids > 0 ? edc_msg_tokens_by_ids(ids, n_ids) : 0;
+    int64_t db_tokens = n_ids > 0 ? edc_msg_tokens_by_ids(ids, n_ids) : 0;
     free(ids);
     if (db_tokens < 0)
         db_tokens = 0;

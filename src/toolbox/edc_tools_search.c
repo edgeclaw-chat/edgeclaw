@@ -9,6 +9,7 @@
 #include "log.h"
 #include "sds.h"
 
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <ctype.h>
 #include <string.h>
 
@@ -179,12 +180,12 @@ struct search_job
     sds glob;
     bool ignore_case;
     bool literal;
-    long long limit;
+    int64_t limit;
     uint64_t deadline_ns;
 
     /* Filled on the pool thread. */
     sds out;
-    long long matches;
+    int64_t matches;
     bool truncated;   /* stopped because of |limit| */
     bool timed_out;   /* stopped because of the deadline */
     bool out_capped;  /* stopped because the result text hit EDC_SEARCH_MAX_OUTPUT */
@@ -443,7 +444,7 @@ static sds search_finish(struct search_job *job)
     sds notes = sdsempty();
     if (job->truncated)
         notes = sdscatprintf(notes,
-                             "[reached the limit of %lld matches -- there may be more; raise limit or narrow "
+                             "[reached the limit of %" PRId64 " matches -- there may be more; raise limit or narrow "
                              "the pattern]\n",
                              job->limit);
     else if (job->timed_out)
@@ -494,7 +495,7 @@ static void run_search(struct search_job *job)
  * from the pool (never from the runner); tests call it directly so a search can be checked
  * without a running actor system. Returns the result text (never NULL). */
 sds edc_search_run_blocking(const char *root, bool is_grep, const char *pattern, const char *glob, bool ignore_case,
-                            bool literal, long long limit)
+                            bool literal, int64_t limit)
 {
     struct search_job job;
     memset(&job, 0, sizeof(job));
@@ -577,11 +578,11 @@ static unsigned int search_timeout(cJSON *args)
     return timeout;
 }
 
-static long long search_limit(cJSON *args)
+static int64_t search_limit(cJSON *args)
 {
     cJSON *l = cJSON_GetObjectItemCaseSensitive(args, "limit");
     if (l && cJSON_IsNumber(l) && l->valueint > 0)
-        return (long long)l->valueint;
+        return (int64_t)l->valueint;
     return EDC_SEARCH_DEFAULT_LIMIT;
 }
 

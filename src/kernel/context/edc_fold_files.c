@@ -238,11 +238,11 @@ sds edc_fold_files_render(const char *body, const struct edc_fold_files *f)
     return sdscat(out, "\n");
 }
 
-long long edc_fold_files_token_estimate(const struct edc_fold_files *f)
+int64_t edc_fold_files_token_estimate(const struct edc_fold_files *f)
 {
     if (!f || (f->read_n == 0 && f->modified_n == 0))
         return 0;
-    long long est = 0;
+    int64_t est = 0;
     /* The tags and the blank line before each block, then the paths. The constant is
      * small and only ever used to decide when to fold, so precision is not the point --
      * forgetting the blocks entirely is. */
@@ -251,9 +251,9 @@ long long edc_fold_files_token_estimate(const struct edc_fold_files *f)
     if (f->modified_n > 0)
         est += 12; /* "\n\n<modified-files>\n" + "</modified-files>" */
     for (size_t i = 0; i < f->read_n; i++)
-        est += (long long)(strlen(f->read[i]) / 4) + 1;
+        est += (int64_t)(strlen(f->read[i]) / 4) + 1;
     for (size_t i = 0; i < f->modified_n; i++)
-        est += (long long)(strlen(f->modified[i]) / 4) + 1;
+        est += (int64_t)(strlen(f->modified[i]) / 4) + 1;
     return est;
 }
 

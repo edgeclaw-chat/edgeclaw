@@ -677,7 +677,7 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
 
 /* Estimate of a turn from `from`. This used to walk every message in the queue; the
  * per-message estimates are stored with the rows now, so it is one indexed SUM. */
-static long long est_turn_from(struct edc_turn *turn, int from)
+static int64_t est_turn_from(struct edc_turn *turn, int from)
 {
     if (!turn)
         return 0;
@@ -688,14 +688,14 @@ static long long est_turn_from(struct edc_turn *turn, int from)
     return edc_turn_tokens_from(turn, from);
 }
 
-extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)
+extern int64_t edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)
 {
     if (out_estimated)
         *out_estimated = false;
     if (!group)
         return 0;
 
-    long long best = 0;
+    int64_t best = 0;
     bool best_estimated = false;
 
     struct edc_task *t;
@@ -709,7 +709,7 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
         if (t->last_fold_epoch != group->fold_epoch)
             continue; /* the anchor recorded the pre-fold prefix */
 
-        long long tail = 0;
+        int64_t tail = 0;
         {
             const int n = edc_task_group_history_count(group);
             const int from = t->last_hist_len;
@@ -718,7 +718,7 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
         }
         tail += est_turn_from(t->active_turn, t->last_turn_len);
 
-        long long candidate = t->last_total_tokens + tail;
+        int64_t candidate = t->last_total_tokens + tail;
         if (candidate > best)
         {
             best = candidate;
@@ -733,7 +733,7 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     }
 
     /* 2) no usable anchor: estimate what the group's next request would carry */
-    long long est = 0;
+    int64_t est = 0;
     if (group->memory)
         est += edc_token_estimate_text(group->memory);
     /* The blocks are rendered on top of the body at request time; leaving them out here
@@ -748,13 +748,13 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     }
     /* A running member carries its own turn; a fresh task does not -- take the widest,
      * consistent with "group = its widest conversation". */
-    long long widest_turn = 0;
+    int64_t widest_turn = 0;
     LL_FOREACH2(group->members, t, group_next)
     {
         if (edc_task_is_memory_sink(t))
             continue;
         int turn_from = (t->active_turn && t->active_turn->folded_prefix > 0) ? t->active_turn->folded_prefix : 0;
-        long long turn_est = est_turn_from(t->active_turn, turn_from);
+        int64_t turn_est = est_turn_from(t->active_turn, turn_from);
         if (turn_est > widest_turn)
             widest_turn = turn_est;
     }

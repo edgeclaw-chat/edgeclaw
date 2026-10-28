@@ -16,6 +16,7 @@
 #include "edc_turn.h"
 #include "log.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdlib.h>
 #include <string.h>
 
@@ -228,8 +229,8 @@ bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *c
     int window = conf ? conf->context_window : 0;
     if (window <= 0)
         return false;
-    long long ctx = edc_context_group_ctx_tokens(group, NULL);
-    return ctx > (long long)window - EDC_FOLD_RESERVE_TOKENS;
+    int64_t ctx = edc_context_group_ctx_tokens(group, NULL);
+    return ctx > (int64_t)window - EDC_FOLD_RESERVE_TOKENS;
 }
 
 bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_manager *sessions, struct edc_config *conf,
@@ -301,7 +302,7 @@ struct fold_piece
      * in-memory queue; with messages in the store the piece holds the copy it was built
      * from, and the collector frees them all when it is done. */
     cJSON *msg;
-    long long tokens;
+    int64_t tokens;
 };
 
 /* Flatten a turn's UNFOLDED span into that column. turn_index = the turn's index in the
@@ -495,7 +496,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         return NULL;
     }
 
-    long long total = 0;
+    int64_t total = 0;
     for (size_t i = 0; i < cnt; i++)
         total += ps[i].tokens;
 
@@ -507,12 +508,12 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     if (total <= EDC_FOLD_KEEP_RECENT_TOKENS)
     {
         keep = cnt / 2;
-        log_info("L1 fold: group %s is under keep_recent (%lld <= %d tokens) — folding the oldest half (%zu of %zu msgs)",
+        log_info("L1 fold: group %s is under keep_recent (%" PRId64 " <= %d tokens) — folding the oldest half (%zu of %zu msgs)",
                  edc_id_str(group->group_id), total, EDC_FOLD_KEEP_RECENT_TOKENS, cnt - keep, cnt);
     }
     else
     {
-        long long acc = 0;
+        int64_t acc = 0;
         size_t k = 0;
         for (size_t i = cnt; i > 0; i--)
         {
@@ -533,7 +534,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
      * EDC_FOLD_MAX_CORPUS_TOKENS; if it cannot (the first message alone exceeds the
      * cap) keep one and let the failure cap above catch it -- never move the cut to 0,
      * which is a "due but yields nothing" spin. */
-    long long corpus = 0;
+    int64_t corpus = 0;
     for (size_t i = 0; i < cut_at; i++)
         corpus += ps[i].tokens;
     while (cut_at > 1 && corpus > EDC_FOLD_MAX_CORPUS_TOKENS)
@@ -569,7 +570,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         out_cut->turn = (uint32_t)cut_piece->turn_index;
         out_cut->prefix = cut_prefix;
     }
-    log_info("L1 fold: group %s fold %zu/%zu msgs (%lld corpus tokens, cap %d; keep_recent ~%d), "
+    log_info("L1 fold: group %s fold %zu/%zu msgs (%" PRId64 " corpus tokens, cap %d; keep_recent ~%d), "
              "cut at task %s turn %zu msg %u",
              edc_id_str(group->group_id), cut_at, cnt, corpus, EDC_FOLD_MAX_CORPUS_TOKENS, EDC_FOLD_KEEP_RECENT_TOKENS,
              edc_id_str(cut_piece->task->task_id), cut_piece->turn_index, cut_prefix);

@@ -222,7 +222,7 @@ static bool edc_sm_id_matches(int64_t session_id, const char *typed)
     if (!typed || !*typed || session_id <= 0)
         return false;
     char *end = NULL;
-    const long long v = strtoll(typed, &end, 10);
+    const int64_t v = strtoll(typed, &end, 10);
     return end != typed && end && *end == '\0' && v == session_id;
 }
 
@@ -393,7 +393,7 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
         /* Taken by a removed session's leftovers: give this id back and ask for the next. */
         edc_state_store_delete_session(id);
         log_info("session create: id %" PRId64 " is taken by an existing directory, trying the next",
-                 (long long)id);
+                 (int64_t)id);
     }
     if (!allocated)
     {

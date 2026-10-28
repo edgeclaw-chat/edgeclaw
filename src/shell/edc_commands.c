@@ -781,9 +781,9 @@ sds edc_commands_session_info_text(struct edc_session *sess)
                      "- **Working Directory**: %s\n",
                      /* session_id is an int64_t, and an integer conversion is what it needs --
                       * as %s it was dereferenced as a pointer and /session info crashed.
-                      * PRId64 rather than %lld + a cast: the macro expands to "lld" where
-                      * int64_t is long long (macOS) and "ld" where it is long (LP64 Linux),
-                      * so the argument's type matches the format on both without a cast.
+                      * PRId64 rather than %" PRId64 " + a cast: the macro is what keeps the format
+                      * in step with int64_t's actual width, which is `long long` on macOS and
+                      * `long` on LP64 Linux. No cast is needed, so none can be forgotten.
                       * Not edc_id_str(): that helper exists to keep LOG format strings at
                       * %s, its rotating static buffer would collide if a second id were
                       * added to this line, and its id<=0 spelling ("(none)") is a logging
@@ -1906,7 +1906,7 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
     /* Token usage over the task's lifetime; omitted while zero. */
     if (t->tokens_total > 0)
     {
-        out = sdscatprintf(out, "- **tokens**: %lld total (%lld prompt · %lld completion · %lld cached)\n",
+        out = sdscatprintf(out, "- **tokens**: %" PRId64 " total (%" PRId64 " prompt · %" PRId64 " completion · %" PRId64 " cached)\n",
                            t->tokens_total, t->tokens_prompt, t->tokens_completion, t->tokens_cached);
     }
     if (t->output)
@@ -2184,9 +2184,9 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
         return sdsnew("**Group** — no such group (the id is the one on its header).");
 
     bool estimated = false;
-    long long ctx = edc_context_group_ctx_tokens(group, &estimated);
+    int64_t ctx = edc_context_group_ctx_tokens(group, &estimated);
     int window = conf ? conf->context_window : 0;
-    long long line = (long long)window - EDC_FOLD_RESERVE_TOKENS;
+    int64_t line = (int64_t)window - EDC_FOLD_RESERVE_TOKENS;
 
     struct edc_task *leader = group->leader;
     const char *place = (session && edc_scheduler_get_foreground(session) == group) ? "foreground" : "background";
@@ -2195,12 +2195,12 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
                            group->is_orphaned ? ", orphaned" : "");
     out = sdscatprintf(out, "- **%d members** · **%zu foldable** · **%zu unfolded messages**\n", group->member_count,
                        edc_task_group_count_foldable(group), edc_task_group_unfolded_msg_count(group));
-    out = sdscatprintf(out, "- **context** `%lld`%s\n", ctx,
+    out = sdscatprintf(out, "- **context** `%" PRId64 "`%s\n", ctx,
                        estimated ? " (the tail after the last reply is estimated)" : " (provider-reported)");
-    out = sdscatprintf(out, "- **window** `%d` · **fold line** `%lld` (= window − %d reserve)\n", window, line,
+    out = sdscatprintf(out, "- **window** `%d` · **fold line** `%" PRId64 "` (= window − %d reserve)\n", window, line,
                        EDC_FOLD_RESERVE_TOKENS);
     if (window > 0)
-        out = sdscatprintf(out, "- **verdict**: %s, %lld tokens %s the line%s\n",
+        out = sdscatprintf(out, "- **verdict**: %s, %" PRId64 " tokens %s the line%s\n",
                            edc_group_fold_due(group, conf) ? "due" : "not due", ctx > line ? ctx - line : line - ctx,
                            ctx > line ? "above" : "below",
                            edc_group_fold_due(group, conf) ? " — the next message folds it" : "");

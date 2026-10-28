@@ -252,7 +252,7 @@ struct cli_args
     sds line;    /* the input line (may be NULL when none was given) */
     sds session; /* --session */
     out_mode out;
-    long long timeout_sec;
+    int64_t timeout_sec;
     int sandbox_override;
 };
 

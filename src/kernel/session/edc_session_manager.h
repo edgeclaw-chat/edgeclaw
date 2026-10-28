@@ -2,6 +2,7 @@
 #define __BC_SESSION_MANAGER_H__
 
 #include "sds.h"
+#include <stdint.h>
 #include <cJSON.h>
 #include <stdbool.h>
 

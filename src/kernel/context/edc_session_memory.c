@@ -950,7 +950,7 @@ struct extract_piece
     /* The message itself, owned by this piece: messages live in the store now, so the
      * column holds the copies it was built from and frees them when done. */
     cJSON *msg;
-    long long tokens;
+    int64_t tokens;
 };
 
 /* Free the column, including the message copies the pieces own. */
@@ -1041,7 +1041,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         return NULL;
     }
 
-    long long total = 0;
+    int64_t total = 0;
     for (size_t i = 0; i < cnt; i++)
         total += ps[i].tokens;
 
@@ -1053,7 +1053,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
     size_t cut_at = cnt; /* index of the first NOT-covered piece */
     if (total > EDC_FOLD_MAX_CORPUS_TOKENS)
     {
-        long long acc = 0;
+        int64_t acc = 0;
         cut_at = 0;
         while (cut_at < cnt && acc + ps[cut_at].tokens <= EDC_FOLD_MAX_CORPUS_TOKENS)
         {
@@ -1062,7 +1062,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         }
         if (cut_at == 0)
             cut_at = 1;
-        log_info("L2 memo extract: group %s corpus %lld > cap %d — extracting the oldest %zu of %zu msgs",
+        log_info("L2 memo extract: group %s corpus %" PRId64 " > cap %d — extracting the oldest %zu of %zu msgs",
                  edc_id_str(group->group_id), total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
     }
 

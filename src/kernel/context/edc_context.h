@@ -3,6 +3,7 @@
 
 #include "edc_config.h"
 #include "sds.h"
+#include <stdint.h>
 #include <cJSON.h>
 
 struct edc_task;
@@ -74,6 +75,6 @@ extern sds edc_context_render_todo_reminder(cJSON *items);
  * when it comes purely from an anchor with a zero tail (i.e. provider truth). The
  * caller uses it to show an estimate marker -- an estimate must not pass for the
  * provider's measurement. */
-extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated);
+extern int64_t edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated);
 
 #endif

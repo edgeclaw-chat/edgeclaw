@@ -18,6 +18,7 @@
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <errno.h>
 #include <log.h>
 #include <stdio.h>
@@ -90,9 +91,9 @@ static sds edc_shell_append_provider_models(sds out, const char *pid, const char
          * alone makes such a model impossible to recognize in the list. */
         const char *mark = (current && strcmp(mid, current) == 0) ? " **(current)**" : "";
         if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
-            out = sdscatprintf(out, "- `%s` — %s%s · %lld ctx\n", mid, f.name, mark, f.context);
+            out = sdscatprintf(out, "- `%s` — %s%s · %" PRId64 " ctx\n", mid, f.name, mark, f.context);
         else
-            out = sdscatprintf(out, "- `%s`%s · %lld ctx\n", mid, mark, f.context);
+            out = sdscatprintf(out, "- `%s`%s · %" PRId64 " ctx\n", mid, mark, f.context);
     }
     return out;
 }
@@ -176,9 +177,9 @@ sds edc_shell_model_search_text(const char *query)
             edc_models_model_info(mid, &f);
             /* Name first, then the id in parentheses -- see append_provider_models. */
             if (f.name && f.name[0] && strcmp(f.name, mid) != 0)
-                out = sdscatprintf(out, "- `%s` — %s (%s) · %lld ctx\n", mid, f.name, pid, f.context);
+                out = sdscatprintf(out, "- `%s` — %s (%s) · %" PRId64 " ctx\n", mid, f.name, pid, f.context);
             else
-                out = sdscatprintf(out, "- `%s` (%s) · %lld ctx\n", mid, pid, f.context);
+                out = sdscatprintf(out, "- `%s` (%s) · %" PRId64 " ctx\n", mid, pid, f.context);
             hits++;
         }
     }

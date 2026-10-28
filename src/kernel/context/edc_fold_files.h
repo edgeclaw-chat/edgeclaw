@@ -2,6 +2,7 @@
 #define __BC_FOLD_FILES_H__
 
 #include "sds.h"
+#include <stdint.h>
 #include <cJSON.h>
 #include <stddef.h>
 
@@ -65,7 +66,7 @@ extern sds edc_fold_files_body(const char *summary);
 extern sds edc_fold_files_render(const char *body, const struct edc_fold_files *f);
 
 /* Token estimate for the rendered blocks (what `render` adds on top of the body). */
-extern long long edc_fold_files_token_estimate(const struct edc_fold_files *f);
+extern int64_t edc_fold_files_token_estimate(const struct edc_fold_files *f);
 
 /* Persistence: {"modified":[...],"read":[...]}. Array order is the list order. */
 extern cJSON *edc_fold_files_to_json(const struct edc_fold_files *f);

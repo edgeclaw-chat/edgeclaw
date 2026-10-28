@@ -16,7 +16,7 @@
 /* Per-message structure overhead: role / name / separators / JSON framing. */
 #define EDC_TOKEN_MSG_OVERHEAD 8
 
-static void est_count(const char *s, long long *ascii, long long *wide)
+static void est_count(const char *s, int64_t *ascii, int64_t *wide)
 {
     if (!s)
         return;
@@ -46,7 +46,7 @@ static void est_count(const char *s, long long *ascii, long long *wide)
  *     `id` belongs here for the same reason `ts` does -- it is attached by the same
  *     function, is stripped before the request is sent (kWireMessageKeys in
  *     edc_llm_actor.c), and a 16-char id would otherwise add 4 phantom tokens each. */
-static void est_walk_values(const cJSON *node, long long *ascii, long long *wide)
+static void est_walk_values(const cJSON *node, int64_t *ascii, int64_t *wide)
 {
     for (const cJSON *c = node; c; c = c->next)
     {
@@ -60,30 +60,30 @@ static void est_walk_values(const cJSON *node, long long *ascii, long long *wide
     }
 }
 
-long long edc_token_estimate_text(const char *s)
+int64_t edc_token_estimate_text(const char *s)
 {
     if (!s)
         return 0;
-    long long ascii = 0, wide = 0;
+    int64_t ascii = 0, wide = 0;
     est_count(s, &ascii, &wide);
     return ascii / 4 + wide;
 }
 
-long long edc_token_estimate_msg(const cJSON *msg)
+int64_t edc_token_estimate_msg(const cJSON *msg)
 {
     if (!msg)
         return 0;
-    long long ascii = 0, wide = 0;
+    int64_t ascii = 0, wide = 0;
     est_walk_values(msg->child, &ascii, &wide);
     return EDC_TOKEN_MSG_OVERHEAD + ascii / 4 + wide;
 }
 
-long long edc_token_estimate_msgs(const cJSON *arr, size_t from, size_t to)
+int64_t edc_token_estimate_msgs(const cJSON *arr, size_t from, size_t to)
 {
     if (!arr || to <= from)
         return 0;
 
-    long long total = 0;
+    int64_t total = 0;
     size_t i = 0;
     const cJSON *item = NULL;
     cJSON_ArrayForEach(item, arr)

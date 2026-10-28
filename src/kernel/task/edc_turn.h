@@ -89,7 +89,7 @@ extern cJSON *edc_turn_msg_at(const struct edc_turn *turn, int idx);
  * work that needed it. */
 extern cJSON *edc_turn_msgs(const struct edc_turn *turn, int from, int to);
 /* Token estimate of [from, msg_count): a SUM over the rows, never a re-estimate walk. */
-extern long long edc_turn_tokens_from(const struct edc_turn *turn, int from);
+extern int64_t edc_turn_tokens_from(const struct edc_turn *turn, int from);
 /* Drop message |new_len| onwards (revert). */
 extern bool edc_turn_truncate(struct edc_turn *turn, int new_len);
 /* Remove every message (turn discarded). */

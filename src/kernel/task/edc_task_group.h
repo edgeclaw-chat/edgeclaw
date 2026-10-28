@@ -198,7 +198,7 @@ extern cJSON *edc_task_group_history_at(struct edc_task_group *group, int i);
  * the whole range -- this is the request assembly path. */
 extern cJSON *edc_task_group_history_msgs(struct edc_task_group *group, int from, int to);
 /* Sum of the token estimates of [from, to); |to| < 0 means "to the end". */
-extern long long edc_task_group_history_tokens(struct edc_task_group *group, int from, int to);
+extern int64_t edc_task_group_history_tokens(struct edc_task_group *group, int from, int to);
 
 /* The ROLE of message |i| ("user" / "assistant" / "tool" / "system"), or NULL.
  * A borrowed pointer that stays valid until the slot changes. Exists so the request

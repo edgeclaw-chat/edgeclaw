@@ -3,6 +3,7 @@
 
 #include "edc_error.h"
 #include "sds.h"
+#include <stdint.h>
 #include <cJSON.h>
 #include <stdbool.h>
 

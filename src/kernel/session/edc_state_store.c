@@ -59,8 +59,8 @@ static sds g_ws_raw = NULL;    /* the workspace string as the caller spelled it,
  * subsequent read would see nothing. Comparing the identity before each use turns that
  * silent split-brain into a reopen. dev/ino are 0 on platforms without st_ino, where
  * exists_if_same() falls back to "the path still exists". */
-static unsigned long long g_db_dev;
-static unsigned long long g_db_ino;
+static uint64_t g_db_dev;
+static uint64_t g_db_ino;
 
 /* ── Schema ─────────────────────────────────────────────────────────────────
  * Transcribed from design doc §4. Three rules the DDL follows:
@@ -712,8 +712,8 @@ static bool db_file_is_still_ours(void)
         return false; /* deleted underneath us */
 #ifndef _WIN32
     if (g_db_ino != 0 || g_db_dev != 0)
-        return ((unsigned long long)st.st_ino == g_db_ino) &&
-               ((unsigned long long)st.st_dev == g_db_dev);
+        return ((uint64_t)st.st_ino == g_db_ino) &&
+               ((uint64_t)st.st_dev == g_db_dev);
 #endif
     return true;
 }
@@ -859,8 +859,8 @@ bool edc_state_store_open(struct edc_config *cfg)
         if (stat(g_db_path, &st) == 0)
         {
 #ifndef _WIN32
-            g_db_dev = (unsigned long long)st.st_dev;
-            g_db_ino = (unsigned long long)st.st_ino;
+            g_db_dev = (uint64_t)st.st_dev;
+            g_db_ino = (uint64_t)st.st_ino;
 #endif
         }
     }
@@ -1596,13 +1596,13 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
 
 /* Pages the pager has written since the connection opened (WAL mode: pages appended to
  * the -wal). Cumulative; the caller subtracts. Returns -1 when not measurable. */
-static long long pages_written_now(long long *page_size_out)
+static int64_t pages_written_now(int64_t *page_size_out)
 {
     int cur = 0, hiwtr = 0;
     if (sqlite3_db_status(g_db, SQLITE_DBSTATUS_CACHE_WRITE, &cur, &hiwtr, 0) != SQLITE_OK)
         return -1;
     sqlite3_stmt *st = NULL;
-    long long page_size = 0;
+    int64_t page_size = 0;
     if (sqlite3_prepare_v2(g_db, "PRAGMA page_size", -1, &st, NULL) == SQLITE_OK)
     {
         if (sqlite3_step(st) == SQLITE_ROW)
@@ -1613,7 +1613,7 @@ static long long pages_written_now(long long *page_size_out)
         return -1;
     if (page_size_out)
         *page_size_out = page_size;
-    return (long long)cur;
+    return (int64_t)cur;
 }
 
 bool edc_state_store_flush_measured(struct edc_session *session, struct edc_scheduler *sched,
@@ -1630,8 +1630,8 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
 
     /* Sampled before BEGIN: the page counter and the change counter must bracket the whole
      * transaction, including the serialize that this function does first. */
-    long long page_size = 0;
-    const long long pages_before = out ? pages_written_now(&page_size) : -1;
+    int64_t page_size = 0;
+    const int64_t pages_before = out ? pages_written_now(&page_size) : -1;
     const int rows_before = out ? sqlite3_total_changes(g_db) : 0;
 
     const int64_t session_id = session->session_id;
@@ -1739,11 +1739,11 @@ rollback:
 done:
     if (out)
     {
-        const long long pages_after = pages_written_now(NULL);
+        const int64_t pages_after = pages_written_now(NULL);
         out->io_bytes = (pages_before >= 0 && pages_after >= 0)
                             ? (pages_after - pages_before) * page_size
                             : -1;
-        out->rows = (long long)(sqlite3_total_changes(g_db) - rows_before);
+        out->rows = (int64_t)(sqlite3_total_changes(g_db) - rows_before);
     }
     return ok;
 }
@@ -1820,7 +1820,7 @@ struct load_group_slot
 
 static unsigned load_map_bucket(int64_t id)
 {
-    unsigned long long x = (unsigned long long)id;
+    uint64_t x = (uint64_t)id;
     x ^= x >> 33;
     x *= 0xff51afd7ed558ccdULL;
     x ^= x >> 33;
@@ -1923,7 +1923,7 @@ static void load_detach_from_groups(struct edc_session *session, struct edc_task
             if (g->member_count > 0)
                 g->member_count--;
             log_warn("load: task %" PRId64 " detached from group %" PRId64 " (a task belongs to one group only)",
-                     (long long)task_id, (long long)g->group_id);
+                     (int64_t)task_id, (int64_t)g->group_id);
             break;
         }
     }
@@ -2146,11 +2146,11 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                     task->output = sdsnew(output);
             }
             task->completion_seq = (uint32_t)col_i64(st, 27);
-            task->tokens_prompt = (long long)col_i64(st, 28);
-            task->tokens_completion = (long long)col_i64(st, 29);
-            task->tokens_total = (long long)col_i64(st, 30);
-            task->tokens_cached = (long long)col_i64(st, 31);
-            task->last_total_tokens = (long long)col_i64(st, 32);
+            task->tokens_prompt = (int64_t)col_i64(st, 28);
+            task->tokens_completion = (int64_t)col_i64(st, 29);
+            task->tokens_total = (int64_t)col_i64(st, 30);
+            task->tokens_cached = (int64_t)col_i64(st, 31);
+            task->last_total_tokens = (int64_t)col_i64(st, 32);
             task->last_fold_epoch = (uint32_t)col_i64(st, 33);
             task->last_hist_len = (int)col_i64(st, 34);
             task->last_turn_len = (int)col_i64(st, 35);
@@ -2255,7 +2255,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             if (!leader)
             {
                 log_warn("load: group %" PRId64 " has no member to lead it -- skipped",
-                         (long long)group_id);
+                         (int64_t)group_id);
                 continue;
             }
 
@@ -2883,8 +2883,8 @@ static char *msg_payload_text(const cJSON *msg)
 
 /* Rebuild the full message object from a row: body first, then the metadata columns, which
  * take precedence (they are the ones the runtime reads back). */
-static cJSON *msg_from_columns(const char *body, const char *id, const char *role, long long ts,
-                               const char *render, long long synthetic, const char *payload,
+static cJSON *msg_from_columns(const char *body, const char *id, const char *role, int64_t ts,
+                               const char *render, int64_t synthetic, const char *payload,
                                const char *mid){
     cJSON *msg = body ? cJSON_Parse(body) : NULL;
     if (!msg || !cJSON_IsObject(msg))
@@ -3033,7 +3033,7 @@ static void turn_recount(int64_t task_id, int turn_ord)
 }
 
 bool edc_msg_append(int64_t task_id, int turn_ord, int msg_ord, const struct cJSON *msg,
-                    long long tokens)
+                    int64_t tokens)
 {
     if (!g_db || task_id <= 0 || !msg || msg_ord < 0)
         return false;
@@ -3129,13 +3129,13 @@ struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord)
     return out;
 }
 
-long long edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from)
+int64_t edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from)
 {
     if (!g_db || task_id <= 0)
         return -1;
 
     sqlite3_stmt *st = NULL;
-    long long total = 0;
+    int64_t total = 0;
     if (sqlite3_prepare_v2(g_db,
                            "SELECT coalesce(sum(tokens),0) FROM messages "
                            "WHERE task_id=? AND turn_ord=? AND msg_ord>=?",
@@ -3469,7 +3469,7 @@ bool edc_msg_role_by_id(const char *id, char *buf, size_t n)
     return found;
 }
 
-long long edc_msg_tokens_by_ids(const char *const *ids, int n)
+int64_t edc_msg_tokens_by_ids(const char *const *ids, int n)
 {
     if (!g_db)
         return -1;
@@ -3479,7 +3479,7 @@ long long edc_msg_tokens_by_ids(const char *const *ids, int n)
         return -1;
 
     sqlite3_stmt *st = NULL;
-    long long total = 0;
+    int64_t total = 0;
     if (sqlite3_prepare_v2(g_db,
                            "SELECT coalesce(sum(m.tokens),0) FROM want_msg w "
                            "JOIN messages m ON m.id=w.msg_id",

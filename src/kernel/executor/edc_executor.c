@@ -8,6 +8,7 @@
 #include "log.h"
 #include "sds.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,21 +29,21 @@ static int exec_max_iter(const struct edc_executor *ex)
 }
 
 /* Compact token count for a one-line notice: 980 / 65.5k / 1.0M. */
-static void fmt_tokens(long long n, char *buf, size_t cap)
+static void fmt_tokens(int64_t n, char *buf, size_t cap)
 {
     if (n >= 1000000)
         snprintf(buf, cap, "%.1fM", (double)n / 1000000.0);
     else if (n >= 1000)
         snprintf(buf, cap, "%.1fk", (double)n / 1000.0);
     else
-        snprintf(buf, cap, "%lld", n);
+        snprintf(buf, cap, "%" PRId64 "", n);
 }
 
 /* The only thing a user can act on once the context no longer fits: the numbers and
  * the next step. `prompt` is what the provider counted (0 = it reported none),
  * `window` comes from the config (0 = unknown), `what` says which of the three
  * overflows this is. Caller owns the returned sds. */
-static sds exec_overflow_notice(const struct edc_executor *ex, long long prompt_tokens, const char *what)
+static sds exec_overflow_notice(const struct edc_executor *ex, int64_t prompt_tokens, const char *what)
 {
     char num[32];
     char win[32];
@@ -373,7 +374,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
      * window looks like on providers that do not say the word. A plain `length`
      * (completion > 0) is a real truncation and keeps the generic line. */
     else if (e->reason == EDC_REASON_LENGTH && e->completion_tokens == 0 && window > 0 &&
-             (long long)e->prompt_tokens * 100 >= (long long)window * 99)
+             (int64_t)e->prompt_tokens * 100 >= (int64_t)window * 99)
     {
         sds advice = exec_overflow_notice(ex, e->prompt_tokens, "the answer was cut at max_tokens");
         edc_task_set_output(task, advice);

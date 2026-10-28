@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* What this build can DO, as data -- and the few OPERATIONS whose implementation differs.
  *
@@ -134,6 +135,6 @@ void edc_platform_unlock_memory(void *addr, size_t len);
  * group signal is what also takes down grandchildren -- for `sh -c 'a && sudo b'`, killing
  * only the shell leaves the grandchild running and holding the pipes open). A no-op where
  * there are no process groups; the caller still terminates the child itself. */
-void edc_platform_kill_process_group(long pid);
+void edc_platform_kill_process_group(int64_t pid);
 
 #endif /* EDC_PLATFORM_H */

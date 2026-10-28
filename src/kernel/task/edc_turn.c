@@ -7,6 +7,7 @@
 #include "edc_string_utils.h"
 #include "log.h"
 
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdio.h>
 #include <time.h>
 
@@ -27,7 +28,7 @@
  * NOT sent to the model: the request builder allowlists wire keys (see
  * kWireMessageKeys in edc_llm_actor.c) and drops anything else, so this field cannot leak
  * into an API payload. */
-static unsigned long g_msg_seq;
+static uint64_t g_msg_seq;
 
 static sds edc_message_new_id(void)
 {
@@ -37,9 +38,9 @@ static sds edc_message_new_id(void)
         ts.tv_sec = time(NULL);
         ts.tv_nsec = 0;
     }
-    const unsigned long long ms = (unsigned long long)ts.tv_sec * 1000ULL +
-                                  (unsigned long long)(ts.tv_nsec / 1000000L);
-    return sdscatprintf(sdsempty(), "m%llu_%lu", ms, g_msg_seq++);
+    const uint64_t ms = (uint64_t)ts.tv_sec * 1000ULL +
+                                  (uint64_t)(ts.tv_nsec / 1000000L);
+    return sdscatprintf(sdsempty(), "m%" PRIu64 "_%" PRIu64, ms, g_msg_seq++);
 }
 
 void edc_turn_set_key(struct edc_turn *turn, int64_t session_id, int64_t group_id,
@@ -240,7 +241,7 @@ cJSON *edc_turn_msgs(const struct edc_turn *turn, int from, int to)
     return arr;
 }
 
-long long edc_turn_tokens_from(const struct edc_turn *turn, int from)
+int64_t edc_turn_tokens_from(const struct edc_turn *turn, int from)
 {
     if (!turn)
         return 0;

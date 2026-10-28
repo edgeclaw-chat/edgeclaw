@@ -994,8 +994,8 @@ bool edc_task_llm_request_poke(struct edc_task *task)
 
 /* ── Token accounting ──────────────────────────────────────── */
 
-void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
-                        long long total_tokens, long long cached_tokens)
+void edc_task_add_usage(struct edc_task *task, int64_t prompt_tokens, int64_t completion_tokens,
+                        int64_t total_tokens, int64_t cached_tokens)
 {
     if (!task)
         return;
@@ -1276,7 +1276,7 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
              * a cascade are routine / already announced, so they carry no notice. */
             task_record_move(source, target, EDC_MOVE_UNBLOCKED,
                              sdscatprintf(sdsempty(), "`%" PRId64 "` is running again — its dependency `%" PRId64 "` produced.",
-                                          (long long)target->task_id, (long long)source->task_id));
+                                          (int64_t)target->task_id, (int64_t)source->task_id));
     }
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))

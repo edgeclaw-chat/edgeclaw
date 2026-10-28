@@ -312,7 +312,7 @@ sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t l
     sds out = sdsempty();
     if (!whole)
         out = sdscatprintf(out, "[lines %" PRId64 "-%" PRId64 " of %" PRId64 "%s]\n", offset, offset + taken - 1,
-                           (long long)total, line_cut ? ", cut at 64 KiB" : "");
+                           (int64_t)total, line_cut ? ", cut at 64 KiB" : "");
     out = sdscatlen(out, p + start, body_len);
 
     /* How to fetch the rest -- worth saying only when something is left. */

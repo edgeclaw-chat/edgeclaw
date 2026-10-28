@@ -131,10 +131,10 @@ struct edc_state_flush_cost
      * Deliberately NOT the growth of the -wal file: after an auto-checkpoint the WAL is
      * reused from offset 0, so a 17 MB flush can leave the file exactly as long as it
      * was. That measured 0 bytes for the second flush of a 4000-message session. */
-    long long io_bytes;
+    int64_t io_bytes;
     /* Rows inserted or deleted, FK cascades included: the O(history) side in the store's
      * own units (one row per message, task, turn, dep, tool call...). */
-    long long rows;
+    int64_t rows;
 };
 
 /* Write one session's whole tree into the database, in one transaction.
@@ -212,7 +212,7 @@ bool edc_state_ensure_turn(int64_t session_id, int64_t group_id, int64_t task_id
  * time (0 = unknown), so token accounting is a range SUM instead of re-estimating every
  * message per request. The turn row must already exist (edc_state_ensure_turn). */
 bool edc_msg_append(int64_t task_id, int turn_ord, int msg_ord, const struct cJSON *msg,
-                    long long tokens);
+                    int64_t tokens);
 
 /* One message, parsed into a fresh object the CALLER owns (free with cJSON_Delete), or
  * NULL when the row does not exist. */
@@ -220,7 +220,7 @@ struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord);
 
 /* Sum of the token estimates of messages [from, len). One indexed range scan; this
  * replaces walking every message in C. Returns -1 when the store is closed. */
-long long edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from);
+int64_t edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from);
 
 /* Drop messages with msg_ord >= |new_len| (revert / rollback). |new_len| 0 drops the
  * whole turn. */
@@ -279,7 +279,7 @@ struct cJSON *edc_msg_load_by_ids(const char *const *ids, int n);
 
 /* Sum of the token estimates of the messages' stored estimates, by id. -1 when the store
  * is closed. */
-long long edc_msg_tokens_by_ids(const char *const *ids, int n);
+int64_t edc_msg_tokens_by_ids(const char *const *ids, int n);
 
 /* The role column of one message, copied into |buf| ("user" / "assistant" / "tool" /
  * "system"; "" when the column is empty). Returns false when the row does not exist.

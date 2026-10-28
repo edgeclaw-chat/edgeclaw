@@ -2,6 +2,7 @@
 
 #include "log.h"
 
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -150,7 +151,7 @@ static void probe_keep_sample(struct probe_bucket *b, uint64_t dur_ns)
 /* Caller holds g_mutex. A "not measurable" -1 is kept out of the sums but stays in
  * the CSV row, so one unmeasurable sample cannot poison the aggregate. */
 static void probe_tally(const char *kind, const char *tag, uint64_t dur_ns, uint64_t doc_bytes,
-                        long long io_bytes, long long rows, long n_tasks, long n_msgs)
+                        int64_t io_bytes, int64_t rows, int64_t n_tasks, int64_t n_msgs)
 {
     struct probe_bucket *b = probe_bucket(kind, tag);
     if (!b)
@@ -176,8 +177,8 @@ static const char *probe_sid(const char *session_id)
     return (session_id && *session_id) ? session_id : "?";
 }
 
-void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, long long io_bytes, long long rows,
-                          long n_tasks, long n_msgs, bool ok, const char *session_id,
+void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, int64_t io_bytes, int64_t rows,
+                          int64_t n_tasks, int64_t n_msgs, bool ok, const char *session_id,
                           const char *tag)
 {
     edc_state_probe_init();
@@ -188,8 +189,8 @@ void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, long long io_bytes,
     probe_tally("save", tag, dur_ns, doc_bytes, io_bytes, rows, n_tasks, n_msgs);
     if (g_csv)
     {
-        fprintf(g_csv, "%llu,save,%s,%s,%.3f,%zu,%lld,%lld,%ld,%ld,%d\n",
-                (unsigned long long)((uv_hrtime() - g_t0) / 1000000ULL), tag ? tag : "?",
+        fprintf(g_csv, "%" PRIu64 ",save,%s,%s,%.3f,%zu,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%d\n",
+                (uint64_t)((uv_hrtime() - g_t0) / 1000000ULL), tag ? tag : "?",
                 probe_sid(session_id), (double)dur_ns / 1e6, doc_bytes, io_bytes, rows,
                 n_tasks, n_msgs, ok ? 1 : 0);
         fflush(g_csv);
@@ -197,7 +198,7 @@ void edc_state_probe_save(uint64_t dur_ns, size_t doc_bytes, long long io_bytes,
     uv_mutex_unlock(&g_mutex);
 }
 
-void edc_state_probe_load(uint64_t dur_ns, long long rows, bool ok, long n_tasks, long n_msgs,
+void edc_state_probe_load(uint64_t dur_ns, int64_t rows, bool ok, int64_t n_tasks, int64_t n_msgs,
                           const char *session_id, const char *tag)
 {
     edc_state_probe_init();
@@ -208,8 +209,8 @@ void edc_state_probe_load(uint64_t dur_ns, long long rows, bool ok, long n_tasks
     probe_tally("load", tag, dur_ns, (uint64_t)(rows > 0 ? rows : 0), -1, rows, n_tasks, n_msgs);
     if (g_csv)
     {
-        fprintf(g_csv, "%llu,load,%s,%s,%.3f,-,-,%lld,%ld,%ld,%d\n",
-                (unsigned long long)((uv_hrtime() - g_t0) / 1000000ULL), tag ? tag : "?",
+        fprintf(g_csv, "%" PRIu64 ",load,%s,%s,%.3f,-,-,%" PRId64 ",%" PRId64 ",%" PRId64 ",%d\n",
+                (uint64_t)((uv_hrtime() - g_t0) / 1000000ULL), tag ? tag : "?",
                 probe_sid(session_id), (double)dur_ns / 1e6, rows, n_tasks, n_msgs, ok ? 1 : 0);
         fflush(g_csv);
     }
@@ -256,7 +257,7 @@ static void probe_print_row(FILE *out, struct probe_bucket *b)
     const double mean = b->count ? (double)b->total_ns / (double)b->count / 1e6 : 0.0;
 
     fprintf(out, "%-5s %-22s n=%-6llu mean=%9.2fms p50=%8.2fms p95=%8.2fms max=%9.2fms",
-            b->kind, b->tag, (unsigned long long)b->count, mean,
+            b->kind, b->tag, (uint64_t)b->count, mean,
             probe_pct(sorted, b->n_samples, 0.50), probe_pct(sorted, b->n_samples, 0.95),
             (double)b->max_ns / 1e6);
 
@@ -275,7 +276,7 @@ static void probe_print_row(FILE *out, struct probe_bucket *b)
                 (double)b->total_msgs / (double)b->count);
 
     if (b->dropped)
-        fprintf(out, " [dropped %llu samples]", (unsigned long long)b->dropped);
+        fprintf(out, " [dropped %" PRIu64 " samples]", (uint64_t)b->dropped);
     fprintf(out, "\n");
 
     if (sorted && sorted != b->samples)

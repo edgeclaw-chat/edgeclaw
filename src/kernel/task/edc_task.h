@@ -148,7 +148,7 @@ struct edc_tool_call_record
 /* Render an id for a log line ("%s ...", edc_id_str(task->task_id)).
  *
  * Ids are numbers now and the log format strings are all %s, so this keeps those calls
- * unchanged instead of rewriting every message to %lld. A small rotating buffer works
+ * unchanged instead of rewriting every message to %" PRId64 ". A small rotating buffer works
  * because a single log call never needs more than a few ids at once; it is NOT thread
  * safe, and logging already assumes that. */
 static inline const char *edc_id_str(int64_t id)
@@ -226,10 +226,10 @@ struct edc_task
 
     /* Usage accumulated over the task's whole lifetime, for the sidebar; not used
      * for scheduling. */
-    long long tokens_prompt;
-    long long tokens_completion;
-    long long tokens_total;
-    long long tokens_cached;
+    int64_t tokens_prompt;
+    int64_t tokens_completion;
+    int64_t tokens_total;
+    int64_t tokens_cached;
 
     /* How big the conversation had grown after the most recent reply: that
      * response's usage.total_tokens (its prompt *and* its completion) -- what was
@@ -241,7 +241,7 @@ struct edc_task
      * request: it is a sum of two counts, so a provider that folds reasoning
      * content into completion_tokens (which need not be sent back) makes it a
      * slight over-estimate of what the next request will carry. */
-    long long last_total_tokens;
+    int64_t last_total_tokens;
 
     /* Where that reply sat in the group's context, so the tail appended after it
      * can be estimated instead of guessed: the group history length and the
@@ -522,8 +522,8 @@ extern bool edc_task_llm_request_poke(struct edc_task *task);
 
 /** Add one LLM response's usage to the task's token account. All-zero usage is a
  *  no-op; total <= 0 falls back to prompt + completion. */
-extern void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
-                               long long total_tokens, long long cached_tokens);
+extern void edc_task_add_usage(struct edc_task *task, int64_t prompt_tokens, int64_t completion_tokens,
+                               int64_t total_tokens, int64_t cached_tokens);
 
 extern void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn);
 extern void edc_task_commit_active_turn(struct edc_task *task);

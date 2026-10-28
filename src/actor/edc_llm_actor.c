@@ -404,14 +404,14 @@ static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, N
 /* Read an integer field from a cJSON object; returns 0 when the object or the
  * field is missing or not a number. Token counts can exceed INT_MAX, so the
  * value is taken through `valuedouble` into a 64-bit integer. */
-static long long edc_llm_json_int(cJSON *obj, const char *key)
+static int64_t edc_llm_json_int(cJSON *obj, const char *key)
 {
     if (!obj)
         return 0;
     cJSON *v = cJSON_GetObjectItem(obj, key);
     if (!v || !cJSON_IsNumber(v))
         return 0;
-    return (long long)v->valuedouble;
+    return (int64_t)v->valuedouble;
 }
 
 /* Parse the optional top-level `usage` object into resp->usage. Providers
@@ -433,7 +433,7 @@ static void edc_llm_actor_parse_usage(cJSON *response, struct edc_llm_actor_resp
     cJSON *details = cJSON_GetObjectItem(usage, "prompt_tokens_details");
     if (details && cJSON_IsObject(details))
     {
-        long long cached = edc_llm_json_int(details, "cached_tokens");
+        int64_t cached = edc_llm_json_int(details, "cached_tokens");
         if (cached > 0)
             resp->usage.cached_tokens = cached;
     }
