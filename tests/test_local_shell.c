@@ -152,7 +152,7 @@ static void pump_message(struct edc_scheduler *sched)
 }
 
 /* A single-tool chain TOOL_RESPONSE: the fake execution of the call. */
-static void deliver_tool_resp(struct edc_scheduler *sched, long req_id, const char *call_id, const char *result)
+static void deliver_tool_resp(struct edc_scheduler *sched, intptr_t req_id, const char *call_id, const char *result)
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_toolbox_actor_req *tr = calloc(1, sizeof(*tr));
@@ -160,7 +160,7 @@ static void deliver_tool_resp(struct edc_scheduler *sched, long req_id, const ch
     tr->call_id = sdsnew(call_id);
     tr->result = sdsnew(result);
     tr->next = NULL;
-    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, NULL, (void *)(intptr_t)req_id, tr, NULL);
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, NULL, (void *)req_id, tr, NULL);
     actor->handler(actor, msg); /* dispatches + frees msg (data is ours) */
     sdsfree(tr->name);
     sdsfree(tr->call_id);
@@ -280,7 +280,7 @@ static void test_drive_dispatches_and_settles_without_llm(void)
     CHECK(g_llm_calls == 0, "no LLM request was sent to start it");
     CHECK(t->step == EDC_TASKSTEP_AWAIT_TOOLS, "the task is waiting on its tool");
 
-    long rid = (long)(intptr_t)t->current_request_id;
+    intptr_t rid = (intptr_t)t->current_request_id;
     deliver_tool_resp(sched, rid, call_id, "On branch main\nnothing to commit");
     sdsfree(call_id);
 

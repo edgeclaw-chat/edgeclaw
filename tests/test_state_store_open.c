@@ -22,6 +22,7 @@
 #include "log.h"
 #include "sqlite3.h"
 
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -513,8 +514,8 @@ int main(void)
     /* Every message this file asserts on is a log_error from the store. */
     log_add_callback(capture_log, NULL, LOG_TRACE);
     const char *tmp = getenv("TMPDIR");
-    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_state_store_%ld",
-             (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
+    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_state_store_%" PRId64,
+             (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
 
     printf("workspace: %s\n", g_dir);
 

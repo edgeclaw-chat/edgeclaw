@@ -512,7 +512,7 @@ bool edc_session_save_state_tagged(struct edc_session *session, struct edc_sched
             struct edc_task_group *g;
             DL_FOREACH(session->groups, g)
                 n_tasks += g->member_count;
-            n_msgs = (long)edc_session_get_message_count(session);
+            n_msgs = (int64_t)edc_session_get_message_count(session);
         }
 
         edc_state_probe_save(t1 - t0, doc_bytes, cost.io_bytes, cost.rows, n_tasks, n_msgs, ok,
@@ -533,7 +533,7 @@ bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *s
 /* Body with the measured quantities reported back: how many rows the store produced, and
  * what the loader made of them (tasks / messages) -- the "O(history)" side of the cost. */
 static bool session_load_state_impl(struct edc_session *session, struct edc_scheduler *sched,
-                                    long *out_rows, long *out_tasks, long *out_msgs)
+                                    int64_t *out_rows, int64_t *out_tasks, int64_t *out_msgs)
 {
     *out_rows = 0;
     *out_tasks = 0;
@@ -570,7 +570,7 @@ static bool session_load_state_impl(struct edc_session *session, struct edc_sche
         struct edc_task_group *g;
         DL_FOREACH(session->groups, g)
             *out_tasks += g->member_count;
-        *out_msgs = (long)edc_session_get_message_count(session);
+        *out_msgs = (int64_t)edc_session_get_message_count(session);
     }
 
     /* "file_bytes" used to be the size of session.json. The new backend has no single

@@ -21,6 +21,7 @@
 #include "edc_file_index.h"
 #include "edc_file_utils.h"
 
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -240,7 +241,8 @@ static bool scratch(char *buf, size_t cap, const char *leaf)
     while (base_len > 1 && base[base_len - 1] == PATH_SEP)
         base_len--;
 
-    const int n = snprintf(buf, cap, "%.*s%cedc_contract_%ld%c%s", (int)base_len, base, PATH_SEP, (long)getpid(),
+    const int n = snprintf(buf, cap, "%.*s%cedc_contract_%" PRId64 "%c%s", (int)base_len, base, PATH_SEP,
+                           (int64_t)getpid(),
                            PATH_SEP, leaf);
     return n > 0 && (size_t)n < cap;
 }

@@ -419,7 +419,7 @@ static bool fs_type_is_local(const char *dir, const char **why)
         *why = "cannot stat the workspace filesystem";
         return false;
     }
-    switch ((unsigned long)sfs.f_type)
+    switch ((uint64_t)sfs.f_type)
     {
     case 0xEF53:       /* ext2/3/4 */
     case 0x58465342:   /* XFS */

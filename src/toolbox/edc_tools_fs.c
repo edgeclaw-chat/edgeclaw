@@ -587,7 +587,7 @@ static void edc_edit_file_format_match_list(const char *content, size_t content_
             else
                 ctx = sdscatprintf(ctx, "%c", c);
         }
-        *out = sdscatprintf(*out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx);
+        *out = sdscatprintf(*out, "\n  [%u] line %" PRId64 ": \"%s\"", i + 1, ln, ctx);
         sdsfree(ctx);
     }
     if (count > max_preview)
@@ -609,8 +609,8 @@ static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occur
 {
     if ((uint64_t)occurrence > count)
     {
-        edc_error_set(error, EDC_ERR_EXEC, "Error: occurrence %ld out of range; old_text appears %u times.",
-                      (long)occurrence, count);
+        edc_error_set(error, EDC_ERR_EXEC,
+                      "Error: occurrence %" PRId64 " out of range; old_text appears %u times.", occurrence, count);
         return false;
     }
     unsigned int idx = (unsigned int)(occurrence - 1);
@@ -644,8 +644,9 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
     {
         sds msg = sdsempty();
         edc_edit_file_format_match_list(content, content_len, positions, line_nums, old_len, count, 5, &msg);
-        edc_error_set(error, EDC_ERR_EXEC, "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
-                      (long)line_hint, count, msg);
+        edc_error_set(error, EDC_ERR_EXEC,
+                      "Error: line_hint %" PRId64 " is ambiguous; old_text appears %u times.%s", line_hint,
+                      count, msg);
         sdsfree(msg);
         return false;
     }
@@ -800,8 +801,9 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 
     if (expected_replacements > 0 && utarray_len(selected) != (unsigned int)expected_replacements)
     {
-        edc_error_set(error, EDC_ERR_EXEC, "Error: expected %ld replacements but would make %u.",
-                      (long)expected_replacements, (unsigned)utarray_len(selected));
+        edc_error_set(error, EDC_ERR_EXEC,
+                      "Error: expected %" PRId64 " replacements but would make %u.", expected_replacements,
+                      (unsigned)utarray_len(selected));
         goto cleanup;
     }
 

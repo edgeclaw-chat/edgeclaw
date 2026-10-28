@@ -39,6 +39,7 @@
 #include "sds.h"
 #include "utlist_fix.h"
 
+#include <inttypes.h> /* PRId64 */
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,9 +67,9 @@ static double now_ms(void)
     return (double)uv_hrtime() / 1e6;
 }
 
-static long count_tasks(struct edc_session *s)
+static int64_t count_tasks(struct edc_session *s)
 {
-    long n = 0;
+    int64_t n = 0;
     struct edc_task_group *g;
     DL_FOREACH(s->groups, g)
         n += g->member_count;
@@ -115,7 +116,7 @@ int main(int argc, char **argv)
     printf("── load_state ─────────────────────────────────────────────\n");
     printf("  result      : %s\n", loaded ? "ok" : "FAILED (no file / corrupt)");
     printf("  wall        : %.1f ms\n", load_ms);
-    printf("  tasks       : %ld\n", count_tasks(s));
+    printf("  tasks       : %" PRId64 "\n", count_tasks(s));
     printf("  messages    : %zu\n", edc_session_get_message_count(s));
 
     if (!loaded)

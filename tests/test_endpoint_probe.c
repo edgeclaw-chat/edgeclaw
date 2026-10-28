@@ -31,6 +31,7 @@
 #include "mbedtls/x509_crt.h"
 #include "uv.h"
 
+#include <inttypes.h> /* PRId64 */
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdbool.h>
@@ -473,8 +474,8 @@ static void test_connection_failed(void)
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
-    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_endpoint_probe_%ld",
-             (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
+    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_endpoint_probe_%" PRId64,
+             (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
     snprintf(g_cert, sizeof(g_cert), "%s/cert.pem", g_dir);
     snprintf(g_key, sizeof(g_key), "%s/key.pem", g_dir);
 

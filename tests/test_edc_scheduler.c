@@ -748,11 +748,11 @@ static void test_queue_advances_when_front_dies(void)
 /* 发起请求的那个 request_id 现在由**调度**发号 (唯一驱动入口), 测试不能再自己写死
  * 一个数字: 后续投递的响应必须带**登记过的那个** id, 否则 task_hash 路由不到任务。
  * 任务自己记着它 (current_request_id) —— 这也是那条不变量的可读证据。 */
-static long req_id_of(struct edc_task *t)
+static intptr_t req_id_of(struct edc_task *t)
 {
     /* NULL 安全: 断言失败时 (没有任务被派发) 后续投递要变成一个良性的"找不到任务"，
      * 而不是解引用 NULL。 */
-    return t ? (long)(intptr_t)t->current_request_id : 0;
+    return t ? (intptr_t)t->current_request_id : 0;
 }
 
 /* Failure propagates the same way: an ERROR source cascades to its JOIN dependents.
@@ -829,7 +829,7 @@ static void test_failure_cascade_settles_dependents(void)
 /* 驱动一条入站输入 (模拟 TUI): TUI 永远**显式**带 session 标签 (P3 ①a)。 */
 
 /* 直接驱动 scheduler actor handler 投递一条 CHANNEL_RECV 消息 (模拟 TUI 输入)。 */
-static void drive_input(struct edc_scheduler *sched, const char *content, long req_id)
+static void drive_input(struct edc_scheduler *sched, const char *content, intptr_t req_id)
 {
     edc_actor_t *sched_actor = edc_scheduler_get_actor(sched);
     struct edc_channel_message *cm =
@@ -1269,7 +1269,7 @@ static void mock_send_reply(struct edc_scheduler *sched, struct edc_task *task, 
 }
 
 /* 投递一条 TOOL_CALL 的 LLM_RESPONSE (模拟模型又请求了一次工具)。 */
-static void deliver_llm_tool_call(struct edc_scheduler *sched, long req_id)
+static void deliver_llm_tool_call(struct edc_scheduler *sched, intptr_t req_id)
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_llm_actor_resp *r = edc_llm_actor_resp_new();
@@ -1284,7 +1284,7 @@ static void deliver_llm_tool_call(struct edc_scheduler *sched, long req_id)
 }
 
 /* 投递一条单工具链 (tr->next == NULL) 的 TOOL_RESPONSE, 模拟工具已执行完。 */
-static void deliver_tool_resp(struct edc_scheduler *sched, long req_id)
+static void deliver_tool_resp(struct edc_scheduler *sched, intptr_t req_id)
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_toolbox_actor_req *tr = calloc(1, sizeof(*tr));
@@ -1302,7 +1302,7 @@ static void deliver_tool_resp(struct edc_scheduler *sched, long req_id)
 
 /* 一轮工具循环: LLM 要工具 → 派发 → 工具结果回链尾。返回后由 send_llm
  * 决定是否续发 (或到 max_iter 被截断)。 */
-static void run_one_tool_round(struct edc_scheduler *sched, long req_id)
+static void run_one_tool_round(struct edc_scheduler *sched, intptr_t req_id)
 {
     deliver_llm_tool_call(sched, req_id);
     deliver_tool_resp(sched, req_id);
@@ -1571,7 +1571,7 @@ static void test_cancelled_task_resume_accepts_reply(void)
 
     /* 关键断言: 那条新请求的应答被**接受**。若被丢弃, 任务会永远停在 AWAIT_EXEC
      * (界面就显示成"执行中"而再无消息 —— 正是真机看到的那个样子)。 */
-    deliver_llm_tool_call(sched, (long)(intptr_t)t->current_request_id);
+    deliver_llm_tool_call(sched, (intptr_t)t->current_request_id);
     CHECK(g_dispatch_calls == 1, "the reply was accepted -> tools dispatched");
     CHECK(edc_task_awaits_tools(t), "task advanced to AWAIT_TOOLS");
 

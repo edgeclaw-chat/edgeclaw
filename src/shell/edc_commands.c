@@ -3418,22 +3418,25 @@ static sds jobs_describe_next(const cJSON *schedule)
     struct tm tm;
     char buf[32];
     if (!jobs_localtime(at, &tm) || strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm) == 0)
-        snprintf(buf, sizeof(buf), "%ld", (long)at);
+        snprintf(buf, sizeof(buf), "%" PRId64, (int64_t)at);
 
     const char *tz = cJSON_GetStringValue(cJSON_GetObjectItem(schedule, "tz"));
     sds when = sdsnew(buf);
-    const long delta = (long)(at - time(NULL));
+    /* int64_t, not `long`: `long` is 64 bits on LP64 and 32 on LLP64 (Windows), and a
+     * countdown in seconds leaves the 32-bit range after 68 years -- but the width has to
+     * be stated, not inherited from the platform. */
+    const int64_t delta = (int64_t)(at - time(NULL));
     if (delta <= 0)
         return sdscatprintf(when, " (due now)%s%s", (tz && *tz) ? " " : "", (tz && *tz) ? tz : "");
 
-    const long d = delta / 86400, h = (delta % 86400) / 3600, m = (delta % 3600) / 60;
+    const int64_t d = delta / 86400, h = (delta % 86400) / 3600, m = (delta % 3600) / 60;
     sds rel = sdsempty();
     if (d > 0)
-        rel = sdscatprintf(rel, "%ldd %ldh", d, h);
+        rel = sdscatprintf(rel, "%" PRId64 "d %" PRId64 "h", d, h);
     else if (h > 0)
-        rel = sdscatprintf(rel, "%ldh %ldm", h, m);
+        rel = sdscatprintf(rel, "%" PRId64 "h %" PRId64 "m", h, m);
     else
-        rel = sdscatprintf(rel, "%ldm", m);
+        rel = sdscatprintf(rel, "%" PRId64 "m", m);
     when = sdscatprintf(when, " (in %s)%s%s", rel, (tz && *tz) ? " " : "", (tz && *tz) ? tz : "");
     sdsfree(rel);
     return when;
@@ -3453,12 +3456,12 @@ static sds jobs_describe_schedule(const cJSON *schedule)
     if (strcmp(kind, "every") == 0)
     {
         const cJSON *every = cJSON_GetObjectItem(schedule, "every_seconds");
-        const long secs = (every && cJSON_IsNumber(every)) ? (long)every->valuedouble : 0;
+        const int64_t secs = (every && cJSON_IsNumber(every)) ? (int64_t)every->valuedouble : 0;
         if (secs > 0 && secs % 3600 == 0)
-            return sdscatprintf(sdsempty(), "every %ldh", secs / 3600);
+            return sdscatprintf(sdsempty(), "every %" PRId64 "h", secs / 3600);
         if (secs > 0 && secs % 60 == 0)
-            return sdscatprintf(sdsempty(), "every %ldm", secs / 60);
-        return sdscatprintf(sdsempty(), "every %lds", secs);
+            return sdscatprintf(sdsempty(), "every %" PRId64 "m", secs / 60);
+        return sdscatprintf(sdsempty(), "every %" PRId64 "s", secs);
     }
     return sdsnew("one-shot"); /* "at" */
 }

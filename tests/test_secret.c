@@ -26,6 +26,7 @@
 #include "log.h"
 #include "sds.h"
 
+#include <inttypes.h> /* PRId64 */
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -508,8 +509,8 @@ static void test_update_llm_refuses_without_key(void)
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
-    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_secret_%ld",
-             (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
+    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_secret_%" PRId64,
+             (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
 
     log_add_callback(capture_log, NULL, LOG_TRACE);
 

@@ -127,7 +127,7 @@ static struct edc_session *g_sess_a = NULL;
 static struct edc_session *g_sess_b = NULL;
 
 /* 投递一条入站消息 (模拟前端): |tag| 就是消息上的 session 标签。 */
-static void deliver_input(struct edc_scheduler *sched, const char *tag, const char *content, long req_id)
+static void deliver_input(struct edc_scheduler *sched, const char *tag, const char *content, intptr_t req_id)
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_channel_message *cm =
@@ -135,7 +135,7 @@ static void deliver_input(struct edc_scheduler *sched, const char *tag, const ch
     if (tag)
         cm->session_id = sdsnew(tag);
     edc_actor_msg_t *msg =
-        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, edc_channel_input_new(cm),
+        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)req_id, edc_channel_input_new(cm),
                           (edc_actor_data_free_fn)edc_channel_input_free);
     actor->handler(actor, msg); /* dispatches + frees msg */
 }

@@ -353,7 +353,11 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcE
 
     if (hFind == INVALID_HANDLE_VALUE)
     {
-        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %lu", path, GetLastError());
+        /* DWORD is 32 bits by definition (Win32 API); say so instead of %lu, which is 32 on
+         * Windows but 64 on LP64 -- a format that happens to match the platform here and
+         * would be wrong the moment this value were anything else. */
+        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %" PRIu32, path,
+                      (uint32_t)GetLastError());
         return false;
     }
 
