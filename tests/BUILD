@@ -1105,6 +1105,17 @@ cc_test(
 )
 
 cc_test(
+    name = "test_endpoint_probe",
+    srcs = ["test_endpoint_probe.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_connect",
     srcs = ["test_connect.c", "test_ws.h"],
     deps = [
