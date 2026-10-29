@@ -344,7 +344,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Task", "/task fork <parent> <desc>",
      "fork: the child leads a group of its own and inherits the parent's context", NULL},
     {"Task", "/task list", "list all groups and tasks", NULL},
-    {"Task", "/task status [id]", "show a task's state, output, deps and turns", NULL},
+    {"Task", "/task status [id]", "show a task's state, deps, output, and the tool call it is running", NULL},
     {"Task", "/task output <id>", "show only the task's output text", NULL},
     {"Task", "/task history <id>", "show the task's messages (`--json` = raw payload)", NULL},
     {"Task", "/task fg <id>", "foreground + set as active (only the active task outputs to terminal)", NULL},
@@ -1821,6 +1821,69 @@ static void edc_commands_handle_group_list(struct edc_session_manager *sm, struc
     sdsfree(out);
 }
 
+/* ── what a busy task is DOING right now ─────────────────────
+ *
+ * `state: RUNNING` says a task is moving, not what it is doing, and the tool NAME is not the
+ * command: `exec_shell` alone answers nothing. So the call is printed with its arguments.
+ *
+ * Only the calls STILL IN FLIGHT are printed -- i.e. exactly the resume ledger
+ * (`task->tool_calls`). That ledger is the definition of "in flight": a call enters it PENDING
+ * when the model asks for it, becomes EXECUTING when it is dispatched, and is REMOVED the
+ * moment its result arrives. So a call that already produced something is not in the ledger and
+ * is not printed -- the finished calls are `/task history <id>`, not "what is it doing now".
+ * This is also why the block disappears on its own once the task settles.
+ *
+ * Reading the ledger directly (instead of scanning the turn's messages and looking each call up
+ * in it) is the same answer for less work: the ledger already IS the filtered set.
+ */
+#define CMD_TOOL_CALLS_MAX 10      /* beyond this it is a wall, not an answer */
+#define CMD_TOOL_CALL_ARGS_MAX 400 /* a shell line fits; a whole written file does not */
+
+/* The "- **running**" block, or NULL when nothing is in flight (the caller then omits the line
+ * entirely rather than printing an empty section). */
+static sds cmd_task_running_calls_note(struct edc_task *t)
+{
+    if (!t || !t->tool_calls)
+        return NULL;
+
+    sds body = sdsempty();
+    int total = 0, shown = 0;
+    const struct edc_tool_call_record *rec;
+    LL_FOREACH(t->tool_calls, rec)
+    {
+        total++;
+        if (shown >= CMD_TOOL_CALLS_MAX)
+            continue;
+        shown++;
+
+        /* The arguments are a cJSON object here (the ledger keeps them to rebuild the request
+         * on resume), where the message holds the API's serialized STRING. Print the same
+         * one-line shape either way. */
+        char *args_s = rec->args ? cJSON_PrintUnformatted(rec->args) : NULL;
+        const char *args = (args_s && *args_s) ? args_s : "{}";
+        body = sdscatprintf(body, "  - `%s` **%s** `%.*s%s`\n",
+                            rec->status == TOOL_CALL_EXECUTING ? "running" : "queued",
+                            rec->name ? rec->name : "tool", CMD_TOOL_CALL_ARGS_MAX, args,
+                            strlen(args) > CMD_TOOL_CALL_ARGS_MAX ? " …" : "");
+        if (args_s)
+            cJSON_free(args_s);
+    }
+
+    if (total == 0)
+    {
+        sdsfree(body);
+        return NULL;
+    }
+
+    sds out = sdscatprintf(sdsempty(), "- **running**: %d tool call%s in flight\n", total, total == 1 ? "" : "s");
+    out = sdscatsds(out, body);
+    if (shown < total)
+        out = sdscatprintf(out, "  - _… and %d more (`/task history %s`)_\n", total - shown,
+                           edc_id_str(t->task_id));
+    sdsfree(body);
+    return out;
+}
+
 static void edc_commands_handle_task_status(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                             struct edc_reply_to to, const char *id)
 {
@@ -1908,6 +1971,16 @@ static void edc_commands_handle_task_status(struct edc_session_manager *sm, stru
     {
         out = sdscatprintf(out, "- **tokens**: %" PRId64 " total (%" PRId64 " prompt · %" PRId64 " completion · %" PRId64 " cached)\n",
                            t->tokens_total, t->tokens_prompt, t->tokens_completion, t->tokens_cached);
+    }
+    /* What it is doing right now, not just which bucket it is in: the tool calls still in
+     * flight, with their arguments. Omitted when nothing is running. */
+    {
+        sds calls = cmd_task_running_calls_note(t);
+        if (calls)
+        {
+            out = sdscatsds(out, calls);
+            sdsfree(calls);
+        }
     }
     if (t->output)
     {

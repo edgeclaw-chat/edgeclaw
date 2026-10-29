@@ -479,6 +479,20 @@ cc_test(
 )
 
 cc_test(
+    name = "test_commands_report",
+    srcs = ["test_commands_report.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_session_remove",
     srcs = ["test_commands_session_remove.c", "test_ws.h"],
     deps = [

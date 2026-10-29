@@ -487,12 +487,26 @@ also records *why* the model call failed (`AUTH`, `CONTEXT_OVERFLOW`, `RATE_LIMI
 `TRANSPORT`, `OTHER`), and `/task resume` repeats it: a bad key or an overflowing context
 does not heal by retrying.
 
+State and reason still do not say what a busy task is *doing*: `LLM_PROCESSING` while a
+tool runs looks the same as `LLM_PROCESSING` while the reply streams. So `/task status`
+also prints a **running** block — but only the calls still in flight, never the ones that
+already returned. The tool name and its JSON arguments are both shown, because the name is
+not the command (`{"command":"ls -la"}` is). "In flight" is exactly the resume ledger: a
+call enters it when the model asks for it (`queued`, not dispatched yet), becomes
+`running` when dispatched, and leaves it the moment its result arrives — so a finished
+call is not printed, and the block disappears by itself once the task settles. Earlier
+turns are never listed; those are `/task history <id>`.
+
 The sidebar's marker says the same thing at a glance — the colour is the state, the shape
 is the reason: `■` the active task, `●` anything else, `*` finished while you were not
 looking, `□` interrupted, `×` stopped by you, `–` skipped by `||`, `⊘` blocked by a
-dependency. When a session opens with interrupted tasks, one line in the chat says so
-(`/task resume <id>` takes one back at a time); it is not written to the transcript, so it
-does not come back on the next load.
+dependency. The `*` drops as soon as the task's content is in front of you — being the
+active task, its output arriving live in the chat pane, or asking for it: `/task output`,
+`/task status`, `/task fg`, and equally `/task history` / `/group history` (a transcript
+on screen *is* the output; making the user re-read it through a second command to clear a
+marker would be busywork). When a session opens with interrupted tasks, one line in the
+chat says so (`/task resume <id>` takes one back at a time); it is not written to the
+transcript, so it does not come back on the next load.
 
 Two behaviours follow from the reason:
 
@@ -643,7 +657,7 @@ and a missing value is a usage error.
 | Command | Description |
 |---------|-------------|
 | `/task list` | List all groups and tasks. Active task marked with `*` (e.g. `[L*]` or `[M*]`). |
-| `/task status [tid]` | Show task details (state, output, deps, turns) |
+| `/task status [tid]` | Show task details (state, deps, output, and the tool call it is running right now) |
 | `/task output <tid>` | Show only the task's output text |
 | `/task history <tid>` | Show the task's messages (`--json` = raw payload) |
 

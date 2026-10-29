@@ -223,6 +223,26 @@ std::string SnapJsonEnd(const char *session_id, const char *task_id, const char 
     return json;
 }
 
+// 同 SnapJsonEnd，但 active 由调用方给：用来造"在后台跑完"的任务（active=false
+// 才会计入 unread，见 TaskTreeModel::Apply）。
+std::string SnapJsonTask(const char *session_id, const char *task_id, const char *desc, const char *state, bool active)
+{
+    std::string json = R"({"session_id":")";
+    json += session_id;
+    json += R"(","session_name":"harness","message_count":1,"created_at":"2026-09-16 05:00:00","groups":[)"
+            R"({"id":"1","kind":"user","member_count":1,"msg_count":1,"orphaned":false,"fg":true,)"
+            R"("tokens_total":3,"ctx_tokens":45000,"tasks":[{"id":")";
+    json += task_id;
+    json += R"(","state":")";
+    json += state;
+    json += R"(","leader":true,"active":)";
+    json += active ? "true" : "false";
+    json += R"(,"desc":")";
+    json += desc;
+    json += R"(","tokens_prompt":1,"tokens_completion":2,"tokens_total":3,"tokens_cached":0}]}]})";
+    return json;
+}
+
 int CountOf(const std::string &hay, const std::string &needle)
 {
     int n = 0;
@@ -495,6 +515,38 @@ std::string LineOf(const std::string &frame, int row)
 // ── 输入框的命令补全弹层 ────────────────────────────────────────────────────
 // 打 "/" 弹家族、"ta" 收敛、Tab 补全、Esc 关掉；Enter 默认仍是 Submit，只在上下浏览过
 // 列表之后变成"选中"（见下面 TestPaletteEnterPicks）。
+// ── 未读标记：读过的途径不止 `/task output` ────────────────────────────────
+// 后台任务跑完 → 侧栏一枚 `*`（unread）。原来只有 `/task output|status|fg` 会清掉它，
+// 可 `/task history` 同样是"读它的产出"的途径 —— 整个转录（含最后那条 output）就摆在
+// 眼前，标记却还留着，等于让用户去敲第二条命令才能消掉一个已经看过的提示。
+//
+// 判据落在屏幕上：`*` 出现在那行 task 里 => 未读；消失 => 已读。
+void TestHistoryMarksTaskRead(edc::TUIWindow &win)
+{
+    std::cout << "未读标记：/task history 也算读过了\n";
+    const char *kUnreadTask = "UNREAD_TASK_DESC";
+
+    /* 跑起来 → 后台结束：这是 unread 的产生条件（非 active + 进入终态）。 */
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonTask(kShown, "4242", kUnreadTask, "LLM_PROCESSING", false).c_str(),
+                      kShown));
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonTask(kShown, "4242", kUnreadTask, "COMPLETED", false).c_str(),
+                      kShown));
+    Check(Has(FrameOf(win), "* 4242"), "后台跑完 → 侧栏出现未读标记");
+
+    /* 读它的 history（走生产路径：结构化载荷 → RenderTaskHistory）。 */
+    const char *payload =
+        R"({"kind":"task","id":"4242","input":"UNREAD_INPUT","messages":[)"
+        R"({"role":"assistant","content":"UNREAD_OUTPUT_MARKER","render":"plain"}]})";
+    Feed(win, MakeMsg(HARNESS_MSG_TASK_HISTORY, payload, "", ""));
+    const std::string frame = FrameOf(win);
+    Check(Has(frame, "UNREAD_OUTPUT_MARKER"), "history 里能看到它的产出");
+    Check(!Has(frame, "* 4242"), "看过 history → 未读标记消失（不必再敲 /task output）");
+
+    /* Esc 回到实时流；标记不能复活（终态任务不会再"结束一次"）。 */
+    Check(win.OnEvent(::ftxui::Event::Escape), "Esc 被吃掉");
+    Check(!Has(FrameOf(win), "* 4242"), "回到实时流后仍未读标记");
+}
+
 void TestCommandPalette(edc::TUIWindow &win)
 {
     std::cout << "输入框补全弹层\n";
@@ -877,6 +929,7 @@ int main()
     TestUnknownMessageIgnored(win);
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
+    TestHistoryMarksTaskRead(win);
     TestCommandPalette(win);
     TestPaletteEnterPicks(win);
     TestHistoryRecallKeepsArrows(win);
