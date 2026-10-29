@@ -479,6 +479,13 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     if (db)
     {
         jobs = cJSON_GetObjectItem(db, "jobs");
+        /* A jobs.json can exist without the "jobs" key -- a truncated write, an older
+         * shape, or something the model wrote. cJSON_AddItemToArray() silently does
+         * nothing for a NULL array, so without this the new job would be dropped while
+         * the tool reported "Add job ... done": the user is told it was scheduled and it
+         * is nowhere. Create the array instead of trusting the key to be there. */
+        if (!jobs || !cJSON_IsArray(jobs))
+            jobs = cJSON_AddArrayToObject(db, "jobs");
     }
     else
     {
