@@ -1593,6 +1593,20 @@ cc_test(
 )
 
 cc_test(
+    name = "test_crontab_tool",
+    srcs = ["test_crontab_tool.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_crontab_service",
     srcs = ["test_crontab_service.c", "test_ws.h"],
     deps = [
