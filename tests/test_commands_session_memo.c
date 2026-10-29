@@ -25,6 +25,7 @@
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRIu64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,6 +110,32 @@ static sds seed_entry(struct edc_session *sess, const char *title, const char *s
         e->sources = strdup("group 675");
     }
     return id;
+}
+
+/* The compaction task currently running (system group, sink SESSION_MEMORY, COMPACT). */
+static struct edc_task *find_compact_task(struct edc_session *sess)
+{
+    struct edc_task_group *g = NULL;
+    DL_FOREACH(sess->groups, g)
+    {
+        struct edc_task *t = NULL;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t->sink == EDC_SINK_SESSION_MEMORY && t->memo_kind == EDC_MEMO_KIND_COMPACT &&
+                !edc_task_is_finished(t))
+                return t;
+        }
+    }
+    return NULL;
+}
+
+/* The compaction task's material (its input, message 0). Borrowed, not a copy. */
+static const char *compact_material(struct edc_task *t)
+{
+    if (!t || !t->active_turn || t->active_turn->msg_count <= 0)
+        return NULL;
+    cJSON *m = edc_turn_msg_at(t->active_turn, 0);
+    return cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
 }
 
 int main(void)
@@ -235,8 +262,22 @@ int main(void)
             material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
         }
         CHECK(material && strstr(material, "## Compact the session memory") != NULL, "压缩指令在材料里");
-        CHECK(material && strstr(material, "id: m1") != NULL && strstr(material, "rev: ") != NULL,
-              "全量 dump：每条的 id 与 rev 都在（update 要用）");
+        CHECK(material && strstr(material, "[m1]") != NULL && strstr(material, "rev ") != NULL,
+              "索引行：每条的 id 与 rev 都在（update 要用）");
+        /* 材料 = 索引，不是明细：细节由模型自己调 memory_get 取（这是压缩变小、变可恢复的前提） */
+        CHECK(material && strstr(material, "memory_get") != NULL, "材料声明：明细要靠 memory_get 自己取");
+        CHECK(material && strstr(material, "detail") == NULL, "材料里没有任何 detail 全文");
+        /* 全量索引：一次给完，不切片、不打窗口标记（跨条目的合并关系要全局视野才看得见） */
+        CHECK(material && strstr(material, "> [") == NULL, "没有窗口标记（全量索引，不切片）");
+        CHECK(material && strstr(material, "round") == NULL, "没有轮次概念（一次压缩就是一个任务）");
+        {
+            /* 每一条都在材料里：m1..mN 一个不落 */
+            size_t listed = 0;
+            /* 索引行以 "[mN]" 起头（行首），指令里的 "id / rev / ..." 不算 */
+            for (const char *p = material; (p = strstr(p, "\n[m")) != NULL; p += 3)
+                listed++;
+            CHECK(listed == sess->memo->entry_count, "全量索引：条目数 == 材料里的索引行数");
+        }
     }
     CHECK(strcmp(edc_session_memory_compact_prompt(), edc_session_memory_system_prompt()) != 0,
           "压缩有自己的系统提示词（与策展的不同）");
@@ -276,7 +317,41 @@ int main(void)
         CHECK(!holds, "压缩任务一结束就不再攥着它（边已 completed/cancelled，任务接着跑）");
     }
 
-    CHECK(!edc_session_memory_compact_due(sess), "同尺寸不会立刻再来一轮（要再长才触发）");
+    /* 防抖：这次压缩是在 201 条时起的（compact_at_entries），所以同一个尺寸不会再起一个。 */
+    CHECK(!edc_session_memory_compact_due(sess), "同尺寸不会立刻再来一次（要再长才触发）");
+
+    TEST("没有多轮/预算机制：一次压缩就是一个普通任务，靠常规工具循环读完写完");
+    {
+        /* 材料是全量索引 + summary，本身量不大，所以不需要分批、不需要轮次上限、不需要
+         * 单独请求预算 —— 这些宏都不该再存在。 */
+        struct edc_task *one = edc_session_memory_start_compact(sched, sess);
+        CHECK(one != NULL, "起了一个压缩任务");
+        const char *mat = compact_material(one);
+        CHECK(mat && strstr(mat, "round") == NULL, "材料里没有 round/episode 概念");
+        {
+            size_t listed = 0;
+            for (const char *p = mat; p && (p = strstr(p, "\n[m")) != NULL; p += 3)
+                listed++;
+            CHECK(mat && listed == sess->memo->entry_count, "全量索引一次给完（条目一个不落）");
+        }
+        /* 压缩任务自己动手（这里模拟改了 m1），结算后**不应**自动再起一个：
+         * 记忆尺寸没变，防抖说"再长才触发"。 */
+        struct edc_memo_entry *e1 = edc_session_memory_entry(sess->memo, "m1");
+        CHECK(edc_session_memory_update(sess->memo, "m1", NULL, "更短的摘要", NULL,
+                                        e1 ? e1->updated_seq : 0, NULL) == EDC_MEMO_WRITE_OK,
+              "压缩任务在它自己的循环里改了一条");
+        CHECK(edc_task_await_exec(one), "压缩任务被驱动");
+        CHECK(edc_task_mark_completed(one), "压缩任务完成");
+        {
+            struct edc_advance_result res;
+            memset(&res, 0, sizeof(res));
+            res.outcome = EDC_STEP_DONE;
+            res.changed = true;
+            res.settled = true;
+            edc_scheduler_apply_advance(sched, one, NULL, &res);
+        }
+        CHECK(find_compact_task(sess) == NULL, "结算后不会自动接着起下一个（没有多轮推进）");
+    }
 
     TEST("/session memo compact: 只压 session memory（材料里**没有** group memory）");
     g_llm_calls = 0;
@@ -304,7 +379,7 @@ int main(void)
             material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
         }
         CHECK(material && strstr(material, "## Compact the session memory") != NULL, "材料里是压缩指令");
-        CHECK(material && strstr(material, "id: m1") != NULL, "以及条目 dump（id/rev/内容）");
+        CHECK(material && strstr(material, "[m1]") != NULL, "以及条目索引（id / rev / title / summary）");
         CHECK(material && strstr(material, "### group") == NULL,
               "材料里**没有** group memory —— 压缩只动 session memory 自己");
     }

@@ -3,6 +3,7 @@
 #include "edc_config.h"
 #include "edc_exec_io.h"
 #include "edc_llm_error_kind.h"
+#include "edc_session_memory.h" /* EDC_MEMO_KIND_COMPACT: compaction gets its own failure text */
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "log.h"
@@ -22,7 +23,9 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
 }
 
 /* Read-only environment fact: max_iter is the run budget (it decides whether to
- * continue), so it stays on the advance path rather than behind a port. */
+ * continue), so it stays on the advance path rather than behind a port. A compaction task
+ * gets no budget of its own: its material is the index only, so the normal tool loop is all
+ * it needs. */
 static int exec_max_iter(const struct edc_executor *ex)
 {
     return (ex->config && ex->config->max_iter > 0) ? ex->config->max_iter : 0;
@@ -358,13 +361,21 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         /* A summary/curation that could not be finished. A FOLD keeps the old group
          * memory; a CURATION is tool-driven, so anything it already wrote through the
          * memory tools stays (there is no batch to roll back).
-         * docs/session-memory-write-path.md). */
+         * COMPACTION is the same shape: a truncated
+         * reply carries no tool calls, so only that reply's calls are lost -- the entries it
+         * already rewrote or deleted remain, and the task can simply be run again. */
         const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
+        const bool compact = (task->memo_kind == EDC_MEMO_KIND_COMPACT);
         log_error("%s: task %s did not finish cleanly (reason=%d) — stopped early",
                   curate ? "L2 memo" : "L1 fold", edc_id_str(task->task_id), (int)e->reason);
-        if (e->reason == EDC_REASON_LENGTH)
+        if (e->reason == EDC_REASON_LENGTH && compact)
+            notice = "Compaction was truncated (max_tokens) — it stopped early; the entries it already rewrote "
+                     "or deleted remain. Run it again to continue.";
+        else if (e->reason == EDC_REASON_LENGTH)
             notice = curate ? "Curation was truncated (max_tokens) — it stopped early; entries it already wrote remain"
                             : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
+        else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED && compact)
+            notice = "Compaction overflowed the model window — it stopped early; entries it already wrote remain.";
         else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
             notice = curate
                          ? "Curation overflowed the model window — it stopped early; entries it already wrote remain"

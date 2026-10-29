@@ -540,13 +540,17 @@ static bool edc_commands_handle_session_memo(struct edc_session_manager *sm, str
     }
     else if (strcmp(sub, "compact") == 0)
     {
-        /* COMPACTION shrinks the session memory and nothing else: merge / condense / drop / rebuild
-         * the index. Its material is the entries themselves -- no group memory is involved (see
-         * build_compact_prompt). Normally started by the entry cap; this runs one now. */
+        /* COMPACTION shrinks the session memory and nothing else: merge / condense / drop /
+         * rebuild the index. Its material is the whole entry INDEX -- no group memory, and no
+         * entry content either: the model calls memory_get for the ones it means to rewrite
+         * (see build_compact_prompt). The index is small by construction, so the ordinary tool
+         * loop is enough -- no rounds, no per-task request budget. Normally started by the
+         * entry cap; this starts one now. */
         struct edc_task *t = edc_session_memory_start_compact(sched, active);
         if (t)
             edc_commands_reply(to, "**Session memory** — compaction started (it only rewrites the session "
-                                   "entries: merge / condense / drop / rebuild the index).");
+                                   "entries: merge / condense / drop / rebuild the index; it reads the entries "
+                                   "it means to change itself).");
         else if (edc_scheduler_has_pending_system_task(active))
             edc_commands_reply(to, "**Session memory** — a system task is already running in this session; "
                                    "wait for it to finish.");

@@ -1361,6 +1361,34 @@ static bool mark_seen_task(int64_t task_id)
     return ok;
 }
 
+/* The memory's two tables need the same treatment as tasks and groups: the session memory
+ * removes rows in RAM only -- `edc_session_memory_delete` drops an entry for real and
+ * `edc_session_memory_trim_events` drops old events -- so without a seen-set the next load
+ * would resurrect them. (That was a real bug: the flush only ever inserted.) */
+static bool mark_seen_memo_entry(const char *entry_id)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO flush_seen_memo_entry(entry_id) VALUES(?)", -1, &st,
+                           NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, entry_id);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool mark_seen_memo_event(uint64_t seq)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO flush_seen_memo_event(seq) VALUES(?)", -1, &st, NULL) !=
+        SQLITE_OK)
+        return false;
+    bind_num(st, 1, (double)seq);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* Write one tracked-file list. |at| is the module's read-only accessor, so the caller does
  * not need to know how many entries there are beyond the count it passes. */
 static bool bind_fold_files(sqlite3 *db, int64_t session_id, int64_t group_id, const char *kind,
@@ -1427,8 +1455,10 @@ static bool delete_turns_from(int64_t task_id, int keep)
 }
 
 /* Everything that was in the database but is not in this snapshot. Runs LAST, inside the
- * transaction, and only inside the session being flushed. */
-static bool delete_stale(int64_t session_id)
+ * transaction, and only inside the session being flushed. `memo_flushed` gates the memory
+ * tables: without a memory in hand their seen-sets are empty, and "not seen" would then mean
+ * "delete everything" instead of "nothing was checked". */
+static bool delete_stale(int64_t session_id, bool memo_flushed)
 {
     /* Tasks and groups removed from the session. Cascades clean their turns/messages. */
     sqlite3_stmt *st = NULL;
@@ -1447,6 +1477,32 @@ static bool delete_stale(int64_t session_id)
     if (sqlite3_prepare_v2(g_db,
                            "DELETE FROM groups WHERE session_id=? AND group_id NOT IN "
                            "(SELECT group_id FROM flush_seen_group)",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok || !memo_flushed)
+        return ok;
+
+    /* The memory's two tables: an entry deleted for real and an event trimmed away leave the
+     * RAM tables but, without this, stayed in the database and came back on the next load. */
+    st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "DELETE FROM memo_entries WHERE session_id=? AND entry_id NOT IN "
+                           "(SELECT entry_id FROM flush_seen_memo_entry)",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+
+    st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "DELETE FROM memo_events WHERE session_id=? AND seq NOT IN "
+                           "(SELECT seq FROM flush_seen_memo_event)",
                            -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
@@ -1562,6 +1618,8 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         sqlite3_finalize(st);
         if (!ok)
             return false;
+        if (!mark_seen_memo_event(e->seq))
+            return false;
     }
 
     for (size_t i = 0; i < memo->entry_count; i++)
@@ -1589,6 +1647,8 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
         if (!ok)
+            return false;
+        if (!mark_seen_memo_entry(e->id))
             return false;
     }
     return true;
@@ -1659,8 +1719,12 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
         if (!exec_sql(g_db,
                       "CREATE TEMP TABLE IF NOT EXISTS flush_seen_group(group_id INTEGER PRIMARY KEY);"
                       "CREATE TEMP TABLE IF NOT EXISTS flush_seen_task(task_id INTEGER PRIMARY KEY);"
+                      "CREATE TEMP TABLE IF NOT EXISTS flush_seen_memo_entry(entry_id TEXT PRIMARY KEY);"
+                      "CREATE TEMP TABLE IF NOT EXISTS flush_seen_memo_event(seq INTEGER PRIMARY KEY);"
                       "DELETE FROM flush_seen_group;"
-                      "DELETE FROM flush_seen_task;",
+                      "DELETE FROM flush_seen_task;"
+                      "DELETE FROM flush_seen_memo_entry;"
+                      "DELETE FROM flush_seen_memo_event;",
                       "flush seen-sets"))
             goto rollback;
     }
@@ -1722,10 +1786,11 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
         }
     }
 
+    const bool memo_flushed = (session->memo != NULL);
     if (!flush_memo(g_db, session_id, session->memo))
         goto rollback;
 
-    if (!delete_stale(session_id))
+    if (!delete_stale(session_id, memo_flushed))
         goto rollback;
 
     if (!exec_sql(g_db, "COMMIT", "flush COMMIT"))

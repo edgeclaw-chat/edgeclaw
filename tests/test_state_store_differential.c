@@ -517,6 +517,77 @@ static void test_normalization(void)
     edc_scheduler_free(sched);
 }
 
+/* ── The memory's removals must reach the database ──────────────────────────
+ * `memory_delete` drops an entry FOR REAL and `trim_events` drops old events, but both do it
+ * in RAM. The flush used to be insert-only, so a deleted entry came back on the next load --
+ * a compaction could delete 30 entries, restart, and find every one of them again. */
+static void test_memo_removals_persist(void)
+{
+    printf("\n── deleted entries and trimmed events stay gone after a reload ──\n");
+
+    struct edc_config *cfg = g_new0(struct edc_config, 1);
+    cfg->workspace = sdsnew(g_dir);
+
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-memo-del"), "MemoDelete");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_sessions(sched, s);
+
+    /* three entries, each with its CREATED event */
+    const char *ids[3] = {NULL, NULL, NULL};
+    const char *titles[3] = {"A 标题", "B 标题", "C 标题"};
+    for (int i = 0; i < 3; i++)
+    {
+        const char *id = ids[i] = edc_session_memory_create_entry(s->memo, titles[i], "摘要", "明细正文", "task-1");
+        uint64_t seq = edc_session_memory_add_event(s->memo, id, EDC_MEMO_CREATED, titles[i], "摘要");
+        struct edc_memo_entry *e = edc_session_memory_entry(s->memo, id);
+        if (e)
+            e->created_seq = e->updated_seq = seq;
+    }
+    CHECK(s->memo && s->memo->entry_count == 3, "三个条目");
+    CHECK(edc_state_store_flush(s, sched), "第一次 flush（三条都落盘）");
+
+    /* now remove one for real -- that must reach the database, not just RAM */
+    const char *drop = ids[1];
+    CHECK(edc_session_memory_delete(s->memo, &drop, 1), "真删 m2");
+    CHECK(s->memo && s->memo->entry_count == 2, "内存里剩两条");
+
+    /* and let the real trim run, so old events leave RAM too */
+    const size_t events_before = s->memo ? s->memo->event_count : 0;
+    {
+        /* Shrink the log by hand so the trim actually has something to drop: the public trim
+         * keeps KEEP_EVENTS, which is more than this fixture ever writes. */
+        while (s->memo && s->memo->event_count > 1)
+        {
+            if (s->memo->events[0].seq > s->memo->pruned_before)
+                s->memo->pruned_before = s->memo->events[0].seq;
+            memmove(&s->memo->events[0], &s->memo->events[1],
+                    (s->memo->event_count - 1) * sizeof(*s->memo->events));
+            s->memo->event_count--;
+        }
+    }
+    CHECK(events_before > 1 && s->memo && s->memo->event_count == 1, "内存里只剩最新 1 条事件");
+    CHECK(edc_state_store_flush(s, sched), "第二次 flush（删除 + 裁剪都要落盘）");
+
+    /* reload into a fresh object -- what a restart does */
+    struct edc_session *back = edc_session_new(cfg, edc_test_session_id("s-memo-del"), "MemoDelete");
+    struct edc_scheduler *bsched = edc_scheduler_new(cfg);
+    install_sessions(bsched, back);
+    CHECK(edc_state_store_load(back, bsched), "重启后 load");
+
+    CHECK(back->memo && back->memo->entry_count == 2, "条目数还是 2（被删的没复活）");
+    CHECK(back->memo && edc_session_memory_entry(back->memo, drop) == NULL, "被删的 m2 读不到");
+    CHECK(back->memo && edc_session_memory_entry(back->memo, ids[0]) != NULL, "m1 还在");
+    CHECK(back->memo && edc_session_memory_entry(back->memo, ids[2]) != NULL, "m3 还在");
+    CHECK(back->memo && back->memo->event_count == 1, "事件表也跟着裁剪（旧事件没复活）");
+    CHECK(back->memo && back->memo->pruned_before > 0, "pruned_before 跟着回来");
+
+    edc_session_free(back);
+    edc_scheduler_free(bsched);
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 /* ── New session: no rows, not an error ──────────────────────────────────── */
 static void test_absent_session(void)
 {
@@ -585,6 +656,7 @@ int main(void)
 
     test_roundtrip();
     test_flush_is_idempotent();
+    test_memo_removals_persist();
     test_normalization();
     test_absent_session();
     test_forget_and_lookup();

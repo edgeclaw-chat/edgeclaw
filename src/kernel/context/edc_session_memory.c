@@ -502,19 +502,37 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
 /* Curation instruction: same family as the fold instruction -- the system section of
  * a self-contained request, constant text (so the L2 call's prefix is stable). The
  * output contract is the six-section summary. */
-/* ── Compaction task: an LLM round whose only job is to make the memory smaller ──
+/* ── Compaction task: an LLM task whose only job is to make the memory smaller ──
  *
  * Same nature as the fold task: a system task (sink SESSION_MEMORY, its own turn, tools =
  * the memory tools) started when the entry table outgrows its cap, prompted to merge /
  * condense / drop and rebuild the index. It has to be told apart from the CURATION task,
  * which shares its sink and tools, so it carries its own system prompt (the request picks
- * it by task->memo_kind, see edc_llm_request.c). */
+ * it by task->memo_kind, see edc_llm_request.c).
+ *
+ * The task does NOT see the memory's content: its material is the WHOLE INDEX (id / rev /
+ * updated / title / summary) and it calls memory_get for whatever it means to rewrite. Two
+ * reasons, both learned the hard way:
+ *   1. the dump was unbounded -- entry detail has no length cap, so the material grew with
+ *      the memory, and every request carried the details the model had just written;
+ *   2. asking ONE RESPONSE to rewrite the whole table hit max_tokens, and a `length`
+ *      response carries no tool calls: nothing landed at all (see edc_executor.c).
+ * So: the whole index in (only the full picture shows that two far-apart entries are the
+ * same subject), detail on demand, short replies, as many tool turns as it needs. The index
+ * is small by construction, so no slicing and no budget of its own is called for. */
 
 static const char kCompactSystemPrompt[] =
     "You are compacting this session's shared memory. Nobody is waiting on a conversation: "
     "your only job is to make the memory SMALLER while keeping what is durable.\n"
     "\n"
-    "The whole memory is in this turn. You may:\n"
+    "You get the INDEX, not the content: each line carries id / rev / updated / title / summary. "
+    "Call memory_get on an entry BEFORE you rewrite or delete it -- never guess or invent what "
+    "an entry says. Others rewrote entries too, so read before you touch.\n"
+    "\n"
+    "The whole index is in this turn. Judge globally with it: entries whose\n"
+    "subjects overlap belong together even when they sit far apart in the list.\n"
+    "\n"
+    "You may:\n"
     "- MERGE entries that belong together into one: memory_update the survivor with the union, "
     "then memory_delete the entries it absorbed.\n"
     "- CONDENSE a verbose entry into its decision plus the reason, dropping narration, "
@@ -528,49 +546,120 @@ static const char kCompactSystemPrompt[] =
     "external fact the next session would need must survive somewhere.\n"
     "- Keep what cannot be recovered otherwise: paths, commands, error text, numbers.\n"
     "- When two entries cover the same thing, keep the content of the one updated LATER "
-    "(the dump shows each entry's `updated`); if you cannot tell, keep both and note it.\n"
-    "- Nothing about this round belongs in the memory: do not write an entry saying you "
+    "(the index shows each entry's `updated`); if you cannot tell, keep both and note it.\n"
+    "- Nothing about this task belongs in the memory: do not write an entry saying you "
     "compacted it.\n"
     "- Do not invent facts. If two entries disagree and you cannot tell which is right, keep "
     "both and say so in the summary.\n"
     "\n"
-    "Goal: the entry count back under the cap, and the memory materially smaller.\n";
+    "One response must stay short: one line of text, with the tool calls carrying the changes.\n"
+    "A long reply gets cut at max_tokens, and a cut reply loses the tool calls in it. Work\n"
+    "through the index with as many short turns as you need, and answer DONE on a single line\n"
+    "when the memory is under the cap.\n";
 
 const char *edc_session_memory_compact_prompt(void)
 {
     return kCompactSystemPrompt;
 }
 
-/* The material: every entry, with the fields a rewrite needs (id, rev, title, summary,
- * detail). The curator's prompt embeds group memories; this one embeds the memory itself,
- * because compacting needs nothing from the outside world. */
+/* Summary shown per index line in the compaction material. Long enough to recognize the
+ * entry, short enough that a full table stays cheap; the model fetches the rest. */
+#define COMPACT_SUMMARY_MAX 240
+
+static void compact_append_clipped(sds *out, const char *text, size_t max)
+{
+    if (!text || !text[0])
+        return;
+    size_t n = strlen(text);
+    if (n <= max)
+    {
+        *out = sdscat(*out, text);
+        return;
+    }
+    /* Cut on a UTF-8 boundary: the prompts are full of Chinese, and a split codepoint
+     * would be shipped to the provider as a replacement char. */
+    size_t cut = max;
+    while (cut > 0 && ((unsigned char)text[cut] & 0xc0) == 0x80)
+        cut--;
+    sds head = sdsnewlen(text, cut);
+    *out = sdscatprintf(*out, "%s…", head);
+    sdsfree(head);
+}
+
+/* Stalest first (an entry nobody has touched for a while is the likelier merge / condense /
+ * drop candidate, and it is the ordering a reader can act on top-to-bottom). Fills *out with
+ * indices into m->entries (caller frees); returns the count. */
+static size_t compact_order(const struct edc_session_memory *m, size_t **out)
+{
+    *out = NULL;
+    if (!m || m->entry_count == 0)
+        return 0;
+    size_t *idx = malloc(m->entry_count * sizeof(*idx));
+    if (!idx)
+        return 0;
+    size_t k = 0;
+    for (size_t i = 0; i < m->entry_count; i++)
+    {
+        const struct edc_memo_entry *e = &m->entries[i];
+        const uint64_t rev = e->updated_seq ? e->updated_seq : e->created_seq;
+        size_t j = k++;
+        while (j > 0)
+        {
+            const struct edc_memo_entry *p = &m->entries[idx[j - 1]];
+            const uint64_t prev = p->updated_seq ? p->updated_seq : p->created_seq;
+            /* Ties broken by id so the order is deterministic across runs. */
+            if (prev < rev || (prev == rev && entry_id_num(p->id) <= entry_id_num(e->id)))
+                break;
+            idx[j] = idx[j - 1];
+            j--;
+        }
+        idx[j] = i;
+    }
+    *out = idx;
+    return k;
+}
+
+/* The material: the instruction plus the WHOLE index (id / rev / updated / title / summary,
+ * stalest first). No entry content: the model calls memory_get for what it means to rewrite
+ * (the compaction system prompt says so). The full index -- never a slice -- is what lets it
+ * see that two far-apart entries are the same subject, and it is small by construction. */
 static sds build_compact_prompt(struct edc_session *session)
 {
     struct edc_session_memory *m = session ? session->memo : NULL;
     sds out = sdscatprintf(sdsempty(),
                            "## Compact the session memory\n"
                            "It holds %zu entries; the cap is %d. Bring it back under the cap and make it\n"
-                           "smaller. Every entry follows (id / rev / title / summary / detail); use\n"
-                           "memory_update (with the rev as expected_rev) and memory_delete.\n",
+                           "smaller. The material is the INDEX only: id / rev / updated / title / summary,\n"
+                           "no content. Call memory_get for any entry you rewrite or delete, and pass the\n"
+                           "`rev` below as expected_rev to memory_update.\n"
+                           "\n"
+                           "The whole index is below, so judge globally: entries whose subjects overlap\n"
+                           "belong together even when they are far apart in the list. Work in short turns --\n"
+                           "read a few, write a few, repeat -- and stop when it is under the cap.\n"
+                           "\n"
+                           "## Index (stalest first)\n",
                            m ? m->entry_count : (size_t)0, EDC_SESSION_MEMORY_COMPACT_ENTRIES);
     if (!m || m->entry_count == 0)
         return out;
 
-    /* Ids are handed out in ascending order and a delete keeps the array in order, so the
-     * dump reads in the same order as memory_list. */
-    for (size_t i = 0; i < m->entry_count; i++)
+    size_t *idx = NULL;
+    const size_t n = compact_order(m, &idx);
+    for (size_t i = 0; i < n; i++)
     {
-        const struct edc_memo_entry *e = &m->entries[i];
+        const struct edc_memo_entry *e = &m->entries[idx[i]];
         sds when = edc_datetime_format_min((time_t)(e->updated_at ? e->updated_at : e->created_at));
-        out = sdscatprintf(out, "\n- id: %s  rev: %" PRIu64 "  updated: %s%s\n", e->id, e->updated_seq,
-                           when, e->superseded ? "  (retired)" : "");
-        sdsfree(when);
-        out = sdscatprintf(out, "  title: %s\n", e->title ? e->title : "(untitled)");
+        out = sdscatprintf(out, "[%s]%s rev %" PRIu64 " — %s", e->id ? e->id : "?",
+                           (e->superseded ? " (retired)" : ""), e->updated_seq,
+                           e->title ? e->title : "(untitled)");
         if (e->summary && e->summary[0])
-            out = sdscatprintf(out, "  summary: %s\n", e->summary);
-        if (e->detail && sdslen(e->detail) > 0)
-            out = sdscatprintf(out, "  detail: %s\n", e->detail);
+        {
+            out = sdscat(out, " — ");
+            compact_append_clipped(&out, e->summary, COMPACT_SUMMARY_MAX);
+        }
+        out = sdscatprintf(out, " (%s)\n", when);
+        sdsfree(when);
     }
+    free(idx);
     return out;
 }
 
@@ -579,7 +668,7 @@ int edc_session_memory_hold_task(struct edc_task *task)
     if (!task || !task->group || !task->group->session)
         return 0;
     if (edc_task_is_memory_sink(task))
-        return 0; /* the round itself is never held (a finished task is NOT skipped -- see
+        return 0; /* the compaction itself is never held (a finished task is NOT skipped -- see
                    * edc_group_fold_hold_task: the resume door hands us those) */
 
     struct edc_task_group *sys = edc_session_find_system_group(task->group->session);
@@ -603,8 +692,8 @@ bool edc_session_memory_compact_due(struct edc_session *session)
     if (!session || !session->memo)
         return false;
     const struct edc_session_memory *m = session->memo;
-    /* Over the cap, and it has GROWN since the last round was started: a round that could
-     * not get under the cap must not immediately start another one. */
+    /* Over the cap, and it has GROWN since the last compaction was started: a compaction
+     * that could not get under the cap must not immediately start another one. */
     if (m->entry_count <= EDC_SESSION_MEMORY_COMPACT_ENTRIES || m->entry_count <= m->compact_at_entries)
         return false;
     /* One system task per session at a time (the same gate the fold uses). */
@@ -618,6 +707,7 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
     if (edc_scheduler_has_pending_system_task(session))
         return NULL; /* one at a time */
 
+    struct edc_session_memory *m = session->memo;
     sds prompt = build_compact_prompt(session);
     struct edc_task *task =
         edc_scheduler_spawn_system_task_as(sched, session, "compact session memory", EDC_SINK_SESSION_MEMORY);
@@ -629,13 +719,13 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
     /* Same sink as curation, different prompt: this is what tells the two apart. */
     task->memo_kind = EDC_MEMO_KIND_COMPACT;
 
-    /* Barrier over the WHOLE session: every task that is still going waits for this round, so
+    /* Barrier over the WHOLE session: every task that is still going waits for this compaction, so
      * the memory is not rewritten underneath a task that is mid-flight, and they pick up
      * afterwards. Same shape as the fold's barrier -- and the same safety property: a
-     * TASK_DEP_BARRIER is released by its source ending EITHER way, so a compaction round that
+     * TASK_DEP_BARRIER is released by its source ending EITHER way, so a compaction that
      * dies (or is cancelled) releases the tasks it was holding instead of taking them with it.
      *
-     * What "waits" means concretely: a task that is between rounds (about to send its next
+     * What "waits" means concretely: a task that is between LLM rounds (about to send its next
      * request) parks at AWAIT_DEPS and is woken by the release; one whose LLM call is already
      * in flight finishes that call -- the fold behaves the same way, and it is the request
      * boundary that is the safe point, not the middle of a round. */
@@ -659,12 +749,15 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
         sdsfree(prompt);
         return NULL;
     }
+    const size_t material_len = sdslen(prompt);
+    const int64_t material_tokens = edc_token_estimate_text(prompt);
     sdsfree(prompt);
-    /* Remember the size we tried at, so a round that cannot shrink below the cap does not
-     * start another one until the memory grows again. */
-    session->memo->compact_at_entries = session->memo->entry_count;
-    log_info("L2 memo compact start: session=%s task=%s entries=%zu", edc_id_str(session->session_id), edc_id_str(task->task_id),
-             session->memo->entry_count);
+    /* Remember the size we tried at, so a compaction that cannot shrink below the cap does
+     * not start another one until the memory grows again. */
+    m->compact_at_entries = m->entry_count;
+    log_info("L2 memo compact start: session=%s task=%s entries=%zu cap=%d material=%zuB(~%" PRId64 " tok)",
+             edc_id_str(session->session_id), edc_id_str(task->task_id), m->entry_count,
+             EDC_SESSION_MEMORY_COMPACT_ENTRIES, material_len, material_tokens);
     return task;
 }
 

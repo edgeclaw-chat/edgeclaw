@@ -90,9 +90,9 @@ struct edc_session_memory
     uint64_t next_entry_id; /* next entry number (id = "m<n>", never reused) */
     uint64_t pruned_before; /* events with seq <= this are gone (advanced by trim_events) */
     int fail_count;         /* consecutive failures, in-memory only */
-    /* The entry count the last compaction round was started at. A round that could not get
-     * under the cap must not start another one right away: the trigger only fires again once
-     * the memory GROWS past this. In-memory only (a restart may retry once). */
+    /* The entry count the last compaction task was started at. A compaction that could not
+     * get under the cap must not immediately start another one: the trigger only fires again
+     * once the memory GROWS past this. In-memory only (a restart may retry once). */
     size_t compact_at_entries;
 };
 
@@ -121,6 +121,25 @@ extern enum edc_memo_event_kind edc_memo_event_classify_kind(const char *name);
  * so the entry count and the total volume come back down. A trigger, not a wall: writes
  * are never refused. */
 #define EDC_SESSION_MEMORY_COMPACT_ENTRIES EDC_SESSION_MEMORY_MAX_ENTRIES
+
+/* ── Compaction's material: the whole index, never a slice ────
+ * The task's material is the INDEX only (id / rev / updated / title / summary, never the
+ * detail): the model calls `memory_get` for the entries it actually intends to rewrite, so
+ * the request stays small however long the entries are.
+ *
+ * The index is given WHOLE, every time: it is cheap by construction (one line per entry, the
+ * summary clipped at COMPACT_SUMMARY_MAX), and only the whole picture shows that m7 and m148
+ * are the same subject and belong together. Slicing it would hide exactly the cross-entry
+ * relations compaction exists to find -- shrinking the material was never the point, the
+ * index+summary IS the small thing.
+ *
+ * Because the material is small, one ordinary task suffices: the normal tool loop lets it
+ * read and write as many entries as it needs, in as many turns as it needs, and each
+ * response stays short (a few tool calls, one line of text). What used to break compaction
+ * was asking ONE RESPONSE to rewrite the whole table: that hit max_tokens, and a truncated
+ * response carries no tool calls, so nothing landed at all (see edc_executor.c). Nothing
+ * here needs its own round/iteration budget -- config `max_iter` governs, as for any task.
+ */
 
 extern struct edc_session_memory *edc_session_memory_new(void);
 extern void edc_session_memory_free(struct edc_session_memory *m);
@@ -257,25 +276,25 @@ extern bool edc_session_memory_delete(struct edc_session_memory *m, const char *
  * for a forced run. (The entry TABLE is bounded by the compaction task, not by this.) */
 extern size_t edc_session_memory_trim_events(struct edc_session_memory *m);
 
-/* ── Compaction task: an LLM round that shrinks the memory ──── */
+/* ── Compaction task: one LLM task that shrinks the memory ──── */
 
-/* True when this session's memory has outgrown its entry cap and no compaction round is in
- * flight, so the host should start one. "In flight" is the session's system task (one at a
- * time, the same gate the fold uses); the memory itself remembers the count it was last
- * compacted at, so a round that could not get under the cap does not immediately start
- * another one (the trigger only fires again once the memory GROWS again). */
+/* True when this session's memory has outgrown its entry cap and no system task is in
+ * flight, so the host should start a compaction. Read-only. "In flight" is the session's
+ * system task (one at a time, the same gate the fold uses); the memory remembers the count
+ * it was last started at, so a compaction that could not get under the cap does not
+ * immediately start another one (the trigger only fires again once the memory GROWS). */
 extern bool edc_session_memory_compact_due(struct edc_session *session);
 
-/* Attach |task| to a compaction round in flight for its session (the same TASK_DEP_BARRIER
- * the round's start sweeps over the tasks that already exist). Returns how many edges were
- * added (0 = no round in flight). Called at the same two doors as
+/* Attach |task| to a compaction in flight for its session (the same TASK_DEP_BARRIER the
+ * start sweeps over the tasks that already exist). Returns how many edges were added
+ * (0 = no compaction in flight). Called at the same two doors as
  * edc_group_fold_hold_task -- creation and resume. */
 extern int edc_session_memory_hold_task(struct edc_task *task);
 
-/* Start the compaction round: a system task (sink SESSION_MEMORY, its own turn) holding the
- * whole memory as its material and the agent's compaction instructions. Returns the task
- * (NULL when refused: no session/memo, or a system task is already in flight).
- * The caller persists. */
+/* Start a compaction: a system task (sink SESSION_MEMORY, its own turn) whose
+ * material is the WHOLE entry index (no detail) and the compaction instructions.
+ * Returns the task (NULL when refused: no session/memo, or a system task is already in
+ * flight). The caller persists. */
 extern struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, struct edc_session *session);
 
 /* Manual curation (`/session memo compact [focus]`): run once now, no waiting for

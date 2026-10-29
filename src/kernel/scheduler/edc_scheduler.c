@@ -1525,10 +1525,11 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
     }
 
     /* (6) L2 hygiene, asked at the same boundary: once a session's memory outgrows its entry
-     * cap, start a compaction round. The decision is a fact about the data (entry_count vs
-     * the cap, and whether it grew since the last round), so no write path had to set a flag
-     * for it -- the same shape as the fold check above, and gated the same way (one system
-     * task per session at a time). */
+     * cap, start a compaction task -- it is given the WHOLE entry index (no detail) and works
+     * through it in the ordinary tool loop (see edc_session_memory.h). The decision is a fact
+     * about the data (entry_count vs the cap, and whether it grew since the last start), so no
+     * write path had to set a flag for it -- the same shape as the fold check above, and gated
+     * the same way (one system task per session at a time). */
     {
         struct edc_session *own = edc_task_session(task);
         if (own && edc_session_memory_compact_due(own))
