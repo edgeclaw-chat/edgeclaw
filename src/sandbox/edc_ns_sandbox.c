@@ -5,6 +5,7 @@
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <sched.h>
 #include <stdio.h>
