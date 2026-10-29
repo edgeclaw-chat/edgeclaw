@@ -493,6 +493,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_state_probe",
+    srcs = ["test_state_probe.c"],
+    deps = [
+        "//src/common:common",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_commands_session_new",
     srcs = ["test_commands_session_new.c", "test_ws.h"],
     deps = [

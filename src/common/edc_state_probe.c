@@ -256,7 +256,7 @@ static void probe_print_row(FILE *out, struct probe_bucket *b)
 
     const double mean = b->count ? (double)b->total_ns / (double)b->count / 1e6 : 0.0;
 
-    fprintf(out, "%-5s %-22s n=%-6llu mean=%9.2fms p50=%8.2fms p95=%8.2fms max=%9.2fms",
+    fprintf(out, "%-5s %-22s n=%-6" PRIu64 " mean=%9.2fms p50=%8.2fms p95=%8.2fms max=%9.2fms",
             b->kind, b->tag, (uint64_t)b->count, mean,
             probe_pct(sorted, b->n_samples, 0.50), probe_pct(sorted, b->n_samples, 0.95),
             (double)b->max_ns / 1e6);
