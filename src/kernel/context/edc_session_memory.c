@@ -158,9 +158,16 @@ static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_
  * to read or write these tables calls these rather than touching the arrays. */
 struct edc_memo_event *edc_session_memory_restore_event(struct edc_session_memory *m, uint64_t seq, uint64_t ts,
                                                        const char *entry_id, const char *kind_name,
-                                                       const char *title, const char *summary)
+                                                       const char *title, const char *summary, uint32_t changed)
 {
-    return append_event(m, seq, ts, entry_id, edc_memo_event_classify_kind(kind_name), title, summary);
+    struct edc_memo_event *e =
+        append_event(m, seq, ts, entry_id, edc_memo_event_classify_kind(kind_name), title, summary);
+    /* Restored verbatim: the mask describes a change that already happened, and
+     * re-deriving it from current content is impossible (the old value is gone). 0 keeps
+     * its "unknown" meaning for rows written before v8. */
+    if (e)
+        e->changed = changed;
+    return e;
 }
 
 struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
@@ -273,6 +280,101 @@ static sds index_line_for(const struct edc_memo_entry *e)
     line = sdscatprintf(line, " (%s)", when);
     sdsfree(when);
     return line;
+}
+
+/* ── Baseline catalogue: the OTHER channel (see edc_session_memory_catalogue) ──
+ *
+ * Two channels, two jobs, deliberately different formats:
+ *   catalogue (this)  -- "what exists": once per task, cheapest possible row
+ *   notice            -- "what changed": per change, priced row with kind + summary
+ *
+ * Sharing ONE renderer was the original mistake: the notice was spending ~122 tok per
+ * line (measured) to deliver what a reader only browses -- while the same money would
+ * have bought the whole catalogue (≈33 tok per line).
+ *
+ * The catalogue row carries id + title ONLY (no summary, no timestamp, no kind). That is
+ * a deliberate CONSTRAINT, not an oversight: the catalogue's job is "which of these is
+ * worth fetching", and the fetch is memory_get (≈1079 tok). Adding summaries would
+ * quadruple the catalogue (measured: 5597 → 1376 tok for 37 entries) to save decisions
+ * that the next call makes better anyway.
+ *
+ * `index_line_for()` must NOT be changed to do this: it is shared by memory_list /
+ * memory_search / the L2 curation and compaction materials / `/session memo`, and the
+ * curators compare summaries to spot entries that belong together. */
+static sds catalogue_line_for(const struct edc_memo_entry *e)
+{
+    return sdscatprintf(sdsempty(), "- [%s]%s %s", e->id ? e->id : "?",
+                        (e->superseded ? " (retired)" : ""), e->title ? e->title : "(untitled)");
+}
+
+static int memo_entry_cmp_id(const void *pa, const void *pb)
+{
+    const struct edc_memo_entry *a = *(const struct edc_memo_entry *const *)pa;
+    const struct edc_memo_entry *b = *(const struct edc_memo_entry *const *)pb;
+    const uint64_t na = entry_id_num(a->id), nb = entry_id_num(b->id);
+    if (na < nb)
+        return -1;
+    return na > nb ? 1 : 0;
+}
+
+/* The catalogue card for a task that has never received one. `token_budget` bounds the
+ * row count by PRICE, not by count: rows differ in length, so a fixed cap would either
+ * waste budget on short titles or blow it on long ones.
+ *
+ * Ordering is id-ascending ON PURPOSE -- identical to memory_list, so `memory_list offset
+ * n` continues exactly where the catalogue stopped. That is what makes the "… N more"
+ * tail a HANDOFF rather than a dead end.
+ *
+ * Rendered from `entries[]` (live entries), never from the event table: the event table
+ * keeps DELETED tombstones, so listing from it once produced `共 37 条` above `… 70 more`
+ * (10 + 70 ≠ 37) -- 43 of those "entries" no longer existed.
+ *
+ * NULL when there is nothing to say (no entries at all): the caller then injects nothing. */
+sds edc_session_memory_catalogue(const struct edc_session_memory *m, size_t token_budget)
+{
+    if (!m || m->entry_count == 0)
+        return NULL;
+
+    struct edc_memo_entry **sorted = malloc(m->entry_count * sizeof(*sorted));
+    if (!sorted)
+        return NULL;
+    for (size_t i = 0; i < m->entry_count; i++)
+        sorted[i] = &m->entries[i];
+    qsort(sorted, m->entry_count, sizeof(*sorted), memo_entry_cmp_id);
+
+    sds body = sdsempty();
+    int64_t spent = 0;
+    size_t shown = 0;
+    for (size_t i = 0; i < m->entry_count; i++)
+    {
+        sds line = catalogue_line_for(sorted[i]);
+        const int64_t cost = edc_token_estimate_text(line);
+        /* Always show at least one row, even if a single title exceeds the budget: a card
+         * that says "N entries" and lists none tells the reader nothing it can act on. */
+        if (shown > 0 && spent + cost > (int64_t)token_budget)
+        {
+            sdsfree(line);
+            break;
+        }
+        if (sdslen(body))
+            body = sdscat(body, "\n");
+        body = sdscatsds(body, line);
+        sdsfree(line);
+        spent += cost;
+        shown++;
+    }
+    free(sorted);
+
+    sds out = sdscatprintf(sdsempty(), "## Session Memory  (共 %zu 条)\n", m->entry_count);
+    out = sdscatsds(out, body);
+    sdsfree(body);
+    if (shown < m->entry_count)
+        out = sdscatprintf(out, "\n… %zu more（memory_list %zu 50 接着看）", m->entry_count - shown, shown);
+    out = sdscat(out,
+                 "\n\nThis is the INDEX only (id + title): no summary, no detail. Fetch an entry with "
+                 "memory_get <id> before relying on it; search with memory_search <patterns>.");
+
+    return out;
 }
 
 sds edc_session_memory_index_lines(const struct edc_session_memory *m, size_t offset, size_t n, size_t *out_total)
@@ -476,6 +578,127 @@ sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char
     return NULL;
 }
 
+/* ── summary ⊆ detail: the fact-coverage invariant (see the header) ── */
+
+static bool memo_hex_lower(int c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+static bool memo_word_char(int c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+/* Specification vocabulary, not facts: the memory tools and the field names they take. A
+ * summary saying "use memory_search" or "pass expected_rev" is describing how to work, not
+ * naming something the detail has to resolve. Kept deliberately tiny -- every name here is
+ * a hole in the check. */
+static bool memo_is_spec_name(const char *s, size_t len)
+{
+    static const char *const kNames[] = {
+        "memory_search", "memory_list", "memory_get", "memory_update", "memory_supersede", "memory_write",
+        "memory_delete", "expected_rev", "entry_id", "created_seq", "updated_seq", "session_id", NULL,
+    };
+    for (size_t i = 0; kNames[i]; i++)
+        if (strlen(kNames[i]) == len && strncmp(kNames[i], s, len) == 0)
+            return true;
+    return false;
+}
+
+/* One fact, checked against the detail: present => nothing to report. */
+static void memo_check_fact(sds *rep, size_t *missing, const char *detail, const char *fact, size_t len)
+{
+    if (len == 0 || len >= 64)
+        return;
+    char buf[64];
+    memcpy(buf, fact, len);
+    buf[len] = '\0';
+    if (detail && strstr(detail, buf))
+        return;
+    (*missing)++;
+    if (rep)
+    {
+        if (sdslen(*rep))
+            *rep = sdscat(*rep, ", ");
+        *rep = sdscatprintf(*rep, "`%s`", buf);
+    }
+}
+
+size_t edc_session_memory_uncovered_facts(const char *summary, const char *detail, sds *out_report)
+{
+    if (out_report)
+        *out_report = NULL;
+    if (!summary || !summary[0] || !detail || !detail[0])
+        return 0;
+
+    sds rep = sdsempty();
+    size_t missing = 0;
+    const size_t n = strlen(summary);
+
+    /* 1) commit ids: a run of [0-9a-f] 7..40 long that carries at least one a-f LETTER. The
+     * letter requirement is what keeps dates (`20251230`) and byte counts out -- they are
+     * all-digit runs, and treating them as commit ids would make the check useless. */
+    for (size_t i = 0; i < n;)
+    {
+        if (!memo_hex_lower((unsigned char)summary[i]) || (i > 0 && memo_word_char((unsigned char)summary[i - 1])))
+        {
+            i++;
+            continue;
+        }
+        size_t j = i;
+        while (j < n && memo_hex_lower((unsigned char)summary[j]))
+            j++;
+        if (j < n && memo_word_char((unsigned char)summary[j]))
+        {
+            i = j;
+            continue;
+        }
+        const size_t len = j - i;
+        if (len >= 7 && len <= 40)
+        {
+            bool has_letter = false;
+            for (size_t k = i; k < j; k++)
+                if (summary[k] >= 'a' && summary[k] <= 'f')
+                    has_letter = true;
+            if (has_letter)
+                memo_check_fact(&rep, &missing, detail, summary + i, len);
+        }
+        i = j;
+    }
+
+    /* 2) snake_case identifiers: function / column / table names, equally unrewritable. */
+    for (size_t i = 0; i < n;)
+    {
+        const char c = summary[i];
+        if (!((c >= 'a' && c <= 'z') || c == '_') || (i > 0 && memo_word_char((unsigned char)summary[i - 1])))
+        {
+            i++;
+            continue;
+        }
+        size_t j = i;
+        while (j < n && memo_word_char((unsigned char)summary[j]))
+            j++;
+        const size_t len = j - i;
+        if (len >= 3)
+        {
+            bool has_us = false;
+            for (size_t k = i; k < j; k++)
+                if (summary[k] == '_')
+                    has_us = true;
+            if (has_us && !memo_is_spec_name(summary + i, len))
+                memo_check_fact(&rep, &missing, detail, summary + i, len);
+        }
+        i = j;
+    }
+
+    if (out_report)
+        *out_report = rep;
+    else
+        sdsfree(rep);
+    return missing;
+}
+
 sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *title, const char *summary,
                                     const char *detail, const char *proposed_by)
 {
@@ -545,6 +768,13 @@ static const char kCompactSystemPrompt[] =
     "- Never lose durable knowledge to save space. A decision, a constraint, a gotcha or an "
     "external fact the next session would need must survive somewhere.\n"
     "- Keep what cannot be recovered otherwise: paths, commands, error text, numbers.\n"
+    "- summary ⊆ detail (enforced, the write is refused otherwise): every concrete fact you\n"
+    "  leave in a summary -- commit ids, snake_case identifiers -- must also be in that entry's\n"
+    "  detail. When you condense, move facts DOWN into the detail rather than keeping them in\n"
+    "  the summary alone: a summary-only fact is unresolvable for a reader that stops there.\n"
+    "- CHANGING `detail` REQUIRES RESENDING `summary` (enforced): the summary is the entry's\n"
+    "  materialized view. A condensed detail with a stale summary leaves the memory saying\n"
+    "  something false, so restate the summary in the same memory_update item.\n"
     "- When two entries cover the same thing, keep the content of the one updated LATER "
     "(the index shows each entry's `updated`); if you cannot tell, keep both and note it.\n"
     "- Nothing about this task belongs in the memory: do not write an entry saying you "
@@ -790,6 +1020,15 @@ static const char kCurateSystemPrompt[] =
     "  exact paths / commands / error text. Never progress logs, todos or transient\n"
     "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- summary ⊆ detail (enforced, the write is refused otherwise): every concrete fact you\n"
+    "  put in the summary -- commit ids, snake_case identifiers -- MUST also appear in the\n"
+    "  detail. The summary is what other tasks read WITHOUT fetching the detail, so a fact\n"
+    "  that lives only there is lost to them. Paths and numbers are encouraged in detail;\n"
+    "  keep them out of the summary unless the detail repeats them.\n"
+    "- CHANGING `detail` REQUIRES RESENDING `summary` (enforced): the summary is the entry's\n"
+    "  materialized view, so a detail rewrite without it leaves the summary describing a state\n"
+    "  that no longer exists. When you condense or rewrite a detail, restate its summary in the\n"
+    "  same memory_update item. You already have both from your memory_get.\n"
     "- TIME IS A HINT, NOT A GATE: every history line carries its timestamp and every entry\n"
     "  carries when it was last updated. If the material is NEWER than an entry, reconcile it\n"
     "  (update to the new truth, or retire it); if the material is OLDER than the entry (the\n"
@@ -1016,6 +1255,15 @@ static const char kExtractSystemPrompt[] =
     "  exact paths / commands / error text. Never progress logs, todos or transient\n"
     "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- summary ⊆ detail (enforced, the write is refused otherwise): every concrete fact you\n"
+    "  put in the summary -- commit ids, snake_case identifiers -- MUST also appear in the\n"
+    "  detail. The summary is what other tasks read WITHOUT fetching the detail, so a fact\n"
+    "  that lives only there is lost to them. Paths and numbers are encouraged in detail;\n"
+    "  keep them out of the summary unless the detail repeats them.\n"
+    "- CHANGING `detail` REQUIRES RESENDING `summary` (enforced): the summary is the entry's\n"
+    "  materialized view, so a detail rewrite without it leaves the summary describing a state\n"
+    "  that no longer exists. When you condense or rewrite a detail, restate its summary in the\n"
+    "  same memory_update item. You already have both from your memory_get.\n"
     "- TIME IS A HINT, NOT A GATE: every history line carries its timestamp and every entry\n"
     "  carries when it was last updated. If the material is NEWER than an entry, reconcile it\n"
     "  (update to the new truth, or retire it); if the material is OLDER than the entry (the\n"
@@ -1578,6 +1826,17 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
             *out_rev = e->updated_seq;
         return EDC_MEMO_WRITE_CONFLICT;
     }
+    /* Which fields actually change (see EDC_MEMO_F_*): the notice renders CHANGED FIELDS
+     * for an `updated` line instead of re-printing the summary, so this must be read
+     * BEFORE the overwrites below. Computed here rather than at the call sites, so no
+     * writer can forget it. */
+    uint32_t changed = 0;
+    if (title && (!e->title || strcmp(title, e->title) != 0))
+        changed |= EDC_MEMO_F_TITLE;
+    if (summary && (!e->summary || strcmp(summary, e->summary) != 0))
+        changed |= EDC_MEMO_F_SUMMARY;
+    if (detail && (!e->detail || strcmp(detail, e->detail) != 0))
+        changed |= EDC_MEMO_F_DETAIL;
     /* Given fields overwrite; missing ones stay. */
     if (title)
     {
@@ -1598,6 +1857,10 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
     uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_UPDATED, e->title, e->summary);
     e->updated_seq = seq;
     e->updated_at = (uint64_t)edc_datetime_now();
+    /* Stamp the mask on the event just appended (add_event cannot know it: it only sees
+     * strings). */
+    if (m->event_count > 0 && m->events[m->event_count - 1].seq == seq)
+        m->events[m->event_count - 1].changed = changed;
     if (out_rev)
         *out_rev = seq;
     memo_trim_if_due(m);
@@ -1623,6 +1886,9 @@ bool edc_session_memory_supersede(struct edc_session_memory *m, const char *cons
         uint64_t seq = edc_session_memory_add_event(m, ids[i], EDC_MEMO_SUPERSEDED, e->title, e->summary);
         e->updated_seq = seq;
         e->updated_at = (uint64_t)edc_datetime_now();
+        /* The only field that changed is the retirement flag. */
+        if (m->event_count > 0 && m->events[m->event_count - 1].seq == seq)
+            m->events[m->event_count - 1].changed = EDC_MEMO_F_RETIRED;
     }
     memo_trim_if_due(m);
     return true;
@@ -1727,6 +1993,26 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         return NULL;
     }
 
+    /* Backlog guard: a task that fell far behind (or a fresh one on a huge event table)
+     * must not be drip-fed one line per request forever. Past BACKLOG_FACTOR * cap, stop
+     * listing and DECLARE the abandonment -- the reader is told how many changes it is not
+     * seeing and how to look at the current state instead. That is the difference from the
+     * old "newest cap, advance to next_seq" behaviour: there the skipped changes vanished
+     * without a trace. */
+    if (npick > cap * 3)
+    {
+        free(picked);
+        sds out = sdscatprintf(sdsempty(),
+                               "## Session Memory Updates  (注意：%zu 项变化积压 / 记忆共 %zu 条)\n"
+                               "Backlog too large to list one by one — these changes are NOT being reported. "
+                               "Use memory_list / memory_search to read the CURRENT state; the change feed will "
+                               "resume from now on.",
+                               npick, m->entry_count);
+        if (out_max_injected)
+            *out_max_injected = m->next_seq;
+        return out;
+    }
+
     /* Sort ascending by seq (pick is "first seen" order, not monotonic), then take the NEWEST cap. */
     for (size_t i = 1; i < npick; i++)
     {
@@ -1740,12 +2026,18 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         picked[j] = cur;
     }
 
-    /* The newest cap (overflow is reported as a count). */
-    size_t first = (npick > cap) ? (npick - cap) : 0;
-    size_t shown = npick - first;
+    /* FIFO: deliver the OLDEST pending changes first, so `out_max_injected` (the seq the
+     * watermark advances to) never jumps over an undelivered one. The older "newest cap +
+     * advance to next_seq" pair was self-consistent as a SUMMARY (what was skipped is
+     * declared by "N more" and reachable via memory_list), but it silently DROPPED changes
+     * a task never saw. Delivering in order is the only way "every change is either
+     * delivered or explicitly declared" can hold -- and the watermark below is what makes
+     * it a cursor. */
+    size_t first = 0;
+    size_t shown = (npick > cap) ? cap : npick;
 
     sds body = sdsempty();
-    for (size_t i = first; i < npick; i++)
+    for (size_t i = first; i < first + shown; i++)
     {
         const struct edc_memo_event *ev = picked[i];
         const struct edc_memo_entry *en = NULL;
@@ -1770,6 +2062,45 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         }
         body = sdscatprintf(body, "- [%s] %s: %s", ev->entry_id, edc_memo_event_kind_name(ev->kind),
                             en && en->title ? en->title : (ev->title ? ev->title : "(untitled)"));
+        if (ev->kind == EDC_MEMO_UPDATED && ev->changed)
+        {
+            /* LAYERED RENDERING: for a change, name the FIELDS, do not re-print the content.
+             * The reader's question is "is this worth a memory_get?", and which field moved
+             * answers it better than the content does: a summary/detail change means the
+             * knowledge itself moved, a title change is usually just wording. The full
+             * summary is deliberately NOT repeated -- it is the expensive part (~100 tok)
+             * and the catalogue/memory_list already carry it for the entries that matter. */
+            static const struct
+            {
+                uint32_t bit;
+                const char *name;
+            } kFields[] = {
+                {EDC_MEMO_F_TITLE, "title"},
+                {EDC_MEMO_F_SUMMARY, "summary"},
+                {EDC_MEMO_F_DETAIL, "detail"},
+                {EDC_MEMO_F_RETIRED, "retired"},
+            };
+            sds fields = sdsempty();
+            for (size_t f = 0; f < sizeof(kFields) / sizeof(kFields[0]); f++)
+            {
+                if (!(ev->changed & kFields[f].bit))
+                    continue;
+                if (sdslen(fields))
+                    fields = sdscat(fields, "+");
+                fields = sdscat(fields, kFields[f].name);
+            }
+            if (sdslen(fields))
+            {
+                body = sdscatprintf(body, " (%s changed)", fields);
+                sdsfree(fields);
+                body = sdscatprintf(body, " (%s)", when);
+                sdsfree(when);
+                continue;
+            }
+            sdsfree(fields);
+        }
+        /* created / superseded / old archives (changed == 0): carry the content, because
+         * the reader has no other way to know what the entry now says. */
         const char *sum = (en && en->summary && en->summary[0]) ? en->summary : ev->summary;
         if (sum && sum[0])
             body = sdscatprintf(body, " — %s", sum);
@@ -1778,14 +2109,15 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         sdsfree(when);
     }
 
-    sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n", m->entry_count);
+    sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (本次 %zu 项变化 / 记忆共 %zu 条)\n", npick,
+                           m->entry_count);
     if (seen < m->pruned_before)
         out = sdscatprintf(out, "[events up to seq %" PRIu64 " were compacted away — the index/search hold the full picture]\n",
                            m->pruned_before);
     out = sdscatsds(out, body);
     sdsfree(body); /* copied into out: the per-event listing is not needed past this point */
     if (npick > shown)
-        out = sdscatprintf(out, "\n… %zu more（memory_search <patterns> / memory_list [offset] [n] / memory_get <ids>）",
+        out = sdscatprintf(out, "\n… %zu more（memory_list [offset] [n] / memory_search <patterns> / memory_get <ids>）",
                            npick - shown);
     else
         out = sdscat(out, "\n（memory_list / memory_search / memory_get 可查完整内容）");
@@ -1798,12 +2130,16 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
                  "into a related entry; memory_write only when nothing related exists. memory_update needs the "
                  "entry's `rev` as expected_rev.");
 
+    /* Watermark = the last seq ACTUALLY delivered (FIFO window), not next_seq: with the window
+     * starting at the oldest pending change, this is a cursor that guarantees the next request
+     * continues exactly where this one stopped. The "N more" line tells the reader the rest is
+     * pending, so an unreported change is never silently marked as seen. */
+    uint64_t watermark = m->next_seq;
+    if (shown > 0)
+        watermark = picked[first + shown - 1]->seq;
     free(picked);
-    /* The watermark advances to the HEADER: the "newest cap" window guarantees the
-     * newest is included, and cap-truncated old events are covered by the notice's
-     * "N more" + memory_list/memory_search (see the header). */
     if (out_max_injected)
-        *out_max_injected = m->next_seq;
+        *out_max_injected = watermark;
     return out;
 }
 
@@ -1813,8 +2149,12 @@ void edc_session_memory_adopt_task(struct edc_session *session, struct edc_task 
 {
     if (!session || !task || !session->memo)
         return;
-    /* 0 = "has seen nothing" => the first request carries a backfill notice (newest cap). */
+    /* A new task has received NOTHING: no change notice (there is no "since you last
+     * looked" for it) and no catalogue. Two separate pieces of state, both cleared
+     * (schema v8 -- `memo_seen_seq == 0` used to carry both meanings at once). */
     task->memo_seen_seq = 0;
+    task->memo_baseline_done = false;
+    task->memo_notice_catalogue = false;
 }
 
 void edc_session_memory_note_proposer(struct edc_memo_entry *entry, const char *task_id)

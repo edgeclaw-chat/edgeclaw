@@ -1045,6 +1045,15 @@ void edc_task_memo_commit(struct edc_task *task)
      * not call it, so the next request resends it -- idempotent and harmless. */
     if (task->memo_notice_seq > task->memo_seen_seq)
         task->memo_seen_seq = task->memo_notice_seq;
+    /* Same discipline for the catalogue: it is only "delivered" once a response came back
+     * for the request that carried it. A memory that was EMPTY at that moment sends no
+     * card (nothing to list), so the flag stays clear and the next request tries again --
+     * which is exactly right: the task still has never seen an index. */
+    if (task->memo_notice_catalogue)
+    {
+        task->memo_baseline_done = true;
+        task->memo_notice_catalogue = false;
+    }
 }
 
 /* ── Dependencies (IPC) ────────────────────────────────────── */

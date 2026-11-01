@@ -318,6 +318,24 @@ static void memory_write_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool 
     const char *summary = cJSON_GetStringValue(cJSON_GetObjectItem(args, "summary"));
     const char *detail = cJSON_GetStringValue(cJSON_GetObjectItem(args, "detail"));
 
+    /* summary ⊆ detail (see edc_session_memory_uncovered_facts): refuse BEFORE writing.
+     * A fact that lives only in the summary is unresolvable for every reader that does not
+     * fetch the detail -- and the summary is exactly what they stop at. */
+    sds uncovered_rep = NULL;
+    size_t uncovered = edc_session_memory_uncovered_facts(summary, detail, &uncovered_rep);
+    if (uncovered > 0)
+    {
+        fail(ctx, callback,
+             "Error: `summary` names %zu fact(s) that `detail` does not contain: %s.\n"
+             "Every concrete fact in the summary (commit ids, snake_case identifiers) must also appear in the "
+             "detail -- a reader who only sees the summary cannot resolve it otherwise. Add them to `detail`, or "
+             "drop them from `summary`. Nothing was written.",
+             uncovered, uncovered_rep ? uncovered_rep : "");
+        sdsfree(uncovered_rep);
+        return;
+    }
+    sdsfree(uncovered_rep);
+
     /* Search for related entries BEFORE creating, so the nudge cannot name the new entry
      * itself. Non-blocking: the write still happens; the model decides what to do. */
     sds related = memo_related_hint(m, title, summary);
@@ -448,13 +466,60 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
             bad = sdscatprintf(bad, "%s%s: duplicate id in batch", pfx, id), ok = false;
         else if (!title && !summary && !detail)
             bad = sdscatprintf(bad, "%s%s: no field to update", pfx, id), ok = false;
+        else if (detail && e->detail && strcmp(detail, e->detail) != 0 && !summary)
+            /* A CHANGED detail must be accompanied by a restated summary. summary is the
+             * materialized view of detail: if the base changes and the view is not rebuilt,
+             * the view describes a state that no longer exists -- it says something FALSE,
+             * which is worse than being incomplete. The fact check below cannot catch that
+             * (the old summary's facts may still all be in the new detail; only the MEANING
+             * flipped, e.g. "still in use" -> "obsolete").
+             *
+             * Deliberately ONE-DIRECTIONAL. Forcing detail on every summary change would cost
+             * 1300 tok of OUTPUT per edit where detail is ~11x the size of summary, and L2
+             * curation edits entries in batches. The other direction is cheap (summary is
+             * ~100 tok) and its information is already in the caller's context (L2 is told to
+             * memory_get before rewriting).
+             *
+             * "Same content" is not a change: re-sending an identical detail is not a rewrite
+             * and must not drag the summary along. */
+            bad = sdscatprintf(bad,
+                               "%s%s: `detail` changed but `summary` was not resent — resend the summary so it "
+                               "still describes the new detail",
+                               pfx, id),
+            ok = false;
         else
         {
-            ids[i] = id;
-            titles[i] = title;
-            summaries[i] = summary;
-            details[i] = detail;
-            revs[i] = rev;
+            /* summary ⊆ detail on the MERGED result: an update may pass only `summary`,
+             * leaving the existing detail in place (or only `detail`, leaving the summary),
+             * so the invariant is about the pair as it will read AFTER the write, not about
+             * the fields this item happens to carry. */
+            const char *eff_sum = summary ? summary : e->summary;
+            const char *eff_det = detail ? detail : e->detail;
+            /* Grandfather clause: an entry written before this check existed can ALREADY
+             * violate it. Refusing every later write would freeze that entry forever -- even
+             * a title-only fix or a step-by-step repair would be blocked. So compare: a write
+             * is refused only when it makes the gap WORSE than the entry's current state. */
+            sds before_rep = NULL;
+            sds uncovered_rep = NULL;
+            size_t before = edc_session_memory_uncovered_facts(e->summary, e->detail, &before_rep);
+            size_t uncovered = edc_session_memory_uncovered_facts(eff_sum, eff_det, &uncovered_rep);
+            sdsfree(before_rep);
+            if (uncovered > before)
+            {
+                bad = sdscatprintf(bad, "%s%s: summary names %zu fact(s) missing from detail: %s", pfx, id,
+                                   uncovered, uncovered_rep ? uncovered_rep : "");
+                sdsfree(uncovered_rep);
+                ok = false;
+            }
+            else
+            {
+                sdsfree(uncovered_rep);
+                ids[i] = id;
+                titles[i] = title;
+                summaries[i] = summary;
+                details[i] = detail;
+                revs[i] = rev;
+            }
         }
     }
     if (!ok)
@@ -690,8 +755,17 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
                                 "existing entry use memory_update; to retire one use memory_supersede.",
                                 scope_note);
         struct edc_tool_param *params = edc_tool_param_new("title", edc_param_str_type("One-line title", NULL), true);
-        params->next = edc_tool_param_new("summary", edc_param_str_type("One or two sentences", NULL), false);
-        params->next->next = edc_tool_param_new("detail", edc_param_str_type("Full detail: paths, commands, error text", NULL), false);
+        params->next = edc_tool_param_new(
+            "summary",
+            edc_param_str_type("One or two sentences. Every fact it names (commit ids, snake_case identifiers) must "
+                               "also appear in detail, or the write is refused",
+                               NULL),
+            false);
+        params->next->next = edc_tool_param_new(
+            "detail",
+            edc_param_str_type("Full detail: paths, commands, error text. Must contain every fact named in summary",
+                               NULL),
+            false);
         struct edc_tool *tool = edc_tool_new("memory_write", desc, params, memory_write_exec);
         sdsfree(desc);
         edc_tool_set_snippet(tool, "Record a durable note");

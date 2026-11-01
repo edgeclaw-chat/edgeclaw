@@ -18,6 +18,7 @@
 #include "log.h"
 #include "sds.h"
 #include <cJSON.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -231,6 +232,7 @@ int main(void)
     free_capture(&ub);
     free_capture(&ue);
 
+
     TEST("memory_supersede: 列表形式; 标 retired + SUPERSEDED 事件; 条目不删");
     struct capture sp = run_tool(tb, task, "memory_supersede", "{\"ids\":[\"m2\"]}");
     CHECK(sp.error == NULL && sp.result && strstr(sp.result, "m2") != NULL, "作废成功");
@@ -378,6 +380,97 @@ int main(void)
         HASH_FIND_STR(tb->tools, "exec_shell", t);
         CHECK(t == NULL || !t->keep_full_output, "对照组: shell 没有声明（它有自己的上限）");
     }
+
+
+    TEST("summary ⊆ detail: memory_write 拒绝 summary 里有、detail 里没有的 commit");
+    size_t w_events = session->memo->event_count;
+    struct capture w_bad = run_tool(tb, task, "memory_write",
+                                    "{\"title\":\"坏条目\",\"summary\":\"见 4dd2b14\",\"detail\":\"没有那个号\"}");
+    CHECK(w_bad.error != NULL, "缺覆盖 ⇒ 报错");
+    CHECK(w_bad.result && strstr(w_bad.result, "4dd2b14") != NULL, "错误里点名缺失的事实");
+    CHECK(session->memo->event_count == w_events, "没落地 (也没写事件)");
+    free_capture(&w_bad);
+
+    TEST("summary ⊆ detail: detail 覆盖该 commit ⇒ 放行");
+    struct capture w_ok = run_tool(
+        tb, task, "memory_write", "{\"title\":\"好条目\",\"summary\":\"见 4dd2b14\",\"detail\":\"commit 4dd2b14 修好了\"}");
+    CHECK(w_ok.error == NULL, "有覆盖 ⇒ 成功");
+    free_capture(&w_ok);
+
+    TEST("summary ⊆ detail: 祖父条款 —— 存量违规条目不因无关修改被锁死");
+    /* 先合法写入，再把它改造成"旧数据"（detail 不含 summary 里的事实）。 */
+    struct capture w_leg = run_tool(
+        tb, task, "memory_write", "{\"title\":\"历史条目\",\"summary\":\"见 9f8e7d6\",\"detail\":\"9f8e7d6 在这\"}");
+    CHECK(w_leg.error == NULL, "先合法创建");
+    free_capture(&w_leg);
+    struct edc_memo_entry *leg = NULL;
+    for (size_t i = 0; i < session->memo->entry_count; i++)
+        if (session->memo->entries[i].title && strcmp(session->memo->entries[i].title, "历史条目") == 0)
+            leg = &session->memo->entries[i];
+    CHECK(leg != NULL, "找到刚写的条目");
+    sdsfree(leg->detail);
+    leg->detail = sdsnew("明细里没有那个号"); /* 模拟旧二进制写下的数据：缺口 = 1 */
+
+    char leg_upd[256];
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"title\":\"只改标题\"}]}", leg->id,
+             leg->updated_seq);
+    struct capture leg1 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(leg1.error == NULL, "不变得更糟的写入放行 (否则存量条目永久锁死)");
+    free_capture(&leg1);
+
+    TEST("summary ⊆ detail: 让缺口变大的写入仍然拒绝");
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"summary\":\"见 9f8e7d6 和 4dd2b14\"}]}",
+             leg->id, leg->updated_seq);
+    struct capture leg2 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(leg2.error != NULL, "缺口 1 → 2 ⇒ 拒绝");
+    free_capture(&leg2);
+
+    TEST("summary ⊆ detail: 修好缺口 ⇒ 放行 (修复路径不能被自己挡住)");
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64
+             ",\"summary\":\"见 9f8e7d6\",\"detail\":\"明细：9f8e7d6 在这里\"}]}",
+             leg->id, leg->updated_seq);
+    struct capture leg3 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(leg3.error == NULL, "缺口 1 → 0 ⇒ 放行");
+    free_capture(&leg3);
+
+    TEST("detail Δ ⇒ 必须同批给 summary (物化视图: 基表变了视图必须重建)");
+    /* leg 现在的 detail 是 "明细：9f8e7d6 在这里"，只改 detail 不给 summary ⇒ 拒绝 */
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"detail\":\"改成别的内容\"}]}", leg->id,
+             leg->updated_seq);
+    struct capture d1 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(d1.error != NULL, "detail 变了但没重述 summary ⇒ 拒绝");
+    CHECK(d1.result && strstr(d1.result, "summary") != NULL && strstr(d1.result, "not resent") != NULL,
+          "错误说清要重述 summary");
+    free_capture(&d1);
+
+    TEST("detail 内容未变 ⇒ 不要求 summary (重复提交不算改写)");
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"detail\":\"明细：9f8e7d6 在这里\"}]}",
+             leg->id, leg->updated_seq);
+    struct capture d2 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(d2.error == NULL, "同值 detail 放行 (否则无意义重复会被误拒)");
+    free_capture(&d2);
+
+    TEST("summary 变了不给 detail ⇒ 放行 (单向强制: detail 是 summary 的 11 倍)");
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"summary\":\"见 9f8e7d6 记录\"}]}",
+             leg->id, leg->updated_seq);
+    struct capture d3 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(d3.error == NULL, "只改 summary 不需要重吐 detail");
+    free_capture(&d3);
+
+    TEST("detail Δ + summary 同批给 ⇒ 放行 (规定路径)");
+    snprintf(leg_upd, sizeof(leg_upd),
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64
+             ",\"summary\":\"见 9f8e7d6 记录\",\"detail\":\"改成别的内容，仍是 9f8e7d6\"}]}",
+             leg->id, leg->updated_seq);
+    struct capture d4 = run_tool(tb, task, "memory_update", leg_upd);
+    CHECK(d4.error == NULL, "两者同批 = 规定路径");
+    free_capture(&d4);
 
     edc_toolbox_free(tb);
     edc_session_free(session); /* 连带释放 group / task / memo */

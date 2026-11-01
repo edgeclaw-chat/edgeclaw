@@ -46,6 +46,15 @@ enum edc_memo_event_kind
     EDC_MEMO_DELETED,
 };
 
+/* Which fields a change actually touched (bit mask on edc_memo_event.changed). The
+ * notice renders an `updated` line from this instead of re-printing the summary, so a
+ * reader can tell "a decision-bearing field changed, worth a look" from "the wording was
+ * tightened". 0 = an old archive (unknown): fall back to the plain rendering. */
+#define EDC_MEMO_F_TITLE (1u << 0)
+#define EDC_MEMO_F_SUMMARY (1u << 1)
+#define EDC_MEMO_F_DETAIL (1u << 2)
+#define EDC_MEMO_F_RETIRED (1u << 3)
+
 struct edc_memo_event
 {
     uint64_t seq;
@@ -57,6 +66,9 @@ struct edc_memo_event
     enum edc_memo_event_kind kind;
     char *title;
     char *summary;
+    /* EDC_MEMO_F_* bits. Computed inside the mutator (it still holds the old value), so
+     * no caller has to pass it -- and no call site can forget to. */
+    uint32_t changed;
 };
 
 struct edc_memo_entry
@@ -149,7 +161,8 @@ extern void edc_session_memory_free(struct edc_session_memory *m);
  * the mutators above assign them; restoring through those would renumber the log. */
 extern struct edc_memo_event *edc_session_memory_restore_event(struct edc_session_memory *m, uint64_t seq, uint64_t ts,
                                                               const char *entry_id, const char *kind_name,
-                                                              const char *title, const char *summary);
+                                                              const char *title, const char *summary,
+                                                              uint32_t changed);
 extern struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
                                                               const char *title, const char *summary,
                                                               const char *detail, const char *sources,
@@ -189,19 +202,69 @@ extern sds edc_session_memory_search_lines(const struct edc_session_memory *m, c
 extern sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, const char *pattern, size_t cap,
                                                  size_t *out_hits, int *out_regerror);
 
+/* ── The catalogue channel: "what exists" ─────────────────────
+ * The counterpart of the notice. The notice answers "what changed" (precise, priced,
+ * per-change, FIFO); the catalogue answers "what is available" (cheap rows, once per
+ * task, id-ordered so `memory_list` can continue it).
+ *
+ * Why it exists at all: without it a new task cannot see WHICH memories exist, and an
+ * agent with no lead almost never calls memory_search -- so the whole L2 layer sits
+ * unused. Giving the catalogue nothing (the original plan, `baseline_sample = 0`) saves
+ * ~1.2k tokens and costs the feature.
+ *
+ * Why it can be cheap: id + title only, ~33 tok per row measured (vs ~122 for a notice
+ * row). 2000 tokens covers ~60 entries, i.e. the great majority of real sessions in full
+ * (measured sessions: 8, 37, 84 live entries).
+ *
+ * Rendered from the ENTRY table, never the event table: DELETED events keep tombstones,
+ * and listing from them once produced "共 37 条" above "… 70 more".
+ *
+ * NULL when the memory is empty (inject nothing). */
+#define EDC_SESSION_MEMORY_CATALOGUE_TOKENS 2000
+extern sds edc_session_memory_catalogue(const struct edc_session_memory *m, size_t token_budget);
+
 /* Tail notice (a request-time temporary):
- * entries CREATED/UPDATED since `seen`, one line each (an id appears once, the
- * newest), at most cap, with the total count and a usage hint. NULL = nothing new
- * (do not inject). `*out_max_injected` (may be NULL) = the largest event seq
- * ACTUALLY injected -- the watermark advances to it only once the model really read
- * the request; truncated old events are marked seen by the watermark, and the
- * notice's "N more" plus memory_list/memory_search are their fallback. */
+ * entries CREATED/UPDATED since `seen`, one line each (an id appears once, the newest),
+ * at most `cap`, with the changed count AND the total count in the header.
+ * NULL = nothing new (do not inject).
+ *
+ * DELIVERY SEMANTICS (2026-10-30): the window is FIFO -- the OLDEST pending change goes
+ * first -- and `*out_max_injected` (may be NULL) is the largest event seq ACTUALLY
+ * delivered, so the watermark is a cursor and the next request continues where this one
+ * stopped. Every change is therefore either delivered or explicitly declined: past
+ * `cap * 3` pending changes the notice stops listing and says so ("backlog too large"),
+ * advancing the watermark past them. The earlier pair (newest `cap` + advance to
+ * `next_seq`) was self-consistent as a summary, but silently marked unseen changes seen. */
 extern sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen, size_t cap,
                                      uint64_t *out_max_injected);
 
 /* Full detail of one entry (falls back to the index row when there is none); NULL
  * when the entry does not exist. */
 extern sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char *id);
+
+/* ── summary ⊆ detail: the fact-coverage invariant ─────────────
+ * The three fields are a hierarchy (measured on a real table: title 29 tok, summary 100,
+ * detail 1079 -- 1 : 3.4 : 38): title is the ADDRESS, summary is the DECISION PAYLOAD (it
+ * is what a reader sees when many entries sit side by side and it must not fetch each
+ * detail), detail is the STORE. That only works if a reader who stops at the summary does
+ * not end up holding a fact it can never resolve -- so every HARD fact named in the summary
+ * must also appear in the detail.
+ *
+ * HARD = commit ids and snake_case identifiers. Both are unrewritable: if the summary says
+ * `4dd2b14` or `edc_sub_fn`, no paraphrase carries it and no reader can re-derive it.
+ * Measured on the real 129-entry table: 237 hard facts, 3 uncovered (1.3%) -- all three
+ * genuine defects (a lost commit id and two symbol names).
+ *
+ * NOT enforced, deliberately: paths and quantities with units. `200us` vs `0.2ms` and
+ * `/log/x-YYYY-MM-DD.log` vs "the daily log" are legitimate rewrites, and hard-failing
+ * them blocks honest writes -- 9.7% of them look uncovered while most are formatting.
+ *
+ * A literal `summary inside detail` check is NOT the invariant and cannot be used: the
+ * summary is always a rewrite (0 of 129 matched as a substring). It is about FACTS, not
+ * text. Returns the number of uncovered hard facts; `*out_report` (may be NULL) receives a
+ * comma-separated list of them, for the error message. No detail => 0: with no second home
+ * for its facts a summary-only entry has no coverage to demand. */
+extern size_t edc_session_memory_uncovered_facts(const char *summary, const char *detail, sds *out_report);
 
 /* Create an entry: allocate a new id (m<n>, never reused) and write
  * title/summary/detail. Returns the new id (sds, caller sdsfree); NULL on failure.
@@ -210,11 +273,19 @@ extern sds edc_session_memory_get_detail(const struct edc_session_memory *m, con
 extern sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *title, const char *summary,
                                            const char *detail, const char *proposed_by);
 
-/* Birth-point adoption: a new task's "seen" watermark = 0 -- the one meaning "no
- * latest entry", so its first request carries a backfill notice (newest cap entries
- * + "N more"). This fixes "a newly created group in a session cannot see the latest
- * session memory". Call ONLY at a task's birth point (user task = create_task, fork
- * child / new group leader = create_group, system task = start_system_task). */
+/* Birth-point adoption: a new task has received nothing -- neither a change notice nor
+ * the CATALOGUE -- so both pieces of state are cleared (`memo_seen_seq = 0`,
+ * `memo_baseline_done = false`). Its first request therefore carries the index card
+ * ("what exists", id + title, budget-bounded) instead of a change notice.
+ *
+ * Why the catalogue instead of a backfill delta: a delta's meaning is "these are the
+ * changes since you last looked", which says nothing to a task that never looked. Reusing
+ * the change channel to ship an index also made a fresh task look like it had just
+ * witnessed a burst of changes. The catalogue states the actual fact and costs ~4x less
+ * per row (id + title vs kind + title + summary + timestamp).
+ *
+ * Call ONLY at a task's birth point (user task = create_task, fork child / new group
+ * leader = create_group, system task = start_system_task). */
 extern void edc_session_memory_adopt_task(struct edc_session *session, struct edc_task *task);
 
 /* ── L2 curation task ──────────────────────────────────────── */

@@ -412,17 +412,40 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         if (own && own->memo)
         {
             uint64_t max_injected = 0;
-            sds notice = edc_session_memory_notice(own->memo, task->memo_seen_seq, 10, &max_injected);
-            if (notice)
+            /* TWO channels, chosen by whether this task has ever received an INDEX:
+             *   !memo_baseline_done => send the CATALOGUE ("what exists": id + title,
+             *                          budget-bounded) and let the watermark jump past the
+             *                          events it supersedes.
+             *   otherwise           => send the CHANGE notice (FIFO, priced rows).
+             * They are never mixed: the catalogue is not a change, and a delta is not an
+             * index. Reusing one rendering for both is what made the old notice claim
+             * "共 37 条" above a single line. */
+            sds card = NULL;
+            if (!task->memo_baseline_done)
+            {
+                /* Explicit flag (schema v8), not `memo_seen_seq == 0`: "never received the
+                 * index" and "the change cursor is at 0" are different facts. */
+                card = edc_session_memory_catalogue(own->memo, EDC_SESSION_MEMORY_CATALOGUE_TOKENS);
+                if (card)
+                {
+                    max_injected = own->memo->next_seq; /* the catalogue supersedes the feed */
+                    task->memo_notice_catalogue = true;
+                }
+            }
+            else
+            {
+                card = edc_session_memory_notice(own->memo, task->memo_seen_seq, 20, &max_injected);
+            }
+            if (card)
             {
                 cJSON *sys = cJSON_CreateObject();
                 cJSON_AddStringToObject(sys, "role", "system");
-                cJSON_AddStringToObject(sys, "content", notice);
+                cJSON_AddStringToObject(sys, "content", card);
                 if (!req->tail_parts)
                     req->tail_parts = cJSON_CreateArray();
                 cJSON_AddItemToArray(req->tail_parts, sys);
                 task->memo_notice_seq = max_injected; /* promoted to memo_seen_seq only after the response */
-                sdsfree(notice);
+                sdsfree(card);
             }
         }
         /* [1] todo reminder (throttled): the cadence for "a user task at work". A summary

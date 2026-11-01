@@ -279,7 +279,8 @@ static const char *notice_part(struct edc_llm_actor_req *req, int *out_index)
     {
         cJSON *m = cJSON_GetArrayItem(req->tail_parts, i);
         const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
-        if (content && strncmp(content, "## Session Memory Updates", 25) == 0)
+        if (content && (strncmp(content, "## Session Memory Updates", 25) == 0 ||
+                        strncmp(content, "## Session Memory ", 18) == 0))
         {
             if (out_index)
                 *out_index = i;
@@ -301,7 +302,7 @@ static sds memo_add(struct edc_session *sess, const char *title, const char *sum
 
 static void test_session_memory_notice_reaches_the_tail(void)
 {
-    TEST("L2 通知: 新 task 首轮自带回填; 队尾第一条; 提交前不发第二次; 提交后为空");
+    TEST("L2 双通道: 水位=0 ⇒ 目录卡(有什么); 水位>0 ⇒ 变化通知(变了什么)");
 
     struct harness h;
     harness_up(&h);
@@ -313,7 +314,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     /* 两条条目 (与前台 memory_write 走同一套) + 一个还没有东西的 task */
     sds id1 = memo_add(h.sess, "构建入口", "唯一入口是 bazelisk", "明细一");
     sds id2 = memo_add(h.sess, "沙箱策略", "uid 1000 + sudo", NULL);
-    leader->memo_seen_seq = 0; /* 新 task: 什么都没看过 ⇒ 该回填 */
+    leader->memo_seen_seq = 0; /* 新 task: 什么都没看过 ⇒ 发目录，不发变化 */
 
     edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
@@ -321,25 +322,32 @@ static void test_session_memory_notice_reaches_the_tail(void)
     CHECK(g_req_msgs == 1, "请求发出去了");
     int idx = -1;
     const char *notice = notice_part(g_req, &idx);
-    CHECK(notice != NULL, "队尾有 session 记忆通知");
-    CHECK(notice && strstr(notice, "[m1] created: 构建入口 — 唯一入口是 bazelisk") != NULL, "第一条在");
-    CHECK(notice && strstr(notice, "[m2] created: 沙箱策略 — uid 1000 + sudo") != NULL, "第二条在");
-    CHECK(notice && strstr(notice, "共 2 条") != NULL, "带总条数");
-    CHECK(idx == 0, "通知在队尾**第一条** (todo 提醒在它后面)");
+    CHECK(notice != NULL, "队尾有 session 记忆卡片");
+    /* 通道 B：目录 —— id + title，不带 summary/kind/时间 */
+    CHECK(notice && strstr(notice, "## Session Memory  (共 2 条)") != NULL, "首轮是目录卡，抬头带总条数");
+    CHECK(notice && strstr(notice, "[m1] 构建入口") != NULL, "目录行 = id + title");
+    CHECK(notice && strstr(notice, "唯一入口是 bazelisk") == NULL, "目录不带 summary (成本优势所在)");
+    CHECK(notice && strstr(notice, "created:") == NULL, "目录不是变化通知 (没有 kind)");
+    CHECK(idx == 0, "卡片在队尾**第一条** (todo 提醒在它后面)");
     CHECK(leader->memo_seen_seq == 0, "水位没动 —— 请求还没被模型读到");
-    CHECK(leader->memo_notice_seq == 2, "记下了这次装进去的最大 seq");
+    CHECK(leader->memo_notice_seq == 2, "目录卡顶替了 feed: 记下 next_seq");
+    CHECK(!leader->memo_baseline_done, "**基线还没提交**：请求尚未被模型读到");
+    CHECK(leader->memo_notice_catalogue, "记下'这次带了目录卡'");
 
-    /* 还没提交 (等价于请求被取消): 下一次请求**重发同一条** */
+    /* 还没提交 (等价于请求被取消): 下一次请求**重发同一张卡** */
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
     edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 2, "第二次请求也发出去了");
-    CHECK(notice_part(g_req, NULL) != NULL, "没提交 ⇒ 通知重发 (幂等, 不丢信息)");
+    CHECK(notice_part(g_req, NULL) != NULL, "没提交 ⇒ 卡片重发 (幂等, 不丢信息)");
+    CHECK(!leader->memo_baseline_done, "取消的请求不能让基线变成'已交付'");
 
     /* 响应回来 ⇒ 提交 ⇒ 再请求就不带了 */
     edc_task_memo_commit(leader);
     CHECK(leader->memo_seen_seq == 2, "提交后水位追平");
+    CHECK(leader->memo_baseline_done, "**提交后基线置真**（目录确实被读过）");
+    CHECK(!leader->memo_notice_catalogue, "瞬态标记被消费掉");
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
     edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
@@ -347,7 +355,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     CHECK(g_req_msgs == 3, "第三次请求");
     CHECK(notice_part(g_req, NULL) == NULL, "看过之后不再注入 (常驻里也没有 memory 内容)");
 
-    /* 新条目到来 ⇒ 只补新的那条 */
+    /* 新条目到来 ⇒ 走通道 A：变化通知，只补新的那条 (带 summary, 因为是"变了什么") */
     sds id3 = memo_add(h.sess, "第三条", "后来才有的", NULL);
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
@@ -355,7 +363,9 @@ static void test_session_memory_notice_reaches_the_tail(void)
     pump(&h);
     const char *n2 = notice_part(g_req, NULL);
     CHECK(n2 != NULL && strstr(n2, id3) != NULL, "只带新条目");
-    CHECK(n2 && strstr(n2, "共 3 条") != NULL, "总数跟着涨");
+    CHECK(n2 && strstr(n2, "## Session Memory Updates") != NULL, "水位>0 ⇒ 变化通知，不是目录");
+    CHECK(n2 && strstr(n2, "本次 1 项变化 / 记忆共 3 条") != NULL, "两个数分列");
+    CHECK(n2 && strstr(n2, "后来才有的") != NULL, "变化通知带 summary (要让人判断值不值得取)");
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
 

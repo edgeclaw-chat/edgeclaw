@@ -262,10 +262,10 @@ struct edc_task
      * it advances in the bookkeeping after a request
      * is sent (cancel/failure do NOT advance, so the same patch is resent).
      *
-     * Birth point adopted from the session: `memo_seen_seq = session->memo->next_seq`
-     * -- a new task gets the full index on its first round, so a "patch" says
-     * nothing to it. Old archives (migration) read back 0, and the migrated table
-     * is empty too (next_seq = 0), so both agree.
+     * Birth point adopted from the session: `memo_seen_seq = 0`, i.e. "has seen
+     * nothing", so its FIRST request carries a backfill notice (the newest `cap`
+     * events + a total count). That is deliberate: a newly created group must be able
+     * to see what the session already knows, or it starts blind.
      *
      * `last_prefix_tokens` = estimated tokens of the session memory block + patch
      * at anchor time (P4b onward): the ctx estimate adds
@@ -273,6 +273,19 @@ struct edc_task
      * systematically late. P4a only persists this field, no readers yet. */
     uint64_t memo_seen_seq;
     uint64_t last_prefix_tokens;
+
+    /* Whether this task has received the memory CATALOGUE (the "what exists" card,
+     * id + title). Persisted (schema v8) because it is real state, not a sentinel: the
+     * earlier encoding -- `memo_seen_seq == 0` -- conflated it with "the change cursor
+     * sits at the beginning of the feed" and could not express "the catalogue was
+     * delivered while the memory was still empty". */
+    bool memo_baseline_done;
+
+    /* Set when the request actually carried the catalogue; promoted into
+     * `memo_baseline_done` by `edc_task_memo_commit` once the response returns. A
+     * cancelled/failed request therefore leaves the flag clear and the catalogue is sent
+     * again -- idempotent, like the notice. In-memory only: it describes one request. */
+    bool memo_notice_catalogue;
 
     /* Largest event seq the last request INCLUDED (in-memory only). It is promoted
      * to `memo_seen_seq` only once the response really returns

@@ -76,8 +76,23 @@ struct edc_scheduler;
  *     {"modified":[...],"read":[...]} object, that meant the table was never written at all
  *     since the store landed -- and the load, which built a flat array, could not have read it
  *     back either. Both sides now go through edc_fold_files_*, so the shape lives in one
- *     place. */
-#define EDC_DB_VERSION 7
+ *     place.
+ *
+ * v8 (2026-10-30): two session-memory fields became explicit state instead of being
+ *     encoded in something else.
+ *     - tasks.memo_baseline_done: whether this task has received the memory CATALOGUE.
+ *       It used to be inferred from memo_seen_seq == 0, which overloaded one watermark
+ *       with two meanings ("never saw the index" vs "cursor at the beginning of the
+ *       feed") and could not express "the catalogue was delivered but the feed is
+ *       empty".
+ *     - memo_events.changed: which fields a change touched (EDC_MEMO_F_*). It was
+ *       in-memory only, so a restart silently turned every past change into "unknown"
+ *       and the notices fell back to re-printing summaries.
+ *     Migration: tools/migrate_edgeclaw_db_v7_to_v8.py. It backfills
+ *     memo_baseline_done = (memo_seen_seq > 0) -- a task that had already consumed
+ *     events has necessarily been through the index -- and leaves changed = 0, which is
+ *     the documented "unknown, render the content" value, not a guess. */
+#define EDC_DB_VERSION 8
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

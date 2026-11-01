@@ -199,6 +199,10 @@ static const char *const EDC_SCHEMA_SQL =
     "  last_hist_len             INTEGER NOT NULL DEFAULT 0,"
     "  last_turn_len             INTEGER NOT NULL DEFAULT 0,"
     "  memo_seen_seq             INTEGER NOT NULL DEFAULT 0,"
+    /* v8: whether this task has received the memory CATALOGUE (the "what exists" card).
+     * It is separate state, not `memo_seen_seq == 0`: one watermark cannot express both
+     * "never saw the index" and "the feed is empty". */
+    "  memo_baseline_done        INTEGER NOT NULL DEFAULT 0,"
     "  last_prefix_tokens        INTEGER NOT NULL DEFAULT 0,"
     "  redirect_stdout           TEXT,"
     "  redirect_stderr           TEXT,"
@@ -347,6 +351,9 @@ static const char *const EDC_SCHEMA_SQL =
     "  kind       TEXT,"
     "  title      TEXT,"
     "  summary    TEXT,"
+    /* v8: EDC_MEMO_F_* mask of the fields this change touched. 0 = unknown (rows written
+     * before v8). Persisted so a restart does not erase the layering of past changes. */
+    "  changed    INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, seq)"
     ");";
 
@@ -1120,9 +1127,10 @@ static const char *INSERT_TASK =
     "sink_group_id,fold_cut_task,fold_cut_turn,fold_cut_prefix,memo_cut_task,memo_cut_turn,"
     "memo_cut_prefix,forked_from_task_id,fork_point_completion_seq,output,completion_seq,"
     "tokens_prompt,tokens_completion,tokens_total,tokens_cached,last_total_tokens,last_fold_epoch,"
-    "last_hist_len,last_turn_len,memo_seen_seq,last_prefix_tokens,redirect_stdout,redirect_stderr,"
+    "last_hist_len,last_turn_len,memo_seen_seq,memo_baseline_done,last_prefix_tokens,"
+    "redirect_stdout,redirect_stderr,"
     "redirect_append,redirect_stderr_append,todos,todo_sync_gap,updated_at) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(task_id) DO UPDATE SET session_id=excluded.session_id,group_id=excluded.group_id,"
     "ord=excluded.ord,description=excluded.description,raw_input=excluded.raw_input,step=excluded.step,"
     "life=excluded.life,end_state=excluded.end_state,blocked_by=excluded.blocked_by,"
@@ -1139,6 +1147,7 @@ static const char *INSERT_TASK =
     "tokens_cached=excluded.tokens_cached,last_total_tokens=excluded.last_total_tokens,"
     "last_fold_epoch=excluded.last_fold_epoch,last_hist_len=excluded.last_hist_len,"
     "last_turn_len=excluded.last_turn_len,memo_seen_seq=excluded.memo_seen_seq,"
+    "memo_baseline_done=excluded.memo_baseline_done,"
     "last_prefix_tokens=excluded.last_prefix_tokens,redirect_stdout=excluded.redirect_stdout,"
     "redirect_stderr=excluded.redirect_stderr,redirect_append=excluded.redirect_append,"
     "redirect_stderr_append=excluded.redirect_stderr_append,todos=excluded.todos,"
@@ -1223,6 +1232,7 @@ static void bind_task(sqlite3_stmt *st, void *ctx)
     bind_num(st, i++, (double)t->last_hist_len);
     bind_num(st, i++, (double)t->last_turn_len);
     bind_num(st, i++, (double)t->memo_seen_seq);
+    sqlite3_bind_int(st, i++, t->memo_baseline_done ? 1 : 0);
     bind_num(st, i++, (double)t->last_prefix_tokens);
     bind_str(st, i++, t->redirect_stdout);
     bind_str(st, i++, t->redirect_stderr);
@@ -1605,7 +1615,7 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(db,
                                "INSERT OR REPLACE INTO memo_events(session_id,seq,ts,entry_id,"
-                               "kind,title,summary) VALUES(?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
+                               "kind,title,summary,changed) VALUES(?,?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
             return false;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
         bind_num(st, 2, (double)e->seq);
@@ -1614,6 +1624,7 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         bind_str(st, 5, edc_memo_event_kind_name(e->kind));
         bind_str(st, 6, e->title);
         bind_str(st, 7, e->summary);
+        sqlite3_bind_int64(st, 8, (sqlite3_int64)e->changed);
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
         if (!ok)
@@ -1843,7 +1854,7 @@ static const char *SELECT_TASK_COLS =
     "fold_cut_task,fold_cut_turn,fold_cut_prefix,memo_cut_task,memo_cut_turn,memo_cut_prefix,"
     "forked_from_task_id,fork_point_completion_seq,output,completion_seq,tokens_prompt,"
     "tokens_completion,tokens_total,tokens_cached,last_total_tokens,last_fold_epoch,last_hist_len,"
-    "last_turn_len,memo_seen_seq,last_prefix_tokens,redirect_stdout,redirect_stderr,redirect_append,"
+    "last_turn_len,memo_seen_seq,memo_baseline_done,last_prefix_tokens,redirect_stdout,redirect_stderr,redirect_append,"
     "redirect_stderr_append,todos,todo_sync_gap";
 
 static bool session_exists(int64_t session_id)
@@ -2220,19 +2231,21 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             task->last_hist_len = (int)col_i64(st, 34);
             task->last_turn_len = (int)col_i64(st, 35);
             task->memo_seen_seq = (uint64_t)col_i64(st, 36);
-            task->last_prefix_tokens = (uint64_t)col_i64(st, 37);
+            /* v8: the catalogue flag is its own column now, not `memo_seen_seq == 0`. */
+            task->memo_baseline_done = sqlite3_column_int(st, 37) != 0;
+            task->last_prefix_tokens = (uint64_t)col_i64(st, 38);
             {
-                const char *rout = col_str(st, 38);
+                const char *rout = col_str(st, 39);
                 if (rout)
                     task->redirect_stdout = sdsnew(rout);
-                const char *rerr = col_str(st, 39);
+                const char *rerr = col_str(st, 40);
                 if (rerr)
                     task->redirect_stderr = sdsnew(rerr);
             }
-            task->redirect_append = sqlite3_column_int(st, 40) != 0;
-            task->redirect_stderr_append = sqlite3_column_int(st, 41) != 0;
+            task->redirect_append = sqlite3_column_int(st, 41) != 0;
+            task->redirect_stderr_append = sqlite3_column_int(st, 42) != 0;
             {
-                const char *todos = col_str(st, 42);
+                const char *todos = col_str(st, 43);
                 if (todos)
                 {
                     cJSON *parsed = cJSON_Parse(todos);
@@ -2240,7 +2253,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                         task->todos = parsed;
                 }
             }
-            task->todo_sync_gap = (int)col_i64(st, 43);
+            task->todo_sync_gap = (int)col_i64(st, 44);
 
             load_task_put(task_map, task_id, task);
             if (task_count == task_cap)
@@ -2569,14 +2582,15 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     /* ── 11. session memory rows ────────────────────────────────────────── */
     {
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT seq,ts,entry_id,kind,title,summary FROM memo_events "
+        if (sqlite3_prepare_v2(g_db, "SELECT seq,ts,entry_id,kind,title,summary,changed FROM memo_events "
                                      "WHERE session_id=? ORDER BY seq", -1, &st, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
             while (sqlite3_step(st) == SQLITE_ROW)
                 edc_session_memory_restore_event(session->memo, (uint64_t)col_i64(st, 0),
                                                  (uint64_t)col_i64(st, 1), col_str(st, 2), col_str(st, 3),
-                                                 col_str(st, 4), col_str(st, 5));
+                                                 col_str(st, 4), col_str(st, 5),
+                                                 (uint32_t)sqlite3_column_int64(st, 6));
         }
         sqlite3_finalize(st);
     }

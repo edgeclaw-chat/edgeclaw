@@ -343,6 +343,23 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     s->foreground_group = g1;
     /* An integer, like every other timestamp now. */
     s->last_active = 1790000000ULL;
+
+    /* v8 columns get NON-DEFAULT values here, otherwise the row-for-row comparison below
+     * proves nothing about them: the dump reads every column, so a flush/load mismatch
+     * would only show up if the stored value differs from the fresh default. */
+    leader->memo_baseline_done = true; /* a task that has already received the catalogue */
+    {
+        sds id = edc_session_memory_create_entry(s->memo, "round-trip entry", "its summary", "its detail text", NULL);
+        const uint64_t seq =
+            edc_session_memory_add_event(s->memo, id, EDC_MEMO_UPDATED, "round-trip entry", "its summary");
+        struct edc_memo_entry *e = edc_session_memory_entry(s->memo, id);
+        if (e)
+            e->created_seq = e->updated_seq = seq;
+        /* A real mask: 0 is the documented "unknown" value, so leaving the default would
+         * let a column that is never written pass unnoticed. */
+        s->memo->events[s->memo->event_count - 1].changed = EDC_MEMO_F_SUMMARY | EDC_MEMO_F_DETAIL;
+        sdsfree(id);
+    }
 }
 
 /* ── The round trip ──────────────────────────────────────────────────────── */
@@ -372,6 +389,25 @@ static void test_roundtrip(void)
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_sessions(sched2, s2);
     CHECK(edc_state_store_load(s2, sched2), "load back from the database");
+
+    /* ABSOLUTE assertion, not just the differential: the dump comparison proves flush and
+     * load AGREE, which a column that is never written (or always written as its default)
+     * also satisfies. These check the VALUES came back. */
+    {
+        bool baseline_ok = false;
+        for (struct edc_task_group *gp = s2->groups; gp; gp = gp->next)
+            for (struct edc_task *tp = gp->members; tp; tp = tp->group_next)
+                if (tp->memo_baseline_done)
+                    baseline_ok = true;
+        CHECK(baseline_ok, "v8: memo_baseline_done survives a restart");
+
+        bool mask_ok = false;
+        for (size_t i = 0; i < s2->memo->event_count; i++)
+            if (s2->memo->events[i].changed == (EDC_MEMO_F_SUMMARY | EDC_MEMO_F_DETAIL))
+                mask_ok = true;
+        CHECK(mask_ok, "v8: the changed mask survives a restart (0 would mean 'unknown')");
+    }
+
     CHECK(edc_state_store_flush(s2, sched2), "flush the reloaded session");
 
     sds after = dump_rows("s-diff");
