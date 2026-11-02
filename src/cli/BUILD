@@ -18,6 +18,8 @@ cc_library(
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",
+        "//src/common:version",
+        "//src/kernel:kernel",
         "@cjson//:cjson",
         "@libuv",
         "@log.c//:log.c",

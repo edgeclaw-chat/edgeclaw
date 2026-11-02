@@ -3,6 +3,8 @@
 #include "cJSON.h"
 #include "edc_api.h"
 #include "edc_app.h"
+#include "edc_state_store.h"
+#include "edc_version.h"
 #include "log.h"
 #include "sds.h"
 #include "uv.h"
@@ -397,6 +399,17 @@ int edc_cli_main(int argc, char **argv)
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
 #endif
+
+    /* Answered before configuration, a database or a network call is touched: a user who
+     * cannot start the program still needs to say which build they are running. */
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--version") == 0)
+        {
+            edc_version_print(EDC_DB_VERSION, stdout);
+            return 0;
+        }
+    }
 
     struct cli_args args;
     parse_args(argc, argv, &args);

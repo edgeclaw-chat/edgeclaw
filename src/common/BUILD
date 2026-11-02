@@ -10,6 +10,33 @@ cc_library(
 
 # ── Individual utility libraries (externally visible) ──────────────────────
 
+# The version facts, derived at build time from `git describe` (tools/gen_version.py).
+# `local = 1` so the action can read .git, which the sandbox does not expose; the rule is
+# cheap and its output changes only when the commit or the dirty state does.
+genrule(
+    name = "version_header",
+    # //:BUILD is declared only so its location can be passed to the script: resolving it
+    # is how the script finds the checkout that owns .git (see gen_version.py).
+    srcs = ["//:BUILD"],
+    outs = ["edc_version_gen.h"],
+    cmd = "$(execpath //tools:gen_version) --out $@ --repo $(location //:BUILD)",
+    tools = ["//tools:gen_version"],
+    local = 1,
+    tags = ["no-sandbox"],
+    visibility = ["//visibility:public"],
+)
+
+# A tiny target of its own so a binary that only wants `--version` does not have to pull
+# the whole //src/common:common tree (edc_config, HTTPS, the embedded workspace...).
+cc_library(
+    name = "version",
+    srcs = ["edc_version.c"],
+    hdrs = ["edc_version.h", ":version_header"],
+    includes = ["."],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
 # Header-only platform/GLib compatibility shim. Exposed on its own so very
 # small binaries (e.g. //src/sandbox:sandbox_helper) can use it without pulling
 # the whole //src/common:common library.

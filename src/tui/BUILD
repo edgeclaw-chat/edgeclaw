@@ -104,6 +104,7 @@ cc_binary(
         "//src/app:app",
         "//src/common:common",
         "//src/common:utlist_fix",
+        "//src/common:version",
         "//src/kernel:kernel",
         "//src/shell:shell",
         "//src/tui:tui",

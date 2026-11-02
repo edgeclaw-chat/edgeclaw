@@ -1,6 +1,14 @@
 load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
+# Exported so //src/common:version_header can resolve a path inside the checkout. That is
+# how tools/gen_version.py finds .git: the genrule runs in the execroot, where the tree is
+# a set of symlinks, and realpath() of any tracked file lands back in the source tree.
+exports_files(
+    ["BUILD"],
+    visibility = ["//visibility:public"],
+)
+
 config_setting(
     name = "debug",
     values = {"compilation_mode": "dbg"},

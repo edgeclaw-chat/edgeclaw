@@ -32,3 +32,13 @@ py_binary(
     srcs = ["embed_models.py"],
     visibility = ["//visibility:public"],
 )
+
+# Build-time tool: turns `git describe` into the C header behind `--version` (see
+# //src/common:version_header). Generated, not checked in: a hand-written version string
+# drifts from the commit it claims to describe and nobody notices until a bug report
+# names a version that was never released.
+py_binary(
+    name = "gen_version",
+    srcs = ["gen_version.py"],
+    visibility = ["//visibility:public"],
+)
