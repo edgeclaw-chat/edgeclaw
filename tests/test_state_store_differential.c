@@ -300,14 +300,14 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     edc_queue_init(&child->turns);
     edc_task_group_add_task(g1, child);
 
-    /* dep: child -> leader (outgoing edge on the child, as the serializer writes it) */
-    struct edc_task_dep *dep = g_new0(struct edc_task_dep, 1);
-    dep->source = leader;
-    dep->target = child;
-    dep->type = TASK_DEP_JOIN;
-    dep->completed = true;
-    dep->next = child->deps;
-    child->deps = dep;
+    /* dep: child -> leader. Built through the real door, NOT by hand: an edge is a PAIR of
+     * nodes (child->deps and leader->dependents) and only edc_task_add_dependency keeps them
+     * in step. A hand-built one-sided edge used to live here, and it was a use-after-free
+     * waiting for a teardown order: freeing the leader (which has no matching dependents
+     * node) left the child's dep pointing at freed memory, and freeing the child then read
+     * `dep->source->dependents`. leader is already COMPLETED above, so the API marks the
+     * edge completed itself -- exactly the state this fixture is after. */
+    edc_task_add_dependency(child, leader, TASK_DEP_JOIN);
 
     /* A second group, so group ordering and multiple groups are covered. */
     struct edc_task *sys = edc_task_new(edc_test_id("t-3"), s->session_id, edc_test_id("g-2"), "second group leader",

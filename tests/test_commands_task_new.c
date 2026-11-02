@@ -333,8 +333,13 @@ int main(void)
     if (g_llm_task)
     {
         const char *full = "a prompt clearly longer than thirty characters";
+        /* strlen, NOT sdslen: task->description is a plain `char *` from strdup
+         * (edc_task_new), not an sds. sdslen reads the length header at s[-1], i.e. one byte
+         * BEFORE the allocation -- an out-of-bounds read that only a sanitizer sees, and
+         * that returns a garbage length which this assertion would happily "pass" or fail
+         * for the wrong reason. */
         CHECK(g_llm_task->description && strcmp(g_llm_task->description, full) != 0 &&
-                  sdslen(g_llm_task->description) < strlen(full),
+                  strlen(g_llm_task->description) < strlen(full),
               "the description is the truncated display name");
         CHECK(g_llm_task->description && strstr(g_llm_task->description, "...") != NULL,
               "and the truncation is marked");

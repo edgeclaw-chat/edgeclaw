@@ -195,7 +195,11 @@ size_t edc_file_index_query(const char *root, const char *query, char *buf, size
     if (error)
         edc_error_free(error);
 
-    qsort(ctx.hits, ctx.n, sizeof(*ctx.hits), hit_cmp);
+    /* qsort's array argument is declared non-null: sorting zero (or one) hits is undefined
+     * behaviour even though every libc tolerates it. A completion query that matches
+     * nothing is the common case, not the exception, so the guard belongs here. */
+    if (ctx.n > 1)
+        qsort(ctx.hits, ctx.n, sizeof(*ctx.hits), hit_cmp);
 
     /* 4. Emit: an absolute (or '~') query keeps absolute paths; a relative one is written
      *    relative to the completion root, so what the picker inserts stays short -- unless

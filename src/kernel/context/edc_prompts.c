@@ -287,7 +287,12 @@ UT_array *edc_prompts_list(const char *dir, const struct edc_config *conf)
     edc_error_free(error);
     sdsfree(scan.dir);
 
-    utarray_sort(prompts, edc_prompt_name_cmp);
+    /* Sort only when there is something to sort: utarray_sort expands to qsort(), whose
+     * pointer argument is declared non-null, so qsort(NULL, 0, ...) is undefined behaviour
+     * even though it "works". UBSAN flags it; an empty directory is a normal case (a
+     * prompts/ directory with no templates). */
+    if (utarray_len(prompts) > 1)
+        utarray_sort(prompts, edc_prompt_name_cmp);
     return prompts;
 }
 
