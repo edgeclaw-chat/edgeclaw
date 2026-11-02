@@ -1,0 +1,8 @@
+The IANA time zone database (tzdata/tzdb) is in the public domain.
+
+The files under thirdparty/brutezone/ are generated from that database: timezone_database.h
+is a compiled table of the zone rules, and timezone.c/timezone.h are a small lookup layer
+written for EdgeClaw.  The database is maintained by the IANA time zone database project at
+https://www.iana.org/time-zones; its public-domain status is stated in the tz repository's
+LICENSE file ("This file is in the public domain, so clarified as of 2009-05-17 by Arthur
+David Olson.").

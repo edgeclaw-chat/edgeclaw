@@ -166,6 +166,12 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
 
+      # After the build above, the external repositories exist, so the script can compare the
+      # committed licences against the sources they came from. A dependency bump without a
+      # refreshed notice fails here rather than shipping an archive that misstates its terms.
+      - name: Verify third-party notices are current
+        run: python3 tools/gen_notices.py --check
+
       - name: Test
         run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
         env:

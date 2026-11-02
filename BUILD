@@ -1,4 +1,4 @@
-load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
 # Exported so //src/common:version_header can resolve a path inside the checkout. That is
@@ -290,6 +290,23 @@ genrule(
     visibility = ["//visibility:public"],
 )
 
+# Licence texts travel WITH the binary. EdgeClaw ships as one statically linked executable,
+# so distributing it distributes every library linked into it -- those licences have to
+# accompany the archive, or the release is not compliant. Refreshed and checked by
+# tools/gen_notices.py; the texts are committed rather than generated during the build so a
+# release does not depend on a Bazel external cache happening to exist (see that script).
+pkg_files(
+    name = "licenses_files",
+    srcs = [
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+    ] + glob(["licenses/**"]),
+    # from_root(""), not the default: the default strips ALL directories, which would
+    # flatten licenses/<component>/LICENSE onto a single colliding `LICENSE`.
+    strip_prefix = strip_prefix.from_root(""),
+    visibility = ["//visibility:public"],
+)
+
 # Release archive: a single self-contained binary. The default workspace is
 # embedded in the binary and released to ~/.edgeclaw/ on first run, so no
 # workspace/ copy ships alongside it.
@@ -297,6 +314,7 @@ pkg_tar(
     name = "edgeclaw",
     srcs = [
         ":edgeclaw_binary",
+        ":licenses_files",
     ],
     extension = "tar.gz",
     package_dir = FILE_NAME,
@@ -313,6 +331,7 @@ pkg_tar(
     name = "device_agent",
     srcs = [
         ":device_agent_binary",
+        ":licenses_files",
     ],
     extension = "tar.gz",
     package_dir = DAGENT_FILE_NAME,
