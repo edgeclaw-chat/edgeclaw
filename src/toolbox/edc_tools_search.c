@@ -13,10 +13,16 @@
 #include <ctype.h>
 #include <string.h>
 
-/* POSIX regex on every platform: the system <regex.h> on POSIX, and pcre2's POSIX
- * wrapper on Windows (which has no <regex.h>) -- the same arrangement the kernel already
- * uses, wired by the same BUILD select. */
+/* POSIX regex on every platform: the system <regex.h> on POSIX, and pcre2's POSIX wrapper
+ * on Windows (which has no <regex.h>). Note the HEADER NAME differs -- pcre2 ships
+ * `pcre2posix.h`, and it maps regcomp/regexec/regerror/regfree onto pcre2_* with macros, so
+ * only the include changes, not the calls. The BUILD select wires the dependency; it cannot
+ * make `<regex.h>` exist. */
+#ifdef _WIN32
+#include <pcre2posix.h>
+#else
 #include <regex.h>
+#endif
 
 /* ── grep / find, in C ──────────────────────────────────────────────────────
  *
