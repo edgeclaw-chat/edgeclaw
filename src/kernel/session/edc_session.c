@@ -586,9 +586,13 @@ bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *s
     const bool probe = edc_state_probe_enabled();
     const uint64_t t0 = probe ? edc_state_probe_now_ns() : 0;
 
-    long rows = 0;
-    long n_tasks = 0;
-    long n_msgs = 0;
+    /* int64_t, not long: session_load_state_impl() and edc_state_probe_load() both take
+     * int64_t*, and on a 32-bit target `long` is only 32 bits wide -- passing `long*` there
+     * is an incompatible pointer type (an error with modern GCC, and a silent truncation
+     * before that). It compiled on aarch64 only because `long` happens to be 64-bit there. */
+    int64_t rows = 0;
+    int64_t n_tasks = 0;
+    int64_t n_msgs = 0;
     const bool ok = session_load_state_impl(session, sched, &rows, &n_tasks, &n_msgs);
     const uint64_t t1 = probe ? edc_state_probe_now_ns() : 0;
 
