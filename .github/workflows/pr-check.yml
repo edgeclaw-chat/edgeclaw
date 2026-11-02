@@ -172,6 +172,27 @@ jobs:
       - name: Verify third-party notices are current
         run: python3 tools/gen_notices.py --check
 
+      # The notices being committed says nothing about them being IN the archive -- that is a
+      # pkg_tar srcs list, and dropping a dependency's licence from it is a one-line mistake
+      # no unit test would catch. Assert on the artifact a user downloads.
+      - name: Verify the release archive carries its licences
+        run: |
+          set -euo pipefail
+          bazel build //:edgeclaw --action_env=TMPDIR="$RUNNER_TEMP"
+          # Ask Bazel for the artifact rather than globbing: bazel-bin is a symlink (a plain
+          # `find` does not follow it and finds nothing), and the file name carries the
+          # describe string, which a glob would have to guess.
+          tarball=$(bazel cquery --output=files //:edgeclaw --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "no release tarball was produced"; exit 1; }
+          entries=$(tar tzf "$tarball")
+          for required in 'LICENSE' 'THIRD_PARTY_NOTICES.md' 'licenses/'; do
+            echo "$entries" | grep -q "$required" \
+              || { echo "$tarball is missing $required"; exit 1; }
+          done
+          echo "$tarball carries $(echo "$entries" | grep -c 'LICENSE') licence file(s)"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
       - name: Test
         run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
         env:
