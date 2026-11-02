@@ -14,8 +14,13 @@ release builds still work) and publishes only for `v*` tags.
 
 ## 1. Before you start
 
-- [ ] `dev` is green in CI: the `build` matrix, `test`, and `asan` jobs. `release` will not
-      start until all three pass — but knowing that before merging saves a round trip.
+**Pushing to `dev` runs no CI.** `PR Check` triggers on `pull_request → master` and `Release`
+on push to `master` or a `v*` tag, so a commit that only lands on `dev` has never been built
+by anything but the machine that wrote it. Open the `dev → master` PR and let it run — that
+PR is the first time CI sees the work, not a formality after it.
+
+- [ ] The `dev → master` PR is green: the `build` matrix, `test`, `asan`, the licence check
+      and the archive check. `release` will not start until `build`/`test`/`asan` pass.
 - [ ] `bazel build //tests:all` passes. It is a separate check from `bazel test` because
       `manual`-tagged targets compile only under `build`; two of them once sat broken for
       months.
@@ -24,13 +29,17 @@ release builds still work) and publishes only for `v*` tags.
 
 ## 2. Decide the version
 
-- [ ] Pick the number and say why in the tag message. Note that `v1.0.0`–`v1.6.2` already
-      exist as development snapshots; a "1.0" promise made now needs a number that cannot be
-      confused with them.
-- [ ] `./edgeclaw --version` reports the *right* thing, and will after the tag only if the
-      build re-runs — the version string is derived at build time from `git describe`, so a
-      tag built from a stale cache shows the old describe. Confirm on the CI artifact, not
-      locally.
+**This release is `v2.0.0`.** Decided 2026-11-02: `v1.0.0`–`v1.6.2` are development
+snapshots (the first is literally `init(project)`), so a "1.0" promise made now would be
+indistinguishable from them. A major bump is the one number that cannot be confused with
+what came before, and this release does change things users depend on — the database is
+migrated in place instead of refused, and the shell tool now reports exit status.
+
+- [ ] Confirm the number is still right (has anything shipped since this was written?).
+- [ ] Say why in the annotated tag message, not just the number.
+- [ ] `./edgeclaw --version` reports the *right* thing. The version string is derived at
+      build time from `git describe`, so a build from a stale cache shows the previous
+      describe. Confirm on the CI artifact, not locally.
 
 ## 3. Migrations
 
@@ -60,7 +69,7 @@ The one thing that can silently destroy a user's history.
   Expect `LICENSE`, `THIRD_PARTY_NOTICES.md`, and one `licenses/<component>/LICENSE` per
   redistributed component.
 - [ ] `docs/limitations.md` is current. Anything fixed in this release that appears there
-      should move to its "fixed at 1.0" section in the same commit.
+      should move to its "fixed at v2.0.0" section in the same commit.
 - [ ] The sanitizer gate is what this checklist says it is (hard or
       report-only right now?).
 

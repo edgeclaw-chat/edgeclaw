@@ -7,7 +7,7 @@ a limitation nobody wrote down becomes a bug report, and a limitation written do
 If something here is wrong — a feature listed as missing that now exists — that is a bug in
 this file. Fix the file in the same commit that adds the feature.
 
-Last reviewed: 2026-11-02 (v1.0 preparation).
+Last reviewed: 2026-11-02 (v2.0.0 release preparation).
 
 ---
 
@@ -107,7 +107,7 @@ Stated plainly, because "it compiles" is not evidence:
 | Real-model behaviour | The suite drives a fake LLM. Prompt and tool-choice quality is not asserted anywhere. |
 | macOS | Builds in CI (aarch64). Seatbelt sandbox paths are compiled, not exercised. |
 
-## Fixed at 1.0 that used to be limitations
+## Fixed at v2.0.0 that used to be limitations
 
 Listed because older docs and issues still describe these as open:
 
