@@ -62,7 +62,11 @@ int main(void)
     cJSON_AddStringToObject(msg, "content", "什么是敏捷开发?");
     cJSON_AddItemToArray(msg_lst, msg);
 
-    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msg_lst, NULL, NULL);
+    /* Two arguments, not three: fe9e7e9 ("make the database the session's only copy")
+     * removed the trailing EdcQueue *turn -- a turn is rows in the database now, not an
+     * in-memory queue handed to the request. The call used to pass NULL for both `tools`
+     * and `turn`, so dropping the last one is exactly equivalent. */
+    struct edc_llm_actor_req *req = edc_llm_actor_req_new(msg_lst, NULL);
     edc_actor_send(llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, observe_actor, NULL, req,
                                                 (edc_actor_data_free_fn)edc_llm_actor_req_free));
 
