@@ -188,7 +188,9 @@ model, and continues instead of starting over. The id is required (there is no b
 Common options: `--bg` (same group, background), `--new-group`, `-d <id>` (wait for a task
 and inject its output), `-g <group>`. A shell line says background with `&`, not `--bg`.
 
-Full reference: `docs/edgeclaw.md` (or `man docs/edgeclaw.1`).
+Full reference: `docs/edgeclaw.md` (or `man docs/edgeclaw.1`). What it deliberately does
+*not* do, and where the rough edges are: [`docs/limitations.md`](docs/limitations.md) —
+worth reading before you file a bug.
 
 ---
 

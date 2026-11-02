@@ -189,8 +189,9 @@ static sds edc_context_get_identity(const char *os_name, const char *edc_home, c
                              "\n"
                              "Read it (read_file) whenever you need to know how EdgeClaw itself works: "
                              "commands and their options, sessions, tasks and groups, the input syntax, "
-                             "tools and their limits. The other chapters live in the same directory "
-                             "(`edgeclaw.1`, `input-syntax.zh.md`, `local-shell-command.zh.md`, "
+                             "tools and their limits. Check `limitations.md` there BEFORE telling a user "
+                             "something is unsupported or broken. The other chapters live in the same "
+                             "directory (`edgeclaw.1`, `input-syntax.zh.md`, `local-shell-command.zh.md`, "
                              "`tool-output-limits.zh.md`, `prompt-library.md`, ...). It documents THIS "
                              "binary -- prefer it to guessing, and to any older copy of the docs.\n"
                              "\n";

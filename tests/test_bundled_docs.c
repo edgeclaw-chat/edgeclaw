@@ -141,8 +141,8 @@ int main(void)
      * be in, and what must not be -- and the count keeps a stray glob from slipping back
      * in without failing here. */
     static const char *k_manual[] = {"edgeclaw.1", "edgeclaw.md", "input-syntax.zh.md",
-                                     "local-shell-command.zh.md", "prompt-library.md",
-                                     "tool-output-limits.zh.md"};
+                                     "limitations.md", "local-shell-command.zh.md",
+                                     "prompt-library.md", "tool-output-limits.zh.md"};
     const size_t manual_count = sizeof(k_manual) / sizeof(k_manual[0]);
     for (size_t i = 0; i < manual_count; i++)
     {

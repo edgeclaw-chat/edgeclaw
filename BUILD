@@ -238,6 +238,7 @@ DOCS_FILES = [
     "docs/edgeclaw.1",                # the man page
     "docs/edgeclaw.md",               # the manual: commands, sessions, tasks, tools
     "docs/input-syntax.zh.md",        # quoting, the shell-like syntax, @file, !cmd
+    "docs/limitations.md",            # what it does not do, and what is not verified
     "docs/local-shell-command.zh.md", # the !cmd local shell
     "docs/prompt-library.md",         # /prompt templates
     "docs/tool-output-limits.zh.md",  # truncation / output caps
