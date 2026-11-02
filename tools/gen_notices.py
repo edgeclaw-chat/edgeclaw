@@ -31,6 +31,7 @@ WHERE EACH TEXT COMES FROM, and why there are three kinds:
 import argparse
 import glob
 import os
+import subprocess
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -130,17 +131,51 @@ COMPONENTS = [
 
 
 def external_roots():
-    """Every Bazel external root on this machine.
+    """Where to look for fetched Bazel repositories.
 
-    Several can exist (one per output base). Any of them that still holds the component is
-    fine -- the licence text does not depend on which build directory fetched it.
+    Two sources, because neither alone is enough:
 
-    The layout is ~/.cache/bazel/_bazel_<user>/<output-base-hash>/external, hence two
-    wildcards between the bazel root and `external`.
+    1. `bazel info output_base` is authoritative -- it is where the repositories actually
+       are, whatever `--output_user_root` or bazelisk decided. Requiring a build first is
+       acceptable: without one there is nothing to compare against anyway.
+    2. The conventional user-root layout, as a fallback for when the `bazel` binary is not
+       on PATH (a plain source checkout, a release tarball).
+
+    The glob alone was the first version of this and it failed on CI with "roots: (none)":
+    the runner keeps its output base somewhere the hard-coded layout did not cover, so a
+    check that passed locally decided the whole licence tree was missing. Guessing at a
+    tool's internal layout is the bug; asking the tool is the fix.
     """
+    roots = []
+
+    try:
+        out = subprocess.run(["bazel", "info", "output_base"], cwd=REPO,
+                             capture_output=True, text=True, timeout=180)
+        if out.returncode == 0:
+            # `bazel info` prints progress lines before the answer; the answer is the last
+            # line that looks like a path.
+            for line in reversed(out.stdout.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("/"):
+                    candidate = os.path.join(line, "external")
+                    if os.path.isdir(candidate):
+                        roots.append(candidate)
+                    break
+    except (OSError, subprocess.SubprocessError):
+        pass
+
     home = os.path.expanduser("~")
-    pattern = os.path.join(home, ".cache", "bazel", "_bazel_*", "*", "external")
-    return sorted(glob.glob(pattern))
+    for pattern in (("_bazel_*", "*", "external"),):
+        roots.extend(sorted(glob.glob(os.path.join(home, ".cache", "bazel", *pattern))))
+
+    # Preserve order, drop duplicates.
+    seen = set()
+    unique = []
+    for r in roots:
+        if r not in seen:
+            seen.add(r)
+            unique.append(r)
+    return unique
 
 
 def leading_comment(path):
