@@ -281,6 +281,11 @@ _deps
 # A/B harness fixtures are configuration, not build output
 !tools/ab/responses/*.json
 !tools/ab/responses/*.jsonl
+# Third-party licence texts are source, not build output. The `*json` rule above is meant
+# for stray JSON files, but a bare `*json` matches any path component ending in "json" --
+# including the directory `licenses/cjson/`, which silently dropped cJSON's licence from
+# every commit until CI (building from a clean checkout) reported it missing.
+!licenses/**
 MODULE.bazel.lock
 
 # Terminal emulator stray files (accidental empty files in repo root)
