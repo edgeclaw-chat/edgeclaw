@@ -65,6 +65,15 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+# `--define=sanitize=1` (set by --config=asan): ASAN needs a dynamic runtime, so every
+# target that would otherwise link -static has to drop it. Kept separate from `valgrind`
+# because the two are used for different runs and may one day want different link flags.
+config_setting(
+    name = "sanitize",
+    define_values = {"sanitize": "1"},
+    visibility = ["//visibility:public"],
+)
+
 platform(
     name = "arm_linux",
     constraint_values = [

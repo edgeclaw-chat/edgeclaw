@@ -55,3 +55,29 @@ build:windows --repo_env=PATH
 #   bazel coverage --config=cov //tests/...
 build:cov --collect_code_coverage
 build:cov --instrumentation_filter=//src
+
+# ── AddressSanitizer + UndefinedBehaviorSanitizer ─────────────────────────────
+# `bazel test //tests:all --config=asan`: the branches ordinary tests do not reach -- a
+# use-after-free on an error path, an overflow in a length calculation -- surface here as a
+# crash instead of as a plausible-looking result. This is the only job that exercises
+# failure paths, so it is deliberately part of the release gate, not an optional extra.
+#
+# Must NOT carry -static (ASAN needs a dynamic runtime). That is fine because only the
+# SHIPPED binaries add -static, through their own LINK_OPTS; `//tests:...` targets do not.
+build:asan --compilation_mode=dbg
+build:asan --strip=never
+build:asan --define=sanitize=1
+build:asan --copt=-g
+build:asan --copt=-fsanitize=address,undefined
+build:asan --copt=-fno-omit-frame-pointer
+build:asan --linkopt=-fsanitize=address,undefined
+# Leak detection stays off: several tests fork or hold a store open on purpose, so a leak
+# report there is noise. ASAN's memory errors and UBSAN's findings still abort the run.
+test:asan --test_env=ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:print_stacktrace=1
+test:asan --test_env=UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+# lwIP does pointer arithmetic that assumes natural alignment and trips UBSAN's alignment
+# check in several files (memp.c:195, pbuf.c:181, ...). It is third-party code we do not
+# patch, and the finding is about lwIP's own buffer layout rather than our use of it, so the
+# check is disabled for that library -- not globally: an unaligned access in OUR code stays
+# visible, which is where the check has something to say.
+build:asan --per_file_copt='.*lwip/src/.*\.c$@-fno-sanitize=alignment'

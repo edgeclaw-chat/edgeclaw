@@ -35,6 +35,8 @@ LINK_OPTS = select({
     "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": [],
+    # `--config=asan` sets //:sanitize: ASAN cannot link statically.
+    "//:sanitize": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
 

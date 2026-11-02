@@ -4,6 +4,8 @@ LINK_OPTS = select({
     "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
     "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    # `--config=asan` sets //:sanitize: ASAN cannot link statically.
+    "//:sanitize": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],
 })
 
