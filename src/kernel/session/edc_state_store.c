@@ -11,7 +11,9 @@
  */
 
 #include "edc_scheduler.h"
+#include "edc_state_migrate.h"
 #include "edc_state_store.h"
+#include "edc_version.h"
 
 #include "edc_config.h"
 #include "edc_datetime_utils.h"
@@ -651,9 +653,46 @@ static bool apply_pragmas(sqlite3 *db)
 }
 
 /* ── Version handling ───────────────────────────────────────────────────────
- * Exactly one version, no migration code (design doc §3.3). A mismatch is not a data
- * incident in a development build; it means "this build changed the schema, recreate the
- * file", and the message says exactly what to delete. */
+ * One schema version (`EDC_DB_VERSION`) and one upgrade direction: forward, one step at a
+ * time, through the registry in edc_state_migrate.c.
+ *
+ * A mismatch used to be terminal -- "remove the file to recreate it". It is not any more:
+ * from v1.0 on, a workspace that a previous EdgeClaw wrote is MIGRATED (backed up first,
+ * verified, one transaction per step), and only a NEWER schema is refused, because reading
+ * a newer file with an older binary is how data gets silently dropped. */
+/* Every table the schema promises must exist. Shared by the create path and the migrate
+ * path: a partial schema should fail here, with a sentence a user can act on, rather than
+ * as a confusing SQL error in the middle of a flush. */
+static bool require_expected_tables(sqlite3 *db, const char *when)
+{
+    for (int i = 0; EDC_EXPECTED_TABLES[i]; i++)
+    {
+        char sql[128];
+        snprintf(sql, sizeof(sql),
+                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='%s'",
+                 EDC_EXPECTED_TABLES[i]);
+        if (query_int(db, sql, 0) != 1)
+        {
+            log_error("state_store: %s left no '%s' table", when, EDC_EXPECTED_TABLES[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Four cases, in the order they are decided:
+ *
+ *  1. same version        -> nothing to do.
+ *  2. newer version       -> REFUSE. A database written by a newer build cannot be
+ *                            understood by this one, and pretending otherwise would
+ *                            corrupt it. The answer is "update EdgeClaw", never "delete".
+ *  3. older, known        -> MIGRATE in place (edc_state_migrate.c): back up, prove the
+ *                            backup opens, then one transaction per step.
+ *  4. no version stamp    -> brand-new file: build the schema and stamp it.
+ *
+ * The third case is the one that matters to a user: before this existed, a schema bump
+ * answered with "remove the file to recreate it", which is exactly how someone loses every
+ * conversation they ever had. */
 static bool check_or_create_schema(sqlite3 *db)
 {
     const int version = query_int(db, "PRAGMA user_version", -1);
@@ -666,13 +705,28 @@ static bool check_or_create_schema(sqlite3 *db)
     if (version == EDC_DB_VERSION)
         return true;
 
+    if (version > EDC_DB_VERSION)
+    {
+        log_error("state_store: database schema is v%d, but this EdgeClaw (%s) understands "
+                  "v%d -- a newer EdgeClaw wrote %s. Update EdgeClaw; this build will not "
+                  "touch a schema it cannot read, because writing it back would lose "
+                  "whatever the newer version added.",
+                  version, edc_version(), EDC_DB_VERSION,
+                  g_db_path ? g_db_path : "(the database)");
+        return false;
+    }
+
     if (version != 0)
     {
-        log_error("state_store: database schema is v%d, this build expects v%d. This is a "
-                  "development build with no migration path -- remove %s (and its -wal / "
-                  "-shm) to recreate it.",
-                  version, EDC_DB_VERSION, g_db_path ? g_db_path : "(the database)");
-        return false;
+        char err[1024] = {0};
+        if (!edc_migrate_run(db, g_db_path, version, err, sizeof err))
+        {
+            log_error("state_store: %s", err);
+            return false;
+        }
+        if (!require_expected_tables(db, "migration"))
+            return false;
+        return true;
     }
 
     /* user_version == 0: a brand-new file (or one created outside this code). Build the
@@ -688,20 +742,8 @@ static bool check_or_create_schema(sqlite3 *db)
             return false;
     }
 
-    /* Sanity: every expected table must exist now. A partial schema should fail here
-     * rather than as a confusing SQL error in the middle of a flush. */
-    for (int i = 0; EDC_EXPECTED_TABLES[i]; i++)
-    {
-        char sql[128];
-        snprintf(sql, sizeof(sql),
-                 "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='%s'",
-                 EDC_EXPECTED_TABLES[i]);
-        if (query_int(db, sql, 0) != 1)
-        {
-            log_error("state_store: schema creation left no '%s' table", EDC_EXPECTED_TABLES[i]);
-            return false;
-        }
-    }
+    if (!require_expected_tables(db, "schema creation"))
+        return false;
 
     log_info("state_store: created schema v%d at %s", EDC_DB_VERSION, g_db_path);
     return true;

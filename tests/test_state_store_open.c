@@ -4,8 +4,9 @@
  *   - the PRAGMA set actually took effect (a wrong synchronous is invisible until a
  *     crash, so it is asserted here instead);
  *   - the schema is complete and stamped with exactly one version;
- *   - a database from another version is REFUSED (there is no migration path -- that is
- *     the design, so it must not silently half-load);
+ *   - a database from a NEWER version is REFUSED (this binary must not write a schema it
+ *     cannot read). An OLDER version is migrated forward instead, not refused -- that is
+ *     test_state_migrate's subject, and it is the path a user upgrading EdgeClaw takes;
  *   - a symlinked database is REFUSED (the workspace is model-writable; this exact hole
  *     was exploited once with jobs.json);
  *   - the workspace lock is exclusive and released on close (two agent processes would
@@ -269,7 +270,7 @@ static void test_schema_tables(void)
     }
 }
 
-/* ── 4. a different schema version is refused ──────────────────────────────── */
+/* ── 4. a NEWER schema version is refused ──────────────────────────────────── */
 static void test_version_mismatch_refused(void)
 {
     printf("\n── version mismatch ──\n");

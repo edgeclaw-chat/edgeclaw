@@ -12,10 +12,17 @@
  * edc_scheduler.c). SQLite itself would tolerate more, but the in-memory session tree
  * is not thread-safe and two writers would diverge from it.
  *
- * NO MIGRATION PATH, BY DESIGN. This is a development build: the schema has exactly one
- * version (`EDC_DB_VERSION`), and a database written by any other version is REFUSED at
- * startup with an instruction to delete the file. There is no import, no dual-write, no
- * rollback, and no compatibility decoding. See design doc §3.3.
+ * MIGRATIONS RUN FORWARD, IN THE BINARY. The schema has one version (`EDC_DB_VERSION`) and
+ * a registry of steps that upgrade a database written by an older build in place
+ * (edc_state_migrate.{c,h}). Starting EdgeClaw is the whole procedure: it checkpoints the
+ * WAL, copies the database aside, proves the copy opens (`quick_check`), then commits each
+ * step together with its version stamp, so a crash can only leave the file at a complete
+ * version. The backup is kept and named in the log.
+ *
+ * A database written by a NEWER build is still refused: an older binary cannot understand
+ * a newer schema, and writing it back would drop whatever that version added. That refusal
+ * says "update EdgeClaw", never "delete the file" -- the delete-and-recreate instruction
+ * this header used to give was how a schema bump cost a user every conversation they had.
  */
 
 #include <stdbool.h>
@@ -88,7 +95,9 @@ struct edc_scheduler;
  *     - memo_events.changed: which fields a change touched (EDC_MEMO_F_*). It was
  *       in-memory only, so a restart silently turned every past change into "unknown"
  *       and the notices fell back to re-printing summaries.
- *     Migration: tools/migrate_edgeclaw_db_v7_to_v8.py. It backfills
+ *     Migration: built in since v1.0 (edc_state_migrate.c step_v7_to_v8); the python
+ *     script tools/migrate_edgeclaw_db_v7_to_v8.py stays for databases that stopped at
+ *     v7 before the binary could upgrade them. It backfills
  *     memo_baseline_done = (memo_seen_seq > 0) -- a task that had already consumed
  *     events has necessarily been through the index -- and leaves changed = 0, which is
  *     the documented "unknown, render the content" value, not a guess. */
@@ -103,7 +112,8 @@ struct edc_scheduler;
  *    is itself a symlink must not become an escape hatch);
  *  - another process already holds the workspace lock;
  *  - the filesystem is not a local one (SQLite's locking is not reliable over NFS/SMB);
- *  - the file carries a different EDC_DB_VERSION.
+ *  - the file carries a NEWER EDC_DB_VERSION (an older binary must not write a newer
+ *    schema). An older version is migrated forward in place, not refused.
  *
  * Idempotent: a second call with the store already open returns true.
  * Returns false for a NULL cfg or one with no workspace. */

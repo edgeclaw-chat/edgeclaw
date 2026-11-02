@@ -625,6 +625,22 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The schema-upgrade runner (edc_state_migrate.c). Drives the runner with synthetic steps
+# -- success, failure before a write, failure AFTER a write, a verify that fails, a hole in
+# the chain -- and then exercises the real v7 -> v8 step against a hand-built v7 database.
+# The properties it pins (backup readable and pre-migration, DDL rolled back, chain checked
+# before any write, newer schema refused) are the ones whose absence loses a user's history.
+cc_test(
+    name = "test_state_migrate",
+    srcs = ["test_state_migrate.c"],
+    deps = [
+        "//src/kernel:kernel",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # Guards the no-patch SQLite configuration: asserts that the compile options injected via
 # .bazelrc --per_file_copt actually reached the library. Without this, a --per_file_copt
 # rule that stops matching would silently yield an unhardened sqlite (see the test file).
