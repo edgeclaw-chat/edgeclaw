@@ -187,9 +187,6 @@ jobs:
   asan:
     name: AddressSanitizer + UBSan
     runs-on: ubuntu-latest
-    # REPORT-ONLY until the full suite has run green under ASAN in CI; the two findings
-    # from the first local run are already fixed (docs/asan-findings.md §1/§2).
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

@@ -174,13 +174,6 @@ jobs:
   asan:
     name: AddressSanitizer + UBSan
     runs-on: ubuntu-latest
-    # REPORT-ONLY for now. The two findings from the first local run are FIXED (both were
-    # test defects: a one-sided dependency edge built by hand, and sdslen() applied to a
-    # strdup'd char*; see docs/asan-findings.md). What is missing is the proof: the full
-    # suite could not be run under ASAN locally (the dbg+tui artifacts do not fit on this
-    # machine's 30G disk -- 64/125, then ENOSPC). Flip this to false after the first FULL
-    # green asan run in CI, and record the date in that document.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
