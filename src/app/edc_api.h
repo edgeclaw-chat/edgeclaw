@@ -102,8 +102,6 @@ extern const char *edc_app_models_model_name(const char *model_id);
 extern int edc_app_models_model_context(const char *model_id);
 extern int edc_app_models_model_output(const char *model_id);
 extern int edc_app_models_model_is_chat(const char *model_id);
-extern int edc_app_models_provider_matches(const char *provider_id, const char *query);
-extern int edc_app_models_model_matches(const char *model_id, const char *query);
 
 /* ── Command surface (read-only projection of the shell's command table) ──────
  * The TUI's completion palette reads these. Static data -> no `struct edc_app`

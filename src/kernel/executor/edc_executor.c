@@ -3,11 +3,13 @@
 #include "edc_config.h"
 #include "edc_exec_io.h"
 #include "edc_llm_error_kind.h"
+#include "edc_session_memory.h" /* EDC_MEMO_KIND_COMPACT: compaction gets its own failure text */
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "sds.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,28 +23,30 @@ void edc_executor_init(struct edc_executor *ex, const struct edc_executor_ops *o
 }
 
 /* Read-only environment fact: max_iter is the run budget (it decides whether to
- * continue), so it stays on the advance path rather than behind a port. */
+ * continue), so it stays on the advance path rather than behind a port. A compaction task
+ * gets no budget of its own: its material is the index only, so the normal tool loop is all
+ * it needs. */
 static int exec_max_iter(const struct edc_executor *ex)
 {
     return (ex->config && ex->config->max_iter > 0) ? ex->config->max_iter : 0;
 }
 
 /* Compact token count for a one-line notice: 980 / 65.5k / 1.0M. */
-static void fmt_tokens(long long n, char *buf, size_t cap)
+static void fmt_tokens(int64_t n, char *buf, size_t cap)
 {
     if (n >= 1000000)
         snprintf(buf, cap, "%.1fM", (double)n / 1000000.0);
     else if (n >= 1000)
         snprintf(buf, cap, "%.1fk", (double)n / 1000.0);
     else
-        snprintf(buf, cap, "%lld", n);
+        snprintf(buf, cap, "%" PRId64 "", n);
 }
 
 /* The only thing a user can act on once the context no longer fits: the numbers and
  * the next step. `prompt` is what the provider counted (0 = it reported none),
  * `window` comes from the config (0 = unknown), `what` says which of the three
  * overflows this is. Caller owns the returned sds. */
-static sds exec_overflow_notice(const struct edc_executor *ex, long long prompt_tokens, const char *what)
+static sds exec_overflow_notice(const struct edc_executor *ex, int64_t prompt_tokens, const char *what)
 {
     char num[32];
     char win[32];
@@ -220,7 +224,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         {
             task->net_retried = true;
             task->llm_rounds++; /* the retry consumes a run-budget round */
-            log_warn("task %s: LLM transport failure (%s) — re-sending once", task->task_id, notice);
+            log_warn("task %s: LLM transport failure (%s) — re-sending once", edc_id_str(task->task_id), notice);
             return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
         }
 
@@ -264,7 +268,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
             edc_task_mark_failed(task);
             const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
             log_error("%s: task %s asked for a tool call — discarded, nothing landed",
-                      curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)");
+                      curate ? "L2 memo" : "L1 fold", edc_id_str(task->task_id));
             return (struct edc_advance_result){
                 .outcome = EDC_STEP_ERROR,
                 .settled = true,
@@ -298,9 +302,15 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
 
         if (task->active_turn)
         {
-            /* The final reply is rendered as Markdown. */
+            /* The final reply is rendered as Markdown. Delete-then-add, NOT
+             * ReplaceItemInObjectCaseSensitive: when the key is absent (a message that
+             * never carried "render") the replace path returns false and drops the new
+             * item on the floor, leaking it plus its strdup'd name. */
             if (e->msg)
-                cJSON_ReplaceItemInObjectCaseSensitive(e->msg, "render", cJSON_CreateString("markdown"));
+            {
+                cJSON_DeleteItemFromObjectCaseSensitive(e->msg, "render");
+                cJSON_AddStringToObject(e->msg, "render", "markdown");
+            }
             edc_turn_add_assistant_message(task->active_turn, e->msg);
             e->msg = NULL;
 
@@ -351,13 +361,21 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
         /* A summary/curation that could not be finished. A FOLD keeps the old group
          * memory; a CURATION is tool-driven, so anything it already wrote through the
          * memory tools stays (there is no batch to roll back).
-         * docs/session-memory-write-path.md). */
+         * COMPACTION is the same shape: a truncated
+         * reply carries no tool calls, so only that reply's calls are lost -- the entries it
+         * already rewrote or deleted remain, and the task can simply be run again. */
         const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);
+        const bool compact = (task->memo_kind == EDC_MEMO_KIND_COMPACT);
         log_error("%s: task %s did not finish cleanly (reason=%d) — stopped early",
-                  curate ? "L2 memo" : "L1 fold", task->task_id ? task->task_id : "(null)", (int)e->reason);
-        if (e->reason == EDC_REASON_LENGTH)
+                  curate ? "L2 memo" : "L1 fold", edc_id_str(task->task_id), (int)e->reason);
+        if (e->reason == EDC_REASON_LENGTH && compact)
+            notice = "Compaction was truncated (max_tokens) — it stopped early; the entries it already rewrote "
+                     "or deleted remain. Run it again to continue.";
+        else if (e->reason == EDC_REASON_LENGTH)
             notice = curate ? "Curation was truncated (max_tokens) — it stopped early; entries it already wrote remain"
                             : "Summary was truncated (max_tokens) — discarded, the group memory is unchanged";
+        else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED && compact)
+            notice = "Compaction overflowed the model window — it stopped early; entries it already wrote remain.";
         else if (e->reason == EDC_REASON_CONTEXT_EXCEEDED)
             notice = curate
                          ? "Curation overflowed the model window — it stopped early; entries it already wrote remain"
@@ -367,7 +385,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
      * window looks like on providers that do not say the word. A plain `length`
      * (completion > 0) is a real truncation and keeps the generic line. */
     else if (e->reason == EDC_REASON_LENGTH && e->completion_tokens == 0 && window > 0 &&
-             (long long)e->prompt_tokens * 100 >= (long long)window * 99)
+             (int64_t)e->prompt_tokens * 100 >= (int64_t)window * 99)
     {
         sds advice = exec_overflow_notice(ex, e->prompt_tokens, "the answer was cut at max_tokens");
         edc_task_set_output(task, advice);

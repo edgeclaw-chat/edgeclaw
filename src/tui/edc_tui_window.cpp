@@ -1654,6 +1654,9 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
             head += " —";
             bubbles.push_back(MakeChatWidget("sys", "", head, "", EDC_APP_RENDER_PLAIN, 0));
             AppendHistoryBubbles(msgs, block_id ? block_id : "", &bubbles);
+            /* Every member's transcript is on screen now, so every member has been read. */
+            if (block_id && *block_id)
+                task_widget_->model()->MarkRead(block_id);
         }
     }
     else
@@ -1665,6 +1668,10 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
             head += " · input: " + std::string(input);
         bubbles.push_back(MakeChatWidget("sys", "", head, "", EDC_APP_RENDER_PLAIN, 0));
         AppendHistoryBubbles(msgs, sid, &bubbles);
+        /* The whole transcript -- the task's output included -- is on screen now. This is
+         * the structural place to say so: it holds for ANY way the view was opened (and the
+         * payload is parsed here anyway, so there is no line to re-parse). */
+        task_widget_->model()->MarkRead(sid);
     }
     cJSON_Delete(root);
 
@@ -1694,23 +1701,43 @@ void TUIWindow::Post(std::function<void()> task)
         task(); // no screen (construction / harness): run synchronously
 }
 
-/* `/task output|status|fg <id>`: the user asked about that task, so it has been read.
- * Parsed from what was typed -- the frontend owns the input box, and the reply text is
- * not something to re-parse. */
+/* `/task output|status|fg <id>`, `/task|group history <id>`: the user asked about that task,
+ * so it has been read. Parsed from what was typed -- the frontend owns the input box, and the
+ * reply text is not something to re-parse.
+ *
+ * The command list is for the replies that arrive as PLAIN TEXT: `/task output` prints the
+ * output, and `--json` prints the raw history payload. The normal history view does not need
+ * an entry here -- it marks itself read where the transcript is rendered (RenderTaskHistory),
+ * which also covers the group's members. */
 void TUIWindow::MarkReadFromInput(const std::string &line)
 {
-    static const char *const kCommands[] = {"/task output ", "/task status ", "/task fg "};
+    static const char *const kCommands[] = {"/task output ", "/task status ", "/task fg ",
+                                            "/task history ", "/group history "};
     for (const char *cmd : kCommands)
     {
         const size_t len = std::strlen(cmd);
         if (line.compare(0, len, cmd) != 0)
             continue;
-        std::string id = line.substr(len);
-        const size_t end = id.find_first_of(" \t\r\n");
-        if (end != std::string::npos)
-            id.resize(end);
-        if (!id.empty())
-            task_widget_->model()->MarkRead(id);
+        /* Every non-option word, not just the first: `/task history --json 42` puts the
+         * option before the id (`--json` may stand anywhere among the words), and an id
+         * that is not in the tree makes MarkRead a no-op -- so marking each candidate is
+         * both simpler and correct regardless of order. */
+        const std::string rest = line.substr(len);
+        size_t p = 0;
+        while (p < rest.size())
+        {
+            const size_t start = rest.find_first_not_of(" \t", p);
+            if (start == std::string::npos)
+                break;
+            const size_t end = rest.find_first_of(" \t\r\n", start);
+            const std::string word =
+                rest.substr(start, end == std::string::npos ? std::string::npos : end - start);
+            if (!word.empty() && word[0] != '-')
+                task_widget_->model()->MarkRead(word);
+            if (end == std::string::npos)
+                break;
+            p = end;
+        }
         return;
     }
 }

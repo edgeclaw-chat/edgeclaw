@@ -1,5 +1,6 @@
 #include "edc_context.h"
 #include "edc_file_utils.h"
+#include "edc_fold_files.h"
 #include "edc_resources.h"
 #include "edc_skills.h"
 #include "edc_task.h"
@@ -9,14 +10,21 @@
 #include "sds.h"
 #include "utlist_fix.h"
 
-/* Only files that are contractual and do not duplicate the persona stay in the prompt:
- *   - AGENTS.md   -- behaviour contract (tools/skills/memory/event conventions)
- *   - TOOLS.md    -- tool quick reference
- *   - IDENTITY.md -- optional identity override (absent by default)
- * SOUL.md / USER.md were dropped from the prompt and the seed workspace: the former's
- * principles duplicate AGENTS.md, the tool descriptions and skills; the latter is an
- * ALL-EMPTY template (no real fields), pure noise. pi has neither either. */
-const char *BOOTSTRAP_FILES[] = {"AGENTS.md", "TOOLS.md", "IDENTITY.md"};
+/* There are no "bootstrap files" any more -- the workspace is not a source of prompt text:
+ *
+ *   - The behaviour contract (skills / memory / guidelines / reminders / device) is generated
+ *     here, in edc_context_build_contract(). It belongs to the BINARY: it describes how this
+ *     program works, so it must change with the program. Shipping it as a file in the user's
+ *     workspace made it a copy that could never be updated -- the workspace is released once,
+ *     on first run, and an existing directory is never touched again.
+ *   - Tool descriptions come from the tool registry (request `tools` field + the generated
+ *     section), never from a file. TOOLS.md was the third copy of that list and it drifted
+ *     (it described web_search / web_fetch / message / spawn long after they were gone).
+ *   - AGENTS.md is PROJECT input, not bootstrap: ~/.edgeclaw/AGENTS.md plus the upward walk
+ *     from the session's workdir, see load_project_context(). A project that has none simply
+ *     gets no <project_instructions> section (same as pi).
+ *   - IDENTITY.md was dropped with the array: a persona override is a different feature
+ *     (custom prompt), not a file the release ships next to the model's instructions. */
 
 /* pi's "context file" candidates (docs/pi-system-prompt-guide.md §3.6): IN a directory
  * only the highest-priority one is taken; an override suppresses only its own directory. */
@@ -70,10 +78,6 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
 
     sds seen[64];
     size_t seen_n = 0;
-    /* The workspace's bootstrap files were collected elsewhere; remember them to avoid duplicates. */
-    for (size_t i = 0; i < sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]) && seen_n < 64; i++)
-        seen[seen_n++] = edc_path_join(workspace, BOOTSTRAP_FILES[i], NULL);
-
     sds body = sdsempty();
 
     /* (1) user-global (pi: ~/.pi/agent/AGENTS.md; us: ~/.edgeclaw/AGENTS.md) */
@@ -185,8 +189,9 @@ static sds edc_context_get_identity(const char *os_name, const char *edc_home, c
                              "\n"
                              "Read it (read_file) whenever you need to know how EdgeClaw itself works: "
                              "commands and their options, sessions, tasks and groups, the input syntax, "
-                             "tools and their limits. The other chapters live in the same directory "
-                             "(`edgeclaw.1`, `input-syntax.zh.md`, `local-shell-command.zh.md`, "
+                             "tools and their limits. Check `limitations.md` there BEFORE telling a user "
+                             "something is unsupported or broken. The other chapters live in the same "
+                             "directory (`edgeclaw.1`, `input-syntax.zh.md`, `local-shell-command.zh.md`, "
                              "`tool-output-limits.zh.md`, `prompt-library.md`, ...). It documents THIS "
                              "binary -- prefer it to guessing, and to any older copy of the docs.\n"
                              "\n";
@@ -221,38 +226,39 @@ static sds edc_context_get_identity(const char *os_name, const char *edc_home, c
     return identity;
 }
 
-static sds edc_context_load_bootstrap_files(const char *workspace)
+/* The behaviour contract: how this program works, in the program's own words.
+ *
+ * Generated rather than read from a file because a shipped file cannot be updated: the
+ * workspace is released once, so a workspace/AGENTS.md would freeze at the version the user
+ * first installed (and it did -- copies still described tools that no longer existed). Only
+ * facts that cannot come from a tool's JSON schema live here; anything a schema can say
+ * (parameters, one-line purpose) stays in the registry.
+ *
+ * Interpolated: the workspace path. Everything else is a constant, so two builds of the same
+ * version produce byte-identical prompts (docs/pi-system-prompt-guide.md §7). */
+static sds edc_context_build_contract(const char *workspace)
 {
-    sds result = sdsempty();
-    size_t num_files = sizeof(BOOTSTRAP_FILES) / sizeof(BOOTSTRAP_FILES[0]);
-
-    for (size_t i = 0; i < num_files; i++)
-    {
-        const char *filename = BOOTSTRAP_FILES[i];
-        sds filepath = edc_path_join(workspace, filename, NULL);
-
-        EdcError *error = NULL;
-        sds content = edc_file_read(filepath, &error);
-
-        if (content)
-        {
-            result = sdscatprintf(result, "## %s\n\n%s", filename, content);
-            sdsfree(content);
-        }
-        else
-        {
-            edc_error_free(error);
-        }
-
-        if (i < num_files - 1)
-        {
-            result = sdscat(result, "\n\n");
-        }
-
-        sdsfree(filepath);
-    }
-
-    return result;
+    return sdscatprintf(sdsempty(),
+        "## How this program works\n\n"
+        "**Skills.** A skill is a directory with a `SKILL.md`: %s/skills/<name>/SKILL.md, and the other "
+        "resource roots this program shares with pi / Claude Code / opencode. The system prompt lists them; "
+        "read a SKILL.md before following it, or let the user run `/skill <name>`.\n\n"
+        "**Memory.** Durable knowledge lives in this session's shared memory, visible to every task and "
+        "group in the session: `memory_write` to record, `memory_search` / `memory_list` / `memory_get` to "
+        "read back, `memory_update` / `memory_supersede` / `memory_delete` to revise. Cross-session memory "
+        "does not exist yet. There is no memory file to edit.\n\n"
+        "**Guidelines.**\n"
+        "- Explain what you are about to do before doing it.\n"
+        "- Multi-step work: plan with `todowrite` first, then execute step by step, updating it as you go.\n"
+        "- Verify after changing something (re-read the file, run the test, check the output).\n"
+        "- When a tool fails, read the error and take a different approach; do not repeat the same call.\n"
+        "- Look things up with tools before asking; ask when the tools genuinely cannot answer.\n"
+        "- Never fake confidence: say what you know and flag what you do not.\n\n"
+        "**Reminders.** Scheduling is the `crontab` tool -- call it (list / add / remove). Writing a "
+        "reminder into a notes file triggers nothing.\n\n"
+        "**Remote device.** The `device_*` tools talk to a separate agent over TCP or a PPPoS serial "
+        "link; they run on that device, not in this sandbox.\n",
+        workspace ? workspace : "(workspace)");
 }
 
 static sds edc_context_load_skills(const struct edc_config *conf, const char *workdir)
@@ -331,7 +337,7 @@ static sds edc_context_build_permissions(struct edc_config *conf)
 
 /* The ONLY session-memory hint: constant text, zero variable content (no count, no
  * content, no ids). Placed at the END of the system prompt -- the last thing the model
- * reads before the long prompt (bootstrap/skills can be tens of thousands of tokens),
+ * reads before the long prompt (project instructions / skills can be tens of thousands of tokens),
  * giving it best recency; the count/content come from the request-time tail notice.
  * Constant => the prompt cache prefix is untouched. */
 static const char kSessionMemoryHint[] =
@@ -361,6 +367,17 @@ static const char kSessionMemoryHint[] =
     "New or updated entries are announced at the tail of your context (a \"## Session Memory Updates\" block)\n"
     "when something changed. Keep progress logs and todos out of it.\n";
 
+/* Installed by the assembly root (see edc_context.h); NULL = no tool section, which is what
+ * a unit test that builds a prompt without a registry wants. */
+static EdcToolSectionFn g_tool_section_fn = NULL;
+static void *g_tool_section_ctx = NULL;
+
+void edc_context_set_tool_section_provider(EdcToolSectionFn fn, void *ctx)
+{
+    g_tool_section_fn = fn;
+    g_tool_section_ctx = ctx;
+}
+
 sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir)
 {
     const char *workspace = conf->workspace;
@@ -368,7 +385,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
 
     sds identity = edc_context_get_identity(os_name, conf->edc_home, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
-    sds bootstrap = edc_context_load_bootstrap_files(workspace);
+    sds contract = edc_context_build_contract(workspace);
     /* Context files (pi §3.6): user-global + an upward walk from THIS session's workdir
      * -- so a session bound to a project directory really picks up that project's
      * AGENTS.md. */
@@ -378,16 +395,30 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     sds system_prompt = sdsempty();
     system_prompt = sdscat(system_prompt, identity);
     system_prompt = sdscat(system_prompt, permissions);
-    system_prompt = sdscat(system_prompt, bootstrap);
+    system_prompt = sdscat(system_prompt, contract);
     system_prompt = sdscatsds(system_prompt, project_context);
     system_prompt = sdscat(system_prompt, skills);
+
+    /* The tool section: rendered from the registry by the provider the assembly root
+     * installed (see edc_context.h). It sits inside the frozen system prompt, so it is
+     * generated once per group and lives in the cached prefix -- which is exactly why it
+     * must be deterministic and must not restate the request's `tools` field. */
+    if (g_tool_section_fn)
+    {
+        sds tools = g_tool_section_fn(g_tool_section_ctx);
+        if (tools)
+        {
+            system_prompt = sdscatsds(system_prompt, tools);
+            sdsfree(tools);
+        }
+    }
     system_prompt = sdscat(system_prompt, kSessionMemoryHint);
 
     sdsfree(os_name);
 
     sdsfree(identity);
     sdsfree(permissions);
-    sdsfree(bootstrap);
+    sdsfree(contract);
     sdsfree(project_context);
     sdsfree(skills);
 
@@ -578,15 +609,20 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         *out_pristine = NULL;
 
     /* 1. system prompt (pristine, no todo injection)
-     * - group has history: attach history[0] by reference (no copy);
+     * - group has history: attach its first slot (the system prompt);
      * - no history / group NULL: build a pristine prompt and return it via out_pristine
      *   (the caller decides whether to write it back to group history; after that,
-     *   later requests take the reference branch). */
-    if (group && cJSON_GetArraySize(group->history) > 0)
+     *   later requests take the first branch).
+     * The slot hands out an owned copy now, so this moves it into |msgs| rather than
+     * referencing it. */
+    if (group && edc_task_group_history_count(group) > 0)
     {
-        cJSON *sys0 = cJSON_GetArrayItem(group->history, 0);
-        cJSON_AddItemReferenceToArray(msgs, sys0);
-        appended++;
+        cJSON *sys0 = edc_task_group_history_at(group, 0);
+        if (sys0)
+        {
+            cJSON_AddItemToArray(msgs, sys0);
+            appended++;
+        }
     }
     else if (conf)
     {
@@ -601,15 +637,22 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         sdsfree(prompt);
     }
 
-    /* 2. GROUP memory summary (a condensation of folded turns) -- the mutable part last (see the function head) */
+    /* 2. GROUP memory summary (a condensation of folded turns) -- the mutable part last (see the function head).
+     *
+     * The tracked-file blocks are RENDERED here, from `group->fold_files`, not stored in
+     * `group->memory`: the text is a projection of the data. It must be deterministic --
+     * same (body, lists) => same bytes -- because this message sits in the cached prefix
+     * and a single different byte invalidates it from token 0. */
     if (group && group->memory && sdslen(group->memory) > 0)
     {
         cJSON *mem = cJSON_CreateObject();
         cJSON_AddStringToObject(mem, "role", "system");
-        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", group->memory);
+        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", rendered);
         cJSON_AddStringToObject(mem, "content", mc);
         cJSON_AddItemToArray(msgs, mem);
         sdsfree(mc);
+        sdsfree(rendered);
         appended++;
     }
 
@@ -633,28 +676,27 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
  * the tail todo reminder (constant-size additions) are omitted; a running member counts
  * only its own turn's increment. */
 
-/* Estimate of a turn from `from` (from scratch when from <= head). */
-static long long est_turn_from(struct edc_turn *turn, int from)
+/* Estimate of a turn from `from`. This used to walk every message in the queue; the
+ * per-message estimates are stored with the rows now, so it is one indexed SUM. */
+static int64_t est_turn_from(struct edc_turn *turn, int from)
 {
     if (!turn)
         return 0;
-    size_t begin = (from > 0) ? (size_t)from : turn->messages.head;
-    if (begin < turn->messages.head)
-        begin = turn->messages.head;
-    long long total = 0;
-    for (size_t i = begin; i < turn->messages.tail; i++)
-        total += edc_token_estimate_msg(turn->messages.data[i]);
-    return total;
+    if (from < 0)
+        from = 0;
+    if (from >= turn->msg_count)
+        return 0;
+    return edc_turn_tokens_from(turn, from);
 }
 
-extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)
+extern int64_t edc_context_group_ctx_tokens(struct edc_task_group *group, bool *out_estimated)
 {
     if (out_estimated)
         *out_estimated = false;
     if (!group)
         return 0;
 
-    long long best = 0;
+    int64_t best = 0;
     bool best_estimated = false;
 
     struct edc_task *t;
@@ -668,17 +710,16 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
         if (t->last_fold_epoch != group->fold_epoch)
             continue; /* the anchor recorded the pre-fold prefix */
 
-        long long tail = 0;
-        if (group->history)
+        int64_t tail = 0;
         {
-            size_t n = (size_t)cJSON_GetArraySize(group->history);
-            size_t from = (size_t)t->last_hist_len;
+            const int n = edc_task_group_history_count(group);
+            const int from = t->last_hist_len;
             if (from < n)
-                tail += edc_token_estimate_msgs(group->history, from, n);
+                tail += edc_task_group_history_tokens(group, from, n);
         }
         tail += est_turn_from(t->active_turn, t->last_turn_len);
 
-        long long candidate = t->last_total_tokens + tail;
+        int64_t candidate = t->last_total_tokens + tail;
         if (candidate > best)
         {
             best = candidate;
@@ -693,29 +734,28 @@ extern long long edc_context_group_ctx_tokens(struct edc_task_group *group, bool
     }
 
     /* 2) no usable anchor: estimate what the group's next request would carry */
-    long long est = 0;
+    int64_t est = 0;
     if (group->memory)
         est += edc_token_estimate_text(group->memory);
-    if (group->history)
+    /* The blocks are rendered on top of the body at request time; leaving them out here
+     * would make the estimate low by exactly the part the model is told about. */
+    est += edc_fold_files_token_estimate(group->fold_files);
+    if (edc_task_group_history_count(group) > 0)
     {
-        size_t n = (size_t)cJSON_GetArraySize(group->history);
-        if (n > 0)
-            est += edc_token_estimate_msg(cJSON_GetArrayItem(group->history, 0)); /* system prompt */
-        /* The history only holds what is still sent (folded messages are pruned
-         * at landing), so the tail starts right after the system prompt. */
-        size_t from = 1;
-        if (from < n)
-            est += edc_token_estimate_msgs(group->history, from, n);
+        /* The history only holds what is still sent (folded messages are pruned at
+         * landing), so the tail starts right after the system prompt. Token accounting is
+         * a SUM over the stored estimates -- never a walk that parses the messages. */
+        est += edc_task_group_history_tokens(group, 0, -1);
     }
     /* A running member carries its own turn; a fresh task does not -- take the widest,
      * consistent with "group = its widest conversation". */
-    long long widest_turn = 0;
+    int64_t widest_turn = 0;
     LL_FOREACH2(group->members, t, group_next)
     {
         if (edc_task_is_memory_sink(t))
             continue;
         int turn_from = (t->active_turn && t->active_turn->folded_prefix > 0) ? t->active_turn->folded_prefix : 0;
-        long long turn_est = est_turn_from(t->active_turn, turn_from);
+        int64_t turn_est = est_turn_from(t->active_turn, turn_from);
         if (turn_est > widest_turn)
             widest_turn = turn_est;
     }

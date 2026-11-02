@@ -277,14 +277,6 @@ int edc_app_models_model_is_chat(const char *model_id)
 {
     return edc_models_is_chat_model(model_id);
 }
-int edc_app_models_provider_matches(const char *provider_id, const char *query)
-{
-    return edc_models_provider_matches(provider_id, query);
-}
-int edc_app_models_model_matches(const char *model_id, const char *query)
-{
-    return edc_models_model_matches(model_id, query);
-}
 
 /* The command surface, straight from the shell's table (static data, no app). */
 size_t edc_app_cmd_count(void)
@@ -551,8 +543,8 @@ void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
 
 /* Send a user input. |session_id| names the session it belongs to (the task it
  * spawns lands there). NULL/"" = unspecified, the store picks the default. */
-void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
-                               const char *payload_json, const char *mid)
+static void send_user_message_impl(struct edc_app *app, const char *session_id, const char *content,
+                                   const char *payload_json, const char *mid)
 {
     edc_actor_t *channel = edc_app_channel_actor(app);
     if (!channel)
@@ -577,6 +569,12 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
         edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, channel, NULL, edc_channel_input_new(message),
                           (edc_actor_data_free_fn)edc_channel_input_free);
     edc_actor_send(state->observer, actor_msg);
+}
+
+void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
+                               const char *payload_json, const char *mid)
+{
+    send_user_message_impl(app, session_id, content, payload_json, mid);
 }
 
 /* Request a task tree (the frontend pulls only the one it displays); built on the
@@ -606,7 +604,7 @@ void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
     if (!state || !state->observer)
         return;
 
-    sds tag = sdsnew(session_id ? session_id : "");
+    sds tag = sdsnew(session_id);
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, channel, NULL, tag,
                                              (edc_actor_data_free_fn)sdsfree);
     edc_actor_send(state->observer, msg);

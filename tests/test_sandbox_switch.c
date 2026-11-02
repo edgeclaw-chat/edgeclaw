@@ -24,6 +24,7 @@
 #include "edc_file_utils.h"
 #include "edc_init_env.h"
 
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,7 +59,7 @@ static bool scratch_home(char *buf, size_t cap)
     if (!base || !base[0])
         base = "/tmp";
 
-    const int n = snprintf(buf, cap, "%s%cedc_switch_%ld", base, PATH_SEP, (long)getpid());
+    const int n = snprintf(buf, cap, "%s%cedc_switch_%" PRId64, base, PATH_SEP, (int64_t)getpid());
     return n > 0 && (size_t)n < cap;
 }
 

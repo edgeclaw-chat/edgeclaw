@@ -11,6 +11,7 @@
  * test_toolbox_request.c 同一配方)。捕获器把 req 从消息里摘下来自己持有。 */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -111,9 +112,9 @@ static void install_sessions(struct edc_scheduler *sched, struct edc_session *se
 static void harness_up(struct harness *h)
 {
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_llm_request_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->sched = edc_scheduler_new(h->cfg);
-    h->sess = edc_session_new(h->cfg, "sess-req", "Req");
+    h->sess = edc_session_new(h->cfg, edc_test_session_id("sess-req"), "Req");
     install_sessions(h->sched, h->sess);
 
     h->llm_actor = edc_llm_actor_new(h->cfg);
@@ -147,9 +148,9 @@ static void harness_down(struct harness *h)
 
 /* ── fixtures ─────────────────────────────────────────────── */
 
-static struct edc_task_group *make_group(struct harness *h, struct edc_task **out_task, const char *sid)
+static struct edc_task_group *make_group(struct harness *h, struct edc_task **out_task, int64_t sid)
 {
-    struct edc_task *leader = edc_task_new("1", sid, "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), sid, edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(h->sess, g);
     edc_task_await_exec(leader);
@@ -197,11 +198,11 @@ static void test_turn_begin_honours_folded_prefix(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     history_add_user(g, "already committed member message");
 
     struct edc_turn *turn = attach_turn(&h, leader, "current input");
-    CHECK(edc_queue_length(&turn->messages) == 3, "当前 turn 有 3 条");
+    CHECK(turn->msg_count == 3, "当前 turn 有 3 条");
 
     /* 折叠切在这个 turn 内部: 前缀 1 条进了组记忆。 */
     turn->folded_prefix = 1;
@@ -209,10 +210,13 @@ static void test_turn_begin_honours_folded_prefix(void)
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求真发出去了");
+
     if (g_req)
     {
-        CHECK(g_req->turn_begin == 1, "turn_begin = 折叠前缀 (前缀不再重复发送)");
-        CHECK(g_req->turn == &turn->messages, "turn 指向当前 turn 的消息队列");
+        /* The request carries the tail span it loaded (folded prefix already excluded):
+         * the turn has 3 messages and folded_prefix is 1, so 2 go on the wire. */
+        CHECK(cJSON_GetArraySize(g_req->turn_tail) == 2,
+              "turn_tail 只含折叠前缀之后的消息 (前缀不再重复发送)");
     }
     /* 组历史那一条 (未折叠) 必须在, 折掉的那条 turn 消息由 turn_begin 拦。 */
     int found_member_msg = 0;
@@ -242,7 +246,7 @@ static void test_turn_begin_zero_without_prefix(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     (void)g;
 
     struct edc_turn *turn = attach_turn(&h, leader, "current input");
@@ -253,7 +257,8 @@ static void test_turn_begin_zero_without_prefix(void)
 
     CHECK(g_req_msgs == 1, "请求发出去了");
     if (g_req)
-        CHECK(g_req->turn_begin == 0, "turn_begin = 0 (整条 turn 从头发)");
+        CHECK(cJSON_GetArraySize(g_req->turn_tail) == turn->msg_count,
+              "turn_tail 是整条 turn (没有折叠前缀)");
 
     harness_down(&h);
 }
@@ -274,7 +279,8 @@ static const char *notice_part(struct edc_llm_actor_req *req, int *out_index)
     {
         cJSON *m = cJSON_GetArrayItem(req->tail_parts, i);
         const char *content = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
-        if (content && strncmp(content, "## Session Memory Updates", 25) == 0)
+        if (content && (strncmp(content, "## Session Memory Updates", 25) == 0 ||
+                        strncmp(content, "## Session Memory ", 18) == 0))
         {
             if (out_index)
                 *out_index = i;
@@ -296,19 +302,19 @@ static sds memo_add(struct edc_session *sess, const char *title, const char *sum
 
 static void test_session_memory_notice_reaches_the_tail(void)
 {
-    TEST("L2 通知: 新 task 首轮自带回填; 队尾第一条; 提交前不发第二次; 提交后为空");
+    TEST("L2 双通道: 水位=0 ⇒ 目录卡(有什么); 水位>0 ⇒ 变化通知(变了什么)");
 
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     (void)g;
     attach_turn(&h, leader, "current input");
 
     /* 两条条目 (与前台 memory_write 走同一套) + 一个还没有东西的 task */
     sds id1 = memo_add(h.sess, "构建入口", "唯一入口是 bazelisk", "明细一");
     sds id2 = memo_add(h.sess, "沙箱策略", "uid 1000 + sudo", NULL);
-    leader->memo_seen_seq = 0; /* 新 task: 什么都没看过 ⇒ 该回填 */
+    leader->memo_seen_seq = 0; /* 新 task: 什么都没看过 ⇒ 发目录，不发变化 */
 
     edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
@@ -316,25 +322,32 @@ static void test_session_memory_notice_reaches_the_tail(void)
     CHECK(g_req_msgs == 1, "请求发出去了");
     int idx = -1;
     const char *notice = notice_part(g_req, &idx);
-    CHECK(notice != NULL, "队尾有 session 记忆通知");
-    CHECK(notice && strstr(notice, "[m1] created: 构建入口 — 唯一入口是 bazelisk") != NULL, "第一条在");
-    CHECK(notice && strstr(notice, "[m2] created: 沙箱策略 — uid 1000 + sudo") != NULL, "第二条在");
-    CHECK(notice && strstr(notice, "共 2 条") != NULL, "带总条数");
-    CHECK(idx == 0, "通知在队尾**第一条** (todo 提醒在它后面)");
+    CHECK(notice != NULL, "队尾有 session 记忆卡片");
+    /* 通道 B：目录 —— id + title，不带 summary/kind/时间 */
+    CHECK(notice && strstr(notice, "## Session Memory  (共 2 条)") != NULL, "首轮是目录卡，抬头带总条数");
+    CHECK(notice && strstr(notice, "[m1] 构建入口") != NULL, "目录行 = id + title");
+    CHECK(notice && strstr(notice, "唯一入口是 bazelisk") == NULL, "目录不带 summary (成本优势所在)");
+    CHECK(notice && strstr(notice, "created:") == NULL, "目录不是变化通知 (没有 kind)");
+    CHECK(idx == 0, "卡片在队尾**第一条** (todo 提醒在它后面)");
     CHECK(leader->memo_seen_seq == 0, "水位没动 —— 请求还没被模型读到");
-    CHECK(leader->memo_notice_seq == 2, "记下了这次装进去的最大 seq");
+    CHECK(leader->memo_notice_seq == 2, "目录卡顶替了 feed: 记下 next_seq");
+    CHECK(!leader->memo_baseline_done, "**基线还没提交**：请求尚未被模型读到");
+    CHECK(leader->memo_notice_catalogue, "记下'这次带了目录卡'");
 
-    /* 还没提交 (等价于请求被取消): 下一次请求**重发同一条** */
+    /* 还没提交 (等价于请求被取消): 下一次请求**重发同一张卡** */
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
     edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
     pump(&h);
     CHECK(g_req_msgs == 2, "第二次请求也发出去了");
-    CHECK(notice_part(g_req, NULL) != NULL, "没提交 ⇒ 通知重发 (幂等, 不丢信息)");
+    CHECK(notice_part(g_req, NULL) != NULL, "没提交 ⇒ 卡片重发 (幂等, 不丢信息)");
+    CHECK(!leader->memo_baseline_done, "取消的请求不能让基线变成'已交付'");
 
     /* 响应回来 ⇒ 提交 ⇒ 再请求就不带了 */
     edc_task_memo_commit(leader);
     CHECK(leader->memo_seen_seq == 2, "提交后水位追平");
+    CHECK(leader->memo_baseline_done, "**提交后基线置真**（目录确实被读过）");
+    CHECK(!leader->memo_notice_catalogue, "瞬态标记被消费掉");
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
     edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
@@ -342,7 +355,7 @@ static void test_session_memory_notice_reaches_the_tail(void)
     CHECK(g_req_msgs == 3, "第三次请求");
     CHECK(notice_part(g_req, NULL) == NULL, "看过之后不再注入 (常驻里也没有 memory 内容)");
 
-    /* 新条目到来 ⇒ 只补新的那条 */
+    /* 新条目到来 ⇒ 走通道 A：变化通知，只补新的那条 (带 summary, 因为是"变了什么") */
     sds id3 = memo_add(h.sess, "第三条", "后来才有的", NULL);
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
@@ -350,7 +363,9 @@ static void test_session_memory_notice_reaches_the_tail(void)
     pump(&h);
     const char *n2 = notice_part(g_req, NULL);
     CHECK(n2 != NULL && strstr(n2, id3) != NULL, "只带新条目");
-    CHECK(n2 && strstr(n2, "共 3 条") != NULL, "总数跟着涨");
+    CHECK(n2 && strstr(n2, "## Session Memory Updates") != NULL, "水位>0 ⇒ 变化通知，不是目录");
+    CHECK(n2 && strstr(n2, "本次 1 项变化 / 记忆共 3 条") != NULL, "两个数分列");
+    CHECK(n2 && strstr(n2, "后来才有的") != NULL, "变化通知带 summary (要让人判断值不值得取)");
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
 
@@ -378,10 +393,10 @@ static void test_head_blocks_cache_layout(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-head");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-head"));
     g->memory = sdsnew("MEM-SUMMARY"); /* 非空 ⇒ 两块都出现 */
 
-    struct edc_task *t2 = edc_task_new("h-2", "sess-head", g->group_id, "second task", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("h-2"), edc_test_session_id("sess-head"), g->group_id, "second task", edc_channel_adapter);
     edc_task_group_add_task(g, t2);
 
     attach_turn(&h, leader, "first input");
@@ -431,18 +446,18 @@ static void test_join_injection_shape(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-inj");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-inj"));
     (void)g;
 
     /* 源一: 普通任务 (description + output) */
-    struct edc_task *src = edc_task_new("src-1", "sess-inj", "src-1", "src work", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("src-1"), edc_test_session_id("sess-inj"), edc_test_id("src-1"), "src work", edc_channel_adapter);
     {
         struct edc_turn *t = edc_turn_new();
-        t->task_id = strdup("src-1");
+        t->task_id = edc_test_id("src-1");
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "SOURCE-USER-TEXT");
-        edc_queue_push(&t->messages, um);
+        edc_turn_add_message(t, um);
         edc_task_add_turn(src, t);
     }
     src->output = sdsnew("SOURCE-OUTPUT-TEXT");
@@ -453,11 +468,11 @@ static void test_join_injection_shape(void)
     struct edc_task *fold_src = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
     {
         struct edc_turn *t = edc_turn_new();
-        t->task_id = strdup(fold_src->task_id);
+        t->task_id = fold_src->task_id;
         cJSON *um = cJSON_CreateObject();
         cJSON_AddStringToObject(um, "role", "user");
         cJSON_AddStringToObject(um, "content", "FOLD-PROMPT-TEXT");
-        edc_queue_push(&t->messages, um);
+        edc_turn_add_message(t, um);
         edc_task_add_turn(fold_src, t);
     }
     fold_src->output = sdsnew("FOLD-OUTPUT-MEMORY");
@@ -465,7 +480,7 @@ static void test_join_injection_shape(void)
     edc_task_mark_completed(fold_src);
 
     /* 目标: 自己的输入 = "DEST-OWN-TURN", 同时 JOIN 两个源 */
-    struct edc_task *dst = edc_task_new("dst-1", "sess-inj", "dst-1", "dst work", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new(edc_test_id("dst-1"), edc_test_session_id("sess-inj"), edc_test_id("dst-1"), "dst work", edc_channel_adapter);
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
     edc_task_add_dependency(dst, fold_src, TASK_DEP_JOIN);
     attach_turn(&h, dst, "DEST-OWN-TURN");
@@ -477,9 +492,9 @@ static void test_join_injection_shape(void)
 
     /* 目标自己的输入被就地改写: 原文 + 两段材料 */
     const char *input = NULL;
-    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
     {
-        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
         input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(input && strstr(input, "DEST-OWN-TURN") != NULL, "原输入还在");
@@ -501,9 +516,9 @@ static void test_join_injection_shape(void)
     pump(&h);
     CHECK(g_req_msgs == 1, "第二次请求也出去了");
     const char *input2 = NULL;
-    if (dst->active_turn && edc_queue_length(&dst->active_turn->messages) > 0)
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
     {
-        cJSON *m = dst->active_turn->messages.data[dst->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
         input2 = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     int marker_hits = 0;
@@ -535,7 +550,7 @@ static void test_curate_request_is_self_contained(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-curate");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-curate"));
     (void)g;
     /* 会话里放两条条目: 策展任务也不该被"通知" (它读的是自己 turn 里的材料) */
     sds id1 = memo_add(h.sess, "构建入口", "bazelisk", NULL);
@@ -580,7 +595,7 @@ static void test_summary_request_is_capped(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
     (void)g;
 
     /* 普通任务: 不带 max_tokens (回复从不封顶)。 */
@@ -625,7 +640,7 @@ static void test_fold_request_is_self_contained(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-fold-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-fold-req"));
     (void)g;
 
     struct edc_task *fold = edc_scheduler_spawn_system_task(h.sched, h.sess, "fold group memory");
@@ -638,13 +653,13 @@ static void test_fold_request_is_self_contained(void)
      * 拿到一条主提示词。 */
     if (sys)
     {
-        cJSON_Delete(sys->history);
-        sys->history = cJSON_CreateArray();
+        /* The history is derived: dropping it is what a restart leaves behind. */
+        edc_task_group_history_reset(sys);
         edc_task_group_rebuild_history(sys);
         /* 显式摆出**修复前重启后**的真形状: 那个槽位里躺着主提示词 (当时的加载期
          * 就是这么填的, 实测确认过)。修复后折叠请求不读这个槽位, 所以下面那几条
          * 断言与它无关; 一旦有人把折叠请求改回走组上下文, 这个夹具立刻变红。 */
-        if (cJSON_GetArraySize(sys->history) == 0)
+        if (edc_task_group_history_count(sys) == 0)
         {
             sds mainp = edc_context_build_system_prompt(h.cfg, NULL);
             cJSON *m = cJSON_CreateObject();
@@ -653,9 +668,11 @@ static void test_fold_request_is_self_contained(void)
             edc_task_group_history_add_owned(sys, m);
             sdsfree(mainp);
         }
-        cJSON *h0 = cJSON_GetArrayItem(sys->history, 0);
+        cJSON *h0 = edc_task_group_history_at(sys, 0);
         const char *c0 = h0 ? cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")) : NULL;
         log_info("  (前置: 系统组 history[0] 里躺着 = %.24s)", c0 ? c0 : "(空)");
+        if (h0)
+            cJSON_Delete(h0);
     }
 
     edc_scheduler_attach_input(h.sched, fold, "SUMMARIZE-BODY");
@@ -673,7 +690,7 @@ static void test_fold_request_is_self_contained(void)
         CHECK(content && strcmp(content, edc_group_fold_system_prompt()) == 0,
               "内容逐字节 = 折叠说明 (不是主提示词)");
         CHECK(content && strstr(content, "# EdgeClaw") == NULL, "没有主提示词 (重启那条污染路径)");
-        CHECK(g_req->turn == &fold->active_turn->messages, "turn 就是折叠任务的 turn (折叠 prompt)");
+        CHECK(g_req->turn_tail != NULL, "turn_tail 就是折叠任务的 turn (折叠 prompt)");
         CHECK(g_req->tail_parts == NULL, "队尾什么都不追加 (摘要不该被插尾)");
         edc_llm_actor_req_free(g_req);
         g_req = NULL;
@@ -701,12 +718,12 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
-    struct edc_task_group *g = make_group(&h, &leader, "sess-req");
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-req"));
 
-    /* The completed `!cmd` task's turn. Not freed on purpose: history_add_turn stores
-     * BORROWED references (in production the turn lives in task->turns). */
-    struct edc_turn *done = edc_turn_new();
-    done->task_id = strdup("2");
+    /* The completed `!cmd` task's turn. The key is bound at CREATION: messages are rows
+     * written under it, so assigning task_id afterwards would leave them under the
+     * constructor's placeholder and history_add_turn would find nothing. */
+    struct edc_turn *done = edc_turn_new_for(edc_test_session_id("sess-req"), edc_test_id("2"), edc_test_id("2"), 0);
     edc_turn_add_user_message(done, "!pwd");
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "command", "pwd");
@@ -721,7 +738,6 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     pump(&h);
 
     CHECK(g_req_msgs == 1, "请求真发出去了");
-
     char order[4] = {0};
     int n = 0;
     bool cmd_seen = false, output_seen = false;
@@ -769,8 +785,26 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     harness_down(&h);
 }
 
+/* 存进 turn 的消息会挂一些"只给我们自己看"的键（折叠粘贴的 payload、工具集变更的
+ * tools_added / tools_removed / toolset_reason / pinned）。它们**不能**上 wire：OpenAI 对
+ * message 上的未知字段是整单 400。这条测试钉住的是白名单策略本身 —— 漏一个键，请求就打挂。 */
+static void test_wire_message_keys_are_allowlisted(void)
+{
+    TEST("wire: message 只带 provider 认识的键（store-only 一律剥掉）");
+
+    const char *allowed[] = {"role", "content", "name", "tool_call_id", "tool_calls", "function_call", "refusal"};
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++)
+        CHECK(edc_llm_wire_key_is_standard(allowed[i]), "wire key allowed");
+
+    const char *dropped[] = {"payload", "tools_added", "tools_removed", "toolset_reason", "pinned"};
+    for (size_t i = 0; i < sizeof(dropped) / sizeof(dropped[0]); i++)
+        CHECK(!edc_llm_wire_key_is_standard(dropped[i]), "store-only key dropped");
+}
+
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
+    test_wire_message_keys_are_allowlisted();
     test_turn_begin_honours_folded_prefix();
     test_turn_begin_zero_without_prefix();
     test_session_memory_notice_reaches_the_tail();

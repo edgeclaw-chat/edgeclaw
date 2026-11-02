@@ -12,11 +12,10 @@
 /* ── Cross-session task resolution (S2) ──────────────────────
  * A task id is globally unique (edc_session_manager_find_task_any), so a hit is
  * unambiguous. The in-memory lookup covers only sessions activated this run; when a
- * task belongs to a disk-only, not-yet-activated session, the session_manager index
- * (task_id -> session_id, parsed once from each unloaded session.json) locates the
- * owner, which is then loaded on demand. */
+ * task belongs to a not-yet-activated session, one primary-key lookup in the tasks table
+ * (edc_state_store_session_for_task) names the owner, which is then loaded on demand. */
 struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                                const char *task_id, struct edc_session **owner_out)
+                                                int64_t task_id, struct edc_session **owner_out)
 {
     if (owner_out)
         *owner_out = NULL;
@@ -33,8 +32,7 @@ struct edc_task *edc_session_store_resolve_task(struct edc_session_manager *sm, 
         return t;
     }
 
-    /* 2. Miss: use the session_manager index to locate the owning session (parsing
-     *    each unloaded session.json once); on a hit, load it on demand. */
+    /* 2. Miss: ask the database which session holds the task, then load it on demand. */
     struct edc_session *s = edc_session_manager_session_for_task(sm, task_id);
     if (!s)
         return NULL;
@@ -78,8 +76,7 @@ static void apply_dep_flags(struct edc_task *target, struct edc_task *source, bo
 
 static void free_pending_dep(struct edc_pending_dep *pd)
 {
-    sdsfree(pd->target_task_id);
-    sdsfree(pd->source_task_id);
+    /* The ids are values now: nothing to free but the node. */
     free(pd);
 }
 
@@ -157,8 +154,8 @@ void edc_session_store_reconcile_pending_deps(struct edc_session_manager *sm, st
     /* Whatever is left is genuinely unresolvable: surface it, and rely on the
      * resume gate to keep the target from running. */
     for (struct edc_pending_dep *pd = sched->pending_deps; pd; pd = pd->next)
-        log_warn("cross-session dep unresolved: task `%s` waits on `%s` (owner session not found)", pd->target_task_id,
-                 pd->source_task_id);
+        log_warn("cross-session dep unresolved: task `%s` waits on `%s` (owner session not found)", edc_id_str(pd->target_task_id),
+                 edc_id_str(pd->source_task_id));
 
     sched->reconciling = false;
 }
@@ -190,8 +187,9 @@ void edc_session_store_save_all_sessions_state(struct edc_session_manager *sm, s
     edc_session_manager_save_loaded_states(sm, sched);
 }
 
-void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
-                                          struct edc_session *session)
+void edc_session_store_save_session_state_tagged(struct edc_session_manager *sm,
+                                                 struct edc_scheduler *sched,
+                                                 struct edc_session *session, const char *tag)
 {
     if (!sm || !sched)
         return;
@@ -201,7 +199,13 @@ void edc_session_store_save_session_state(struct edc_session_manager *sm, struct
 
     struct edc_session *target = session ? session : edc_session_manager_get_active(sm);
     if (target)
-        edc_session_save_state(target, sched);
+        edc_session_save_state_tagged(target, sched, tag);
+}
+
+void edc_session_store_save_session_state(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                          struct edc_session *session)
+{
+    edc_session_store_save_session_state_tagged(sm, sched, session, "store:direct");
 }
 
 /* User /stop (/session stop): cancel all non-terminal turns of the current session
@@ -215,7 +219,7 @@ void edc_session_store_stop_all_turns(struct edc_session_manager *sm, struct edc
         return;
     struct edc_session *active = edc_session_manager_get_active(sm);
     edc_scheduler_send_signal_to_all(sched, active, TASK_SIGTERM);
-    edc_session_store_save_session_state(sm, sched, active);
+    edc_session_store_save_session_state_tagged(sm, sched, active, "session:stop");
 }
 
 /* Forget that any request was in flight: the process is going down, so a reply that is
@@ -238,4 +242,177 @@ void edc_session_store_drop_in_flight_requests(struct edc_session_manager *sm, s
     if (!sm)
         return;
     edc_session_manager_foreach_task(sm, drop_in_flight_request, NULL);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ *  Unloading an idle session
+ *
+ *  The in-memory tree is a CACHE of the database, not the source of truth, so it can be
+ *  handed back. Before the group history became ids this would have been pointless (a
+ *  loaded session held every unfolded message); now a load is cheap, which is what makes
+ *  eviction worth doing at all.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+bool edc_session_has_live_work(struct edc_session *session)
+{
+    if (!session)
+        return false;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            /* ALIVE means "may still advance on its own": queued, running, waiting on
+             * tools or on a dependency. INTERRUPTED is deliberately NOT live -- it waits
+             * for a decision, and that decision is already on disk. */
+            if (edc_task_is_alive(t))
+                return true;
+        }
+    }
+    return false;
+}
+
+/* Does any OTHER in-memory session hold a pointer into |victim|'s tree?
+ *
+ * The dangerous link is a dependency edge: `target->deps` holds `dep->source` as a LIVE
+ * pointer to the source task, and the edge is used long after it fires -- a queued
+ * dependent's request injects `dep->source->output`. `/task new -d <id>` explicitly allows
+ * a dependency to live in another session, so freeing the source's session would leave a
+ * dependent holding a pointer into freed memory (and, before that, silently drop the
+ * output it was supposed to carry). */
+struct dep_scan_ctx
+{
+    struct edc_session *victim;
+    bool referenced;
+};
+
+static void dep_scan_cb(void *ctx, struct edc_task *task)
+{
+    struct dep_scan_ctx *c = ctx;
+    if (!c || c->referenced || !task)
+        return;
+    struct edc_task_group *g = task->group;
+    if (g && g->session == c->victim)
+        return; /* this task belongs to the victim; its own edges go with it */
+
+    struct edc_task_dep *dep;
+    LL_FOREACH(task->deps, dep)
+    {
+        /* A source inside the victim's tree means the dependent would dereference freed
+         * memory. Cheap alias test: the tree is being scanned anyway. */
+        if (dep->source && dep->source->group && dep->source->group->session == c->victim)
+        {
+            c->referenced = true;
+            return;
+        }
+    }
+}
+
+static bool session_referenced_elsewhere(struct edc_session_manager *sm, struct edc_session *victim)
+{
+    struct dep_scan_ctx c = {victim, false};
+    edc_session_manager_foreach_task(sm, dep_scan_cb, &c);
+    return c.referenced;
+}
+
+bool edc_session_unload(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                        struct edc_session *session)
+{
+    if (!sm || !session)
+        return false;
+
+    /* Never the active one: the scheduler is driving it, and the next thing it does would
+     * dereference a tree that just disappeared. */
+    if (edc_session_manager_get_active(sm) == session)
+        return false;
+
+    if (!session->state_loaded)
+        return false; /* already just a shell */
+
+    /* A quarantined session must never be persisted (its in-memory form is the shell left
+     * by a failed load), and its tree is all we have -- so it is never evicted either. */
+    if (session->state_quarantined)
+        return false;
+
+    if (edc_session_has_live_work(session))
+        return false;
+
+    /* Another loaded session may depend on a task in this one (a cross-session `-d`). Its
+     * `dep->source` is a live pointer into this tree, so neither can go: this session
+     * keeps its memory, the other keeps its output injection. Cross-session dependencies
+     * are rare, so the cost of this check is the cost of a scan nobody notices. */
+    if (session_referenced_elsewhere(sm, session))
+    {
+        log_info("session_unload: %s stays resident (another session depends on its tasks)",
+                 edc_id_str(session->session_id));
+        return false;
+    }
+
+    /* Persist FIRST. If this fails the tree is the only copy and dropping it would lose
+     * the conversation, so the eviction is abandoned instead. */
+    edc_session_store_save_session_state_tagged(sm, sched, session, "unload");
+
+    /* Release the tree. memo/session-memory is left alone: it is a handful of entries and
+     * the loader rebuilds it anyway (edc_state_serializer.c frees and reconstructs it),
+     * so keeping it avoids a pointless gap in /session status. */
+    edc_session_reset(session);
+
+    /* The shell a never-activated session has, which is what the load path keys on. From
+     * here edc_session_store_load_session() brings it back on demand. */
+    session->state_loaded = false;
+
+    log_info("session_unload: %s released (its state is in the database)", edc_id_str(session->session_id));
+    return true;
+}
+
+int edc_session_manager_loaded_count(struct edc_session_manager *sm)
+{
+    if (!sm)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < sm->session_count; i++)
+        if (sm->sessions[i] && sm->sessions[i]->state_loaded)
+            n++;
+    return n;
+}
+
+int edc_session_manager_evict_idle(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                   int max_loaded)
+{
+    if (!sm)
+        return 0;
+    if (max_loaded <= 0)
+        max_loaded = EDC_SESSION_MAX_LOADED;
+
+    int evicted = 0;
+    /* One at a time, oldest first: evicting can free a lot, so re-scanning after each is
+     * cheaper than it looks and keeps the "how many are resident" count honest. */
+    while (edc_session_manager_loaded_count(sm) > max_loaded)
+    {
+        struct edc_session *victim = NULL;
+        struct edc_session *active = edc_session_manager_get_active(sm);
+        for (int i = 0; i < sm->session_count; i++)
+        {
+            struct edc_session *s = sm->sessions[i];
+            if (!s || !s->state_loaded || s == active)
+                continue;
+            /* Skip anything that must not be dropped; unload() would refuse anyway, but
+             * skipping here keeps the victim search from spinning on the same session --
+             * and lets it pick a different candidate instead of giving up. */
+            if (s->state_quarantined || edc_session_has_live_work(s))
+                continue;
+            if (session_referenced_elsewhere(sm, s))
+                continue;
+            if (!victim || s->last_active < victim->last_active)
+                victim = s;
+        }
+        if (!victim)
+            break; /* everything resident is active / busy / quarantined */
+
+        if (!edc_session_unload(sm, sched, victim))
+            break; /* save failed: keep what we have rather than lose it */
+        evicted++;
+    }
+    return evicted;
 }

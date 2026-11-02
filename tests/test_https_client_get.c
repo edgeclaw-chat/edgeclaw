@@ -15,7 +15,7 @@
 static uv_sem_t done_sem;
 static int last_status;
 static int last_headers_status; /* whatever the status is before the body */
-static long body_len;
+static size_t body_len;
 
 static void edc_https_client_fn(struct edc_https_request *req, int ev, void *data)
 {
@@ -42,7 +42,7 @@ static void edc_https_client_fn(struct edc_https_request *req, int ev, void *dat
     {
         uv_buf_t *buf = data;
         log_info("%.*s", (int)buf->len, buf->base);
-        body_len += (long)buf->len;
+        body_len += (size_t)buf->len;
         free(buf->base);
     }
     else if (ev == EDC_HTTPS_EVENT_ERROR)
@@ -97,7 +97,7 @@ int main(const int argc, const char *argv[])
     }
     else
     {
-        fprintf(stderr, "ok: %s ⇒ %d (body %ld 字节, header 阶段读到 %d)\n", url, got, body_len, last_headers_status);
+        fprintf(stderr, "ok: %s ⇒ %d (body %zu 字节, header 阶段读到 %d)\n", url, got, body_len, last_headers_status);
     }
     if (last_headers_status != got)
     {

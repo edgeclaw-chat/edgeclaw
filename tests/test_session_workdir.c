@@ -1,4 +1,5 @@
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_channel_actor.h"
@@ -8,7 +9,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
+#include "edc_state_store.h"
 #include "log.h"
 #include <ctype.h>
 #include <limits.h>
@@ -85,7 +86,7 @@ static void test_explicit_workdir(void)
     make_tmpdir(dir, sizeof(dir));
 
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new_with_workdir(cfg, "sess-w", "W", dir);
+    struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-w"), "W", dir);
 
     char real[PATH_MAX];
     CHECK(realpath(dir, real) != NULL, "realpath(dir)");
@@ -110,7 +111,7 @@ static void test_default_unbound(void)
 {
     TEST("no workdir → unbound");
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new(cfg, "sess-def", "Def");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-def"), "Def");
     CHECK(edc_session_get_workdir(s) == NULL, "default session is unbound");
     edc_session_free(s);
     edc_config_free(cfg);
@@ -121,7 +122,7 @@ static void test_invalid_workdir(void)
 {
     TEST("invalid workdir fails creation (no default fallback)");
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new_with_workdir(cfg, "sess-bad", "Bad", "/no/such/dir/edgeclaw-xyz");
+    struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-bad"), "Bad", "/no/such/dir/edgeclaw-xyz");
     CHECK(s == NULL, "session creation fails on a nonexistent workdir");
     edc_config_free(cfg);
 }
@@ -192,18 +193,17 @@ static void test_persist_roundtrip(void)
     realpath(dir, real);
 
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new_with_workdir(cfg, "sess-p", "P", dir);
+    struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-p"), "P", dir);
 
-    cJSON *json = edc_state_serialize(s, NULL);
-    CHECK(json != NULL, "serialize");
+    /* Through the store, which is the path production takes -- there is no intermediate
+     * document to inspect any more. */
+    CHECK(edc_state_store_flush(s, NULL), "save");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-p", "P");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-p"), "P");
     CHECK(edc_session_get_workdir(s2) == NULL, "fresh session starts unbound");
-    bool ok = edc_state_deserialize(json, s2, NULL);
-    CHECK(ok, "deserialize");
+    bool ok = edc_state_store_load(s2, NULL);
+    CHECK(ok, "load");
     CHECK(s2->workdir && strcmp(s2->workdir, real) == 0, "workdir restored from state");
-
-    cJSON_Delete(json);
     edc_session_free(s);
     edc_session_free(s2);
     edc_config_free(cfg);
@@ -275,8 +275,7 @@ static void test_system_prompt_cwd(void)
 
 /* pi 的纪律 (docs/pi-system-prompt-guide.md §7: "无任何日期/时间戳注入 … 跨天、重启、resume
  * prompt 字节完全不变")。这里钉住它 —— 提示词里不许有时钟, 也不许留未替换的占位符。 */
-static void test_system_prompt_has_no_clock(void)
-{
+static void test_system_prompt_has_no_clock(void){
     TEST("system prompt: 无时钟 / 无未替换占位符 (pi §7 的确定性纪律)");
 
     struct edc_config *cfg = make_config("/tmp/test_edc_noclock_ws");
@@ -339,6 +338,43 @@ static void test_memory_file_mechanism_is_gone(void)
 /* pi 的"上下文文件"发现 (docs/pi-system-prompt-guide.md §3.6): 用户全局一份 + 从**工作目录**
  * 向上遍历到根, 同一目录里只取优先级最高的候选 (override > AGENTS.md > AGENTS.MD > CLAUDE.md >
  * CLAUDE.MD), 每个文件带自己的路径。绑定到某个项目目录的 session 就是靠这个吃到项目的规矩。 */
+/* 2026-10-21: 工作区不再是提示词的来源。BOOTSTRAP_FILES 已取消 —— workspace 只在首次运行
+ * 铺一次、之后永不更新，一份放在那里的 AGENTS.md 会永久停在安装那天的版本（它曾长期宣称
+ * web_search / web_fetch / message / spawn 四个不存在的工具）。契约改由 edc_context_build_contract()
+ * 运行时生成；AGENTS.md 只剩"项目维度"这一个身份（~/.edgeclaw/AGENTS.md + workdir 向上遍历）。
+ * 这条测试就是那个 bug 的回归守卫。 */
+static void test_workspace_files_are_not_prompt_sources(void)
+{
+    TEST("工作区不再提供提示词：旧的 workspace/AGENTS.md 不被注入");
+
+    char ws[64];
+    make_tmpdir(ws, sizeof(ws));
+    char stale[128];
+    snprintf(stale, sizeof(stale), "%s/AGENTS.md", ws);
+    EdcError *err = NULL;
+    edc_file_write(stale,
+                   "# Agent Instructions\n\nSTALE-MARKER\n\n"
+                   "## Available Tools\n- **Web**: `web_search`, `web_fetch`\n"
+                   "- **Comm**: `message`, `spawn`\n",
+                   -1, &err);
+    if (err)
+        edc_error_free(err);
+
+    struct edc_config *cfg = make_config(ws);
+    /* 未绑定工作目录 ⇒ 不做项目级向上遍历，于是这份文件没有任何注入路径。 */
+    sds p = edc_context_build_system_prompt(cfg, NULL);
+
+    CHECK(p && strstr(p, "STALE-MARKER") == NULL, "旧 bootstrap 文件的内容不再进 prompt");
+    CHECK(p && strstr(p, "How this program works") != NULL, "契约段是运行时生成的");
+    CHECK(p && strstr(p, "web_search") == NULL, "提示词里不再出现不存在的工具");
+    CHECK(p && strstr(p, "spawn") == NULL, "提示词里不再出现不存在的工具");
+
+    sdsfree(p);
+    edc_config_free(cfg);
+    unlink(stale);
+    rmdir(ws);
+}
+
 static void test_project_context_discovery(void)
 {
     TEST("project context: 全局 + 向上遍历 + override 优先 + 可关掉");
@@ -458,8 +494,8 @@ static void test_task_workdir_owner(void)
     CHECK(realpath(dirB, realB) != NULL, "realpath(B)");
 
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *A = edc_session_new_with_workdir(cfg, "sess-A", "A", dirA);
-    struct edc_session *B = edc_session_new_with_workdir(cfg, "sess-B", "B", dirB);
+    struct edc_session *A = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-A"), "A", dirA);
+    struct edc_session *B = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-B"), "B", dirB);
 
     /* The task belongs to B (its group is bound to B): a tool call from that task
      * must resolve against B's directory. P3 ③: 目录**只看属主** —— core 里已经没有
@@ -467,7 +503,7 @@ static void test_task_workdir_owner(void)
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, A);
 
-    struct edc_task *tB = edc_task_new("tB", "sess-B", "tB", "desc", edc_channel_adapter);
+    struct edc_task *tB = edc_task_new(edc_test_id("tB"), edc_test_session_id("sess-B"), edc_test_id("tB"), "desc", edc_channel_adapter);
     struct edc_task_group *gB = edc_task_group_new(tB);
     edc_session_add_group(B, gB);
 
@@ -475,7 +511,7 @@ static void test_task_workdir_owner(void)
     CHECK(strcmp(edc_scheduler_task_workdir(tB), realB) == 0, "task owner dir = B (not the displayed A)");
     /* 没有属主就没有目录: 不再是"回退到当前 session"(那份副本已删)。工具层拿到
      * NULL 时落到沙箱根 (见 edc_tools_shell / edc_tools_fs)。 */
-    struct edc_task *ownerless = edc_task_new("tX", "sess-X", "tX", "desc", edc_channel_adapter);
+    struct edc_task *ownerless = edc_task_new(edc_test_id("tX"), edc_test_session_id("sess-X"), edc_test_id("tX"), "desc", edc_channel_adapter);
     CHECK(edc_scheduler_task_workdir(ownerless) == NULL, "ownerless task → NULL (core 不猜)");
     CHECK(edc_scheduler_task_workdir(NULL) == NULL, "no task → NULL");
 
@@ -498,9 +534,12 @@ static void test_history_dir_convention(void)
 {
     TEST("session dir is <workspace>/<session_id> (frontend derives chat.jsonl from it)");
     struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
-    struct edc_session *s = edc_session_new(cfg, "sess-dir", "D");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-dir"), "D");
 
-    sds expected = edc_path_join(cfg->workspace, "sess-dir", NULL);
+    /* The directory keeps the historical "s<id>" spelling (edc_session_dir_name): it
+     * holds live chat.jsonl transcripts, so the ids became numbers but the names did not. */
+    sds expected = edc_path_join(cfg->workspace,
+                                 edc_session_dir_name(edc_test_session_id("sess-dir")), NULL);
     CHECK(s->history_dir != NULL, "history_dir is set");
     CHECK(s->history_dir && strcmp(s->history_dir, expected) == 0, "history_dir == <workspace>/<session_id>");
     sdsfree(expected);
@@ -508,8 +547,9 @@ static void test_history_dir_convention(void)
 
     /* Binding a workdir must not move the state directory: cwd and storage are
      * two different things, and the frontend only knows the second one. */
-    struct edc_session *b = edc_session_new_with_workdir(cfg, "sess-dir2", "B", "/tmp");
-    sds expected2 = edc_path_join(cfg->workspace, "sess-dir2", NULL);
+    struct edc_session *b = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-dir2"), "B", "/tmp");
+    sds expected2 = edc_path_join(cfg->workspace,
+                                  edc_session_dir_name(edc_test_session_id("sess-dir2")), NULL);
     CHECK(b->history_dir && strcmp(b->history_dir, expected2) == 0, "bound workdir does not change history_dir");
     sdsfree(expected2);
     edc_session_free(b);
@@ -544,6 +584,7 @@ static void test_absolute_workdir_not_anchored(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("== test_session_workdir ==");
 
     test_explicit_workdir();
@@ -556,6 +597,7 @@ int main(void)
     test_verify_path_at();
     test_system_prompt_cwd();
     test_system_prompt_has_no_clock();
+    test_workspace_files_are_not_prompt_sources();
     test_memory_file_mechanism_is_gone();
     test_project_context_discovery();
     test_task_workdir_owner();

@@ -1,12 +1,15 @@
 #include "edc_log.h"
 #include "edc_theme.hpp"
 #include "edc_tui_window.hpp"
+#include "edc_state_store.h"
+#include "edc_version.h"
 #include "ftxui/component/loop.hpp"
 #include "ftxui/component/screen_interactive.hpp"
 #include "uv.h"
 #include <memory>
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <string>
 #include <thread>
 
@@ -80,6 +83,19 @@ void CloseDefaultLoop(uv_loop_t *loop)
 
 int main(int argc, char **argv)
 {
+    /* Before anything else -- no terminal setup, no config, no passphrase. A version
+     * question must be answerable by a binary that cannot start (wrong master key, no
+     * tty, broken database): it is the first thing a bug report needs, and it must not
+     * fail for the same reason the user is reporting. */
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--version") == 0)
+        {
+            edc_version_print(EDC_DB_VERSION, stdout);
+            return 0;
+        }
+    }
+
 
 #ifdef _WIN32
     // FTXUI renders each frame to a UTF-8 std::string and writes it as raw
@@ -99,6 +115,10 @@ int main(int argc, char **argv)
     const int sandbox_override = ParseSandboxFlag(argc, argv);
 
     edc_log_init();
+
+    /* No headless branch here: the non-interactive frontend is its own binary
+     * (`edgeclaw_cli`), which links this app WITHOUT ftxui. Keeping the terminal code out of
+     * that binary is the point -- see src/cli/BUILD. */
 
     // Settle the colour depth first: ftxui::Color::RGB() quantises to whatever
     // depth is in force when the colour is built, and the palettes are built

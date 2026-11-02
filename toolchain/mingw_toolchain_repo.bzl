@@ -4,6 +4,7 @@ load(
     ":compilation_mode_features.bzl",
     "COMPILATION_MODE_ACTIONS",
     "COMPILATION_MODE_FEATURES",
+    "COVERAGE_FEATURE",
 )
 
 def _normalize_path(path):
@@ -135,7 +136,7 @@ mingw_toolchain_config = rule(
     implementation = _impl,
     attrs = {{}},
 )
-""".format(tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES, cxx_tool_path = cxx_tool_path)
+""".format(tool_paths = tool_paths_str, include_dirs = include_dirs_str, target_cpu = target_cpu, target_system_name = target_system_name, toolchain_identifier = toolchain_identifier, all_compile_actions = COMPILATION_MODE_ACTIONS, compilation_mode_features = COMPILATION_MODE_FEATURES + COVERAGE_FEATURE, cxx_tool_path = cxx_tool_path)
 
 def _generate_stub(rctx):
     rctx.file("mingw_compiler_config.bzl", content = """load("@rules_cc//cc/common:cc_common.bzl", "cc_common")

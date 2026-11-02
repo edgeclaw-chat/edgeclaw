@@ -7,6 +7,7 @@
  * for a 429. */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_exec_io.h"
@@ -77,11 +78,11 @@ struct fix
 static void give_input(struct edc_task *task, const char *text)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
+    turn->task_id = task->task_id;
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", "user");
     cJSON_AddStringToObject(msg, "content", text);
-    edc_queue_push(&turn->messages, msg);
+    edc_turn_add_message(turn, msg);
     edc_task_add_turn(task, turn);
     edc_task_await_exec(task); /* 停在"已派发, 等回话" */
 }
@@ -90,13 +91,13 @@ static void fix_up(struct fix *f, int window)
 {
     memset(f, 0, sizeof(*f));
     f->cfg = g_new0(struct edc_config, 1);
-    f->cfg->workspace = sdsnew("/tmp/test_executor_overflow_ws");
+    f->cfg->workspace = sdsnew(edc_test_workspace());
     f->cfg->context_window = window;
-    f->sess = edc_session_new(f->cfg, "sess-overflow", "Overflow");
+    f->sess = edc_session_new(f->cfg, edc_test_session_id("sess-overflow"), "Overflow");
     f->sched = edc_scheduler_new(f->cfg);
     install_resolver(f->sched, f->sess);
 
-    f->task = edc_task_new("t-1", "sess-overflow", "t-1", "user task", edc_channel_adapter);
+    f->task = edc_task_new(edc_test_id("t-1"), edc_test_session_id("sess-overflow"), edc_test_id("t-1"), "user task", edc_channel_adapter);
     edc_session_add_group(f->sess, edc_task_group_new(f->task));
     give_input(f->task, "hello");
 }
@@ -504,6 +505,7 @@ static void test_http_failure_is_not_retried(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== test_executor_overflow ===");
 
     test_explicit_overflow();

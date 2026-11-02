@@ -1,6 +1,7 @@
 #ifndef __BC_MODELS_H__
 #define __BC_MODELS_H__
 
+#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -37,8 +38,8 @@ struct edc_model_info
 {
     const char *id;
     const char *name;
-    long long context; /* tokens; 0 = unknown */
-    long long output;
+    int64_t context; /* tokens; 0 = unknown */
+    int64_t output;
     bool tool_call;
     bool reasoning;
     bool attachment;

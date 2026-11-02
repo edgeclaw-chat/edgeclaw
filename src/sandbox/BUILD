@@ -73,6 +73,8 @@ cc_binary(
     linkopts = select({
         "//:windows": [],
         "//:macos": [],
+        # ASAN cannot link statically; --config=asan sets //:sanitize.
+        "//:sanitize": [],
         "//conditions:default": ["-static"],
     }),
     visibility = ["//visibility:public"],

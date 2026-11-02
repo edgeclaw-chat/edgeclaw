@@ -3,6 +3,7 @@
 
 #include "edc_error.h"
 #include "sds.h"
+#include <stdint.h>
 #include <cJSON.h>
 #include <stdbool.h>
 
@@ -24,10 +25,16 @@ struct edc_task_group;
 
 struct edc_session
 {
-    char *session_id;
-    char *name;      /* user-friendly display name */
-    sds created_at;  /* ISO 8601 creation timestamp */
-    sds last_active; /* ISO 8601 last-active timestamp */
+    /* The sessions table key, assigned by the database (INTEGER PRIMARY KEY
+     * AUTOINCREMENT) -- like task_id. 0 = not assigned yet. It used to be the TEXT "s<N>"
+     * handed out by a counter whose high-water mark lived in <ws>/.session_seq. */
+    int64_t session_id;
+    char *name; /* user-friendly display name */
+    /* Unix seconds, the one representation used everywhere (DB columns, sessions.json and
+     * in memory). 0 = unknown. These used to be ISO strings, which meant save/load
+     * converted back and forth and the same instant existed in two formats. */
+    uint64_t created_at;
+    uint64_t last_active;
 
     /* The single representation of task state (v3 on): groups/tasks. The old
      * session->messages track and v2 read compatibility are gone. */
@@ -40,24 +47,28 @@ struct edc_session
     struct edc_task_group *foreground_group;
 
     /* Whether the in-memory groups/tasks are ready. First activation (startup, or
-     * switching to a never-loaded session) deserializes session.json once; after
-     * that memory is authoritative and a switch back must never load_state again
-     * (that would overwrite live objects with a disk copy). */
+     * switching to a never-loaded session) reads the session's rows once; after that this
+     * tree is the working copy and a switch back must never load again (that would rebuild
+     * live objects from the database and discard unsaved changes). */
     bool state_loaded;
 
-    /* Quarantine flag: set when load_state found an existing session.json it could
-     * not read (unknown version / bad JSON) and renamed it to
-     * session.json.broken. While set, this process REFUSES to persist -- else the
-     * in-memory empty shell would be written into the session.json slot, creating a
-     * seemingly-valid fake state that a later recovered file dropped in would be
-     * overwritten by on the next exit. */
+    /* Quarantine flag: set when the session HAS rows but they could not be read (a version
+     * mismatch, a corrupt page, a SQL error). While set, this process REFUSES to persist --
+     * otherwise the half-built shell would be flushed over the real rows, turning a
+     * recoverable database into a plausibly-shaped empty one. See
+     * edc_session_load_state() for where it is set. */
     bool state_quarantined;
+
+    /* The legacy session.json warning was already emitted for this session. Nothing reads
+     * that file any more; a leftover one is reported ONCE per session per process rather
+     * than at every tool boundary. */
+    bool legacy_state_warned;
 
     struct edc_config *config;
 
     /* L2: session-level memory (event table + entry table + digest watermark).
-     * Never NULL (built at construction); persisted at session.json's top-level
-     * `session_memory` key (schema v7). See docs/l2-session-memory.md. */
+     * Never NULL (built at construction); persisted in the memo_events / memo_entries
+     * tables plus a few counters on the session row. */
     struct edc_session_memory *memo;
 
     sds history_dir; /* workspace/<session_id> -- per-session history */
@@ -78,14 +89,28 @@ struct edc_session
 /* ── Lifetime ──────────────────────────────────────────────── */
 
 /** Create a session with a specific id and display name. */
-extern struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name);
+extern struct edc_session *edc_session_new(struct edc_config *config, int64_t session_id, const char *name);
 
 /** Create a session bound to a working directory. |workdir| is resolved with
  *  realpath() and must name an existing directory; NULL/empty keeps the
  *  default (the launch directory). If |workdir| is given but unusable, creation
  *  FAILS (returns NULL) rather than silently binding the default. */
-extern struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id,
+extern struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id,
                                                         const char *name, const char *workdir);
+
+/* The session's directory name, WITHOUT the workspace prefix: the id's text form, exactly
+ * as edc_id_str() renders it ("15"), but as a string the caller owns.
+ *
+ * There is deliberately ONE text form for an id. An earlier version prefixed session ids
+ * with an "s" (a leftover from the days when they were "s<N>" strings) while task and group
+ * ids were bare numbers -- so "which of the two renderers is right here?" became a question
+ * a developer had to remember, and getting it wrong compiled cleanly and silently wrote a
+ * session's transcript into a directory that did not exist. Now the database's own type
+ * decides: an id is an integer, so its text form is that integer.
+ *
+ * Caller frees with sdsfree. */
+extern sds edc_session_dir_name(int64_t session_id);
+
 
 /** The session's bound working directory as an absolute realpath, or NULL when
  *  the session is unbound (callers then fall back to the launch directory,
@@ -131,7 +156,7 @@ extern size_t edc_session_get_message_count(struct edc_session *session);
 
 extern void edc_session_add_group(struct edc_session *session, struct edc_task_group *group);
 extern void edc_session_remove_group(struct edc_session *session, struct edc_task_group *group);
-extern struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id);
+extern struct edc_task_group *edc_session_find_group(struct edc_session *session, int64_t group_id);
 
 /** The session's SYSTEM group (kind == SYSTEM), or NULL when there is none.
  *
@@ -145,7 +170,7 @@ extern struct edc_task_group *edc_session_find_group(struct edc_session *session
  *  other reader is the display layer. */
 extern struct edc_task_group *edc_session_find_system_group(struct edc_session *session);
 
-extern struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id);
+extern struct edc_task *edc_session_find_task(struct edc_session *session, int64_t task_id);
 
 extern void edc_session_set_active_task(struct edc_session *session, struct edc_task *task);
 extern struct edc_task *edc_session_get_active_task(struct edc_session *session);
@@ -154,19 +179,30 @@ extern struct edc_task *edc_session_get_active_task(struct edc_session *session)
 
 struct edc_scheduler;
 
-/** Save complete session state to workspace/<session_id>/session.json.
- *  Atomic: writes to .tmp then rename().
+/** Save the session's state into <workspace>/edgeclaw.db (see edc_state_store.h).
+ *
+ *  Not a file write any more: the flush upserts the rows that changed, in one transaction.
+ *  (This used to say "writes to workspace/<session_id>/session.json, atomic via .tmp then
+ *  rename()" -- that file is not written or read by anything now, only warned about when a
+ *  leftover one is found. <session_id>/ holds the chat transcript and tool output.)
+ *
  *  The caller must only save a session whose state was loaded in this run
- *  (session->state_loaded): an unloaded session is just an id/name shell built
- *  from sessions.json, so writing it would clobber the newer on-disk state
- *  (groups, tasks, and the bound working directory). See
- *  edc_session_manager_save_loaded_states() for the exit path.
+ *  (session->state_loaded): an unloaded session is just an id/name shell built from the
+ *  sessions table, so writing it would clobber the newer rows (groups, tasks, and the bound
+ *  working directory). See edc_session_manager_save_loaded_states() for the exit path.
  *  Returns true on success. */
 extern bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched);
 
-/** Load session state from workspace/<session_id>/session.json.
+/** Same as edc_session_save_state(), but records |tag| (the call site) in the
+ *  stage-0 baseline probe (EDGECLAW_STATE_PROBE, see edc_state_probe.h). Exists
+ *  only so the baseline can tell the flush sites apart; behaves identically. */
+extern bool edc_session_save_state_tagged(struct edc_session *session, struct edc_scheduler *sched,
+                                          const char *tag);
+
+/** Load session state from <workspace>/edgeclaw.db (see edc_state_store.h).
  *  Rebuilds all groups, tasks, turns, and dependencies.
- *  Returns true on success, false if file missing or corrupt. */
+ *  Returns true on success, false when the store holds nothing for this session
+ *  (a brand-new session) or when reading failed. */
 extern bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched);
 
 #endif

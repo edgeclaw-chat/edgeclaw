@@ -4,6 +4,7 @@
 #include "edc_path.h"
 #include "edc_file_utils.h"
 
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -131,8 +132,9 @@ sds edc_path_guard_resolve(const struct edc_path_rules *rules, const char *path,
      *    Only asked for content that ends up in the model's context. */
     if (rules->refuse_hardlink && stat(resolved, &lst) == 0 && lst.st_nlink > 1)
     {
-        edc_error_set(error, EDC_ERR_FAILED, "'%s' has %lu links (a hardlink to another file); refusing to use it",
-                      path, (unsigned long)lst.st_nlink);
+        edc_error_set(error, EDC_ERR_FAILED,
+                      "'%s' has %" PRIu64 " links (a hardlink to another file); refusing to use it", path,
+                      (uint64_t)lst.st_nlink);
         free(resolved);
         return NULL;
     }

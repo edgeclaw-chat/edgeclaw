@@ -197,9 +197,14 @@ SHELL SYNTAX (on by default)
 
      Options on + and /task new
            > +"input text" -d task1 --group dev
-       Options are recognised only after a quoted description (or when the
-       description is the only content); otherwise a token starting with "-"
-       is a syntax error, not a silently-ignored flag.
+       On a SHELL line (the + form) options are recognised only after a quoted
+       description; otherwise a token starting with "-" is a syntax error, not a
+       silently-ignored flag.
+       A / command reads its own options out of its words, so /task new needs no
+       quotes around the description: an option is a whole word, and quoting is
+       what turns it back into text.
+           /task new fix -d 1      a task called "fix", waiting for task 1
+           /task new 'fix -d 1'    a task called "fix -d 1"
        --bg              Run in background (command layer only: a shell line uses `&`).
        --new-group       Open a group of its own (a fresh conversation).
        -d <id>           Wait for this task before executing (repeatable).
@@ -409,8 +414,8 @@ COMMAND REFERENCE
                                    alone reports the state).
 
      Session
-     /session new [name] [dir]     Start a new session (optionally named,
-                                   optionally with a working directory).
+     /session new [name] <dir>      Start a new session bound to <dir> (the
+                                   name is optional, the directory is not).
      /session switch <name_or_id>  Switch to another session.
      /session list                 List all sessions.
      /session info                 Show current session details.
@@ -452,7 +457,8 @@ COMMAND REFERENCE
      Task inspection
      /task list               List all groups and tasks. Active task
                                marked with * (e.g. [L*] or [M*]).
-     /task status [tid]       Show task details (state, output, deps).
+     /task status [tid]       Show task details (state, deps, output,
+                              and the tool call it is running).
      /task output <tid>       Show only the task's output text.
      /task history <tid>      Show the task's messages (--json = raw payload).
 

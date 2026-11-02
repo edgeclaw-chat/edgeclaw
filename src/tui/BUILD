@@ -6,6 +6,8 @@ LINK_OPTS = select({
     "//:windows": ["-lstdc++", "-lws2_32", "-lbcrypt", "-luserenv"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": ["-lstdc++"],
+    # `--config=asan`: same reason -- ASAN needs a dynamic runtime.
+    "//:sanitize": ["-lstdc++"],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections", "-lstdc++"],
 })
 
@@ -80,6 +82,9 @@ cc_library(
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",
+        # edc_mention.h: the `@reference` grammar the input line paints is the one the
+        # mention pass expands (see that header on why it is not duplicated here).
+        "//src/shell:shell_parse",
         "@cjson//:cjson",
         "@ftxui//:dom",
         "@ftxui//:ftxui",
@@ -101,6 +106,7 @@ cc_binary(
         "//src/app:app",
         "//src/common:common",
         "//src/common:utlist_fix",
+        "//src/common:version",
         "//src/kernel:kernel",
         "//src/shell:shell",
         "//src/tui:tui",

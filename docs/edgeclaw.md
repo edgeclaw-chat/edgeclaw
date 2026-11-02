@@ -50,6 +50,61 @@ matters, by the input line itself). The empty input box's placeholder points at 
 
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
+### Without a terminal (`edgeclaw_cli`)
+
+`edgeclaw_cli` is the same input box without the screen. **The argument is the line you
+would have typed** — there is no second command line to learn:
+
+```bash
+edgeclaw_cli 'summarize this repository'
+edgeclaw_cli '/task new "write the docs"'
+edgeclaw_cli '+"explore the parser"'
+edgeclaw_cli '"a" | "b"'
+edgeclaw_cli '!make -j8'
+```
+
+Each of those goes through exactly the path a keystroke does: the same passes, the same
+classification (command / local shell / shell line / plain message), the same command table,
+the same shell grammar, the same sessions and groups. If a line works in the TUI it works
+here; if it does not, it fails with the same message. Unquoted arguments are joined with
+single spaces, so `edgeclaw_cli /task new "abc"` is the same line as the quoted form; `--`
+ends the flags, for a line that starts with a dash.
+
+What a caller chooses is only **what to do with the output** — the messages exist before the
+process decides to print them:
+
+| mode | behaviour |
+|---|---|
+| (default) | the answer alone on stdout |
+| `--json` | every message this run produced, one JSON object per line, ending with `done` |
+| `--silent` | nothing — the run is still recorded, so `/task output <id>` has it later |
+
+"Where the answer is" depends on what the line was, and the CLI looks in that order: a
+**reply** (a task), a **system message** (a command), a **tool output** (`!cmd` has no reply
+at all). That is why it collects messages first instead of assuming one shape.
+
+Exit codes: `0` the line ran to the end, `1` a task it created failed, `2` usage or
+configuration (no input, the app could not start), `3` timed out (`--timeout`, default 300s).
+stdout carries the answer and nothing else, in every mode, so `> answer.md` is clean;
+progress, tool output and failures go to stderr.
+
+```
+$ edgeclaw_cli --silent 'Reply with exactly: SILENT-OK'   # nothing printed
+$ edgeclaw_cli '/task output 24'
+SILENT-OK
+```
+
+Two things to know unattended. The **master key** is needed to read the stored API key:
+interactively it is asked for on a terminal, so in cron/CI set `EDGECLAW_MASTER_KEY` (running
+`edgeclaw` once interactively is also how a fresh install gets configured). And each task
+joins its session's foreground group exactly as typed input would — a group's queue is
+serial, so a run started from inside a busy session queues like anything else (`+` opens a
+group of its own, as it does in the TUI).
+
+`edgeclaw_cli` is a separate binary on purpose: it links the app, **not ftxui**, so a
+container or a cron host ships a frontend that cannot take over a terminal by accident (and
+about half the size). The interactive `edgeclaw` binary contains no headless code.
+
 ---
 
 ## Shell Architecture
@@ -157,9 +212,22 @@ The redirect target is a string too — `"say hi" > "out.md"` — and its quotes
 delimiters, not part of the path, which is what makes a filename with a space in it
 expressible.
 
-What follows the closing quote is the **option area** (`-d <id>`, `-g <group>`,
-`2>`, …). Anything else there is refused rather than dropped, so `"hello" and more` is an
-error — not a task quietly called `hello`.
+What follows the closing quote of a **shell line** is the **option area** (`-d <id>`,
+`-g <group>`, `2>`, …). Anything else there is refused rather than dropped, so `"hello" and
+more` is an error — not a task quietly called `hello`.
+
+A `/` command is different: its words are handed to the command, which reads its own
+options out of them (the way `ls` reads `-l`). So there is no "option area" on a command
+line and no rule that the description be quoted — `-d`, `--bg` are options only when they
+are their own word, and quoting is what makes them text:
+
+```
+/task new 写脚本 -d 1      # a task called 写脚本 that waits for task 1
+/task new '写脚本 -d 1'    # a task called 写脚本 -d 1; nothing to wait for
+```
+
+That is the same distinction a shell makes, and it is the whole reason quoting is worth
+having: it says where a word begins and ends, nothing more.
 
 `/` commands are never gated: the command layer is a different thing from the shell layer,
 and `/shell` itself has to stay reachable to turn the switch back on. So `/task new`,
@@ -272,7 +340,8 @@ What happens is worth stating exactly, because it is also how the rest of the sy
 sees it: the command becomes **a task of its own** (its own line in the sidebar, its own
 entry in the group's history) whose only job is to issue one `exec_shell` call. So
 
-- the command runs through `sh -c`, in the session's working directory, subject to the
+- the command runs through `sh -c` (on Windows: `powershell.exe -Command`, with an encoding
+  prologue in front of it), in the session's working directory, subject to the
   sandbox setting (`/sandbox`), with the same output cap as the `exec_shell` tool the model
   uses and **no timeout at all** — a command runs until it exits. Bound it yourself when
   you want to: `!timeout 60 make -j8`;
@@ -316,15 +385,27 @@ Rules:
   `@Override` inside pasted code are not references.
 - The path runs to the next whitespace. Trailing ASCII punctuation is ignored when
   resolving (`看下 @a.c.` reads `a.c`), and the text is left exactly as typed.
+- **Quote the path when it contains a space**: `@"my file.txt"` — same quoting rules as
+  everywhere else (`@'…'` and `@$'…'` work too). Quotes are delimiters, and inside them
+  nothing is taken back: `@"a.c."` reads the file literally named `a.c.`, where `@a.c.`
+  reads `a.c`. An unterminated quote is not a reference at all, so the text is left alone
+  rather than read up to the next space.
 - `\@` is the escape: it becomes a literal `@` and attaches nothing.
 - `@path#12` / `@path#12-20` attaches only those lines (1-based, inclusive; `#12-` runs to
-  the end).
+  the end). The range may follow a closing quote: `@"my file.txt"#2-3`.
 - A relative path is resolved against the **session's working directory**, and the read
   goes through the sandbox and symlink checks — the same rules the `read_file` tool obeys.
 - A directory attaches its listing; a binary file is skipped with a note.
 - Caps: 2000 lines / 64 KB per file, 128 KB per message. Truncation says so.
 - A missing or unreadable file does not drop the message: the task is created and the
   failure appears in the attached content.
+
+**Completion follows the same rule.** Typing `@` opens the picker; it stays open across a
+space when a quote is open (`@"my fi` keeps listing) and closes once the quote is. Taking a
+row writes back the form the parser can read: a path with a space (or a `#`) is quoted for
+you, so `@my` → `my file.txt` inserts `@"my file.txt"`, not `@my file.txt` (which would name
+the file `my`). A directory keeps the quote open for the next level (`@"my dir/`), and a
+`#12` you already typed survives the completion.
 
 What the model sees: your text keeps `@path` verbatim, and the file's content arrives as
 its own message, shaped exactly like a `read_file` result
@@ -406,12 +487,26 @@ also records *why* the model call failed (`AUTH`, `CONTEXT_OVERFLOW`, `RATE_LIMI
 `TRANSPORT`, `OTHER`), and `/task resume` repeats it: a bad key or an overflowing context
 does not heal by retrying.
 
+State and reason still do not say what a busy task is *doing*: `LLM_PROCESSING` while a
+tool runs looks the same as `LLM_PROCESSING` while the reply streams. So `/task status`
+also prints a **running** block — but only the calls still in flight, never the ones that
+already returned. The tool name and its JSON arguments are both shown, because the name is
+not the command (`{"command":"ls -la"}` is). "In flight" is exactly the resume ledger: a
+call enters it when the model asks for it (`queued`, not dispatched yet), becomes
+`running` when dispatched, and leaves it the moment its result arrives — so a finished
+call is not printed, and the block disappears by itself once the task settles. Earlier
+turns are never listed; those are `/task history <id>`.
+
 The sidebar's marker says the same thing at a glance — the colour is the state, the shape
 is the reason: `■` the active task, `●` anything else, `*` finished while you were not
 looking, `□` interrupted, `×` stopped by you, `–` skipped by `||`, `⊘` blocked by a
-dependency. When a session opens with interrupted tasks, one line in the chat says so
-(`/task resume <id>` takes one back at a time); it is not written to the transcript, so it
-does not come back on the next load.
+dependency. The `*` drops as soon as the task's content is in front of you — being the
+active task, its output arriving live in the chat pane, or asking for it: `/task output`,
+`/task status`, `/task fg`, and equally `/task history` / `/group history` (a transcript
+on screen *is* the output; making the user re-read it through a second command to clear a
+marker would be busywork). When a session opens with interrupted tasks, one line in the
+chat says so (`/task resume <id>` takes one back at a time); it is not written to the
+transcript, so it does not come back on the next load.
 
 Two behaviours follow from the reason:
 
@@ -480,6 +575,24 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 
 ## Command Reference
 
+**Arguments follow bash quoting.** Every `/command` tail is split the way a shell
+splits words, and nothing is expanded (no `$VAR`, globs or backticks):
+
+- unquoted blanks separate arguments;
+- `'...'` is literal, `"..."` is literal except `\"` and `\\`;
+- escapes have a home of their own, as in bash: `$'...'` (ANSI-C) is the only form
+  that decodes `\n`, `\t`, `\xHH`, `\uHHHH` -- that is how a newline or a tab is
+  written now (a real newline inside quotes works too); in-tree alias: `'''...'''`
+  (its ANSI-C semantics took over the old "raw block" spelling);
+- a value containing spaces has to be quoted: `/session new dev 'D:\my repo'`,
+  `/sandbox add-rw 'C:\Program Files\tool'`;
+- an unterminated quote is a syntax error, not a silently truncated argument;
+- one deliberate Windows concession: outside quotes a backslash is a plain byte (bash
+  would eat it), so `D:\github\edgeclaw` needs no quoting; a space therefore has to
+  be quoted, not escaped (`'C:\Program Files\x'`, not `C:\Program\ Files\x`).
+- free-text tails (`/task fork <id> <desc>`, `/group fold [id] [focus]`) take the
+  remaining words joined by single spaces.
+
 ### General
 
 | Command | Description |
@@ -509,7 +622,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 
 | Command | Description |
 |---------|-------------|
-| `/session new [name] [dir]` | Start a new session (optionally named, optionally with a working directory) |
+| `/session new [name] <dir>` | Start a new session bound to `<dir>` (the name is optional, the directory is not: an unusable directory fails the command and creates no session) |
 | `/session switch <name_or_id>` | Switch to another session |
 | `/session list` | List all sessions |
 | `/session info` | Show current session details |
@@ -532,6 +645,11 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
 | `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
 | `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
+
+`<desc>` does not need quotes. Quote it when the description itself contains something
+that looks like an option: `/task new 'fix -d 1'` is a description, `/task new fix -d 1`
+is a task called `fix` waiting for task `1`. The last word wins as the value of `-d`/`-g`,
+and a missing value is a usage error.
 | `/task fork <pid> <desc>` | Fork: a child task that leads a group of its own and takes the foreground, inheriting the parent group's memory and a snapshot of its context |
 
 ### Task Inspection
@@ -539,7 +657,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 | Command | Description |
 |---------|-------------|
 | `/task list` | List all groups and tasks. Active task marked with `*` (e.g. `[L*]` or `[M*]`). |
-| `/task status [tid]` | Show task details (state, output, deps, turns) |
+| `/task status [tid]` | Show task details (state, deps, output, and the tool call it is running right now) |
 | `/task output <tid>` | Show only the task's output text |
 | `/task history <tid>` | Show the task's messages (`--json` = raw payload) |
 
@@ -564,6 +682,7 @@ the foreground. `+"input"` is a different thing -- it puts the task in a **new**
 |---------|-------------|
 | `/group list` | List all process groups |
 | `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight); no id = the foreground group |
+| `/group files [id]` | The files the group's **folded** work read / modified. A snapshot written when a fold lands, not a live view: later edits are not reflected and `exec_shell` calls (`sed -i`, `cat`, `git checkout`) are never tracked |
 | `/group history <id>` | The whole group's history, one block per member |
 | `/group fold [id] [focus]` | Fold the group now, ignoring the trigger; no id = the foreground group |
 
@@ -784,8 +903,6 @@ inheriting the parent's memory and conversation context up to the fork point.
 | `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
 | `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
-| `~/.edgeclaw/workspace/AGENTS.md` | Agent behavior instructions (the agent's contract) |
-| `~/.edgeclaw/workspace/TOOLS.md` | Tool quick reference |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from
@@ -811,4 +928,5 @@ higher one wins and the shadowed copy is named: a warning in the log, and a
 ## See Also
 
 - Architecture: `docs/task-session-architecture.md`
+- Product gaps & requirement list vs pi: `docs/product-alignment.zh.md`
 - Source: <https://github.com/edgeclaw-chat/edgeclaw>

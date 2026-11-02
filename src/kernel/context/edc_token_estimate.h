@@ -1,6 +1,7 @@
 #ifndef __BC_TOKEN_ESTIMATE_H__
 #define __BC_TOKEN_ESTIMATE_H__
 
+#include <stdint.h>
 #include <cJSON.h>
 #include <stddef.h>
 
@@ -9,13 +10,13 @@
  * is no real count"; any real count (response usage) takes precedence. */
 
 /* Estimate for a UTF-8 text span (excluding message structure overhead). */
-extern long long edc_token_estimate_text(const char *s);
+extern int64_t edc_token_estimate_text(const char *s);
 
 /* Estimate for one message (cJSON object): all its string values plus the
  * per-message structure overhead. */
-extern long long edc_token_estimate_msg(const cJSON *msg);
+extern int64_t edc_token_estimate_msg(const cJSON *msg);
 
 /* Estimate for the [from, to) slice of a JSON message array (out-of-range clamped). */
-extern long long edc_token_estimate_msgs(const cJSON *arr, size_t from, size_t to);
+extern int64_t edc_token_estimate_msgs(const cJSON *arr, size_t from, size_t to);
 
 #endif

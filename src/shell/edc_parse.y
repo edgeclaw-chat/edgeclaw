@@ -73,6 +73,20 @@ static void opt_noarg(const edc_tok *o)
         set_err("unknown option");
 }
 /* 带参选项：参数是紧接的那个 word（所以 `-d \"a b\"` 也成立）。 */
+/* 带参选项后面没有值：`"desc" -d` 断了。这不是"未知语法"，是**少了东西**，所以给一句
+ * 能照着改的话，而不是 bison 的 "unexpected T_WORD / end of file"。
+ *
+ * 它在 `edc_parse()` 的 token 预检里跑，不是文法动作：`opts T_OPTARG` 之后 bison 会先把
+ * 空产生式 `remember` 规约掉再去等 T_WORD，所以那条"缺值"规则永远轮不到（试过，动作不执行）。
+ * 预检也正好和上面 TK_BAD_QUOTED 的拦截同一个位置。 */
+static sds opt_needs_value(const edc_tok *o)
+{
+    if (!o || !o->value)
+        return NULL;
+    const char *arg = (strcmp(o->value, "-d") == 0 || strcmp(o->value, "--with") == 0) ? "<task id>" : "<group id>";
+    return sdscatprintf(sdsempty(), "`%s` needs a value: write `\"desc\" %s %s`.", o->value, o->value, arg);
+}
+/* 带参选项：参数是紧接的那个 word（所以 `-d \"a b\"` 也成立）。 */
 static void opt_witharg(const edc_tok *o, const edc_tok *val)
 {
     struct edc_ast_stage *s = cur_stage();
@@ -96,7 +110,7 @@ static void redir_add(const edc_tok *target, const edc_tok *spec)
      * 不静默丢弃：旧的写法必须停下来，并告诉用户换成什么。 */
     if (spec && spec->fd == 0)
     {
-        set_err("input redirect `\<` is gone — put the file in the message as `@file` "
+        set_err("input redirect `<` is gone — put the file in the message as `@file` "
                 "(it is read the same way, through the sandbox)");
         return;
     }
@@ -112,20 +126,69 @@ static void redir_add(const edc_tok *target, const edc_tok *spec)
     *tail = r; /* 同 fd 的 last wins 由解释器按顺序覆盖 */
 }
 
+/* `/cmd arg…`: the grammar owns the node, the command layer reads it. Two actions,
+ * one per half of the rule, so the name comes from the slash token itself (g_cur
+ * always points at the token that was just shifted). */
+static void cmd_begin(const edc_tok *tok)
+{
+    g_ast->kind = EDC_AST_COMMAND;
+    g_ast->cmd = calloc(1, sizeof(*g_ast->cmd));
+    if (!g_ast->cmd)
+        return;
+    g_ast->cmd->name = sdsdup((tok && tok->value) ? tok->value : sdsempty());
+}
+
+static void cmd_add(const edc_tok *tok)
+{
+    if (!g_ast->cmd)
+        return;
+    struct edc_ast_cmd *c = g_ast->cmd;
+    c->argv = realloc(c->argv, sizeof(sds) * (size_t)(c->argc + 1));
+    c->argv_quoted = realloc(c->argv_quoted, sizeof(bool) * (size_t)(c->argc + 1));
+    c->argv[c->argc] = sdsdup((tok && tok->value) ? tok->value : sdsempty());
+    /* The AST outlives the token stream, so the one fact it needs to keep is which words
+     * were quoted (TK_STRING) -- `/prompt review "--strict"` sends the text, a bare
+     * `--strict` is option-shaped and refused. */
+    c->argv_quoted[c->argc] = tok && tok->kind == TK_STRING;
+    c->argc++;
+}
+
 %}
-%token T_WORD T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_EOF2
+%token T_TEXT T_STRING T_NEWGROUP T_PIPE T_SEQ T_ANDAND T_OROR T_BG T_REDIR T_OPT T_OPTARG T_SLASH_CMD T_EOF2
+/* 显式写出来：bison 默认把**第一条规则的左部**当起始符号，而 `word` 现在排在 `input`
+ * 前面（它是两者的公共零件），不加这一行起始符号就成了 `word` —— 症状是每条输入都报
+ * "unexpected T_SLASH_CMD, expecting T_TEXT or T_STRING"。 */
+%start input
 %%
+/* 一个「词」：无引号文本，或一个引号串。选项取值、命令参数、重定向目标都用它 ——
+ * 所以 `-d t1`、`-d "t 1"`、`-d 'D:\\my repo'` 三种写法都成立，而哪种是哪种由
+ * token 种类说清楚，不用再挂 flag。 */
+word
+    : T_TEXT
+    | T_STRING
+    ;
+
 input
     : stage_head rest
     | T_NEWGROUP stage_head rest        { g_ast->new_group = true; }
+    | cmd_head cmd_args
     ;
+/* `/cmd arg…`: a command line. Both operands are ordinary shell words (the caller
+ * lexes a command line with the shell switch OFF, so `|`, `&`, `--bg` … are plain
+ * arguments here, exactly as they always were for `/…`). */
+cmd_head
+    : T_SLASH_CMD                       { cmd_begin(g_cur); }
+    ;
+cmd_args
+    : /* empty */
+    | cmd_args word                     { cmd_add(g_cur); }
+    ;
+/* shell 行的一个 stage：描述**必须是引号串** —— 现在这是文法说的，不是动作里查的。
+ * 第二条产生式只为那句话服务：裸文本进了 stage 位置就给可读的提示，而不是让 bison
+ * 抛一句 unexpected。 */
 stage_head
-    : T_WORD                            { if (!g_cur->fully_quoted)
-                                          {
-                                              set_err(EDC_QUOTED_DESC_HINT);
-                                              YYERROR;
-                                          }
-                                          stage_begin(); stage_set_word(g_cur); } opts
+    : T_STRING                          { stage_begin(); stage_set_word(g_cur); } opts
+    | T_TEXT                            { set_err(EDC_QUOTED_DESC_HINT); YYERROR; }
     ;
 rest
     : /* empty */
@@ -149,8 +212,8 @@ unless_pipe
 opts
     : /* empty */
     | opts T_OPT                        { opt_noarg(g_cur); }
-    | opts T_OPTARG remember T_WORD     { opt_witharg(g_remember, g_cur); }
-    | opts T_REDIR remember T_WORD      { redir_add(g_cur, g_remember); }
+    | opts T_OPTARG remember word        { opt_witharg(g_remember, g_cur); }
+    | opts T_REDIR remember word         { redir_add(g_cur, g_remember); }
     ;
 remember
     : /* empty */                       { g_remember = g_cur; }
@@ -159,18 +222,34 @@ remember
 bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
 {
     memset(out, 0, sizeof(*out));
-    out->kind = EDC_AST_SHELL; /* 文法只产出这一种；MESSAGE 节点由派发层直接构造 */
+    out->kind = EDC_AST_SHELL; /* 文法产出 SHELL 与 COMMAND；MESSAGE 由派发层直接构造 */
     if (err)
         *err = NULL;
 
-    /* 未闭合的字面量在哪个位置都不合法：先在 token 层拦一次，文案比 bison 的默认好。 */
+    /* 未闭合的字面量在哪个位置都不合法：先在 token 层拦一次，文案比 bison 的默认好。
+     * 带参选项缺值同理（`"desc" -d` / `"desc" --group`）：那也不是"未知语法"，是少了东西。 */
     for (int i = 0; toks && i < toks->count; i++)
+    {
         if (toks->toks[i].kind == TK_BAD_QUOTED)
         {
             if (err)
                 *err = edc_lex_unterminated_quote(toks->toks[i].value, toks->toks[i].begin + 1);
             return false;
         }
+        if (toks->toks[i].kind == TK_OPTARG)
+        {
+            const edc_tok *next = (i + 1 < toks->count) ? &toks->toks[i + 1] : NULL;
+            if (!next || (next->kind != TK_TEXT && next->kind != TK_STRING))
+            {
+                sds msg = opt_needs_value(&toks->toks[i]);
+                if (err)
+                    *err = msg;
+                else
+                    sdsfree(msg);
+                return false;
+            }
+        }
+    }
 
     g_toks = toks;
     g_i = 0;
@@ -208,7 +287,9 @@ int yylex(void)
     g_cur = &g_toks->toks[g_i++];
     switch (g_cur->kind)
     {
-    case TK_WORD: return T_WORD;
+    case TK_TEXT: return T_TEXT;
+    case TK_STRING: return T_STRING;
+    case TK_SLASH_CMD: return T_SLASH_CMD;
     case TK_SIGIL_NEWGROUP: return T_NEWGROUP;
     case TK_PIPE: return T_PIPE;
     case TK_SEQ: return T_SEQ;
@@ -258,6 +339,15 @@ void edc_ast_free(edc_ast *a)
     if (!a)
         return;
     payload_free(&a->message);
+    if (a->cmd)
+    {
+        sdsfree(a->cmd->name);
+        for (int i = 0; i < a->cmd->argc; i++)
+            sdsfree(a->cmd->argv[i]);
+        free(a->cmd->argv);
+        free(a->cmd->argv_quoted);
+        free(a->cmd);
+    }
     struct edc_ast_pipeline *p = a->pipelines;
     while (p)
     {

@@ -21,6 +21,7 @@
 #include "edc_file_index.h"
 #include "edc_file_utils.h"
 
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,7 +233,17 @@ static bool scratch(char *buf, size_t cap, const char *leaf)
     if (!base || !base[0])
         base = "/tmp";
 
-    const int n = snprintf(buf, cap, "%s%cedc_contract_%ld%c%s", base, PATH_SEP, (long)getpid(), PATH_SEP, leaf);
+    /* macOS sets TMPDIR to ".../T/" WITH a trailing separator; glibc's /tmp has none.
+     * The format below adds one, so an unstripped base produces ".../T//edc_contract_..."
+     * -- a double separator this test then asserts against, while the code under test
+     * normalizes it away. Strip first, add exactly one after. */
+    size_t base_len = strlen(base);
+    while (base_len > 1 && base[base_len - 1] == PATH_SEP)
+        base_len--;
+
+    const int n = snprintf(buf, cap, "%.*s%cedc_contract_%" PRId64 "%c%s", (int)base_len, base, PATH_SEP,
+                           (int64_t)getpid(),
+                           PATH_SEP, leaf);
     return n > 0 && (size_t)n < cap;
 }
 

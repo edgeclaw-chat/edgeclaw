@@ -14,7 +14,8 @@
 typedef enum
 {
     TK_SLASH_CMD,         /* /name（位置 0） */
-    TK_WORD,              /* 一个 shell word（fully_quoted = 恰好一个闭合引号区） */
+    TK_TEXT,              /* 无引号文本：一个调用的全部裸字符（`a|b` 在 OFF 下是一个） */
+    TK_STRING,            /* 一个闭合引号区（值已去引号、转义已解） */
     TK_BAD_QUOTED,        /* 引号开了却没闭合 —— token **自己就是**那个错误，不走侧信道 */
     TK_SIGIL_NEWGROUP,    /* + （位置 0） */
     TK_SIGIL_LOCALSHELL,  /* ! （位置 0，其载荷整体是下一个 TK_RAW_REST） */
@@ -39,9 +40,8 @@ typedef enum
 typedef struct
 {
     edc_tok_kind kind;
-    sds value;         /* TK_SLASH_CMD / TK_WORD / TK_RAW_REST / TK_OPT：文本（引号已去） */
-    bool fully_quoted; /* TK_WORD：整个 word 恰由一个引号区构成（== 行首是引号） */
-    bool has_var_refs; /* TK_WORD：含 {{…}}（只在双引号区里认） */
+    sds value;         /* TK_SLASH_CMD / TK_TEXT / TK_STRING / TK_RAW_REST / TK_OPT：文本 */
+    bool has_var_refs; /* TK_STRING：含 {{…}}（只在双引号区里认） */
     int fd;            /* TK_REDIR：0=输入 / 1=stdout / 2=stderr */
     bool append;       /* TK_REDIR：>> 或 2>> */
     size_t begin, end; /* 在输入中的字节区间 */
@@ -53,6 +53,10 @@ typedef struct
     int count;
     bool saw_disabled; /* 开关关闭时见过 sigil/算符（→ note，Ⓔ） */
     size_t disabled_at;/* 第一个越界 token 的位置 */
+    /* 这次切词用的模式。TK_STRING 只说明"这是个闭合引号区"这个**词法**事实；
+     * "引号在这里算语法"是模式的事（SHELL_OFF 下引号只定边界，不构成 shell 行）。
+     * 分类器两者都要，所以模式随 token 流一起给它 —— 而不是让分类器再去猜或再收一个参数。 */
+    edc_lex_mode mode;
 } edc_lex_out;
 
 /* 词法器永不失败：不认识的字节也只是一段 word。返回 false 只在内存分配失败时。 */
@@ -84,8 +88,5 @@ static inline sds edc_lex_unterminated_quote(const char *text, size_t col)
                         col, snippet, cut ? "…" : "");
 }
 
-/* 一段文本 -> argv：切词**归词法器**（相邻片段拼接、引号已去），所以
- * `review "a b"` 得到 2 个参数而不是 3 个。命令层用它，算符不参与（SHELL_OFF）。 */
-sds *edc_argv_from_tail(const char *tail, int *out_count);
 
 #endif

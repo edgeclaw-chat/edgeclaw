@@ -24,6 +24,21 @@
 #define CLIENT_IP  "192.168.4.2"
 #define PORT       5000
 
+/* A home of OUR choosing, established before fork() so the forked agent inherits it.
+ *
+ * The agent spawns commands with execl("/bin/sh", "sh", "-c", ...) -- which inherits the
+ * WHOLE environment (it is the shell TOOL, not the device agent, that goes through the
+ * whitelist in src/sandbox/edc_shell_env.c). So `echo $HOME` here reports whatever HOME the
+ * agent process has.
+ *
+ * That assertion used to depend on HOME already being in the ambient environment. Bazel's
+ * default test environment does not set HOME, so the agent inherited none, `echo $HOME`
+ * came back empty, and the case failed for a reason that had nothing to do with the agent.
+ *
+ * Deliberately not "/": the old expectation was merely "output contains a slash", which any
+ * path would satisfy. Proving THIS exact value travelled is what makes it an assertion. */
+#define TEST_HOME  "/tmp/edc-pppos-test-home"
+
 static ppp_pcb *cl_ppp;
 static int cl_fd;
 static volatile int cl_link_up;
@@ -158,6 +173,10 @@ int main(void)
     setbuf(stdout, NULL);
     printf("=== lwIP PPPoS Agent Stress Test ===\n\n");
 
+    /* Before fork(): the agent runs in the child and builds its child environment from its
+     * own environ, so this has to be in place before the split. See TEST_HOME. */
+    setenv("HOME", TEST_HOME, 1);
+
     openpty(&m, &s, NULL, NULL, NULL);
     tcgetattr(s, &t); cfmakeraw(&t); tcsetattr(s, TCSANOW, &t);
     signal(SIGPIPE, SIG_IGN);
@@ -208,7 +227,7 @@ int main(void)
         {"dd if=/dev/zero bs=1024 count=64 2>/dev/null | base64", 0, NULL, NULL, "64KB binary-as-base64"},
         {"for i in $(seq 1 200); do echo $i; done", 0, "200", NULL, "200 lines stdout"},
         /* env */
-        {"echo $HOME", 0, "/", NULL, "env HOME defined"},
+        {"echo $HOME", 0, TEST_HOME, NULL, "env HOME inherited by the spawned shell"},
         {"echo $PATH", 0, NULL, NULL, "env PATH defined"},
         /* command not found */
         {"nonexistent_command_xyz", 127, NULL, "not found", "command not found"},

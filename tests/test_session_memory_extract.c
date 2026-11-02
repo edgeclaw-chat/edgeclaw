@@ -7,6 +7,7 @@
  * landing clamp, failure/backoff, and the tri-state serialization. */
 
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_executor.h"
@@ -17,7 +18,6 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_session_memory.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -70,13 +70,13 @@ static int test_passed = 0;
  *  Helpers
  *  ══════════════════════════════════════════════════════════════ */
 
-#define OLD_TS "2000-01-01 00:00:00"    /* far in the past: definitely idle */
+#define OLD_TS "2000-01-01 00:00:00"    /* far in the past: old material, not old silence */
 #define RECENT_TS "2099-01-01 00:00:00" /* in the future: definitely not idle */
 
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_memo_extract_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -84,7 +84,6 @@ static struct edc_config *make_config(void)
 static void give_turn(struct edc_task *t, const char *text, const char *ts, int n)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
     for (int i = 0; i < n; i++)
     {
         cJSON *m = cJSON_CreateObject();
@@ -92,23 +91,39 @@ static void give_turn(struct edc_task *t, const char *text, const char *ts, int 
         cJSON_AddStringToObject(m, "content", text);
         if (ts)
             cJSON_AddStringToObject(m, "ts", ts);
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     edc_task_add_turn(t, turn);
 }
 
+/* Pretend the group has been idle for longer than the extraction window.
+ *
+ * The idle clock starts when the last member goes terminal (`idle_since`), NOT at the
+ * newest message: a helper that finishes its member now leaves a group that is idle for
+ * ~0s, whatever the messages say. Tests that want "this group has been sitting idle for
+ * a while" say so here instead of backdating message timestamps. */
+static void idle_long_ago(struct edc_task_group *group)
+{
+    if (!group)
+        return;
+    group->busy_members = 0;
+    group->idle_since = time(NULL) - (EDC_MEMO_EXTRACT_IDLE_SECS + 60);
+}
+
 /* A user group whose single (leader) member is finished and holds one |n|-message
- * committed turn. */
+ * committed turn. It starts out idle-for-a-while, which is the state most tests are
+ * about; the ones that care about the clock set it themselves. */
 static struct edc_task_group *make_finished_user_group(struct edc_session *session, const char *gid, const char *text,
                                                        const char *ts, int n)
 {
-    struct edc_task *leader = edc_task_new(gid, session->session_id, gid, text, edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id(gid), session->session_id, edc_test_id(gid), text, edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     give_turn(leader, text, ts, n);
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
     leader->completion_seq = 1;
+    idle_long_ago(group);
     return group;
 }
 
@@ -128,9 +143,9 @@ static struct edc_task *find_extract_task(struct edc_session *session)
 
 static const char *task_input(struct edc_task *t)
 {
-    if (!t || !t->active_turn || edc_queue_length(&t->active_turn->messages) == 0)
+    if (!t || !t->active_turn || t->active_turn->msg_count == 0)
         return NULL;
-    cJSON *m = t->active_turn->messages.data[t->active_turn->messages.head];
+    cJSON *m = edc_turn_msg_at(t->active_turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
 }
 
@@ -157,21 +172,24 @@ static void test_due_predicate(void)
     TEST("due: idle + something extractable, refused while busy / folded / capped");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-due", "Due");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-due"), "Due");
     struct edc_task_group *group = make_finished_user_group(session, "g1", "some work", OLD_TS, 2);
     time_t now = time(NULL);
 
     CHECK(edc_session_memory_extract_due(group, cfg, now), "idle + pending => due");
-    CHECK(edc_session_memory_extract_due(group, cfg, now - 1000), "idle clock not yet elapsed => not due");
+    CHECK(!edc_session_memory_extract_due(group, cfg, now - 1000), "before the idle window elapses => not due");
     CHECK(!edc_session_memory_extract_due(NULL, cfg, now), "NULL group => not due");
 
     /* Not idle: a member still running. */
-    struct edc_task *busy = edc_task_new("2", session->session_id, "g1", "busy", edc_channel_adapter);
+    struct edc_task *busy = edc_task_new(edc_test_id("2"), session->session_id, edc_test_id("g1"), "busy", edc_channel_adapter);
     edc_task_group_add_task(group, busy);
+    CHECK(group->busy_members == 1, "attaching a live member makes the group busy");
     CHECK(!edc_session_memory_extract_due(group, cfg, now), "a running member => not due");
     edc_task_await_exec(busy);
     edc_task_mark_completed(busy);
     busy->completion_seq = 2;
+    CHECK(group->busy_members == 0, "the last member finishing empties the busy count");
+    idle_long_ago(group); /* finishing it now restarts the clock; say it was long ago */
     CHECK(edc_session_memory_extract_due(group, cfg, now), "member finished => due again");
 
     /* Nothing extractable: the watermark covers every committed message. */
@@ -213,7 +231,7 @@ static void test_material_excludes_group_memory(void)
     TEST("material: raw unfolded history + full index; the old group memory is NOT included");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-mat", "Mat");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-mat"), "Mat");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -234,7 +252,7 @@ static void test_material_excludes_group_memory(void)
     CHECK(task != NULL, "the extraction task is in the system group");
     CHECK(task && task->memo_kind == EDC_MEMO_KIND_EXTRACT, "memo_kind = EXTRACT");
     CHECK(task && task->sink_group == group, "knows which group it is extracting");
-    CHECK(task && task->memo_cut_task_id && strcmp(task->memo_cut_task_id, "g1") == 0, "cut lands on the member");
+    CHECK(task && task->memo_cut_task_id && task->memo_cut_task_id == edc_test_id("g1"), "cut lands on the member");
 
     const char *material = task_input(task);
     CHECK(material != NULL, "the prompt is attached");
@@ -265,21 +283,21 @@ static void test_cap_multi_round_and_idempotence(void)
     TEST("cap: an over-cap turn is extracted in rounds; the cursor is idempotent");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-cap", "Cap");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-cap"), "Cap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *leader = edc_task_new("g1", session->session_id, "g1", "big", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("g1"), session->session_id, edc_test_id("g1"), "big", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
     leader->completion_seq = 1;
+    idle_long_ago(group); /* idle long enough for the window; the material is what this test checks */
 
     /* One committed turn with two ~75k-token messages: together over the 131k cap,
      * each comfortably under it => round 1 takes the first, round 2 the second. */
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("g1");
     sds a = sdsnewlen(NULL, 300000);
     memset(a, 'A', 300000);
     a = sdscat(a, " MARK_A");
@@ -293,7 +311,7 @@ static void test_cap_multi_round_and_idempotence(void)
         cJSON_AddStringToObject(m, "role", "user");
         cJSON_AddStringToObject(m, "content", texts[i]);
         cJSON_AddStringToObject(m, "ts", OLD_TS);
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     sdsfree(a);
     sdsfree(b);
@@ -348,7 +366,7 @@ static void test_fold_landing_clamps_memo_prefix(void)
     TEST("fold landing: what is folded is in L2 (memo_prefix clamped up to folded_prefix)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-clamp", "Clamp");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-clamp"), "Clamp");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
@@ -361,9 +379,9 @@ static void test_fold_landing_clamps_memo_prefix(void)
     CHECK(fold != NULL, "a fold started");
     /* The fold corpus is the task's own input; capture it before the reply commits the turn. */
     const char *fold_prompt = NULL;
-    if (fold->active_turn && edc_queue_length(&fold->active_turn->messages) > 0)
+    if (fold->active_turn && fold->active_turn->msg_count > 0)
     {
-        cJSON *m = fold->active_turn->messages.data[fold->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(fold->active_turn, 0);
         fold_prompt = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(fold_prompt && strstr(fold_prompt, OLD_TS) != NULL, "the fold corpus carries each message's timestamp");
@@ -398,7 +416,7 @@ static void test_failure_backoff_and_bad_cut(void)
     TEST("failure: a bad cut advances nothing and counts a failure; the cap pauses automation");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-fail", "Fail");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-fail"), "Fail");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -410,7 +428,7 @@ static void test_failure_backoff_and_bad_cut(void)
         edc_scheduler_spawn_system_task_as(sched, session, "extract session memory", EDC_SINK_SESSION_MEMORY);
     task->memo_kind = EDC_MEMO_KIND_EXTRACT;
     task->sink_group = group;
-    task->memo_cut_task_id = strdup("does-not-exist");
+    task->memo_cut_task_id = edc_test_id("does-not-exist");
     task->memo_cut_turn = 0;
     task->memo_cut_prefix = 2;
 
@@ -440,11 +458,11 @@ static void test_serialization_tristate_and_v7(void)
     TEST("serialize: memo_kind round-trips; a v7 archive (memo_compact) reads as COMPACT");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-ser", "Ser");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *leader = edc_task_new("1", session->session_id, "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), session->session_id, edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     give_turn(leader, "x", NULL, 3);
@@ -455,14 +473,13 @@ static void test_serialization_tristate_and_v7(void)
     edc_task_mark_interrupted(leader);
     leader->memo_kind = EDC_MEMO_KIND_COMPACT;
 
-    cJSON *json = edc_state_serialize(session, sched);
-    CHECK(json != NULL, "serialize returns non-NULL");
+    CHECK(edc_state_store_flush(session, sched), "flush returns ok");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-ser", "Ser");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-ser"), "Ser");
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     install_resolver(sched2, s2);
-    CHECK(edc_state_deserialize(json, s2, sched2), "v8 round-trips");
-    struct edc_task *r = edc_session_find_task(s2, "1");
+    CHECK(edc_state_store_load(s2, sched2), "round-trips through the store");
+    struct edc_task *r = edc_session_find_task(s2, edc_test_id("1"));
     CHECK(r != NULL, "task restored");
     CHECK(r && r->memo_kind == EDC_MEMO_KIND_COMPACT, "memo_kind=COMPACT round-trips");
     CHECK(r && ((struct edc_turn *)r->turns.data[r->turns.head])->memo_prefix == 2, "turn memo_prefix round-trips");
@@ -470,65 +487,29 @@ static void test_serialization_tristate_and_v7(void)
     edc_session_free(s2);
     edc_scheduler_free(sched2);
 
-    /* A v7 archive: the task carries the old `memo_compact` bool and the turn has no
-     * `memo_prefix` at all. The loader must read COMPACT and normalize the turn's
-     * memo_prefix up to folded_prefix (what the old binary implicitly assumed). */
-    cJSON_ReplaceItemInObject(json, "version", cJSON_CreateNumber(7));
-    cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
-    cJSON *tj = NULL;
-    cJSON_ArrayForEach(tj, tasks)
-    {
-        if (cJSON_GetObjectItem(tj, "memo_kind"))
-        {
-            cJSON_DeleteItemFromObject(tj, "memo_kind");
-            cJSON_AddBoolToObject(tj, "memo_compact", true);
-        }
-        cJSON *turns = cJSON_GetObjectItem(tj, "turns");
-        cJSON *turnj = NULL;
-        cJSON_ArrayForEach(turnj, turns)
-        {
-            cJSON_DeleteItemFromObject(turnj, "memo_prefix");
-        }
-    }
+    /* The v7-archive case is gone with the format it described: there is no JSON snapshot to
+     * hand-edit any more, and an old DATABASE is handled by tools/migrate_edgeclaw_db_*.py,
+     * not by the loader. What the old test checked here -- "memo_compact reads as COMPACT",
+     * "a turn without memo_prefix normalizes it up to folded_prefix" -- is now a property of
+     * those migrations. */
 
-    struct edc_session *s3 = edc_session_new(cfg, "sess-ser", "Ser");
-    struct edc_scheduler *sched3 = edc_scheduler_new(cfg);
-    install_resolver(sched3, s3);
-    CHECK(edc_state_deserialize(json, s3, sched3), "v7 archive loads");
-    struct edc_task *r3 = edc_session_find_task(s3, "1");
-    CHECK(r3 != NULL, "v7 task restored");
-    CHECK(r3 && r3->memo_kind == EDC_MEMO_KIND_COMPACT, "v7 memo_compact=true reads as COMPACT");
-    CHECK(r3 && ((struct edc_turn *)r3->turns.data[r3->turns.head])->memo_prefix ==
-                    ((struct edc_turn *)r3->turns.data[r3->turns.head])->folded_prefix,
-          "v7 missing memo_prefix normalizes to folded_prefix");
-    edc_session_free(s3);
-    edc_scheduler_free(sched3);
-
-    cJSON_Delete(json);
-    edc_session_free(session);
-    edc_scheduler_free(sched);
     edc_config_free(cfg);
 }
-
-/* ══════════════════════════════════════════════════════════════
- *  Test 9: the material keeps assistant tool calls (name + arguments)
- *  ══════════════════════════════════════════════════════════════ */
 
 static void test_material_keeps_tool_calls(void)
 {
     TEST("material: an assistant tool call renders its name + arguments");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-tc", "TC");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-tc"), "TC");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *leader = edc_task_new("g1", session->session_id, "g1", "work", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("g1"), session->session_id, edc_test_id("g1"), "work", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
 
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup("g1");
     edc_turn_add_user_message(turn, "list the dir");
     cJSON *args = cJSON_CreateObject();
     cJSON_AddStringToObject(args, "cmd", "ls -la");
@@ -536,12 +517,22 @@ static void test_material_keeps_tool_calls(void)
     cJSON_Delete(args);
     edc_turn_add_tool_message(turn, "call_1", "exec_shell", "total 0");
     /* edc_turn_add_* stamps ts = now; force it old so the group is "idle". */
-    for (size_t mi = turn->messages.head; mi < turn->messages.tail; mi++)
-        cJSON_ReplaceItemInObject(turn->messages.data[mi], "ts", cJSON_CreateString(OLD_TS));
+    for (int mi = 0; mi < turn->msg_count; mi++)
+    {
+        /* edc_turn_msg_at hands out a COPY: the edit has to be written back or the row
+         * keeps "now" and the group never looks idle. */
+        cJSON *m = edc_turn_msg_at(turn, mi);
+        if (!m)
+            continue;
+        cJSON_ReplaceItemInObject(m, "ts", cJSON_CreateString(OLD_TS));
+        edc_msg_append(turn->task_id, turn->turn_ord, mi, m, 0);
+        cJSON_Delete(m);
+    }
     edc_task_add_turn(leader, turn);
     edc_task_await_exec(leader);
     edc_task_mark_completed(leader);
     leader->completion_seq = 1;
+    idle_long_ago(group);
 
     struct edc_session *out = NULL;
     CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "extraction started");
@@ -564,7 +555,7 @@ static void test_extract_scan_service(void)
     TEST("service: extract-scan starts an extraction for an idle group on its tick");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-scan", "Scan");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-scan"), "Scan");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -581,6 +572,73 @@ static void test_extract_scan_service(void)
 
     edc_session_free(session);
     edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Test 9: the idle clock starts when the group BECOMES idle
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_idle_clock_starts_when_the_group_goes_idle(void)
+{
+    TEST("idle: the window runs from the last member going terminal, not from the newest message");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-clock"), "Clock");
+    time_t now = time(NULL);
+
+    /* Ancient messages, member finished just now: the group became idle NOW, so the
+     * window has not elapsed. The old message clock would have said "silent for 25
+     * years" and started a round immediately. */
+    struct edc_task_group *group = make_finished_user_group(session, "g1", "ancient work", OLD_TS, 2);
+    group->idle_since = now; /* make_finished_user_group backdates; this test is about the clock */
+    CHECK(edc_task_group_extractable_msg_count(group) == 2, "there IS material waiting");
+    CHECK(!edc_session_memory_extract_due(group, cfg, now), "ancient messages, freshly idle => NOT due");
+    CHECK(!edc_session_memory_extract_due(group, cfg, now + EDC_MEMO_EXTRACT_IDLE_SECS - 1), "one second early => NOT due");
+    CHECK(edc_session_memory_extract_due(group, cfg, now + EDC_MEMO_EXTRACT_IDLE_SECS), "the window elapsed => due");
+
+    /* The case the message clock got wrong: one member runs for the whole window with no
+     * messages coming in. The group is BUSY the entire time, so nothing is extracted no
+     * matter how old the newest message is. */
+    struct edc_task *long_runner =
+        edc_task_new(edc_test_id("2"), session->session_id, edc_test_id("g1"), "long tool call", edc_channel_adapter);
+    edc_task_group_add_task(group, long_runner);
+    edc_task_await_exec(long_runner);
+    CHECK(group->busy_members == 1, "one live member => busy");
+    CHECK(group->idle_since == 0, "busy => the idle clock is not running");
+    const time_t long_after = now + EDC_MEMO_EXTRACT_IDLE_SECS * 10;
+    CHECK(!edc_session_memory_extract_due(group, cfg, long_after), "a task that has been running for 10 windows => NOT due");
+
+    /* Now it stops -- at |long_after| the group only BECOMES idle. The clock starts here,
+     * so the window has to elapse again from this moment. */
+    edc_task_mark_cancelled(long_runner);
+    CHECK(group->busy_members == 0, "cancelled => nobody running");
+    CHECK(group->idle_since != 0, "the stop stamped the idle clock");
+    CHECK(!edc_session_memory_extract_due(group, cfg, time(NULL)), "just stopped => NOT due (the user may still be there)");
+
+    idle_long_ago(group); /* ... and only a full window later does it become due */
+    CHECK(edc_session_memory_extract_due(group, cfg, time(NULL)), "a full window after the stop => due");
+
+    /* Nobody has observed this group idle yet (a mid-load group): refuse rather than
+     * guess. The next scan's recount stamps it. */
+    group->busy_members = 0;
+    group->idle_since = 0;
+    CHECK(!edc_session_memory_extract_due(group, cfg, now), "no idle stamp => NOT due (do not guess)");
+
+    /* Consistency of the two fields, driven only through the real transitions. */
+    struct edc_task *again =
+        edc_task_new(edc_test_id("3"), session->session_id, edc_test_id("g1"), "another", edc_channel_adapter);
+    edc_task_group_add_task(group, again);
+    CHECK(group->busy_members == 1 && group->idle_since == 0, "attach => busy, clock cleared");
+    edc_task_await_exec(again);
+    CHECK(group->busy_members == 1, "a step change inside a running member keeps it busy");
+    edc_task_mark_completed(again);
+    CHECK(group->busy_members == 0, "the last member finishing empties the count");
+    CHECK(group->idle_since != 0, "and stamps the clock");
+    edc_task_group_remove_task(group, again);
+    CHECK(group->busy_members == 0, "detaching a finished member keeps the count at zero");
+
+    edc_session_free(session);
     edc_config_free(cfg);
 }
 
@@ -604,6 +662,7 @@ static void test_prompts_have_recency_rule(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_due_predicate();
     test_material_excludes_group_memory();
     test_cap_multi_round_and_idempotence();
@@ -612,6 +671,7 @@ int main(void)
     test_serialization_tristate_and_v7();
     test_extract_scan_service();
     test_material_keeps_tool_calls();
+    test_idle_clock_starts_when_the_group_goes_idle();
     test_prompts_have_recency_rule();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);

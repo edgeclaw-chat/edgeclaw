@@ -9,6 +9,7 @@
  * it where the prompt says it is, and refresh it when the bundled copy changes. */
 
 #include "edc_bundled_docs.h"
+#include "edc_bundled_workspace.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_init_env.h"
@@ -140,8 +141,8 @@ int main(void)
      * be in, and what must not be -- and the count keeps a stray glob from slipping back
      * in without failing here. */
     static const char *k_manual[] = {"edgeclaw.1", "edgeclaw.md", "input-syntax.zh.md",
-                                     "local-shell-command.zh.md", "prompt-library.md",
-                                     "tool-output-limits.zh.md"};
+                                     "limitations.md", "local-shell-command.zh.md",
+                                     "prompt-library.md", "tool-output-limits.zh.md"};
     const size_t manual_count = sizeof(k_manual) / sizeof(k_manual[0]);
     for (size_t i = 0; i < manual_count; i++)
     {
@@ -174,10 +175,25 @@ int main(void)
             "the released file does not match the bundled bytes");
     free(on_disk);
 
-    /* The workspace release still happens alongside it (one init, both trees). */
-    snprintf(path, sizeof(path), "%s/workspace/AGENTS.md", home);
+    /* The workspace release still happens alongside it (one init, both trees). What ships is
+     * the skills / prompts / CA tree -- NOT the prompt text: AGENTS.md and TOOLS.md were
+     * removed from the workspace because it is released once, on first run, and never
+     * touched again, so a shipped copy froze at the version the user installed while the
+     * behaviour contract kept changing (edc_context_build_contract() generates it now; see
+     * //tests:test_session_workdir's test_workspace_files_are_not_prompt_sources).
+     *
+     * Asserted from the bundled table rather than a hard-coded name, so this keeps meaning
+     * "whatever the bundle carries is on disk" when the tree changes. */
+    T_CHECK(edc_bundled_workspace_count > 0, "the workspace bundle is empty");
+    const struct edc_bundled_file *ws_file = &edc_bundled_workspace_entries[0];
+    snprintf(path, sizeof(path), "%s/workspace/%s", home, ws_file->path);
     on_disk = slurp(path, NULL);
     T_CHECK(on_disk != NULL, "the workspace was not released next to the manual");
+    free(on_disk);
+
+    snprintf(path, sizeof(path), "%s/workspace/AGENTS.md", home);
+    on_disk = slurp(path, NULL);
+    T_CHECK(on_disk == NULL, "a prompt file (AGENTS.md) is still released into the workspace");
     free(on_disk);
 
     /* (3) The system prompt names the exact path -- this is the whole point: the model

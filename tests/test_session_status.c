@@ -1,4 +1,5 @@
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_session.h"
 #include "edc_task.h"
@@ -36,7 +37,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_edc_session_status_ws");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -45,22 +46,22 @@ static void test_current_session_status(void)
 {
     TEST("current session status summarises groups + task states");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-c", "Current");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-c"), "Current");
 
     /* group 1: leader COMPLETED + a member LLM_PROCESSING */
-    struct edc_task *l1 = edc_task_new("1", "sess-c", "1", "leader one", edc_channel_adapter);
+    struct edc_task *l1 = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-c"), edc_test_id("1"), "leader one", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
     /* 这几个任务**没有 turn**, 所以走不了合法的状态机路径 (READY 不能直接 COMPLETED) ——
      * 它们只是给 `/task status` 的直方图摆场景。装配时 (step, life) 一起给定, 不留
      * 任何"step 与状态互相矛盾"的组合: 读侧只看 (step, life)。 */
     edc_task_force_move(l1, EDC_TASKSTEP_DONE, EDC_LIFE_COMPLETED);
-    struct edc_task *m1 = edc_task_new("2", "sess-c", "1", "member", edc_channel_adapter);
+    struct edc_task *m1 = edc_task_new(edc_test_id("2"), edc_test_session_id("sess-c"), edc_test_id("1"), "member", edc_channel_adapter);
     edc_task_force_move(m1, EDC_TASKSTEP_AWAIT_EXEC, EDC_LIFE_ALIVE);
     edc_task_group_add_task(g1, m1);
     edc_session_add_group(s, g1);
 
     /* group 2: orphaned, leader ERROR */
-    struct edc_task *l2 = edc_task_new("3", "sess-c", "3", "leader two", edc_channel_adapter);
+    struct edc_task *l2 = edc_task_new(edc_test_id("3"), edc_test_session_id("sess-c"), edc_test_id("3"), "leader two", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
     edc_task_force_move(l2, EDC_TASKSTEP_DONE, EDC_LIFE_ERROR);
     edc_task_group_mark_orphaned(g2);
@@ -70,7 +71,12 @@ static void test_current_session_status(void)
 
     sds out = edc_session_status_text(s, true, "1");
     CHECK(out != NULL, "status text built");
-    CHECK(strstr(out, "[sess-c] Current") != NULL, "id + name header");
+    {
+        /* The header shows "[s<id>] <name>"; the id is a number now. */
+        sds want = sdscatprintf(sdsempty(), "[%s]", edc_id_str(s->session_id));
+        CHECK(strstr(out, want) != NULL, "id + name header");
+        sdsfree(want);
+    }
     CHECK(strstr(out, "· current") != NULL, "current marker");
     CHECK(strstr(out, "**Groups**: 2 (1 orphaned)") != NULL, "group count + orphan count");
     CHECK(strstr(out, "**Tasks**: 3") != NULL, "task count");
@@ -92,7 +98,7 @@ static void test_background_session_status(void)
 {
     TEST("background session with no loaded state");
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-b", "Bg");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-b"), "Bg");
 
     sds out = edc_session_status_text(s, false, NULL);
     CHECK(out != NULL, "status text built");
@@ -109,6 +115,7 @@ static void test_background_session_status(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("== test_session_status ==");
     test_current_session_status();
     test_background_session_status();

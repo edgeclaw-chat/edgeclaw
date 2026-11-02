@@ -1,5 +1,13 @@
-load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files", "strip_prefix")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
+# Exported so //src/common:version_header can resolve a path inside the checkout. That is
+# how tools/gen_version.py finds .git: the genrule runs in the execroot, where the tree is
+# a set of symlinks, and realpath() of any tracked file lands back in the source tree.
+exports_files(
+    ["BUILD"],
+    visibility = ["//visibility:public"],
+)
 
 config_setting(
     name = "debug",
@@ -54,6 +62,15 @@ config_setting(
 config_setting(
     name = "valgrind",
     define_values = {"valgrind": "1"},
+    visibility = ["//visibility:public"],
+)
+
+# `--define=sanitize=1` (set by --config=asan): ASAN needs a dynamic runtime, so every
+# target that would otherwise link -static has to drop it. Kept separate from `valgrind`
+# because the two are used for different runs and may one day want different link flags.
+config_setting(
+    name = "sanitize",
+    define_values = {"sanitize": "1"},
     visibility = ["//visibility:public"],
 )
 
@@ -221,6 +238,7 @@ DOCS_FILES = [
     "docs/edgeclaw.1",                # the man page
     "docs/edgeclaw.md",               # the manual: commands, sessions, tasks, tools
     "docs/input-syntax.zh.md",        # quoting, the shell-like syntax, @file, !cmd
+    "docs/limitations.md",            # what it does not do, and what is not verified
     "docs/local-shell-command.zh.md", # the !cmd local shell
     "docs/prompt-library.md",         # /prompt templates
     "docs/tool-output-limits.zh.md",  # truncation / output caps
@@ -273,6 +291,23 @@ genrule(
     visibility = ["//visibility:public"],
 )
 
+# Licence texts travel WITH the binary. EdgeClaw ships as one statically linked executable,
+# so distributing it distributes every library linked into it -- those licences have to
+# accompany the archive, or the release is not compliant. Refreshed and checked by
+# tools/gen_notices.py; the texts are committed rather than generated during the build so a
+# release does not depend on a Bazel external cache happening to exist (see that script).
+pkg_files(
+    name = "licenses_files",
+    srcs = [
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+    ] + glob(["licenses/**"]),
+    # from_root(""), not the default: the default strips ALL directories, which would
+    # flatten licenses/<component>/LICENSE onto a single colliding `LICENSE`.
+    strip_prefix = strip_prefix.from_root(""),
+    visibility = ["//visibility:public"],
+)
+
 # Release archive: a single self-contained binary. The default workspace is
 # embedded in the binary and released to ~/.edgeclaw/ on first run, so no
 # workspace/ copy ships alongside it.
@@ -280,6 +315,7 @@ pkg_tar(
     name = "edgeclaw",
     srcs = [
         ":edgeclaw_binary",
+        ":licenses_files",
     ],
     extension = "tar.gz",
     package_dir = FILE_NAME,
@@ -296,6 +332,7 @@ pkg_tar(
     name = "device_agent",
     srcs = [
         ":device_agent_binary",
+        ":licenses_files",
     ],
     extension = "tar.gz",
     package_dir = DAGENT_FILE_NAME,

@@ -3,6 +3,7 @@
  * handle_task_new is static, so this drives the public edc_commands_handler entry
  * with a spy send_llm to observe whether it actually ran. */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
@@ -77,6 +78,22 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
 }
 
 /* 挂起的任务不会进 send_llm, 所以只能自己去 session 的组里找。 */
+/* A waiting task never reaches send_llm, so lookup by description is the only way in. */
+static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
+{
+    struct edc_task_group *g;
+    DL_FOREACH(sess->groups, g)
+    {
+        struct edc_task *t;
+        LL_FOREACH2(g->members, t, group_next)
+        {
+            if (t->description && strcmp(t->description, desc) == 0)
+                return t;
+        }
+    }
+    return NULL;
+}
+
 static int count_tasks(struct edc_session *sess)
 {
     int n = 0;
@@ -93,9 +110,9 @@ static int count_tasks(struct edc_session *sess)
 /* 这条 turn 发给 LLM 的第一条用户消息。 */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
@@ -115,11 +132,11 @@ static struct edc_task *last_member_except(struct edc_task_group *g, struct edc_
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_task_new_ws";
+    edc_test_workspace(); /* open the disposable store before anything writes */
+    const char *ws = edc_test_workspace();
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
-        return 1;
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
@@ -181,21 +198,76 @@ int main(void)
         g_llm_task = NULL;
         drive_command(cfg, sm, sched, "/task new \"fresh\" --new-group");
         CHECK(g_llm_task != NULL, "it ran immediately -- there is nothing to queue behind");
-        CHECK(g_llm_task && g_llm_task->group && strcmp(g_llm_task->group->group_id, g_llm_task->task_id) == 0,
+        CHECK(g_llm_task && g_llm_task->group && g_llm_task->group->group_id == g_llm_task->task_id,
               "in a group of its own");
         CHECK(g_llm_task && g_llm_task->group != holder->group, "which is not the group in front");
         CHECK(g_llm_task && edc_scheduler_get_foreground(sess) == g_llm_task->group,
               "and it took the foreground");
     }
 
-    /* ── 带选项但 desc 没引号: 语法错误 ──────────────────────────── */
+    /* ── 描述与选项的分界由**引号**决定，不由"描述必须加引号"这条规则 ──────
+ *
+ * 词法器已经切好词: `-d` 单独是一个词时选项才存在，`'-d 1'` 是一个词时它只是文本。
+ * 所以 "desc 没引号 + 带选项" 不再是语法错误 —— 那正是用户能表达两种意图的方式。 */
 
-    TEST("/task new with options needs the description quoted");
+    TEST("/task new: an unquoted description still takes options");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sm, sched, "/task new probe --bg");
-    CHECK(g_llm_task == NULL, "nothing was created (no silently-swallowed option)");
-    CHECK(g_llm_calls == 0, "and nothing ran");
+    drive_command(cfg, sm, sched, "/task new probe --bg --new-group");
+    CHECK(g_llm_task != NULL, "the task was created and dispatched");
+    if (g_llm_task)
+    {
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, "probe") == 0, "the bare word is the description");
+        CHECK(g_llm_task->is_background, "`--bg` was read as an option, not as text");
+    }
+
+    TEST("/task new: quoting is what turns an option back into description text");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new 'probe --bg' --new-group");
+    CHECK(g_llm_task != NULL, "the task was created");
+    if (g_llm_task)
+    {
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, "probe --bg") == 0, "the quotes kept `--bg` inside the description");
+        CHECK(!g_llm_task->is_background, "and it was NOT taken as an option");
+    }
+
+    TEST("/task new: `-d <id>` is a dependency, `'-d <id>'` is description text");
+    g_llm_calls = 0;
+    g_llm_task = NULL;
+    drive_command(cfg, sm, sched, "/task new source --new-group");
+    struct edc_task *source = g_llm_task;
+    CHECK(source != NULL, "a task to depend on");
+    if (source)
+    {
+        /* A task with a dependency WAITS, so send_llm never fires -- look the task up
+         * instead of watching g_llm_task. */
+        sds line = sdscatprintf(sdsempty(), "/task new waithere -d %s", edc_id_str(source->task_id));
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, line);
+        struct edc_task *dependent = find_task_by_desc(sess, "waithere");
+        CHECK(dependent != NULL, "the dependent task was created");
+        CHECK(dependent && dependent->deps_total == 1, "one edge: `-d <id>` was read as an option");
+        CHECK(dependent && dependent->description && strcmp(dependent->description, "waithere") == 0,
+              "and the description is just the word");
+        sdsfree(line);
+
+        sds quoted = sdscatprintf(sdsempty(), "/task new 'target -d %s' --new-group", edc_id_str(source->task_id));
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, quoted);
+        CHECK(g_llm_task != NULL, "the second task was created");
+        if (g_llm_task)
+        {
+            CHECK(g_llm_task->deps_total == 0, "no edge: the quotes made the whole thing description");
+            const char *sent = first_user_content(g_llm_task->active_turn);
+            CHECK(sent && strstr(sent, "-d") != NULL, "and the text really contains `-d`");
+        }
+        sdsfree(quoted);
+    }
 
     /* ── 没有输入: 和 shell 那条路一样, 不该建任务 ───────────────── */
 
@@ -236,12 +308,19 @@ int main(void)
         CHECK(g_llm_task->deps_total == 0, "and no dependency was made for it");
     }
 
-    TEST("/task new refuses a stray token after the quoted description");
-    int before_stray = count_tasks(sess);
+    TEST("/task new joins every non-option word into the description");
+    /* There is no "option area" any more: an option is a word the handler recognises, and
+     * everything else is text. Two words therefore mean a two-word description -- not a
+     * stray token to refuse. Quoting is available when a single word is wanted. */
     g_llm_calls = 0;
     g_llm_task = NULL;
-    drive_command(cfg, sm, sched, "/task new \"scoped\" junk");
-    CHECK(count_tasks(sess) == before_stray, "no task was created (the stray token is refused)");
+    drive_command(cfg, sm, sched, "/task new scoped junk --new-group");
+    CHECK(g_llm_task != NULL, "the task was created");
+    if (g_llm_task)
+    {
+        const char *sent = first_user_content(g_llm_task->active_turn);
+        CHECK(sent && strcmp(sent, "scoped junk") == 0, "both words are the description");
+    }
 
     /* ── desc 只用于显示名, 送给 LLM 的是完整输入 ──────────────────── */
 
@@ -254,8 +333,13 @@ int main(void)
     if (g_llm_task)
     {
         const char *full = "a prompt clearly longer than thirty characters";
+        /* strlen, NOT sdslen: task->description is a plain `char *` from strdup
+         * (edc_task_new), not an sds. sdslen reads the length header at s[-1], i.e. one byte
+         * BEFORE the allocation -- an out-of-bounds read that only a sanitizer sees, and
+         * that returns a garbage length which this assertion would happily "pass" or fail
+         * for the wrong reason. */
         CHECK(g_llm_task->description && strcmp(g_llm_task->description, full) != 0 &&
-                  sdslen(g_llm_task->description) < strlen(full),
+                  strlen(g_llm_task->description) < strlen(full),
               "the description is the truncated display name");
         CHECK(g_llm_task->description && strstr(g_llm_task->description, "...") != NULL,
               "and the truncation is marked");
@@ -301,7 +385,7 @@ int main(void)
     if (alpha)
     {
         char cmd[128];
-        snprintf(cmd, sizeof cmd, "/task resume %s", alpha->task_id);
+        snprintf(cmd, sizeof cmd, "/task resume %s", edc_id_str(alpha->task_id));
         g_llm_task = NULL;
         g_llm_calls = 0;
         drive_command(cfg, sm, sched, cmd);
@@ -327,7 +411,7 @@ int main(void)
         CHECK(skipped->end == EDC_END_SKIPPED, "夹具: 该分支被 `||` 跳过 (CANCELLED + SKIPPED)");
 
         char cmd[128];
-        snprintf(cmd, sizeof cmd, "/task resume %s", skipped->task_id);
+        snprintf(cmd, sizeof cmd, "/task resume %s", edc_id_str(skipped->task_id));
         g_llm_task = NULL;
         g_llm_calls = 0;
         drive_command(cfg, sm, sched, cmd);
@@ -352,13 +436,13 @@ int main(void)
         CHECK(edc_task_awaits_deps(dtgt), "夹具: 目标在等源");
 
         char cmd[160];
-        snprintf(cmd, sizeof cmd, "/task dep %s", dtgt->task_id);
+        snprintf(cmd, sizeof cmd, "/task dep %s", edc_id_str(dtgt->task_id));
         drive_command(cfg, sm, sched, cmd); /* 列表: 不改状态 */
         CHECK(edc_task_awaits_deps(dtgt), "只是列出来，不动状态");
 
         g_llm_task = NULL;
         g_llm_calls = 0;
-        snprintf(cmd, sizeof cmd, "/task dep %s --drop %s", dtgt->task_id, dsrc->task_id);
+        snprintf(cmd, sizeof cmd, "/task dep %s --drop %s", edc_id_str(dtgt->task_id), edc_id_str(dsrc->task_id));
         drive_command(cfg, sm, sched, cmd);
         CHECK(!edc_task_depends_on(dtgt, dsrc), "边被作废");
         CHECK(g_llm_task == dtgt, "目标随即被驱动 (不再卡在等依赖)");
@@ -379,7 +463,7 @@ int main(void)
 
         /* 源永远不会再产出了：断掉这条边必须把它放回来，而不是留在 BLOCKED 里。 */
         char cmd[160];
-        snprintf(cmd, sizeof cmd, "/task dep %s --drop %s", btgt->task_id, bsrc->task_id);
+        snprintf(cmd, sizeof cmd, "/task dep %s --drop %s", edc_id_str(btgt->task_id), edc_id_str(bsrc->task_id));
         g_llm_task = NULL;
         g_llm_calls = 0;
         drive_command(cfg, sm, sched, cmd);
@@ -390,7 +474,7 @@ int main(void)
 
     TEST("resume reply names what the task was, and repeats the last error when it had failed");
     {
-        struct edc_task *r = edc_task_new("rr-1", "sess-reply", "rr-1", "r", edc_channel_adapter);
+        struct edc_task *r = edc_task_new(edc_test_id("rr-1"), edc_test_session_id("sess-reply"), edc_test_id("rr-1"), "r", edc_channel_adapter);
         edc_task_await_exec(r);
 
         sds txt = edc_commands_resume_text(r, EDC_END_INTERRUPTED, EDC_FAIL_NONE);

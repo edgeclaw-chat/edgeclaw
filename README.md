@@ -188,7 +188,9 @@ model, and continues instead of starting over. The id is required (there is no b
 Common options: `--bg` (same group, background), `--new-group`, `-d <id>` (wait for a task
 and inject its output), `-g <group>`. A shell line says background with `&`, not `--bg`.
 
-Full reference: `docs/edgeclaw.md` (or `man docs/edgeclaw.1`).
+Full reference: `docs/edgeclaw.md` (or `man docs/edgeclaw.1`). What it deliberately does
+*not* do, and where the rough edges are: [`docs/limitations.md`](docs/limitations.md) —
+worth reading before you file a bug.
 
 ---
 
@@ -276,8 +278,17 @@ Files live under `~/.edgeclaw/`: `config.json`, `workspace/<session_id>/history.
 
 ```bash
 bazel test //tests:all        # 90+ unit/integration targets
+bazel build //tests:all       # compiles the `manual` targets too -- see below
 bazel build //...             # everything, including the release tarball
 ```
+
+`bazel test` skips targets tagged `manual` (the ones needing network, a serial device or a
+long run), so **they compile only under `bazel build //tests:all`**. CI runs both; run both
+too, or those targets rot unnoticed — which is exactly what happened to two of them.
+
+**Branches.** `dev` is the trunk: work lands there, and `master` is only ever a merge of
+`dev` — never committed to directly. A release is a tag on `master`. See
+[`docs/release-checklist.md`](docs/release-checklist.md) for what a release needs to check.
 
 Conventions worth knowing before a patch:
 

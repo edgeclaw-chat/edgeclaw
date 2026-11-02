@@ -23,8 +23,10 @@
  * 那是 token 模型缺东西（`fully_quoted` 曾把"以引号开头"和"是一个闭合引号区"揉在一起，
  * 于是"引号没闭合"两不沾，分类器只能回头读字节；现在它有自己的 token：`TK_BAD_QUOTED`）。
  *
- * 开关关闭时不需要在这里再判一次：那时的词法器不产出 sigil/算符，也不给任何 word 打
- * `fully_quoted`（词汇表不存在 ⇒ 引号不是信号）。 */
+ * 两个不同的问题，分别有各自的数据源（2026-10-22 拆开）：
+ *   - **这词是引号串吗** → token 种类（`TK_STRING`），纯词法。
+ *   - **引号在这里算语法吗** → `toks->mode`，词法器的开关。
+ * 挤在一个 `fully_quoted` 里时，关闭开关就必须把 flag 关掉，于是"是引号串"也就丢了。 */
 edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
 {
     if (err)
@@ -45,7 +47,10 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
             *err = edc_lex_unterminated_quote(f->value, f->begin + 1);
         return EDC_IN_MESSAGE;
     }
-    if (f->kind == TK_WORD && f->fully_quoted)
+    /* 行首就是一个引号串 ⇒ 这是一条 shell 行 —— 但**只在开关打开时**。TK_STRING 是
+     * 词法事实（"这词是闭合引号区"），"引号算语法"是模式的事：开关关掉时引号只定边界，
+     * `"a" | "b"` 是一条普通消息。所以两件事各问各的，不再挤在一个 flag 里。 */
+    if (f->kind == TK_STRING && toks->mode == EDC_LEX_SHELL_ON)
         return EDC_IN_SHELL;
 
     if (f->kind == TK_SIGIL_NEWGROUP)
@@ -64,7 +69,7 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
             return EDC_IN_MESSAGE;
         }
         /* Ⓐ `+!cmd` / `+/task …`：两层语法不组合（token 的 value 里看得见）。 */
-        if (n->kind == TK_WORD && n->value && (n->value[0] == '!' || n->value[0] == '/'))
+        if (n->kind == TK_TEXT && n->value && (n->value[0] == '!' || n->value[0] == '/'))
         {
             if (err)
                 *err = sdsnew("`+` is shell syntax and `/` / `!` are not -- a line is one or the other, "
@@ -73,7 +78,7 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
                               "or `/skill --new-group <name>`.");
             return EDC_IN_MESSAGE;
         }
-        if (n->kind == TK_WORD && n->fully_quoted)
+        if (n->kind == TK_STRING && toks->mode == EDC_LEX_SHELL_ON)
             return EDC_IN_SHELL;
         return EDC_IN_MESSAGE; /* ① `+foo`（有内容、不是引号）→ 消息 */
     }
@@ -185,7 +190,7 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
             sds spawn_err = NULL;
             /* 前一个任务和"怎么等它"是一个整体：没有前一个就没有这一类边（见 edc_prev_dep）。 */
             const struct edc_prev_dep link = {prev, dep};
-            struct edc_task *task = edc_shell_spawn_task(sm, sched, to.type, session, &opts, prev ? &link : NULL,
+            struct edc_task *task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, prev ? &link : NULL,
                                                          group, ast->new_group ? "+" : "task", &out_group, r_out,
                                                          r_out_app, r_err, &spawn_err);
             if (spawn_err)

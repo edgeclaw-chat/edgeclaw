@@ -4,10 +4,11 @@
  *
  *   用户输入 → edc_lex → edc_classify → [edc_parse] → **passes** → edc_interp → task
  *
- * IR 有两种节点：SHELL 树和 MESSAGE 节点。**只有 SHELL 进文法**：《分类》由派发层看第一
- * 个 token 直接决定（edc_classify），MESSAGE 的节点在分类之后由派发层直接构造 —— 否则
- * 文法里就要有"任意 token"的产生式，那正是 naive.y 验出来的 1 shift/reduce + 26
- * reduce/reduce 冲突来源。上游怎么造节点是文法的事，下游（passes / 解释器）只认 IR。
+ * IR 有三种节点：SHELL 树、COMMAND 节点和 MESSAGE 节点。**SHELL 与 COMMAND 都进文法**：
+ * 两者开头各有自己的 token（行首 `+`/引号 vs `TK_SLASH_CMD`），所以文法里没有"任意 token"
+ * 的产生式 —— 那正是 naive.y 验出来的 1 shift/reduce + 26 reduce/reduce 冲突来源。MESSAGE
+ * 的节点由派发层在分类之后直接构造（它没有语法）。上游怎么造节点是文法的事，下游
+ * （passes / 解释器 / 命令层）只认 IR。
  *
  * 每个"消息载荷"（MESSAGE 节点的文本、SHELL 每个 stage 的文本）都用同一个
  * struct edc_msg_payload 表达：pass 就地改它（定稿文本、挂 synthetic 块），解释器只消费
@@ -70,10 +71,26 @@ struct edc_ast_pipeline
     struct edc_ast_pipeline *next;
 };
 
+/* A `/command` line, produced by the GRAMMAR (not by the classifier): the word after
+ * the slash plus its arguments, both already unquoted by the lexer. The command layer
+ * dispatches on THIS -- it no longer splits the raw text itself, so a command line and
+ * a shell line share one syntax implementation (the lexer plus this grammar). */
+struct edc_ast_cmd
+{
+    sds name;   /* "session" for `/session …` -- the slash is the lexer's delimiter */
+    sds *argv;  /* the words after it, already unquoted; NULL when argc == 0 */
+    /* Per-word: was this word exactly ONE closed quoted region? Only the handler needs it,
+     * and only to tell a bare `--strict` (option-shaped) from `"--strict"` (one literal
+     * word). Quoting splits words; it does not otherwise change them. NULL when argc == 0. */
+    bool *argv_quoted;
+    int argc;
+};
+
 enum edc_ast_kind
 {
     EDC_AST_SHELL = 0, /* 文法产出：`+a | b; c &` 那种 */
     EDC_AST_MESSAGE,   /* 分类产出：整条输入就是一条消息 */
+    EDC_AST_COMMAND,   /* 文法产出：`/cmd args…` 那种 */
 };
 
 typedef struct edc_ast
@@ -85,6 +102,8 @@ typedef struct edc_ast
     bool new_group;  /* `+` */
     bool background; /* 链尾 `&`：作用于整条链的每个 stage */
     struct edc_ast_pipeline *pipelines;
+    /* EDC_AST_COMMAND */
+    struct edc_ast_cmd *cmd;
 } edc_ast;
 
 /* 释放整棵树（含 sds）；对两种 kind 都安全。 */

@@ -12,6 +12,7 @@
  * No channel actor ⇒ replies go nowhere, so assertions look at behaviour.
  */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -101,19 +102,19 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
 /* The first user message the task would send. */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_task_fork_ws";
+    edc_test_workspace(); /* disposable store */
+    const char *ws = edc_test_workspace();
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
-        return 1;
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
     cfg->workspace = sdsnew(ws);
@@ -137,11 +138,20 @@ int main(void)
     /* Give the parent group a memory and a transcript to snapshot: history[0] is the
      * system prompt, history[1] the first message. */
     parent->group->memory = sdsnew("PARENT-MEMORY");
-    cJSON_AddItemToArray(parent->group->history, cJSON_CreateObject());
-    cJSON *m1 = cJSON_CreateObject();
-    cJSON_AddStringToObject(m1, "role", "user");
-    cJSON_AddStringToObject(m1, "content", "PARENT-MESSAGE");
-    cJSON_AddItemToArray(parent->group->history, m1);
+    /* A COMMITTED turn gives the parent a transcript to snapshot. Injecting entries into
+     * group->history by hand does not survive: that array is derived (rebuilt from the
+     * turns), so the next rebuild would drop them and the fork would have nothing to copy.
+     * Rebuilding after adding the turn also puts the system prompt in slot 0, which is what
+     * the fork inherits. */
+    {
+        struct edc_turn *pturn = edc_turn_new_for(sess->session_id, parent->group_id, parent->task_id, 0);
+        cJSON *m1 = cJSON_CreateObject();
+        cJSON_AddStringToObject(m1, "role", "user");
+        cJSON_AddStringToObject(m1, "content", "PARENT-MESSAGE");
+        edc_turn_add_message(pturn, m1);
+        edc_task_add_turn(parent, pturn);
+        edc_task_group_rebuild_history(parent->group);
+    }
 
     /* ── ① 落位: 新组 + 前台 + active ───────────────────────────── */
 
@@ -149,7 +159,7 @@ int main(void)
     g_llm_calls = 0;
     g_llm_task = NULL;
     char fork_cmd[256];
-    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s child work", parent->task_id);
+    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s child work", edc_id_str(parent->task_id));
     drive_command(cfg, sm, sched, fork_cmd);
 
     struct edc_task *child = find_task_by_desc(sess, "child work");
@@ -158,7 +168,7 @@ int main(void)
     {
         CHECK(child->group != NULL && child->group != parent->group, "it leads a group of its own");
         CHECK(child->group && child->group->leader == child, "it is the leader of that group");
-        CHECK(child->group && child->group_id && strcmp(child->group_id, child->task_id) == 0,
+        CHECK(child->group && child->group_id == child->task_id,
               "group id = child task id");
         CHECK(edc_scheduler_get_foreground(sess) == child->group, "the foreground moved onto it");
         CHECK(edc_session_get_active_task(sess) == child, "it is the active task");
@@ -167,7 +177,7 @@ int main(void)
 
         CHECK(child->group && child->group->memory && strcmp(child->group->memory, "PARENT-MEMORY") == 0,
               "inherits the parent group's memory");
-        CHECK(child->group && (size_t)cJSON_GetArraySize(child->group->history) == 2,
+        CHECK(child->group && (size_t)edc_task_group_history_count(child->group) == 2,
               "inherits the system prompt + the snapshot message");
         CHECK(child->turns.tail - child->turns.head == 1, "the snapshot turn is attached to the child");
         CHECK(child->forked_from == parent, "it remembers the parent");
@@ -192,7 +202,7 @@ int main(void)
     TEST("/task fork with no desc is a usage error");
     g_llm_calls = 0;
     g_llm_task = NULL;
-    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s", parent->task_id);
+    snprintf(fork_cmd, sizeof(fork_cmd), "/task fork %s", edc_id_str(parent->task_id));
     drive_command(cfg, sm, sched, fork_cmd);
 
     CHECK(find_task_by_desc(sess, "") == NULL, "no child was created");

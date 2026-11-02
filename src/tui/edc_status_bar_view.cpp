@@ -167,7 +167,6 @@ std::string StatusBarView::CurrentDir() const
     const int pane_w = terminal_->width() - sidebar_width_() - 2;
     const bool sandbox_on = sandbox_enabled_();
     const std::string ctx = ContextText(ctx_tokens_, ctx_estimated_, context_window_ ? context_window_() : 0);
-
     const std::string right = RightText(pane_w, left, model_, ctx, sandbox_on);
 
     // The left end is one dim run: the working directory -- or, while a hint is up, the

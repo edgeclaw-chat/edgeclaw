@@ -210,42 +210,29 @@ static void test_expand_vars_out_error(void)
     sdsfree(out);
 }
 
-static void test_desc_needs_quotes(void)
-{
-    /* No options -> any shape is fine. */
-    T_CHECK(edc_cmd_desc_needs_quotes(NULL) == false, "needs_quotes: NULL -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("plain description") == false, "needs_quotes: plain text -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("{\"a\": 1}") == false, "needs_quotes: json-ish text -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("a - b") == false, "needs_quotes: a lone '-' is not an option");
-
-    /* Quote-led -> the option area after it is legal. */
-    T_CHECK(edc_cmd_desc_needs_quotes("\"quoted desc\"") == false, "needs_quotes: quoted -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("'quoted desc'") == false, "needs_quotes: sq quoted -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("\"\"\"multi\"\"\" -d d1") == false, "needs_quotes: quoted + opt -> false");
-    T_CHECK(edc_cmd_desc_needs_quotes("  \"spaced\" --bg") == false, "needs_quotes: leading spaces trimmed");
-
-    /* Unquoted but carrying an option -> the description must be quoted. */
-    T_CHECK(edc_cmd_desc_needs_quotes("desc --bg") == true, "needs_quotes: unquoted --bg -> true");
-    T_CHECK(edc_cmd_desc_needs_quotes("desc -d d1") == true, "needs_quotes: unquoted -d -> true");
-    T_CHECK(edc_cmd_desc_needs_quotes("  lead --group g1") == true, "needs_quotes: leading spaces, option");
-    T_CHECK(edc_cmd_desc_needs_quotes("analyze \"find bugs\" --bg") == true,
-             "needs_quotes: option after a bare first word -> true");
-}
 
 static void test_escapes(void)
 {
-    /* Python-style escapes, the same in both quote kinds. */
-    check("\"a\\nb\"", "a\nb", 0, 0, "dq: \\n is a newline");
-    check("\"a\\tb\"", "a\tb", 0, 0, "dq: \\t is a tab");
+    /* bash quoting: the plain quotes carry NO escapes. `\n` inside "…" is two
+     * characters, exactly as in bash; the escapes live in the ANSI-C forms --
+     * `$'…'`, and its in-tree alias '''…''' (triple single quotes). */
+    check("\"a\\nb\"", "a\\nb", 0, 0, "dq: \\n is backslash + n, not a newline");
+    check("\"a\\tb\"", "a\\tb", 0, 0, "dq: \\t is backslash + t");
     check("\"a\\\\b\"", "a\\b", 0, 0, "dq: \\\\ is one backslash");
     check("\"a\\\"b\"", "a\"b", 0, 0, "dq: \\\" is a quote, not the closing one");
-    check("\"\\x41B\"", "AB", 0, 0, "dq: \\xHH");
-    check("'a\\'b'", "a'b", 1, 0, "sq: \\' works, and sq stays raw");
-    check("'a\\nb'", "a\nb", 1, 0, "sq: escapes apply, literal still 1");
+    check("\"\\x41B\"", "\\x41B", 0, 0, "dq: no \\xHH -- it stays literal");
+    check("'a\\b'", "a\\b", 1, 0, "sq: raw, the backslash survives");
+    check("'a\\nb'", "a\\nb", 1, 0, "sq: no escapes at all, literal stays 1");
     check("\"a\\db\"", "a\\db", 0, 0, "dq: unknown escape keeps its backslash");
     /* An unterminated region is not one: the whole text stays the input. */
     check("\"abc", "\"abc", 0, 0, "unterminated quote -> whole text verbatim");
-    check("\"\"\"a\\nb\"\"\"", "a\nb", 0, 0, "triple: escapes apply too");
+    /* ANSI-C is where escapes belong. */
+    check("$'a\\nb'", "a\nb", 1, 0, "$'…': \\n is a newline");
+    check("$'a\\tb'", "a\tb", 1, 0, "$'…': \\t is a tab");
+    check("$'\\x41B'", "AB", 1, 0, "$'…': \\xHH");
+    check("$'\\u00e9'", "\xc3\xa9", 1, 0, "$'…': \\uHHHH becomes UTF-8");
+    check("$'a\\qb'", "a\\qb", 1, 0, "$'…': unknown escape keeps its backslash");
+    check("'''a\\nb'''", "a\nb", 1, 0, "'''…''': the in-tree alias of $'…'");
 }
 
 int main(void)
@@ -258,7 +245,10 @@ int main(void)
     test_plain_unquoted();
     test_flags_after_quotes();
     test_escapes();
-    test_desc_needs_quotes();
+    /* `edc_cmd_desc_needs_quotes` is gone: the rule it enforced ("an unquoted description
+     * may not carry options") existed because raw text could not say where the description
+     * stopped. The lexer now says it, so the distinction is quoting + the handler's own
+     * getopt -- pinned in //tests:test_commands_task_new instead. */
     test_expand_vars_out_error();
     test_expand_task_refs();
 

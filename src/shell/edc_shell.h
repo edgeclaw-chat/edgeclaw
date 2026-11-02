@@ -1,6 +1,7 @@
 #ifndef __EDC_SHELL_H__
 #define __EDC_SHELL_H__
 
+#include "edc_ast.h"
 #include "edc_channel_actor.h"
 #include "edc_config.h"
 #include "edc_task_types.h"
@@ -33,8 +34,31 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
                                 struct edc_channel_message *message, const struct edc_msg_payload *payload);
 
 /* Handle a built-in command (/whoami, /model); true = handled. */
-bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm, struct edc_reply_to to,
-                              struct edc_channel_message *message);
+/* The line-level builtins that live in the shell layer (`/whoami`, `/model`,
+ * `/sandbox`, `/shell`). |cmd| is the parsed command line: the name plus the
+ * already-unquoted argv (see struct edc_ast_cmd). */
+bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager *sm,
+                              struct edc_reply_to to, const struct edc_ast_cmd *cmd);
+
+/* ── Builtin bodies, as text ────────────────────────────────────────────────
+ * The four bodies that used to be built inline next to edc_commands_reply() and were
+ * therefore impossible to assert (the text only ever left through a channel actor).
+ * Pure: they neither reply nor write config, so a test drives them directly. Caller
+ * frees. The reply itself stays in edc_shell_handle_builtin(). |cfg| / |conf| must not be
+ * NULL (same precondition as the dispatcher, which reads the config for every builtin). */
+
+/* `/whoami`: session name, model, and the foreground group's leader/active task. */
+sds edc_shell_whoami_text(struct edc_config *cfg, struct edc_session_manager *sm);
+
+/* `/model` with no argument: the current model plus its provider's chat models. */
+sds edc_shell_model_text(struct edc_config *cfg);
+
+/* `/model search <q>`: matching chat models across all providers (40 rows, then a
+ * "narrow the query" note). */
+sds edc_shell_model_search_text(const char *query);
+
+/* `/sandbox` with no argument: on/off state and the rw/ro/deny path lists. */
+sds edc_shell_sandbox_text(struct edc_config *conf);
 
 /* The predecessor of a chained task (`a | b`, `a ; b`, `a && b`, `a || b`): WHERE to wait and
  * HOW the wait behaves travel together, because a dep type without a predecessor is not a

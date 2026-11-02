@@ -4,6 +4,7 @@
  * (snapshot / /task status show it). */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_group_fold.h"
@@ -11,7 +12,6 @@
 #include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -68,7 +68,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_system_task_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -99,7 +99,7 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
-    edc_queue_push(&turn->messages, msg);
+    edc_turn_add_message(turn, msg);
 }
 
 /* 给任务装一个 turn (= 它的 input); 此时它停在 (AWAIT_EXEC, ALIVE) —— "已派发,
@@ -107,7 +107,7 @@ static void turn_add_msg(struct edc_turn *turn, const char *role, const char *co
 static void give_input(struct edc_task *task, const char *text)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
+    turn->task_id = task->task_id;
     turn_add_msg(turn, "user", text);
     turn_add_msg(turn, "assistant", "ok");
     edc_task_add_turn(task, turn);
@@ -154,7 +154,7 @@ static void pump_scheduler(struct edc_scheduler *sched, edc_actor_msg_type_t typ
 static void pull_snapshot(struct edc_scheduler *sched, struct edc_session *session)
 {
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, NULL, NULL,
-                                             sdsnew(session ? session->session_id : ""),
+                                             sdsnew(session ? edc_id_str(session->session_id) : ""),
                                              (edc_actor_data_free_fn)sdsfree);
     sched->self->handler(sched->self, msg);
 }
@@ -178,10 +178,10 @@ static void test_attributes_default(void)
     TEST("sink/kind: 默认值 + 谓词 + 名字往返");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-default", "Default");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-default"), "Default");
 
     /* 普通用户任务: sink=CHANNEL;它的组: USER。 */
-    struct edc_task *task = edc_task_new("t-1", "sess-default", "t-1", "user task", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-1"), edc_test_session_id("sess-default"), edc_test_id("t-1"), "user task", edc_channel_adapter);
     CHECK(task->sink == EDC_SINK_CHANNEL, "新任务默认 sink=CHANNEL");
 
     struct edc_task_group *group = edc_task_group_new(task);
@@ -216,7 +216,7 @@ static void test_spawn_system_task(void)
     TEST("spawn: 建系统组 / 属性齐全 / 第二个复用同一个组");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-spawn", "Spawn");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-spawn"), "Spawn");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -230,14 +230,14 @@ static void test_spawn_system_task(void)
     struct edc_task_group *sg = edc_session_find_system_group(session);
     CHECK(sg != NULL, "系统组出现了");
     CHECK(edc_task_group_is_system(sg), "它就是系统组");
-    CHECK(strcmp(sg->group_id, a->task_id) == 0, "group_id = leader 的 task_id (与用户组同一套规则)");
+    CHECK(sg->group_id == a->task_id, "group_id = leader 的 task_id (与用户组同一套规则)");
     CHECK(count_groups(session) == 1 && count_tasks(session) == 1, "会话里就这一个任务");
 
     struct edc_task *b = edc_scheduler_spawn_system_task(sched, session, "fold group 2");
     CHECK(b != NULL && b->group == sg, "第二个 system task 复用同一个系统组");
     CHECK(count_groups(session) == 1, "没有多出第二个组");
     CHECK(count_tasks(session) == 2, "两个任务都在");
-    CHECK(strcmp(b->task_id, a->task_id) != 0, "两个任务各有自己的 id");
+    CHECK(b->task_id != a->task_id, "两个任务各有自己的 id");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -253,14 +253,14 @@ static void test_system_task_persisted(void)
     TEST("落盘: 系统组 + 折叠任务进 session.json; 读回带 sink/sink_group/切点 且置回就绪");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *s = edc_session_new(cfg, "sess-p", "P");
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-p"), "P");
     struct edc_scheduler *sch = edc_scheduler_new(cfg);
     install_resolver(sch, s);
 
     /* 字面 id 必须带字母前缀: `sched->next_task_id` 是**进程级**递增计数器 (全套测试共享),
      * 纯数字的字面 id (曾经的 "10") 会被后面生成的 id 撞上 —— 撞了之后两个组会 claim 同一个
      * task, 落盘再读回就是"同一个对象进两个组", 释放时 double free (ASAN 抓到过)。 */
-    struct edc_task *user = edc_task_new("u-10", "sess-p", "u-10", "user work", edc_channel_adapter);
+    struct edc_task *user = edc_task_new(edc_test_id("u-10"), edc_test_session_id("sess-p"), edc_test_id("u-10"), "user work", edc_channel_adapter);
     struct edc_task_group *ug = edc_task_group_new(user);
     edc_session_add_group(s, ug);
     give_input_and_complete(user, "hello");
@@ -270,21 +270,20 @@ static void test_system_task_persisted(void)
     edc_scheduler_attach_input(sch, fold, "summarize the group");
     edc_task_await_exec(fold);
     fold->sink_group = ug;
-    fold->fold_cut_task_id = strdup("cut-target");
+    fold->fold_cut_task_id = edc_test_id("cut-target");
     fold->fold_cut_turn = 3;
     fold->fold_cut_prefix = 42;
 
-    cJSON *j = edc_state_serialize(s, sch);
-    CHECK(j != NULL, "可序列化");
-    cJSON *tasks = cJSON_GetObjectItem(j, "tasks");
-    CHECK(cJSON_GetArraySize(tasks) == 2, "tasks 块含用户任务 + 折叠任务");
-    cJSON *groups = cJSON_GetObjectItem(j, "groups");
-    CHECK(cJSON_GetArraySize(groups) == 2, "groups 块含用户组 + 系统组");
+    CHECK(edc_state_store_flush(s, sch), "可落盘");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-p", "P");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-p"), "P");
     struct edc_scheduler *sch2 = edc_scheduler_new(cfg);
     install_resolver(sch2, s2);
-    CHECK(edc_state_deserialize(j, s2, sch2), "反序列化成功");
+    CHECK(edc_state_store_load(s2, sch2), "读回成功");
+    /* The counts that used to be read out of the document: the user's task and the fold
+     * task, the user's group and the system group. */
+    CHECK(count_tasks(s2) == 2, "用户任务 + 折叠任务都落盘了");
+    CHECK(count_groups(s2) == 2, "用户组 + 系统组都落盘了");
     struct edc_task_group *sg2 = edc_session_find_system_group(s2);
     CHECK(sg2 != NULL && edc_task_group_is_system(sg2), "系统组读回来 (kind 由 leader 的 sink 派生)");
     struct edc_task *fold2 = sg2 ? sg2->members : NULL;
@@ -292,17 +291,16 @@ static void test_system_task_persisted(void)
     if (fold2)
     {
         CHECK(fold2->sink == EDC_SINK_GROUP_MEMORY, "sink 读回");
-        CHECK(fold2->fold_cut_task_id && strcmp(fold2->fold_cut_task_id, "cut-target") == 0 &&
+        CHECK(fold2->fold_cut_task_id && fold2->fold_cut_task_id == edc_test_id("cut-target") &&
               fold2->fold_cut_turn == 3 && fold2->fold_cut_prefix == 42,
           "切点三元组读回 (成员/第几个 turn/折到第几条)");
-        CHECK(fold2->sink_group != NULL && strcmp(fold2->sink_group->group_id, ug->group_id) == 0,
+        CHECK(fold2->sink_group != NULL && fold2->sink_group->group_id == ug->group_id,
               "sink_group 解析回用户组");
         CHECK(edc_task_is_ready(fold2) && edc_task_is_alive(fold2),
               "在飞的折叠任务读回是 READY/ALIVE (重启由扫描重新派发), 不是 INTERRUPTED");
         CHECK(fold2->active_turn != NULL, "折叠 prompt 的 active_turn 也读回来了");
     }
 
-    cJSON_Delete(j);
     edc_session_free(s);
     edc_scheduler_free(sch);
     edc_session_free(s2);
@@ -318,7 +316,7 @@ static void test_system_task_not_reaped(void)
     TEST("不回收: 完成/取消的 system task 留在系统组 (与普通任务同等)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-reap", "Reap");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-reap"), "Reap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->snapshot_reply = capture_snapshot;
@@ -363,11 +361,11 @@ static void test_persistent_not_reaped(void)
     TEST("取消的用户任务留在树里 (没有回收)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-keep", "Keep");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-keep"), "Keep");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task *user = edc_task_new("1", "sess-keep", "1", "user work", edc_channel_adapter);
+    struct edc_task *user = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-keep"), edc_test_id("1"), "user work", edc_channel_adapter);
     struct edc_task_group *ug = edc_task_group_new(user);
     edc_session_add_group(session, ug);
     give_input(user, "hi"); /* 停在 (AWAIT_EXEC, ALIVE): 真的可以取消 */
@@ -394,12 +392,12 @@ static void test_system_task_is_visible(void)
     TEST("可见性: 快照带 kind=system 且任务在树里;/task status 也数它");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-vis", "Vis");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-vis"), "Vis");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->snapshot_reply = capture_snapshot;
 
-    struct edc_task *user = edc_task_new("1", "sess-vis", "1", "user work", edc_channel_adapter);
+    struct edc_task *user = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-vis"), edc_test_id("1"), "user work", edc_channel_adapter);
     struct edc_task_group *ug = edc_task_group_new(user);
     edc_session_add_group(session, ug);
     give_input_and_complete(user, "hi");
@@ -407,7 +405,7 @@ static void test_system_task_is_visible(void)
     struct edc_task *sys = edc_scheduler_spawn_system_task(sched, session, "fold everything");
     give_input_and_complete(sys, "fold");
     /* 别让它被回收 —— 本测的是"画得出来", 不是生命周期。 */
-    sds sys_id = sdsnew(sys->task_id);
+    sds sys_id = sdsnew(edc_id_str(sys->task_id));
 
     pull_snapshot(sched, session);
     CHECK(g_snapshot != NULL, "拿到快照");
@@ -498,13 +496,13 @@ static void test_fold_tool_call_is_failure(void)
     TEST("P2b 卫生: 摘要响应带 tool_calls ⇒ ERROR + 不派发 + 记忆不动 (普通任务不受影响)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-hygiene", "Hygiene");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-hygiene"), "Hygiene");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->dispatch_tools = spy_dispatch_tools;
 
     /* 被折的组 (成员 = 普通用户任务) + 一条已有的记忆。 */
-    struct edc_task *user = edc_task_new("u-1", "sess-hygiene", "u-1", "user task", edc_channel_adapter);
+    struct edc_task *user = edc_task_new(edc_test_id("u-1"), edc_test_session_id("sess-hygiene"), edc_test_id("u-1"), "user task", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(user);
     edc_task_group_add_task(group, user);
     group->memory = sdsnew("old memory: keep me");
@@ -573,11 +571,11 @@ static struct edc_task *find_l2(struct edc_session *session)
 static struct edc_task_group *make_foldable_group(struct edc_session *sess, const char *id,
                                                  struct edc_task **out_member)
 {
-    struct edc_task *m = edc_task_new(id, sess->session_id, id, "member work", edc_channel_adapter);
+    struct edc_task *m = edc_task_new(edc_test_id(id), sess->session_id, edc_test_id(id), "member work", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(m);
     edc_session_add_group(sess, g);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(m->task_id);
+    turn->task_id = m->task_id;
     turn_add_msg(turn, "user", "please fold me");
     turn_add_msg(turn, "assistant", "noted");
     edc_task_add_turn(m, turn);
@@ -594,7 +592,7 @@ static void test_session_memory_chain_and_landing(void)
     TEST("L2: 与折叠**同时**建 (成员→L2→JOIN→L1); 策展经工具写入 (完成不落地, completion_seq = 0)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-l2", "L2");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-l2"), "L2");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
@@ -602,7 +600,7 @@ static void test_session_memory_chain_and_landing(void)
     struct edc_task_group *group = make_foldable_group(session, "m-a1", &member);
 
     /* 活着的成员 (非终态) —— 它既等折叠也等策展 */
-    struct edc_task *live = edc_task_new("u-live", "sess-l2", group->group_id, "live member", edc_channel_adapter);
+    struct edc_task *live = edc_task_new(edc_test_id("u-live"), edc_test_session_id("sess-l2"), group->group_id, "live member", edc_channel_adapter);
     edc_task_group_add_task(group, live);
 
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
@@ -628,11 +626,11 @@ static void test_session_memory_chain_and_landing(void)
     /* L2 的请求: 材料**不在 prompt 里**, 而是装配请求时由 JOIN 把它**拼进 L2 自己的输入**
      * (B 方案)。这个夹具没建请求, 所以此刻 turn 里还只有"索引 + 契约"。 */
     struct edc_turn *turn = l2->active_turn;
-    CHECK(turn != NULL && edc_queue_length(&turn->messages) > 0, "L2 有自己的 turn (索引 + 契约)");
+    CHECK(turn != NULL && turn->msg_count > 0, "L2 有自己的 turn (索引 + 契约)");
     const char *material = NULL;
-    if (turn && edc_queue_length(&turn->messages) > 0)
+    if (turn && turn->msg_count > 0)
     {
-        cJSON *m = turn->messages.data[turn->messages.head];
+        cJSON *m = edc_turn_msg_at(turn, 0);
         material = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
     CHECK(material && strstr(material, "Existing session entries") != NULL, "turn 里有条目索引与契约");
@@ -663,14 +661,14 @@ static void test_session_memory_join_cascades_failure(void)
     /* 一个 session + 一个 scheduler (同文件其它用例同形; 不要在一个进程里起第二个
      * scheduler —— `active_contexts` 是单例静态全局, 那属于既有偏离)。 */
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-casc", "Casc");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-casc"), "Casc");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
     /* ── ① 失败级联: 第二个组, 活成员, 折叠一失败 ── */
     struct edc_task *member = NULL;
     struct edc_task_group *gB = make_foldable_group(session, "m-b1", &member);
-    struct edc_task *live = edc_task_new("u-liveB", "sess-casc", gB->group_id, "live B", edc_channel_adapter);
+    struct edc_task *live = edc_task_new(edc_test_id("u-liveB"), edc_test_session_id("sess-casc"), gB->group_id, "live B", edc_channel_adapter);
     edc_task_group_add_task(gB, live);
 
     struct edc_task *fold = edc_group_fold_start(sched, session, gB, NULL);
@@ -685,7 +683,7 @@ static void test_session_memory_join_cascades_failure(void)
     /* ── ② 取消级联: 第三个组, 折叠一起就被取消 (SIGTERM 那条生产路径) ── */
     struct edc_task *member2 = NULL;
     struct edc_task_group *gC = make_foldable_group(session, "m-c1", &member2);
-    struct edc_task *live2 = edc_task_new("u-liveC", "sess-casc", gC->group_id, "live C", edc_channel_adapter);
+    struct edc_task *live2 = edc_task_new(edc_test_id("u-liveC"), edc_test_session_id("sess-casc"), gC->group_id, "live C", edc_channel_adapter);
     edc_task_group_add_task(gC, live2);
 
     struct edc_task *fold2 = edc_group_fold_start(sched, session, gC, NULL);
@@ -719,6 +717,7 @@ static void test_session_memory_join_cascades_failure(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_attributes_default();
     test_spawn_system_task();
     test_session_memory_chain_and_landing();

@@ -173,6 +173,6 @@ void edc_tools_todo_register(struct edc_toolbox *tb)
     struct edc_tool_param *param = edc_tool_param_new("items", items_type, true);
 
     struct edc_tool *tool = edc_tool_new(name, desc, param, edc_tools_todo_exec_async);
-
+    edc_tool_set_snippet(tool, "Maintain the plan as a list of steps");
     edc_toolbox_register(tb, tool);
 }

@@ -3,6 +3,7 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_scheduler.h"
+#include "edc_session.h"
 #include "edc_task.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h" /* struct edc_tool (the abort hook lives on it) */
@@ -103,26 +104,113 @@ static void edc_toolbox_actor_inflight_free(struct edc_toolbox_call_ctx *call)
     edc_toolbox_call_ctx_free(call);
 }
 
-static char *_HINT = "\n\n[Analyze the error above and try a different approach.]";
+/* Appended to a tool failure so the model reads it as a failed attempt rather than as
+ * output. It is constant text -- a `char *` pointing at a string literal said otherwise.
+ *
+ * Every error that reaches here is one the model can act on: a bad or missing parameter, a
+ * tool outside the task's scope, an unknown tool name, a path that does not exist, a file
+ * that already exists, an occurrence count out of range, a sandbox refusal. Cancellation and
+ * timeout are NOT among them -- the shell tool reports those as `[command timed out]` inside
+ * the result with no EdcError at all, so no hint is added for them and the model is not told
+ * to "try a different approach" when the right move is to run it again. */
+static const char _HINT[] = "\n\n[Analyze the error above and try a different approach.]";
+/* Two ceilings, whichever comes first: bytes (tool_max_output_size, configurable) and lines
+ * (EDC_TOOL_OUTPUT_MAX_LINES). Both are needed -- a log of very long lines and a file of
+ * very many short ones hit different ones first, and a single number cannot describe both. */
+#define EDC_TOOL_OUTPUT_MAX_LINES ((size_t)2000)
 
-// TODO: fix error handle
+/* Cut |result| at a line boundary when it has one before |cap| bytes, so the model does not
+ * get half a line it would have to guess at. Returns the byte offset to show. */
+static size_t preview_end(const char *p, size_t len, size_t cap, size_t *out_lines, size_t *out_total_lines)
+{
+    size_t total_lines = 0, shown_lines = 0, last_boundary = 0, pos = 0;
+    while (pos < len)
+    {
+        size_t nl = pos;
+        while (nl < len && p[nl] != '\n')
+            nl++;
+        const size_t line_end = (nl < len) ? nl + 1 : nl;
+        total_lines++;
+        if (line_end <= cap && shown_lines < EDC_TOOL_OUTPUT_MAX_LINES)
+        {
+            shown_lines++;
+            last_boundary = line_end;
+        }
+        pos = line_end;
+    }
+    if (out_lines)
+        *out_lines = shown_lines;
+    if (out_total_lines)
+        *out_total_lines = total_lines;
+    /* No line fits under the cap (one enormous line): fall back to a byte cut, which the
+     * caller marks as such. */
+    return last_boundary > 0 ? last_boundary : cap;
+}
+
+/* Replace an over-budget result with: a head notice, a bounded preview, and the path of the
+ * whole thing. The head, not the tail -- a preview is cut from the front, so a trailer would
+ * be exactly the part that disappears. */
+static sds edc_toolbox_actor_cap_result(edc_toolbox_actor_state_t *state, struct edc_toolbox_call_ctx *tb_ctx,
+                                        struct edc_toolbox_actor_req *req, sds result)
+{
+    const size_t len = sdslen(result);
+    size_t cap = (size_t)state->toolbox->conf->tool_max_output_size;
+    if (cap == 0 || cap > len)
+        cap = len;
+
+    /* Cheap first pass: is it over EITHER ceiling? */
+    size_t lines = 0;
+    for (size_t i = 0; i < len; i++)
+        if (result[i] == '\n')
+            lines++;
+    if (len > 0 && result[len - 1] != '\n')
+        lines++;
+    if (len <= cap && lines <= EDC_TOOL_OUTPUT_MAX_LINES)
+        return result; /* within both: untouched */
+
+    /* spill_output names a DIRECTORY (<ws>/<session>/tool-output), whose session segment is
+     * the session's directory name -- edc_id_str()'s bare "15", the one text form an id has
+     * (edc_session.h: the "s<id>" spelling is gone). */
+    const char *session_id = NULL;
+    if (tb_ctx->task && tb_ctx->task->group && tb_ctx->task->group->session)
+        session_id = edc_id_str(tb_ctx->task->group->session->session_id);
+    /* The whole output goes to a file BEFORE anything is cut: this is the difference between
+     * "truncated" and "lost". A failure here still produces a correct (if lossy) message. */
+    sds path = edc_toolbox_spill_output(state->toolbox, req->name, session_id, result, len);
+
+    size_t shown_lines = 0, total_lines = 0;
+    size_t keep = preview_end(result, len, cap, &shown_lines, &total_lines);
+    const bool byte_cut = (keep == cap) && (shown_lines == 0);
+
+    sds out = sdsempty();
+    out = sdscatprintf(out, "[truncated: showing %zu of %zu lines (%zu of %zu bytes)%s]\n", shown_lines,
+                       total_lines > 0 ? total_lines : 1, keep, len, byte_cut ? ", cut mid-line" : "");
+    if (path)
+        out = sdscatprintf(out, "[full output: %s (read it with read_file offset/limit)]\n", path);
+    else
+        out = sdscat(out, "[full output could not be saved; narrow the query to see more]\n");
+    out = sdscatlen(out, result, keep);
+
+    if (path)
+        sdsfree(path);
+    sdsfree(result);
+    return out;
+}
+
 static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds result, EdcError *error)
 {
     if (error)
     {
-        if (error->message)
+        /* A caller may hand over a result sds AND an error (edc_tools_memory does: it passes
+         * the message it built as the result and wraps the same text in an EdcError). The
+         * error supersedes it, so the result has to be released here -- overwriting the
+         * variable leaked one sds per failed memory call. */
+        if (result)
         {
-            log_error("DEBUG actor_callback: error->message='%s', error->code=%d, error ptr=%p, sdslen=%zu",
-                      error->message, error->code, (void *)error, sdslen(error->message));
-            result = sdsnew(error->message);
+            sdsfree(result);
+            result = NULL;
         }
-        else
-        {
-            log_error("DEBUG actor_callback: error->message=NULL, error->code=%d, error ptr=%p", error->code,
-                      (void *)error);
-            result = sdsnew("unknown error");
-        }
-        log_error("DEBUG actor_callback: after sdsnew, result='%s', len=%zu", result, sdslen(result));
+        result = sdsnew(error->message ? error->message : "unknown error");
         result = sdscat(result, _HINT);
         edc_error_free(error);
     }
@@ -148,20 +236,19 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     log_debug("tool call request name = %s, args = %s, result_len = %zu", req->name, args, sdslen(result));
     cJSON_free(args);
 
+    /* A tool may declare that its output must reach the model whole (read_file and the memory
+     * tools: they bound themselves, in a way that knows what the output MEANS). */
+    const bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
+    if (!keep_full)
+        result = edc_toolbox_actor_cap_result(state, tb_ctx, req, result);
+
+    /* Exactly ONE assignment, after the cap. The cap takes ownership of what it is given
+     * (it frees the original when it cuts) and returns the string to keep, so assigning
+     * req->result BEFORE the call left it pointing at freed memory and req_free() freed it
+     * again -- `free(): invalid pointer`. Re-pointing after the call would work too, but it
+     * relies on remembering to; one assignment leaves no order to get wrong. */
     req->result = result;
-    /* A tool may declare that its output must reach the model whole (the session memory
-     * tools: their output is knowledge, not bulk, and they bound it themselves). */
-    bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
-    if (!keep_full && (sdslen(result)) > state->toolbox->conf->tool_max_output_size)
-    {
-        size_t len = sdslen(result);
-        size_t cap = (size_t)state->toolbox->conf->tool_max_output_size;
-        sdsrange(result, 0, cap);
-        /* The number comes from the config, not from a literal: a hardcoded "10000" here
-         * used to contradict any other configured value. */
-        result = sdscatprintf(result, "\n\n[Result truncated to %zu characters, total length: %zu]", cap, len);
-        req->result = result;
-    }
+
 
     struct edc_toolbox_actor_req *next = req->next;
     edc_actor_send(msg->from, edc_actor_msg_new(BC_ACTOR_MSG_TOOL_RESPONSE, actor, msg->request_id, req,
@@ -187,7 +274,14 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     }
 }
 
-// TODO: async exec
+/* Every tool that can block already runs off this thread: the shell tool uv_spawn()s and
+ * completes from its exit callback, the fs tools uv_queue_work() their I/O, the device tools
+ * are uv_tcp/uv_timer state machines. edc_toolbox_exec() therefore DISPATCHES and returns --
+ * the only tools that answer synchronously are the in-memory ones (memory_*, todo), whose
+ * work is a few string operations.
+ *
+ * (A "TODO: async exec" used to sit here, from the initial commit. It was done in fff7b15
+ * "fix(fs): move the tool file I/O off the runner thread" and the note outlived it.) */
 static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     edc_toolbox_actor_state_t *state = (edc_toolbox_actor_state_t *)actor->state;

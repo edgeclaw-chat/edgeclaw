@@ -246,7 +246,7 @@ cython_debug/
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+.idea/
 
 # ---> CMake
 CMakeLists.txt.user
@@ -281,6 +281,11 @@ _deps
 # A/B harness fixtures are configuration, not build output
 !tools/ab/responses/*.json
 !tools/ab/responses/*.jsonl
+# Third-party licence texts are source, not build output. The `*json` rule above is meant
+# for stray JSON files, but a bare `*json` matches any path component ending in "json" --
+# including the directory `licenses/cjson/`, which silently dropped cJSON's licence from
+# every commit until CI (building from a clean checkout) reported it missing.
+!licenses/**
 MODULE.bazel.lock
 
 # Terminal emulator stray files (accidental empty files in repo root)

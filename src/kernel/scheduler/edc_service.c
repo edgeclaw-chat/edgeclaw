@@ -5,6 +5,7 @@
 
 #include "log.h"
 
+#include <inttypes.h> /* PRIu64 */
 #include <stdlib.h>
 #include <string.h>
 
@@ -99,7 +100,7 @@ struct edc_service *edc_service_register(struct edc_scheduler *sched, const char
         tail = &(*tail)->next;
     *tail = svc;
 
-    log_info("service register: %s every %llums", svc->name, (unsigned long long)interval_ms);
+    log_info("service register: %s every %" PRIu64 "ms", svc->name, interval_ms);
     services_rearm(sched);
     return svc;
 }

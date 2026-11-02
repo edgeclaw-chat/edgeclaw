@@ -208,6 +208,42 @@ static void on_shell_exit(uv_process_t *process, int64_t exit_status, int term_s
     shell_ctx_try_complete(ctx);
 }
 
+/* Windows: a command's bytes can arrive in the ANSI code page -- a native grandchild (python,
+ * gcc: they follow the CRT locale, not the console) or a localized tool. Nothing downstream can
+ * tell: read_file, the TUI and the model's copy all assume UTF-8, and the head is where the
+ * model's copy is cut. So the one invariant is established here, once. Gated by the platform:
+ * on POSIX the conversion answers NULL and this helper does nothing at all.
+ *
+ * Per LINE and not per buffer on purpose -- one command really does emit both encodings in one
+ * invocation (measured: PowerShell's own text plus a python grandchild), so judging the whole
+ * buffer would corrupt the half that was already right. */
+static void shell_ctx_normalize_stream(struct edc_output_buf *b, size_t *converted)
+{
+    *converted = 0;
+    if (!b->data || sdslen(b->data) == 0)
+        return;
+
+    /* The capture cap cut the stream at a byte offset, so the last line can end in the middle
+     * of a character. Transcoding half a character produces a tail that LOOKS like content;
+     * drop it instead -- the truncation note already tells the reader the tail is missing. */
+    if (b->truncated && b->data[sdslen(b->data) - 1] != '\n')
+    {
+        char *last_nl = strrchr(b->data, '\n');
+        if (last_nl)
+            sdsrange(b->data, 0, (ssize_t)(last_nl - b->data));
+        else
+            sdsclear(b->data);
+    }
+
+    size_t len = 0;
+    char *utf8 = edc_platform_output_to_utf8(b->data, sdslen(b->data), &len, converted);
+    if (!utf8)
+        return;
+    sdsfree(b->data);
+    b->data = sdsnewlen(utf8, len);
+    free(utf8); /* malloc'd by the platform layer: NOT an sds handle, so not sdsfree */
+}
+
 static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 {
     if (ctx->completed)
@@ -216,10 +252,22 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
 
     uv_timer_stop(&ctx->timeout_timer);
 
-    sds out = ctx->out.data ? ctx->out.data : sdsempty();
-    sds err = ctx->err.data ? ctx->err.data : sdsempty();
-    sdstrim(out, " \t\r\n");
-    sdstrim(err, " \t\r\n");
+    /* Before the notices are formatted, because the truncation note reports what the reader
+     * actually GETS ("kept the first X"), and transcoding changes that byte count. */
+    size_t converted_out = 0;
+    size_t converted_err = 0;
+    shell_ctx_normalize_stream(&ctx->out, &converted_out);
+    shell_ctx_normalize_stream(&ctx->err, &converted_err);
+
+    /* Borrowed, not owned: a stream that captured nothing has no buffer, and handing
+     * sdsempty() to a variable that is never freed is how the completion path leaked one
+     * empty sds per call. NULL means "nothing captured" everywhere below. */
+    sds out = ctx->out.data;
+    sds err = ctx->err.data;
+    if (out)
+        sdstrim(out, " \t\r\n");
+    if (err)
+        sdstrim(err, " \t\r\n");
 
     /* The notices go FIRST, and that placement is the whole point: the head is the only part
      * both readers keep -- the collapsed bubble draws just the first lines, and the model's
@@ -246,14 +294,35 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     }
     if (ctx->timed_out)
         result = sdscat(result, "[command timed out]\n");
+    /* How the command ended. In the HEAD with the other notices, not appended at the tail:
+     * for a large output the tail is exactly what both readers drop, so a note placed there
+     * is a note nobody gets.
+     *
+     * Only when the command did not simply succeed. `[exit 0]` on every call is noise a
+     * reader learns to skip, and the case that actually matters is the one that is
+     * otherwise invisible: a command that FAILED produced output indistinguishable from one
+     * that worked, so the model reported success on top of a failure.
+     *
+     * A timeout already says why it ended, and the synthetic -1 it leaves behind is not a
+     * signal -- reporting `[signal 1]` there would be a fiction. */
+    else if (ctx->exit_status < 0)
+        result = sdscatprintf(result, "[signal %d]\n", -ctx->exit_status);
+    else if (ctx->exit_status > 0)
+        result = sdscatprintf(result, "[exit %d]\n", ctx->exit_status);
+    /* Transcoding is a change we made to the output, so it is announced rather than silent:
+     * whoever is chasing an encoding problem needs to know which lines are not the raw bytes,
+     * and this line is also how the mechanism stays observable at all. */
+    if (converted_out + converted_err > 0)
+        result = sdscatprintf(result, "[encoding: %zu line(s) converted from cp%u to utf-8]\n",
+                              converted_out + converted_err, edc_platform_ansi_codepage());
 
-    if (sdslen(out) > 0)
+    if (out && sdslen(out) > 0)
         result = sdscatprintf(result, "%s\n", out);
     /* The command's error output follows its normal output with no label: a reader
      * (person or model) gets what the command produced, nothing prepended. The two
      * streams are already collected separately, so the interleaving was lost either
      * way; the label only told you where the switch happened. */
-    if (sdslen(err) > 0)
+    if (err && sdslen(err) > 0)
         result = sdscatprintf(result, "%s\n", err);
 
     edc_toolbox_emit_tool_message_plain(ctx->tb_ctx, ctx->command, result);
@@ -374,7 +443,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
 
     const char *spawn_file = NULL;
     char **spawn_args = NULL;
-    char *plain_args[5] = {0};
+    char *plain_args[EDC_SHELL_ARGV_HEAD_MAX + 2] = {0};
     sds sandbox_helper_file = NULL;
     char **sandbox_helper_args = NULL;
     char **spawn_env = NULL;
@@ -383,11 +452,21 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
      * "powershell.exe" "-NonInteractive" "-Command"), and the command line is appended.
      * Keeping it in the table is what stops the three places that care about the shell --
      * this one, the kill above and the tests -- from each knowing their own answer. */
+    /* Windows: the encoding prologue goes IN FRONT of the command line (the "<- why" lives
+     * with the field in edc_platform.h). It is glued to the command rather than passed
+     * separately because the shell takes ONE command line, and `A;B` means "run A, then B" --
+     * the prologue already ends with ';', so no separator is introduced here. POSIX has no
+     * prologue, so on POSIX this is a NULL test and nothing else. */
+    sds full_cmd = NULL;
+    const char *cmd_line = cmd_s;
+    if (caps->shell_prologue)
+        cmd_line = full_cmd = sdscat(sdsnew(caps->shell_prologue), cmd_s);
+
     int argv_n = 0;
     for (const char *const *a = caps->shell_argv_head;
          a && *a && argv_n < (int)G_N_ELEMENTS(plain_args) - 2; a++)
         plain_args[argv_n++] = (char *)*a;
-    plain_args[argv_n++] = (char *)cmd_s;
+    plain_args[argv_n++] = (char *)cmd_line;
     plain_args[argv_n] = NULL;
     spawn_file = caps->shell_file;
     spawn_args = plain_args;
@@ -421,6 +500,7 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
         sdsfree(sandbox_helper_file);
     free(sandbox_helper_args);
     edc_shell_env_free(spawn_env);
+    sdsfree(full_cmd); /* libuv has built the command line by now */
 
     if (r != 0)
     {
@@ -610,6 +690,11 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
     /* A running command is the one thing here that must be killed when its task is
      * cancelled -- which matters most for `!cmd`, whose commands have no timeout. */
     edc_tool_set_abort(tool, edc_tool_shell_abort);
+    edc_tool_set_snippet(tool, "Run a shell command locally");
+    edc_tool_set_guidelines(tool, "Output is capped; the child sees a minimal environment. "
+                                  "A non-zero exit is reported at the top of the result as "
+                                  "[exit N] (or [signal N]) -- check it before concluding the "
+                                  "command succeeded.");
     edc_toolbox_register(tb, tool);
     return tool;
 }

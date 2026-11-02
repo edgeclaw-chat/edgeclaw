@@ -10,7 +10,7 @@
 typedef enum
 {
     C_UNQUOTED, C_QUOTED, C_BADQ, C_WS, C_PIPE, C_SEQ, C_ANDAND, C_OROR, C_BG, C_REDIR, C_OPT, C_OPTARG,
-    C_SLASH, C_SIGIL_NG, C_SIGIL_LS, C_REST
+    C_SLASH
 } chunk_kind;
 
 typedef struct
@@ -67,12 +67,18 @@ static void push_unquoted(const char *raw, size_t len)
 }
 %}
 %%
-"\"\"\""[^"]*"\"\"\""       { push_quoted(yytext, true); }
-"'''"[^']*"'''"             { push_quoted(yytext, false); }
-\"([^"\\]|\\.)*\"           { push_quoted(yytext, true); }
-'([^'\\]|\\.)*'             { push_quoted(yytext, false); }
-\"([^\"\\]|\\.)*$          { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
-'([^'\\]|\\.)*$            { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+    /* bash quoting (see edc_cmd_parse.c): '…' is RAW, "…" carries only \" and \\, and the
+     * escape-carrying form is ANSI-C -- spelled $'…' the way bash spells it, or '''…'''
+     * (the in-tree alias). """…""" is "…" with a body that may hold a bare ". */
+"$'"[^']*"'"                 { push_quoted(yytext, false); }
+"'''"[^']*"'''"              { push_quoted(yytext, false); }
+"\"\"\""[^"]*"\"\"\""        { push_quoted(yytext, true); }
+\"([^"\\]|\\.)*\"            { push_quoted(yytext, true); }
+'[^']*'                      { push_quoted(yytext, false); }
+"$'"[^']*$                   { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+"'''"[^']*$                  { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+\"([^\"\\]|\\.)*$            { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+'[^']*$                      { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 "2>>"                       { chunk_t *c = push(C_REDIR); c->fd = 2; c->append = true; }
 "2>"                        { chunk_t *c = push(C_REDIR); c->fd = 2; }
 ">>"                        { chunk_t *c = push(C_REDIR); c->fd = 1; c->append = true; }
@@ -83,24 +89,34 @@ static void push_unquoted(const char *raw, size_t len)
 ";"                         { push(C_SEQ); }
 "&&"                        { push(C_ANDAND); }
 "&"[ \t]*$                  { push(C_BG); }
-"--bg"([ \t\n]|$)           { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
-"--new-group"([ \t\n]|$)    { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
-"--with"([ \t\n]|$)         { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
-"--group"([ \t\n]|$)        { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
-"-d"[ \t]                   { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
-"-g"[ \t]                   { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
+    /* The trailing space is TRAILING CONTEXT (`/`), not part of the match: it must survive as
+     * a C_WS chunk, because that chunk is what ends the current word. Consuming it here is
+     * how `-d t1` used to arrive as ONE word `-dt1`: the option chunk carries the literal
+     * name "-d", SHELL_OFF folds it into the word being built (options are not syntax there),
+     * and with the space already eaten nothing separated it from `t1`. In SHELL_ON the
+     * behaviour is unchanged -- TK_OPT/TK_OPTARG, and C_WS still emits no token.
+     *
+     * The input always has "\n" appended (see edc_lex), so a trailing `[ \t\n]` also covers
+     * end-of-line; the old `([ \t\n]|$)` needed the `$` alternative only because it consumed
+     * the separator. Values stay separate words -- and that is the whole point of splitting
+     * here: `/task new x -d 1` gives ["x","-d","1"] (the handler's getopt sees the option)
+     * while `/task new 'x -d 1'` gives ["x -d 1"] (one word, the text). */
+"--bg"/[ \t\n]              { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
+"--new-group"/[ \t\n]       { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
+"--with"/[ \t\n]            { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
+"--group"/[ \t\n]           { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
+"-d"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
+"-g"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
 ^"/"[A-Za-z_-]+             { chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
 [ \t\n]+                    { push(C_WS); }
 [^ \t\n|;&<>"' ]+           { push_unquoted(yytext, (size_t)yyleng); }
 .                           { push_unquoted(yytext, 1); }
 %%
-static void emit(edc_lex_out *out, edc_tok_kind k, sds text, bool fq, bool refs, int fd, bool append, size_t b,
-                 size_t e)
+static void emit(edc_lex_out *out, edc_tok_kind k, sds text, bool refs, int fd, bool append, size_t b, size_t e)
 {
     edc_tok *t = &out->toks[out->count++];
     t->kind = k;
     t->value = text;
-    t->fully_quoted = fq;
     t->has_var_refs = refs;
     t->fd = fd;
     t->append = append;
@@ -111,6 +127,7 @@ static void emit(edc_lex_out *out, edc_tok_kind k, sds text, bool fq, bool refs,
 bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
 {
     memset(out, 0, sizeof(*out));
+    out->mode = mode;
     g_chunks = NULL;
     g_nchunks = g_cap = 0;
     g_pos = g_begin = 0;
@@ -133,16 +150,15 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
             /* 开关关闭：`!` 不是 sigil —— 整行就是一段文本，并记一笔给 note */
             out->saw_disabled = true;
             out->disabled_at = 0;
-            emit(out, TK_WORD, sdsnew(src), false, false, 0, false, 0, strlen(src));
+            emit(out, TK_TEXT, sdsnew(src), false, 0, false, 0, strlen(src));
         }
         else
         {
-            emit(out, TK_SIGIL_LOCALSHELL, NULL, false, false, 0, false, 0, 1);
+            emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
             if (e > (size_t)(p - src))
-                emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, false, 0, false,
-                     (size_t)(p - src), e);
+                emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
         }
-        emit(out, TK_EOF, NULL, false, false, 0, false, strlen(src), strlen(src));
+        emit(out, TK_EOF, NULL, false, 0, false, strlen(src), strlen(src));
         return true;
     }
 
@@ -160,18 +176,32 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
     if (!out->toks)
         return false;
 
-    /* ── chunk → token：相邻的 UNQUOTED/QUOTED 拼成一个 word（真实 shell 的切词） ── */
+    /* ── chunk → token：一个词 = 一个 TEXT 或一个 STRING ─────────────────────
+     *
+     * 引号区与裸文本**不混拼**（用户 2026-10-22 拍板）：`a"b c"d` 是三个词
+     * `a` / `b c` / `d`，不是一个 `ab cd`。词的类型就是 token 的类型，所以
+     * 「这个词是不是引号串」由 token 种类回答，不再需要 flag。
+     *
+     * 唯一的例外是被折叠的算符/选项（`disabled`）：SHELL_OFF 下 `|` `;` `&`
+     * `-d` 都是普通文本，它们必须**粘进**同一个 TEXT —— `/session memo search a|b`
+     * 仍然是一个词 `a|b`。它们不是"片段"，只是夹在片段之间的字节。 */
     sds cur = NULL;
     size_t wb = 0, we = 0;
-    int nchunks_in_word = 0, nquoted = 0;
+    /* NONE / TEXT / STRING：当前正在攒的那个词是什么类型（和下面的 flush 共用） */
+    enum { W_NONE = 0, W_TEXT, W_STRING } word = W_NONE;
     bool refs = false;
 
     for (int i = 0; i < g_nchunks; i++)
     {
         chunk_t *c = &g_chunks[i];
         const bool wordish = (c->kind == C_UNQUOTED || c->kind == C_QUOTED);
-        /* 开关关闭：sigil/算符/选项**不成为 token**，降级成文本（并记一笔供 note 用） */
-        const bool disabled = (mode == EDC_LEX_SHELL_OFF) && !wordish && c->kind != C_WS && c->kind != C_REST;
+        /* 开关关闭：sigil/算符/选项**不成为 token**，降级成文本（并记一笔供 note 用）。
+         * 两个例外，都不是“开关能管的语法”：
+         *   C_BADQ  未闭合引号是词法错误 —— 降级成文本就是静默丢参；
+         *   C_SLASH 行首 `/` 是派发前缀（命令层），与 shell 开关无关 ——
+         *           它得成 TK_SLASH_CMD，否则命令行进不了文法。 */
+        const bool disabled = (mode == EDC_LEX_SHELL_OFF) && !wordish && c->kind != C_WS &&
+                              c->kind != C_BADQ && c->kind != C_SLASH;
 
         if (wordish || disabled)
         {
@@ -187,7 +217,7 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
             if (!cur && c->kind == C_UNQUOTED && c->b == 0 && c->text && c->text[0] == '+' &&
                 mode == EDC_LEX_SHELL_ON)
             {
-                emit(out, TK_SIGIL_NEWGROUP, NULL, false, false, 0, false, 0, 1);
+                emit(out, TK_SIGIL_NEWGROUP, NULL, false, 0, false, 0, 1);
                 sdsrange(c->text, 1, -1);
                 if (sdslen(c->text) == 0)
                     continue;
@@ -196,6 +226,20 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
                      mode == EDC_LEX_SHELL_OFF)
             {
                 out->saw_disabled = true;
+            }
+            /* 一个真正的 word 片段。类型一变就先把这个词吐出去（不混拼）；两个引号区
+             * 相邻同理 —— 它们是两个词，不是 C 那样的字面量拼接。 */
+            if (c->kind == C_QUOTED || c->kind == C_UNQUOTED)
+            {
+                const int want = (c->kind == C_QUOTED) ? W_STRING : W_TEXT;
+                if (word != W_NONE && word != want)
+                {
+                    emit(out, word == W_STRING ? TK_STRING : TK_TEXT, cur, refs, 0, false, wb, we);
+                    cur = NULL;
+                    word = W_NONE;
+                    refs = false;
+                }
+                word = want;
             }
             if (!cur)
             {
@@ -207,63 +251,42 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
             else if (c->raw)
                 cur = sdscatsds(cur, c->raw); /* 降级：用原文 */
             we = c->e;
-            nchunks_in_word++;
-            if (c->kind == C_QUOTED)
-            {
-                nquoted++;
-                if (c->interp && c->text && strstr(c->text, "{{"))
-                    refs = true;
-            }
+            if (c->kind == C_QUOTED && c->interp && c->text && strstr(c->text, "{{"))
+                refs = true;
             continue;
         }
 
         /* 非 word：先把挂着的 word 吐出去 */
         if (cur)
         {
-            emit(out, TK_WORD, cur, mode == EDC_LEX_SHELL_ON && nchunks_in_word == 1 && nquoted == 1, refs, 0,
-                 false, wb, we);
+            emit(out, word == W_STRING ? TK_STRING : TK_TEXT, cur, refs, 0, false, wb, we);
             cur = NULL;
-            nchunks_in_word = nquoted = 0;
+            word = W_NONE;
             refs = false;
         }
 
         switch (c->kind)
         {
         case C_WS: break;
-        case C_PIPE: emit(out, TK_PIPE, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_SEQ: emit(out, TK_SEQ, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_ANDAND: emit(out, TK_ANDAND, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_OROR: emit(out, TK_OROR, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_BG: emit(out, TK_BG, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_REDIR: emit(out, TK_REDIR, NULL, false, false, c->fd, c->append, c->b, c->e); break;
-        case C_OPT: emit(out, TK_OPT, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
-        case C_OPTARG: emit(out, TK_OPTARG, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
+        case C_PIPE: emit(out, TK_PIPE, NULL, false, 0, false, c->b, c->e); break;
+        case C_SEQ: emit(out, TK_SEQ, NULL, false, 0, false, c->b, c->e); break;
+        case C_ANDAND: emit(out, TK_ANDAND, NULL, false, 0, false, c->b, c->e); break;
+        case C_OROR: emit(out, TK_OROR, NULL, false, 0, false, c->b, c->e); break;
+        case C_BG: emit(out, TK_BG, NULL, false, 0, false, c->b, c->e); break;
+        case C_REDIR: emit(out, TK_REDIR, NULL, false, c->fd, c->append, c->b, c->e); break;
+        case C_OPT: emit(out, TK_OPT, sdsdup(c->text), false, 0, false, c->b, c->e); break;
+        case C_OPTARG: emit(out, TK_OPTARG, sdsdup(c->text), false, 0, false, c->b, c->e); break;
         case C_BADQ:
-            emit(out, TK_BAD_QUOTED, sdsdup(c->text), false, false, 0, false, c->b, c->e);
+            emit(out, TK_BAD_QUOTED, sdsdup(c->text), false, 0, false, c->b, c->e);
             break;
-        case C_SLASH: emit(out, TK_SLASH_CMD, sdsdup(c->text), false, false, 0, false, c->b, c->e); break;
-        case C_SIGIL_NG: emit(out, TK_SIGIL_NEWGROUP, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_SIGIL_LS: emit(out, TK_SIGIL_LOCALSHELL, NULL, false, false, 0, false, c->b, c->e); break;
-        case C_REST:
-            if (mode == EDC_LEX_SHELL_OFF)
-            {
-                if (!out->saw_disabled)
-                {
-                    out->saw_disabled = true;
-                    out->disabled_at = c->b;
-                }
-            }
-            else
-                emit(out, TK_RAW_REST, sdsdup(c->text), false, false, 0, false, c->b, c->e);
-            break;
+        case C_SLASH: emit(out, TK_SLASH_CMD, sdsdup(c->text), false, 0, false, c->b, c->e); break;
         default: break;
         }
     }
     if (cur)
-        emit(out, TK_WORD, cur, mode == EDC_LEX_SHELL_ON && nchunks_in_word == 1 && nquoted == 1, refs, 0,
-             false, wb, we);
+        emit(out, word == W_STRING ? TK_STRING : TK_TEXT, cur, refs, 0, false, wb, we);
 
-    emit(out, TK_EOF, NULL, false, false, 0, false, g_pos, g_pos);
+    emit(out, TK_EOF, NULL, false, 0, false, g_pos, g_pos);
 
     for (int i = 0; i < g_nchunks; i++)
     {
@@ -286,26 +309,4 @@ void edc_lex_out_free(edc_lex_out *out)
     free(out->toks);
     out->toks = NULL;
     out->count = 0;
-}
-
-sds *edc_argv_from_tail(const char *tail, int *out_count)
-{
-    if (out_count)
-        *out_count = 0;
-    edc_lex_out o;
-    if (!edc_lex(tail ? tail : "", EDC_LEX_SHELL_OFF, &o))
-        return NULL;
-    sds *args = NULL;
-    int n = 0;
-    for (int i = 0; i < o.count; i++)
-    {
-        if (o.toks[i].kind != TK_WORD)
-            continue; /* OFF 模式下一切都是 word；这里只是防 EOF */
-        args = realloc(args, sizeof(sds) * (size_t)(n + 1));
-        args[n++] = sdsdup(o.toks[i].value ? o.toks[i].value : sdsempty());
-    }
-    edc_lex_out_free(&o);
-    if (out_count)
-        *out_count = n;
-    return args;
 }

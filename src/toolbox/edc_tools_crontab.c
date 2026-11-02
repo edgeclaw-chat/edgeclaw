@@ -147,7 +147,7 @@ static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcE
     if (!fout)
     {
         const char *s = strerror(errno);
-        edc_error_set(error, EDC_ERR_INVAL, "open %s for writting failed: %s", jobs_path, s);
+        edc_error_set(error, EDC_ERR_INVAL, "open %s for writing failed: %s", jobs_path, s);
         sdsfree(jobs_path);
         return false;
     }
@@ -479,6 +479,13 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     if (db)
     {
         jobs = cJSON_GetObjectItem(db, "jobs");
+        /* A jobs.json can exist without the "jobs" key -- a truncated write, an older
+         * shape, or something the model wrote. cJSON_AddItemToArray() silently does
+         * nothing for a NULL array, so without this the new job would be dropped while
+         * the tool reported "Add job ... done": the user is told it was scheduled and it
+         * is nowhere. Create the array instead of trusting the key to be there. */
+        if (!jobs || !cJSON_IsArray(jobs))
+            jobs = cJSON_AddArrayToObject(db, "jobs");
     }
     else
     {
@@ -685,6 +692,7 @@ static void edc_tool_create_crontab(struct edc_toolbox *tb)
     tool->priv = state;
     tool->priv_free_fn = (EdcDestroyNotify)edc_tool_crontab_state_free;
 
+    edc_tool_set_snippet(tool, "Schedule a reminder or recurring job");
     edc_toolbox_register(tb, tool);
 
     if (state->sched)

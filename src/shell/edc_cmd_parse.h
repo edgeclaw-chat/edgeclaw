@@ -19,7 +19,7 @@ struct edc_cmd_task_opts
     bool literal; /* input came from a '''/''' block or single quotes: do not expand {{…}} refs */
     sds *dep_ids; /* -d/--with <id> dependency list (JOIN: waits and injects) */
     int dep_count;
-    sds group_id;    /* --group <id> / -g <id> */
+    sds group_id;    /* --group <id> / -g <id>; TEXT as typed, parsed where used */
     /* The first token in the OPTION AREA that is not an option and not the `2` of a
      * stderr redirect. The option area takes options; anything else is an error rather
      * than text silently dropped (`"hello" and more` must not lose ` and more`, and a
@@ -51,13 +51,6 @@ extern sds edc_cmd_unquote(const char *s, const char **end_out);
 
 /** Parse task operation arguments. arg may be NULL; the caller frees with edc_cmd_task_opts_free. */
 extern void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts);
-
-/** True when |arg| looks like it was given options (a token starting with `-`) while
- *  its description is NOT quoted. The two callers that accept options (`@` and
- *  `/task new`) reject that as a syntax error: options are only recognised after a
- *  quoted description, so letting them through would silently swallow the option into
- *  the description text -- the description must be quoted instead. */
-extern bool edc_cmd_desc_needs_quotes(const char *arg);
 
 /** Free the resources parse allocated. */
 extern void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts);

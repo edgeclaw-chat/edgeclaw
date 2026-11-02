@@ -1,4 +1,5 @@
 #include "edc_session.h"
+#include "test_ws.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -24,7 +25,7 @@ static int passed = 0;
 
 static struct edc_config *make_cfg(void) {
     struct edc_config *c = calloc(1, sizeof(*c));
-    c->workspace = sdsnew("/tmp/test-session");
+    c->workspace = sdsnew(edc_test_workspace());
     return c;
 }
 
@@ -42,7 +43,7 @@ static void test_lifecycle(void)
 {
     T("edc_session_new has session_id, groups=NULL");
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
     C(s != NULL, "new returns non-NULL");
     C(s->session_id != NULL, "session_id is set");
     C(s->groups == NULL, "groups starts NULL");
@@ -50,7 +51,7 @@ static void test_lifecycle(void)
     C(s->config == cfg, "config set");
 
     T("edc_session_free cleans groups and active_task");
-    struct edc_task *t = edc_task_new("t1", s->session_id, "t1", "test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("t1"), s->session_id, edc_test_id("t1"), "test", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
     edc_session_set_active_task(s, t);
@@ -73,15 +74,15 @@ static void test_lifecycle(void)
 static void test_group_mgmt(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
     T("add_group / remove_group basic");
-    struct edc_task *l1 = edc_task_new("t-a1", s->session_id, "t-a1", "G1L", edc_channel_adapter);
+    struct edc_task *l1 = edc_task_new(edc_test_id("t-a1"), s->session_id, edc_test_id("t-a1"), "G1L", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
     edc_session_add_group(s, g1);
     C(s->groups == g1, "first group at head");
 
-    struct edc_task *l2 = edc_task_new("t-a2", s->session_id, "t-a2", "G2L", edc_channel_adapter);
+    struct edc_task *l2 = edc_task_new(edc_test_id("t-a2"), s->session_id, edc_test_id("t-a2"), "G2L", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
     edc_session_add_group(s, g2);
     C(s->groups == g1, "g1 still head");
@@ -112,32 +113,32 @@ static void test_group_mgmt(void)
 static void test_find(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
     T("find_group in 10 groups");
     struct edc_task_group *groups[10];
     for (int i = 0; i < 10; i++) {
         char id[32]; snprintf(id, sizeof(id), "task-%d", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
+        struct edc_task *l = edc_task_new(edc_test_id(id), s->session_id, edc_test_id(id), "leader", edc_channel_adapter);
         groups[i] = edc_task_group_new(l);
         edc_session_add_group(s, groups[i]);
     }
-    C(edc_session_find_group(s, "task-0") == groups[0], "find group 0");
-    C(edc_session_find_group(s, "task-5") == groups[5], "find group 5");
-    C(edc_session_find_group(s, "task-9") == groups[9], "find group 9");
-    C(edc_session_find_group(s, "nonexistent") == NULL, "find nonexistent group");
+    C(edc_session_find_group(s, edc_test_id("task-0")) == groups[0], "find group 0");
+    C(edc_session_find_group(s, edc_test_id("task-5")) == groups[5], "find group 5");
+    C(edc_session_find_group(s, edc_test_id("task-9")) == groups[9], "find group 9");
+    C(edc_session_find_group(s, edc_test_id("nonexistent")) == NULL, "find nonexistent group");
 
     T("find_task cross-group");
-    struct edc_task *m2 = edc_task_new("member-2", s->session_id, "task-2", "member", edc_channel_adapter);
+    struct edc_task *m2 = edc_task_new(edc_test_id("member-2"), s->session_id, edc_test_id("task-2"), "member", edc_channel_adapter);
     edc_task_group_add_task(groups[2], m2);
-    C(edc_session_find_task(s, "member-2") == m2, "find member in group 2");
-    C(edc_session_find_task(s, "task-7") == groups[7]->leader, "find leader in group 7");
+    C(edc_session_find_task(s, edc_test_id("member-2")) == m2, "find member in group 2");
+    C(edc_session_find_task(s, edc_test_id("task-7")) == groups[7]->leader, "find leader in group 7");
 
     T("find NULL safety");
-    C(edc_session_find_group(NULL, "x") == NULL,  "find_group(NULL,_)");
-    C(edc_session_find_group(s, NULL) == NULL,     "find_group(_,NULL)");
-    C(edc_session_find_task(NULL, "x") == NULL,    "find_task(NULL,_)");
-    C(edc_session_find_task(s, NULL) == NULL,      "find_task(_,NULL)");
+    C(edc_session_find_group(NULL, edc_test_id("x")) == NULL,  "find_group(NULL,_)");
+    C(edc_session_find_group(s, 0) == NULL,     "find_group(_,NULL)");
+    C(edc_session_find_task(NULL, edc_test_id("x")) == NULL,    "find_task(NULL,_)");
+    C(edc_session_find_task(s, 0) == NULL,      "find_task(_,NULL)");
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -150,16 +151,16 @@ static void test_find(void)
 static void test_active_task(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
     T("set/get active_task");
     C(edc_session_get_active_task(s) == NULL, "initially NULL");
 
-    struct edc_task *t = edc_task_new("at1", s->session_id, "at1", "active", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("at1"), s->session_id, edc_test_id("at1"), "active", edc_channel_adapter);
     edc_session_set_active_task(s, t);
     C(edc_session_get_active_task(s) == t, "get returns set value");
 
-    struct edc_task *t2 = edc_task_new("at2", s->session_id, "at2", "active 2", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("at2"), s->session_id, edc_test_id("at2"), "active 2", edc_channel_adapter);
     edc_session_set_active_task(s, t2);
     C(edc_session_get_active_task(s) == t2, "overwrite works");
 
@@ -182,25 +183,25 @@ static void test_active_task(void)
 static void test_mixed_scenario(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
     T("scenario: create groups, add tasks, use active_task, then free");
 
     /* Create 3 groups, each with 2-3 tasks */
     struct edc_task_group *g[3];
-    struct edc_task *tasks[8];
+    struct edc_task *tasks[9];
     int t_idx = 0;
 
     for (int i = 0; i < 3; i++) {
         char id[32]; snprintf(id, sizeof(id), "sc-%d-leader", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
+        struct edc_task *l = edc_task_new(edc_test_id(id), s->session_id, edc_test_id(id), "leader", edc_channel_adapter);
         g[i] = edc_task_group_new(l);
         edc_session_add_group(s, g[i]);
         tasks[t_idx++] = l;
 
         for (int j = 0; j < 2; j++) {
             snprintf(id, sizeof(id), "sc-%d-m%d", i, j);
-            struct edc_task *m = edc_task_new(id, s->session_id, g[i]->group_id, "member", edc_channel_adapter);
+            struct edc_task *m = edc_task_new(edc_test_id(id), s->session_id, g[i]->group_id, "member", edc_channel_adapter);
             edc_task_group_add_task(g[i], m);
             tasks[t_idx++] = m;
         }
@@ -235,31 +236,31 @@ static void test_mixed_scenario(void)
 static void test_stress(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
     T("100 groups, 5 tasks each = 500 tasks");
     struct edc_task_group *first = NULL;
     for (int i = 0; i < 100; i++) {
         char id[32]; snprintf(id, sizeof(id), "s-%d", i);
-        struct edc_task *l = edc_task_new(id, s->session_id, id, "leader", edc_channel_adapter);
+        struct edc_task *l = edc_task_new(edc_test_id(id), s->session_id, edc_test_id(id), "leader", edc_channel_adapter);
         struct edc_task_group *g = edc_task_group_new(l);
         edc_session_add_group(s, g);
         if (i == 0) first = g;
 
         for (int j = 0; j < 4; j++) {
             snprintf(id, sizeof(id), "s-%d-m%d", i, j);
-            struct edc_task *m = edc_task_new(id, s->session_id, g->group_id, "m", edc_channel_adapter);
+            struct edc_task *m = edc_task_new(edc_test_id(id), s->session_id, g->group_id, "m", edc_channel_adapter);
             edc_task_group_add_task(g, m);
         }
     }
 
     /* Verify some lookups */
-    C(edc_session_find_group(s, "s-0") == first, "find first group");
-    C(edc_session_find_group(s, "s-50") != NULL, "find mid group");
-    C(edc_session_find_group(s, "s-99") != NULL, "find last group");
+    C(edc_session_find_group(s, edc_test_id("s-0")) == first, "find first group");
+    C(edc_session_find_group(s, edc_test_id("s-50")) != NULL, "find mid group");
+    C(edc_session_find_group(s, edc_test_id("s-99")) != NULL, "find last group");
 
     /* Find random task */
-    C(edc_session_find_task(s, "s-33-m2") != NULL, "find nested task");
+    C(edc_session_find_task(s, edc_test_id("s-33-m2")) != NULL, "find nested task");
 
     edc_session_free(s);
     free_cfg(cfg);
@@ -273,7 +274,7 @@ static void test_stress(void)
 static void test_backward_compat(void)
 {
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
     T("get_message_count is turn-derived (0 with no tasks)");
     C(edc_session_get_message_count(s) == 0, "count 0 for session without tasks");
@@ -296,9 +297,9 @@ static void test_active_task_lifetime(void)
 {
     T("group_free also frees tasks that active_task pointed to");
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
-    struct edc_task *t = edc_task_new("at-life", s->session_id, "at-life", "test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("at-life"), s->session_id, edc_test_id("at-life"), "test", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
     edc_session_add_group(s, g);
     edc_session_set_active_task(s, t);
@@ -318,11 +319,11 @@ static void test_orphan_cleanup(void)
 {
     T("session_free cleans orphaned groups");
     struct edc_config *cfg = make_cfg();
-    struct edc_session *s = edc_session_new(cfg, "test-sess", NULL);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("test-sess"), NULL);
 
-    struct edc_task *l = edc_task_new("orph-l", s->session_id, "orph-l", "L", edc_channel_adapter);
+    struct edc_task *l = edc_task_new(edc_test_id("orph-l"), s->session_id, edc_test_id("orph-l"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
-    struct edc_task *m = edc_task_new("orph-m", s->session_id, "orph-l", "M", edc_channel_adapter);
+    struct edc_task *m = edc_task_new(edc_test_id("orph-m"), s->session_id, edc_test_id("orph-l"), "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     edc_session_add_group(s, g);
 
@@ -331,7 +332,7 @@ static void test_orphan_cleanup(void)
     edc_task_free(l);
     C(g->is_orphaned, "group is orphaned");
     C(g->member_count == 1, "1 member left");
-    C(edc_session_find_task(s, "orph-m") == m, "member still findable");
+    C(edc_session_find_task(s, edc_test_id("orph-m")) == m, "member still findable");
 
     /* Free session — should clean orphaned group + remaining member */
     edc_session_free(s);
@@ -341,6 +342,7 @@ static void test_orphan_cleanup(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 4: edc_session 高强度测试 ===");
     log_info("");
 

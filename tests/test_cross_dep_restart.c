@@ -16,12 +16,14 @@
  */
 
 #include "edc_session_store.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -101,7 +103,7 @@ static void env_close(struct env *e)
 static void give_input(struct edc_task *t)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     edc_turn_add_user_message(turn, "input");
     t->active_turn = turn;
 }
@@ -112,8 +114,8 @@ static void give_input(struct edc_task *t)
 static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, sds *out_bt_id)
 {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    system(cmd);
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(ws);
@@ -121,8 +123,11 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     struct edc_session *sa = edc_session_manager_get_active(sm);
     sa->state_loaded = true;
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
-    sds b_sid = sdsnew(sb->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
+    /* Kept by VALUE: the manager (and with it `sb`) is freed below, and this id is used
+     * after that. Reading it through the freed session was a use-after-free that happened
+     * to work while ids were strings. */
+    const int64_t b_id = sb->session_id;
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -136,26 +141,32 @@ static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, 
     give_input(bt);
     edc_task_mark_interrupted(bt);
     edc_session_save_state(sb, sched);
-    *out_bt_id = sdsnew(bt->task_id);
+    *out_bt_id = sdsnew(edc_id_str(bt->task_id));
 
     /* A task in A that depends on B's task (cross-session edge). */
     struct edc_task *at = edc_scheduler_task_new(sched, sa, "a-task", edc_channel_adapter);
     edc_scheduler_create_group(sched, sa, at);
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, sched);
-    *out_at_id = sdsnew(at->task_id);
+    *out_at_id = sdsnew(edc_id_str(at->task_id));
 
     edc_scheduler_free(sched);
     edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
 
+    /* "B's state is gone" now means "its rows are gone", not "its session.json was
+     * deleted" -- persistence moved to edgeclaw.db, so removing the legacy file would
+     * leave B perfectly restorable and the scenario would test nothing. */
     if (delete_b_state)
     {
-        snprintf(cmd, sizeof(cmd), "rm -f %s/%s/session.json", ws, b_sid);
-        system(cmd);
+        struct edc_config *forget_cfg = g_new0(struct edc_config, 1);
+        forget_cfg->workspace = sdsnew(ws);
+        if (edc_state_store_open(forget_cfg))
+            edc_state_store_forget(b_id);
+        sdsfree(forget_cfg->workspace);
+        free(forget_cfg);
     }
-    sdsfree(b_sid);
 }
 
 static void scenario_restore(const char *ws)
@@ -168,8 +179,8 @@ static void scenario_restore(const char *ws)
     env_open(&e, ws);
     edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
 
-    struct edc_task *at = edc_session_manager_find_task_any(e.sm, at_id, NULL);
-    struct edc_task *bt = edc_session_manager_find_task_any(e.sm, bt_id, NULL);
+    struct edc_task *at = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(at_id, NULL, 10), 0);
+    struct edc_task *bt = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(bt_id, NULL, 10), 0);
     CHECK(at != NULL, "A's task restored");
     CHECK(bt != NULL, "B's task loaded on demand");
     CHECK(at && at->deps_total == 1, "cross-session edge restored");
@@ -201,12 +212,12 @@ static void scenario_unresolvable(const char *ws)
     env_open(&e, ws);
     edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
 
-    struct edc_task *at = edc_session_manager_find_task_any(e.sm, at_id, NULL);
+    struct edc_task *at = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(at_id, NULL, 10), 0);
     CHECK(at != NULL, "A's task restored");
-    CHECK(edc_session_manager_find_task_any(e.sm, bt_id, NULL) == NULL, "B's task unavailable");
+    CHECK(edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(bt_id, NULL, 10), 0) == NULL, "B's task unavailable");
     CHECK(at && edc_scheduler_task_has_unresolved_deps(e.sched, at), "task held by an unresolved dep");
-    const char *missing = at ? edc_scheduler_first_unresolved_dep(e.sched, at) : NULL;
-    CHECK(missing && bt_id && strcmp(missing, bt_id) == 0, "held on the missing source id");
+    int64_t missing = at ? edc_scheduler_first_unresolved_dep(e.sched, at) : 0;
+    CHECK(missing > 0 && bt_id && strcmp(edc_id_str(missing), bt_id) == 0, "held on the missing source id");
 
     sds resume_cmd = sdscatprintf(sdsempty(), "/task resume %s", at_id);
     send_cmd(&e, resume_cmd);
@@ -229,8 +240,8 @@ static void scenario_unresolvable(const char *ws)
 static void scenario_multihop(const char *ws)
 {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    system(cmd);
+    /* the workspace is created once and the store stays open on it: no rm here */
+
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(ws);
@@ -239,7 +250,7 @@ static void scenario_multihop(const char *ws)
     sa->state_loaded = true;
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
     struct edc_session *sc = edc_session_manager_create_ex(sm, "C", NULL);
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -261,7 +272,8 @@ static void scenario_multihop(const char *ws)
     edc_task_add_dependency(at, bt, TASK_DEP_SEQUENCE);
     edc_session_save_state(sa, sched);
 
-    sds at_id = sdsnew(at->task_id), bt_id = sdsnew(bt->task_id), ct_id = sdsnew(ct->task_id);
+    sds at_id = sdsnew(edc_id_str(at->task_id)), bt_id = sdsnew(edc_id_str(bt->task_id)),
+        ct_id = sdsnew(edc_id_str(ct->task_id));
 
     edc_scheduler_free(sched);
     edc_channel_actor_free(channel_actor);
@@ -272,9 +284,9 @@ static void scenario_multihop(const char *ws)
     struct env e;
     env_open(&e, ws);
     edc_session_store_load_session(e.sm, e.sched, edc_session_manager_get_active(e.sm));
-    struct edc_task *a2 = edc_session_manager_find_task_any(e.sm, at_id, NULL);
-    struct edc_task *b2 = edc_session_manager_find_task_any(e.sm, bt_id, NULL);
-    struct edc_task *c2 = edc_session_manager_find_task_any(e.sm, ct_id, NULL);
+    struct edc_task *a2 = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(at_id, NULL, 10), 0);
+    struct edc_task *b2 = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(bt_id, NULL, 10), 0);
+    struct edc_task *c2 = edc_session_manager_find_task_any(e.sm, (int64_t)strtoll(ct_id, NULL, 10), 0);
     CHECK(a2 && b2 && c2, "all three tasks loaded on demand");
     CHECK(a2 && a2->deps && a2->deps->source == b2, "A→B restored");
     CHECK(b2 && b2->deps && b2->deps->source == c2, "B→C restored");
@@ -287,8 +299,25 @@ static void scenario_multihop(const char *ws)
     sdsfree(ct_id);
 }
 
+/* These scenarios each need their own workspace, and they are named paths rather than
+ * mkdtemp ones -- so a previous run (possibly written by a build with a different schema
+ * version) is still sitting there. Wipe before use: a stale database makes the run fail on
+ * a version mismatch that has nothing to do with what is being tested. */
+static void wipe(const char *ws)
+{
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "rm -rf '%s'; mkdir -p '%s'", ws, ws);
+    if (system(cmd) != 0)
+        fprintf(stderr, "warning: could not reset %s\n", ws);
+}
+
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
+    wipe("/tmp/test_cross_dep_restart_a");
+    wipe("/tmp/test_cross_dep_restart_b");
+    wipe("/tmp/test_cross_dep_restart_c");
     scenario_restore("/tmp/test_cross_dep_restart_a");
     scenario_unresolvable("/tmp/test_cross_dep_restart_b");
     scenario_multihop("/tmp/test_cross_dep_restart_c");

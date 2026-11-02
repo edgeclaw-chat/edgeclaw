@@ -135,3 +135,83 @@ jobs:
           CROSS_COMPILE: ${{ matrix.cross_compile && format('/usr/bin/{0}-', matrix.cross_compile) || '' }}
         run: |
           bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
+
+  # The build matrix above proves the code COMPILES on ten targets. It was, until this job
+  # existed, the only thing CI did -- which meant no test had ever run in CI and a tag
+  # could ship with a broken suite. These two jobs are the gate: `test` for behaviour,
+  # `asan` for the failure paths ordinary tests never reach.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-test
+          repository-cache: true
+
+      # TMPDIR twice on purpose: the first makes Bazel put its sandboxes under the runner's
+      # scratch space, the second passes it into the actions. On this project a small
+      # sandbox TMPDIR produced `Disk quota exceeded` disguised as a compile error.
+      #
+      # `bazel build` BEFORE `bazel test`, and it is not redundant: `bazel test //tests:all`
+      # skips every target tagged "manual", so those compile only here. Without this step
+      # they rot silently -- two of them had been calling edc_llm_actor_req_new with an
+      # argument that was removed in fe9e7e9, and nothing noticed for months.
+      - name: Build every test target (including manual)
+        run: bazel build //tests:all --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      # After the build above, the external repositories exist, so the script can compare the
+      # committed licences against the sources they came from. A dependency bump without a
+      # refreshed notice fails here rather than shipping an archive that misstates its terms.
+      - name: Verify third-party notices are current
+        run: python3 tools/gen_notices.py --check
+
+      # The notices being committed says nothing about them being IN the archive -- that is a
+      # pkg_tar srcs list, and dropping a dependency's licence from it is a one-line mistake
+      # no unit test would catch. Assert on the artifact a user downloads.
+      - name: Verify the release archive carries its licences
+        run: |
+          set -euo pipefail
+          bazel build //:edgeclaw --action_env=TMPDIR="$RUNNER_TEMP"
+          # Ask Bazel for the artifact rather than globbing: bazel-bin is a symlink (a plain
+          # `find` does not follow it and finds nothing), and the file name carries the
+          # describe string, which a glob would have to guess.
+          tarball=$(bazel cquery --output=files //:edgeclaw --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "no release tarball was produced"; exit 1; }
+          entries=$(tar tzf "$tarball")
+          for required in 'LICENSE' 'THIRD_PARTY_NOTICES.md' 'licenses/'; do
+            echo "$entries" | grep -q "$required" \
+              || { echo "$tarball is missing $required"; exit 1; }
+          done
+          echo "$tarball carries $(echo "$entries" | grep -c 'LICENSE') licence file(s)"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      - name: Test
+        run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+  asan:
+    name: AddressSanitizer + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-asan
+          repository-cache: true
+
+      - name: Test with sanitizers
+        run: bazel test //tests:all --config=asan --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}

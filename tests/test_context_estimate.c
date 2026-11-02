@@ -1,4 +1,5 @@
 #include "cJSON.h"
+#include "test_ws.h"
 #include "edc_token_estimate.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@ static void fill_cjk(char *dst, int n)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     printf("token estimate: ASCII / 4, everything else 1:1\n");
 
     /* ── 纯文本: 公式 ── */

@@ -9,12 +9,11 @@
 #include "sds.h"
 #include "utarray.h"
 
-struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn)
+struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools)
 {
     struct edc_llm_actor_req *req = g_new0(struct edc_llm_actor_req, 1);
     req->history = msg_lst;
     req->tools = tools;
-    req->turn = turn;
     return req;
 };
 
@@ -24,8 +23,12 @@ void edc_llm_actor_req_free(struct edc_llm_actor_req *req)
         return;
     if (req->history_owned && req->history)
         cJSON_Delete(req->history);
+    if (req->turn_tail)
+        cJSON_Delete(req->turn_tail);
     if (req->tail_parts)
         cJSON_Delete(req->tail_parts);
+    if (req->cache_key)
+        sdsfree(req->cache_key);
     free(req);
 }
 
@@ -145,25 +148,151 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     }
 }
 
-/* A turn message may carry fields that exist for the store and the UI only -- today the
- * folded-paste `payload` (the pasted bytes, already expanded into the content). They must
- * not travel to the API: a copy without them is what goes on the wire, and the original
- * stays untouched in the turn (it is what fork/serialize copy). Every other message keeps
- * the zero-copy reference path. */
+/* A stored message carries fields that exist for us and for the UI only: the folded-paste
+ * `payload`, and a tool-set delta's `tools_added` / `tools_removed` / `toolset_reason` /
+ * `pinned` bookkeeping. None of them may travel to the API -- OpenAI rejects unknown message
+ * fields with a 400, and a provider that merely ignores them is still charged for the bytes.
+ *
+ * The list is an ALLOWLIST on purpose: a new store-only field added later is dropped by
+ * default instead of silently shipped. A copy is made only when something has to go, so the
+ * ordinary message keeps the zero-copy reference path. */
+static const char *const kWireMessageKeys[] = {"role",   "content", "name",
+                                               "tool_call_id", "tool_calls", "function_call", "refusal"};
+
+bool edc_llm_wire_key_is_standard(const char *key)
+{
+    if (!key)
+        return false;
+    for (size_t i = 0; i < sizeof(kWireMessageKeys) / sizeof(kWireMessageKeys[0]); i++)
+    {
+        if (strcmp(key, kWireMessageKeys[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Does |msg| carry anything that must not go on the wire? */
+static bool llm_message_needs_strip(const cJSON *msg)
+{
+    const cJSON *child = NULL;
+    cJSON_ArrayForEach(child, msg)
+    {
+        if (!edc_llm_wire_key_is_standard(child->string))
+            return true;
+    }
+    return false;
+}
+
+/* Which store-only keys were dropped, accumulated for ONE log line per request.
+ *
+ * This used to log inside the per-message loop above: a request carries thousands of
+ * messages and each one drops `id`/`ts`, so a single request wrote thousands of identical
+ * lines -- 3.9 million in one day, 401 MB of log, all saying "dropping 'id'". What the line
+ * is trying to say is a property of the MESSAGE SHAPE, not of an individual message, so it
+ * only needs saying once per request.
+ *
+ * Callers reset it per request with llm_wire_report_begin(). */
+static sds g_wire_dropped = NULL;
+
+/* The set is stored as ",key1,key2," -- a comma on BOTH sides of every key. That is what
+ * makes a membership test a single strstr(",key,"): the leading comma stops "read" matching
+ * inside "xread", and the TRAILING comma stops the last key in the set from needing a special
+ * case. (Without the trailing one, appending "ts" to ",id,ts" and then testing ",ts," failed
+ * to find it -- the set grew a duplicate on every message, which a 3000-message probe caught.)
+ *
+ * Empty set is "," (not ""), so appending is always sdscat(key) then sdscat(","). */
+static void llm_wire_note_dropped(const char *key)
+{
+    if (!key || !*key)
+        return;
+    /* Re-seed on EMPTY, not on NULL: llm_wire_report_begin() clears the buffer between
+     * requests, and checking the pointer left the first key of every request appended
+     * without its leading comma (",a" then looked like "a", and the set read back as
+     * "d,id_extra,id" -- the first two characters eaten when the report stripped its
+     * sentinels). */
+    if (!g_wire_dropped || sdslen(g_wire_dropped) == 0)
+    {
+        if (!g_wire_dropped)
+            g_wire_dropped = sdsempty();
+        sdsclear(g_wire_dropped);
+        g_wire_dropped = sdscat(g_wire_dropped, ",");
+    }
+
+    sds needle = sdscatprintf(sdsempty(), ",%s,", key);
+    const bool seen = strstr(g_wire_dropped, needle) != NULL;
+    sdsfree(needle);
+    if (seen)
+        return; /* the same keys repeat on every message: that is the whole point */
+
+    g_wire_dropped = sdscat(g_wire_dropped, key);
+    g_wire_dropped = sdscat(g_wire_dropped, ",");
+}
+
+/* Reset the accumulated set. Called once when a request body is built. */
+static void llm_wire_report_begin(void)
+{
+    if (g_wire_dropped)
+        sdsclear(g_wire_dropped); /* back to "", which note_dropped re-seeds with "," */
+}
+
+/* Say it once, if anything was dropped. The set is ",a,b,"; report it as "a,b". */
+static void llm_wire_report_end(void)
+{
+    if (!g_wire_dropped || sdslen(g_wire_dropped) <= 2)
+        return; /* just the sentinels: nothing was dropped */
+    sds shown = sdsnewlen(g_wire_dropped + 1, sdslen(g_wire_dropped) - 2);
+    log_debug("llm wire: dropped store-only message key(s) [%s] from every message "
+              "(they live in columns, not in the wire copy)",
+              shown);
+    sdsfree(shown);
+}
+
 static void llm_add_wire_message(cJSON *messages, cJSON *item)
 {
     if (!item)
         return;
-    if (!cJSON_HasObjectItem(item, "payload"))
+    if (!llm_message_needs_strip(item))
     {
         cJSON_AddItemReferenceToArray(messages, item);
         return;
     }
+
     cJSON *copy = cJSON_Duplicate(item, 1);
     if (!copy)
         return;
-    cJSON_DeleteItemFromObject(copy, "payload");
+    const cJSON *child = NULL;
+    /* Collect first, delete after: mutating while iterating the same list is how children get
+     * skipped. */
+    sds drop = sdsempty();
+    cJSON_ArrayForEach(child, copy)
+    {
+        if (!edc_llm_wire_key_is_standard(child->string))
+        {
+            llm_wire_note_dropped(child->string);
+            drop = sdscatprintf(drop, "%s\n", child->string ? child->string : "");
+        }
+    }
+    int n = 0;
+    char **names = sdssplitlen(drop, (ssize_t)sdslen(drop), "\n", 1, &n);
+    for (int i = 0; names && i < n; i++)
+    {
+        if (names[i] && names[i][0])
+            cJSON_DeleteItemFromObject(copy, names[i]);
+    }
+    if (names)
+        sdsfreesplitres(names, n);
+    sdsfree(drop);
     cJSON_AddItemToArray(messages, copy); /* owned: freed with the body */
+}
+
+/* OpenAI's automatic prefix cache is sharded by `prompt_cache_key`, so a stable key keeps
+ * one conversation's requests on the same shard instead of whichever replica the load
+ * balancer picks. Only api.openai.com documents the field: an OpenAI-compatible provider
+ * that does not know it may reject the whole request as an unknown argument, and its cache
+ * is keyed on content alone. pi gates it to that host for the same reason. */
+static bool llm_url_takes_prompt_cache_key(const char *url)
+{
+    return url && strstr(url, "api.openai.com") != NULL;
 }
 
 static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct edc_llm_actor_req *req,
@@ -175,10 +304,17 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
 
     cJSON_AddStringToObject(body, "model", state->api_conf.model);
 
+    if (req->cache_key && llm_url_takes_prompt_cache_key(state->api_conf.api_url))
+        cJSON_AddStringToObject(body, "prompt_cache_key", req->cache_key);
+
     /* Only a fold's one-shot summary asks for a cap (it has to fit in the fold's
      * reserve); a normal reply is never capped. */
     if (req->max_tokens > 0)
         cJSON_AddNumberToObject(body, "max_tokens", req->max_tokens);
+
+    /* One request = one report. The dropped-key set is a property of the message shape, so
+     * it is said once here instead of once per message (see llm_wire_note_dropped). */
+    llm_wire_report_begin();
 
     cJSON *messages = cJSON_AddArrayToObject(body, "messages");
     for (int i = 0; i < cJSON_GetArraySize(req->history); ++i)
@@ -187,14 +323,13 @@ static void edc_llm_actor_send_req(edc_actor_t *actor, edc_actor_t *from, struct
         llm_add_wire_message(messages, item);
     }
 
-    if (req->turn)
+    if (req->turn_tail)
     {
-        for (size_t qi = req->turn->head + req->turn_begin; qi < req->turn->tail; qi++)
-        {
-            cJSON *item = req->turn->data[qi];
-            llm_add_wire_message(messages, item);
-        }
+        cJSON *item = NULL;
+        cJSON_ArrayForEach(item, req->turn_tail) llm_add_wire_message(messages, item);
     }
+
+    llm_wire_report_end();
 
     /* Absolute tail: runtime system reminders (e.g. the latest todo reminder) -- after
      * the committed history window and the current turn, right where the model starts
@@ -269,14 +404,14 @@ static UT_icd ut_tool_call_icd = {sizeof(struct edc_llm_chat_tool_call), NULL, N
 /* Read an integer field from a cJSON object; returns 0 when the object or the
  * field is missing or not a number. Token counts can exceed INT_MAX, so the
  * value is taken through `valuedouble` into a 64-bit integer. */
-static long long edc_llm_json_int(cJSON *obj, const char *key)
+static int64_t edc_llm_json_int(cJSON *obj, const char *key)
 {
     if (!obj)
         return 0;
     cJSON *v = cJSON_GetObjectItem(obj, key);
     if (!v || !cJSON_IsNumber(v))
         return 0;
-    return (long long)v->valuedouble;
+    return (int64_t)v->valuedouble;
 }
 
 /* Parse the optional top-level `usage` object into resp->usage. Providers
@@ -298,7 +433,7 @@ static void edc_llm_actor_parse_usage(cJSON *response, struct edc_llm_actor_resp
     cJSON *details = cJSON_GetObjectItem(usage, "prompt_tokens_details");
     if (details && cJSON_IsObject(details))
     {
-        long long cached = edc_llm_json_int(details, "cached_tokens");
+        int64_t cached = edc_llm_json_int(details, "cached_tokens");
         if (cached > 0)
             resp->usage.cached_tokens = cached;
     }
@@ -344,6 +479,15 @@ static bool edc_llm_actor_parse_resp(cJSON *response, struct edc_llm_actor_resp 
     cJSON *choice = cJSON_GetArrayItem(choices, 0);
     if (!choice)
     {
+        /* Unreachable for a well-formed provider (the size check above already
+         * rejected an empty array), but "return false without setting error" is a
+         * contract violation: the caller prints resp->error->message, so a NULL here
+         * is a segfault with no log line to show for it. Say why instead. */
+        char *err_msg = cJSON_Print(response);
+        log_error("resp format error choice 0 is null (HTTP %d): %s", http_status, err_msg ? err_msg : "(unprintable)");
+        resp->error = edc_error_new(EDC_ERR_INVAL, "resp format choice 0 is null (HTTP %d): %s", http_status,
+                                   err_msg ? err_msg : "(unprintable)");
+        cJSON_free(err_msg);
         return false;
     }
 
@@ -513,6 +657,13 @@ static void edc_llm_actor_handle_respone(edc_actor_t *actor, edc_actor_msg_t *ms
     bool ok = edc_llm_actor_parse_resp(body, resp, req->status);
     if (!ok)
     {
+        /* Never dereference resp->error unguarded: every "return false" in the parser
+         * is supposed to set it, and one of them did not -- which turned a provider
+         * quirk into a segfault that logged nothing at all (the crash happened inside
+         * the log call itself). The consumer below is also told, so an unset error
+         * cannot masquerade as a successful-but-empty response. */
+        if (!resp->error)
+            resp->error = edc_error_new(EDC_ERR_FAILED, "resp parse failed without a reason (HTTP %d)", req->status);
         log_error("parse resp error: %s", resp->error->message);
         goto exit;
     }

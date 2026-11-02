@@ -4,6 +4,7 @@
  * (按组) / 落盘往返 / task 出生点采纳。装配 (补丁注入) 与 L2 压缩任务分别在
  * P4b / P4c 两个阶段。 */
 #include "edc_session_memory.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_session.h"
@@ -234,7 +235,7 @@ static void test_notice(void)
     sds n = edc_session_memory_notice(m, 0, 10, &max_inj);
     CHECK(n != NULL, "有东西可注入");
     CHECK(max_inj == 2, "max_injected = 最新事件 seq");
-    CHECK(strstr(n, "## Session Memory Updates  (共 2 条)") != NULL, "抬头带总条数");
+    CHECK(strstr(n, "## Session Memory Updates  (本次 2 项变化 / 记忆共 2 条)") != NULL, "抬头两个数分列");
     CHECK(strstr(n, "- [m1] created: 构建入口 — 唯一入口是 bazelisk") != NULL, "第一条一行");
     CHECK(strstr(n, "- [m2] created: 沙箱策略") != NULL, "第二条一行 (无摘要不拖尾巴)");
     CHECK(strstr(n, "memory_list") != NULL && strstr(n, "memory_get") != NULL, "带用法提示");
@@ -254,12 +255,19 @@ static void test_notice(void)
     CHECK(first && strstr(first + 1, "[m1]") == NULL, "同一条目只出现一次");
     sdsfree(n2);
 
-    /* cap: 3 条新事件只给 1 行, 其余报数 */
+    /* cap: 去重后 2 项待投递 (m2 seq2, m1 seq3)，cap=1 ⇒ 先给最旧的 m2 (FIFO)，
+     * 水位只推到它，其余下轮继续。这是"每个变化要么被投递、要么被显式声明放弃"的实现。 */
     sds n3 = edc_session_memory_notice(m, 0, 1, &max_inj);
-    CHECK(max_inj == 3, "cap 截断也要把水位推到底 (被截的靠 memory_list 兜)");
-    CHECK(strstr(n3, "more") != NULL, "报出被截的条数");
-    CHECK(strstr(n3, "[m1]") != NULL && strstr(n3, "[m2]") == NULL, "只给最新那条");
+    CHECK(max_inj == 2, "水位只推到实际投递的最大 seq (不是推到底)");
+    CHECK(strstr(n3, "more") != NULL, "报出还剩多少");
+    CHECK(strstr(n3, "本次 2 项变化") != NULL, "抬头报本次变化项数 (去重后的项数)");
+    CHECK(strstr(n3, "[m2]") != NULL && strstr(n3, "[m1]") == NULL, "FIFO: 先给最旧那条 (m2, seq2)");
     sdsfree(n3);
+    /* 下一轮从水位继续 */
+    sds n3b = edc_session_memory_notice(m, max_inj, 10, &max_inj);
+    CHECK(n3b != NULL && strstr(n3b, "[m1]") != NULL, "下一轮补上剩下的 (m1 updated)");
+    CHECK(max_inj == 3, "水位追到 3");
+    sdsfree(n3b);
 
     /* 看过之后: 不再注入 */
     CHECK(edc_session_memory_notice(m, 3, 10, NULL) == NULL, "水位追平后 = NULL");
@@ -269,9 +277,179 @@ static void test_notice(void)
     CHECK(strstr(n4, "[m2]") == NULL, "**已经看过的 m2 不许再出现** (delta 语义)");
     sdsfree(n4);
 
+    /* 溢出卡: 待投递超过 cap*3 就停止逐条列，改为显式声明放弃 (水位推到底) */
+    {
+        struct edc_session_memory *mb = edc_session_memory_new();
+        for (int k = 0; k < 10; k++)
+        {
+            sds bid = NULL;
+            add_entry_with_event(mb, "批量", NULL, &bid);
+            sdsfree(bid);
+        }
+        uint64_t mi = 0;
+        /* cap=2 ⇒ 阈值 6，待投递 10 > 6 ⇒ 触发 */
+        sds ov = edc_session_memory_notice(mb, 0, 2, &mi);
+        CHECK(ov != NULL && strstr(ov, "积压") != NULL, "积压过多 ⇒ 发溢出卡");
+        CHECK(ov && strstr(ov, "NOT being reported") != NULL, "显式声明这些变化不逐条报");
+        CHECK(mi == 10, "溢出卡把水位推到底 (否则会一直卡在同一处)");
+        CHECK(ov && strstr(ov, "- [m1]") == NULL, "溢出卡不逐条列条目");
+        sdsfree(ov);
+        /* 不超高阈值时仍逐条投递 (cap=4 ⇒ 阈值 12，10 项不触发) */
+        sds nx = edc_session_memory_notice(mb, 0, 4, &mi);
+        CHECK(nx && strstr(nx, "积压") == NULL && strstr(nx, "- [m1]") != NULL, "未超阈值 ⇒ 正常逐条");
+        sdsfree(nx);
+        edc_session_memory_free(mb);
+    }
+
+    /* P2 分层渲染: updated 只报"哪个字段变了"，不重述内容 */
+    {
+        struct edc_session_memory *mu = edc_session_memory_new();
+        sds uid = NULL;
+        add_entry_with_event(mu, "分层", "原始摘要内容", &uid);
+        /* 只改 detail（必须同批给 summary —— 工具层强制；这里直接调 API 模拟） */
+        struct edc_memo_entry *ue = edc_session_memory_entry(mu, uid);
+        edc_session_memory_update(mu, uid, NULL, "新摘要内容", "新明细", ue->updated_seq, NULL);
+        uint64_t mi = 0;
+        sds un = edc_session_memory_notice(mu, 0, 20, &mi);
+        CHECK(un && strstr(un, "summary+detail changed") != NULL, "报出变了的字段名");
+        CHECK(un && strstr(un, "新摘要内容") == NULL, "**不重述 summary 内容** (变化通知只报变化)");
+        sdsfree(un);
+
+        /* detail 与 summary 都没变 ⇒ 不写事件（避免无变化噪声） */
+        size_t ev_before = mu->event_count;
+        edc_session_memory_update(mu, uid, NULL, "新摘要内容", "新明细", edc_session_memory_entry(mu, uid)->updated_seq,
+                                  NULL);
+        sds un2 = edc_session_memory_notice(mu, mi, 20, &mi);
+        CHECK(un2 == NULL || strstr(un2, "changed") == NULL, "同值重复更新不算变化");
+        if (un2)
+            sdsfree(un2);
+        (void)ev_before;
+
+        /* retired 也走字段名 */
+        const char *rids[] = {uid};
+        edc_session_memory_supersede(mu, rids, 1);
+        sds un3 = edc_session_memory_notice(mu, 0, 20, &mi);
+        CHECK(un3 && strstr(un3, "superseded") != NULL, "supersede 事件照常");
+        sdsfree(un3);
+
+        /* created 仍带内容（读者没有别的途径知道它写了什么） */
+        sds cid = NULL;
+        add_entry_with_event(mu, "新建的", "新建摘要内容", &cid);
+        sds un4 = edc_session_memory_notice(mu, 0, 20, &mi);
+        CHECK(un4 && strstr(un4, "created: 新建的 — 新建摘要内容") != NULL, "created 带内容");
+        sdsfree(un4);
+        sdsfree(uid);
+        sdsfree(cid);
+        edc_session_memory_free(mu);
+    }
+
     sdsfree(id1);
     sdsfree(id2);
     edc_session_memory_free(m);
+}
+
+/* ── 3.7 目录通道（catalogue）：另一条通道 ───────────────────── */
+
+static void test_catalogue(void)
+{
+    TEST("目录: 只给 id + title（不带 summary/时间/kind）、id 升序、报总条数");
+    struct edc_session_memory *m = edc_session_memory_new();
+    CHECK(edc_session_memory_catalogue(m, 2000) == NULL, "空记忆 = 不注入");
+
+    sds a = NULL, b = NULL, c = NULL;
+    add_entry_with_event(m, "构建入口", "唯一入口是 bazelisk 明细很长很长", &a);
+    add_entry_with_event(m, "沙箱策略", "不再是 user-ns", &b);
+    add_entry_with_event(m, "缓存", NULL, &c);
+
+    sds cat = edc_session_memory_catalogue(m, 2000);
+    CHECK(cat != NULL, "有条目 ⇒ 给目录");
+    CHECK(strstr(cat, "## Session Memory  (共 3 条)") != NULL, "抬头报总条数");
+    CHECK(strstr(cat, "- [m1] 构建入口") != NULL, "行 = id + title");
+    CHECK(strstr(cat, "唯一入口是 bazelisk") == NULL, "目录不带 summary (它的成本优势就在这)");
+    CHECK(strstr(cat, "created") == NULL && strstr(cat, "updated") == NULL, "目录不带 kind");
+    CHECK(strstr(cat, " (20") == NULL, "目录不带时间戳");
+    /* id 升序，与 memory_list 同序 ⇒ 可接着翻页 */
+    const char *p1 = strstr(cat, "[m1]"), *p2 = strstr(cat, "[m2]"), *p3 = strstr(cat, "[m3]");
+    CHECK(p1 && p2 && p3 && p1 < p2 && p2 < p3, "id 升序 (与 memory_list 同序才能无缝翻页)");
+    CHECK(strstr(cat, "memory_get") != NULL, "带取明细的指引");
+    sdsfree(cat);
+
+    /* token 预算: 超预算就截断，并给出可接续的 memory_list 偏移 */
+    sds small = edc_session_memory_catalogue(m, 1);
+    CHECK(small != NULL && strstr(small, "[m1]") != NULL, "预算再小也给至少一行 (否则无法行动)");
+    CHECK(strstr(small, "more") != NULL, "超预算报剩余数");
+    CHECK(strstr(small, "memory_list 1 50") != NULL, "给出接续偏移 (offset = 已展示行数)");
+    sdsfree(small);
+
+    /* 已删条目不出现在目录里：目录走 entries[]，不是 events[]（后者留墓碑） */
+    const char *del_ids[] = {b};
+    edc_session_memory_delete(m, del_ids, 1);
+    sds cat2 = edc_session_memory_catalogue(m, 2000);
+    CHECK(cat2 && strstr(cat2, "共 2 条") != NULL, "删后总数 2");
+    CHECK(cat2 && strstr(cat2, "[m2]") == NULL, "**已删条目不许出现在目录**（墓碑污染的根因）");
+    CHECK(m->event_count == 4, "事件表仍有 4 条（含 DELETED 墓碑）");
+    sdsfree(cat2);
+
+    sdsfree(a);
+    sdsfree(b);
+    sdsfree(c);
+    edc_session_memory_free(m);
+}
+
+/* ── 3.8 summary ⊆ detail：事实覆盖不变量 ─────────────────────
+ * HARD 类（commit + snake_case 标识符）必须被 detail 覆盖；SOFT 类（路径、带单位数值）
+ * 刻意不拦 —— 它们会被合法改写（200us vs 0.2ms），硬拦会挡掉诚实的写入。 */
+
+static void test_summary_coverage(void)
+{
+    TEST("summary ⊆ detail: commit/标识符过硬门槛, 路径数字与规范词汇放过");
+    sds rep = NULL;
+
+    /* 没有 detail = 无需校验：summary 是唯一载体，不存在"不一致的第二个家" */
+    CHECK(edc_session_memory_uncovered_facts("见 4dd2b14", NULL, &rep) == 0, "detail 为空 = 0");
+    CHECK(rep == NULL, "detail 为空不给报告");
+    CHECK(edc_session_memory_uncovered_facts(NULL, "detail", &rep) == 0, "summary 为空 = 0");
+    CHECK(edc_session_memory_uncovered_facts("", "detail", &rep) == 0, "summary 空串 = 0");
+
+    /* commit 缺失 / 已覆盖 */
+    CHECK(edc_session_memory_uncovered_facts("见 4dd2b14", "没有那个号", &rep) == 1, "commit 缺失 = 1");
+    CHECK(rep && strstr(rep, "4dd2b14") != NULL, "报告里点名缺的事实");
+    sdsfree(rep);
+    CHECK(edc_session_memory_uncovered_facts("见 4dd2b14", "commit 4dd2b14 修好了", &rep) == 0, "commit 已覆盖 = 0");
+    sdsfree(rep);
+
+    /* 纯数字不是 commit：否则日期/字节数会把校验变成噪声源 */
+    CHECK(edc_session_memory_uncovered_facts("20251230 那天", "x", &rep) == 0, "纯数字不是 commit");
+    sdsfree(rep);
+    /* 长度门槛 7：abc123 只有 6 位 */
+    CHECK(edc_session_memory_uncovered_facts("abc123 太短", "x", &rep) == 0, "6 位不算 commit");
+    sdsfree(rep);
+    /* 词内不算：前面是 word char */
+    CHECK(edc_session_memory_uncovered_facts("g4dd2b14 嵌在词里", "x", &rep) == 0, "词内不算");
+
+    /* snake_case 标识符 */
+    CHECK(edc_session_memory_uncovered_facts("调用 edc_sub_fn", "x", &rep) == 1, "标识符缺失 = 1");
+    CHECK(rep && strstr(rep, "edc_sub_fn") != NULL, "报告里点名标识符");
+    sdsfree(rep);
+    CHECK(edc_session_memory_uncovered_facts("调用 edc_sub_fn", "edc_sub_fn 是静态的", &rep) == 0,
+          "标识符已覆盖 = 0");
+    sdsfree(rep);
+
+    /* 规范词汇不算事实：summary 讲"怎么干活"不能要求 detail 复述 */
+    CHECK(edc_session_memory_uncovered_facts("用 memory_search 并传 expected_rev", "x", &rep) == 0,
+          "工具名/字段名放过");
+
+    /* SOFT 类刻意不拦 */
+    CHECK(edc_session_memory_uncovered_facts("耗时 9.6ms，路径 /src/toolbox", "x", &rep) == 0,
+          "带单位数值与路径不拦 (会被合法改写)");
+
+    /* 多个缺失一起报 */
+    sds r2 = NULL;
+    CHECK(edc_session_memory_uncovered_facts("4dd2b14 与 edc_sub_fn", "x", &r2) == 2, "多个缺失计数正确");
+    CHECK(r2 && strstr(r2, "4dd2b14") && strstr(r2, "edc_sub_fn"), "多个缺失都点名");
+    sdsfree(r2);
+
+    edc_session_memory_free(NULL); /* 防御性调用不该崩 */
 }
 
 /* ── 4. 落盘往返 ─────────────────────────────────────────────── */
@@ -342,14 +520,14 @@ static void test_adopt(void)
 {
     TEST("出生点: 新 task 的水位是 0 —— 它没有最新条目, 首轮要回填");
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_l2_workspace");
-    struct edc_session *s = edc_session_new(cfg, "l2", "L2");
+    cfg->workspace = sdsnew(edc_test_workspace());
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("l2"), "L2");
     CHECK(s->memo != NULL, "session 构造即带 session 记忆");
 
     edc_session_memory_add_event(s->memo, "m1", EDC_MEMO_CREATED, "t", "s");
     edc_session_memory_add_event(s->memo, "m2", EDC_MEMO_CREATED, "t", "s");
-    struct edc_task *early = edc_task_new("100", "l2", "100", "早的", edc_channel_adapter);
-    struct edc_task *late = edc_task_new("101", "l2", "100", "晚的", edc_channel_adapter);
+    struct edc_task *early = edc_task_new(edc_test_id("100"), edc_test_session_id("l2"), edc_test_id("100"), "早的", edc_channel_adapter);
+    struct edc_task *late = edc_task_new(edc_test_id("101"), edc_test_session_id("l2"), edc_test_id("100"), "晚的", edc_channel_adapter);
     edc_session_memory_adopt_task(s, early);
     CHECK(early->memo_seen_seq == 0, "采纳 = 0 (不是表头 2)");
     CHECK(s->memo->next_seq == 2, "表头是 2 ⇒ 差集 = {1,2} = 首轮回填");
@@ -422,11 +600,14 @@ static void test_delete_and_trim(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
 
     test_events();
     test_entries();
     test_read_write_api();
     test_notice();
+    test_catalogue();
+    test_summary_coverage();
     test_round_trip();
     test_adopt();
     test_delete_and_trim();

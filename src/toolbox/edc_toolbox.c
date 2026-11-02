@@ -2,15 +2,18 @@
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_file_utils.h"
 #include "edc_param_types.h"
 #include "edc_tools.h"
 #include "edc_tools_crontab.h"
 #include "edc_tools_device_file.h"
 #include "edc_tools_device_shell.h"
 #include "edc_tools_fs.h"
+#include "edc_tools_search.h"
 #include "edc_tools_shell.h"
 #include "edc_tools_todo.h"
 #include "edc_tools_memory.h"
+#include "edc_task.h" /* the sink, which decides what a task may run (edc_tool_scope_for_task) */
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
@@ -145,7 +148,7 @@ static cJSON *edc_tool_params_to_json(struct edc_tool_param *params)
     return result;
 }
 
-static cJSON *edc_tool_to_schema(const struct edc_tool *tool)
+cJSON *edc_tool_to_schema(const struct edc_tool *tool)
 {
     cJSON *function = cJSON_CreateObject();
     cJSON_AddStringToObject(function, "name", tool->name);
@@ -173,6 +176,7 @@ void edc_toolbox_register_defaults(struct edc_toolbox *tb)
 {
     edc_tools_fs_register(tb);
     edc_tools_shell_register(tb);
+    edc_tools_search_register(tb);
     edc_tools_crontab_register(tb);
     edc_tools_todo_register(tb);
     edc_tools_memory_register(tb);
@@ -218,6 +222,126 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
     return true;
 }
 
+/* Which tool kinds a task may RUN. This is NOT the declaration set: that one decides what
+ * the model is told about (edc_toolset), while this decides what actually executes. They
+ * differ on purpose -- a deferred tool is callable without being declared, and a curator
+ * must not be dragged into shell work just because the model asked (docs/pi-toolset-plan.zh.md,
+ * I4 "声明 ≠ 权限"). */
+static uint32_t edc_tool_scope_for_task(const struct edc_task *task)
+{
+    if (!task)
+        return EDC_TOOL_SCOPE_NORMAL; /* a non-task path (no per-task policy to apply) */
+    switch (task->sink)
+    {
+    case EDC_SINK_SESSION_MEMORY:
+        return EDC_TOOL_SCOPE_MEMORY;
+    case EDC_SINK_GROUP_MEMORY:
+        /* A fold's one-shot summary declares no tools at all; a stray call must not run. */
+        return 0;
+    default:
+        return EDC_TOOL_SCOPE_NORMAL;
+    }
+}
+
+/* The names a task of |scope| may actually use, for the rejection message: "not available"
+ * without saying what IS available leaves the model guessing. */
+static sds edc_toolbox_names_for_scope(const struct edc_toolbox *tb, uint32_t scope)
+{
+    sds names = sdsempty();
+    if (!tb)
+        return names;
+    struct edc_tool *t, *tmp;
+    HASH_ITER(hh, tb->tools, t, tmp)
+    {
+        if ((t->scope & scope) == 0)
+            continue;
+        if (sdslen(names) > 0)
+            names = sdscat(names, ", ");
+        names = sdscatsds(names, t->name);
+    }
+    return names;
+}
+
+/* ── Spilling a capped tool result ───────────────────────────────────────────
+ *
+ * A result over the budget used to be cut and the remainder FREED: the model got a note
+ * saying how much it had lost, and no way to see it. Now the whole result is written once
+ * and the message carries a bounded preview plus the path -- the model reads the rest with
+ * read_file (which has offset/limit for exactly this).
+ *
+ * Where: <workspace>/<session>/tool-output/. Two reasons, not one. It is under the workspace,
+ * so the sandbox already allows the model to read it back; and it is per session, so a
+ * session's spilled output is deleted with the session instead of accumulating forever in a
+ * temp directory nobody owns.
+ *
+ * Writes with edc_file_write_safe(): the target lives in a tree the model can write to, so a
+ * planted symlink (tool-output/x.txt -> ~/.edgeclaw/config.json) must not redirect it. */
+#define EDC_SPILL_SEQ_MAX 100000
+
+static unsigned g_spill_seq; /* runner-thread only, so a plain counter (no lock) */
+
+sds edc_toolbox_spill_output(struct edc_toolbox *tb, const char *tool_name, const char *session_id,
+                             const char *content, size_t len)
+{
+    if (!tb || !tb->conf || !tb->conf->workspace || !content)
+        return NULL;
+
+    /* Join "tool-output" whether or not there is a session, so the session segment has to be
+     * dropped by not passing it at all: edc_path_join stops at a NULL segment and would take
+     * "tool-output" with it. Passing the guard itself (a 0/1 int) is not an option -- the
+     * varargs are unchecked, so the compiler happily hands the callee (const char *)1. */
+    const char *session_dir = (session_id && *session_id) ? session_id : NULL;
+    sds dir = session_dir ? edc_path_join(tb->conf->workspace, session_dir, "tool-output", NULL)
+                          : edc_path_join(tb->conf->workspace, "tool-output", NULL);
+    EdcError *error = NULL;
+    bool made = edc_dir_create_with_parents(dir, 0755, &error);
+    if (error)
+        edc_error_free(error);
+    if (!made)
+    {
+        sdsfree(dir);
+        return NULL;
+    }
+
+    /* A name that cannot collide within a process run, and that says which tool produced it:
+     * the model (and a human reading the transcript) can tell them apart at a glance. */
+    sds safe_tool = sdsnew(tool_name && *tool_name ? tool_name : "tool");
+    for (size_t i = 0; i < sdslen(safe_tool); i++)
+    {
+        const unsigned char c = (unsigned char)safe_tool[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            safe_tool[i] = '_';
+    }
+
+    sds path = NULL;
+    for (int attempt = 0; attempt < 100; attempt++)
+    {
+        unsigned seq = ++g_spill_seq % EDC_SPILL_SEQ_MAX;
+        sds candidate = sdscatprintf(sdsempty(), "%s/%s-%u.txt", dir, safe_tool, seq);
+        if (!edc_file_exists(candidate))
+        {
+            path = candidate;
+            break;
+        }
+        sdsfree(candidate);
+    }
+    sdsfree(safe_tool);
+    sdsfree(dir);
+    if (!path)
+        return NULL; /* no free name: report no path rather than overwrite someone's file */
+
+    error = NULL;
+    bool ok = edc_file_write_safe(path, content, (ssize_t)len, tb->conf->workspace, &error);
+    if (error)
+        edc_error_free(error);
+    if (!ok)
+    {
+        sdsfree(path);
+        return NULL;
+    }
+    return path;
+}
+
 void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON *args,
                       void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
@@ -228,6 +352,20 @@ void edc_toolbox_exec(struct edc_toolbox_call_ctx *ctx, const char *name, cJSON 
     HASH_FIND_STR(ctx->tb->tools, name, tool);
     if (tool)
     {
+        const uint32_t want = edc_tool_scope_for_task(ctx->task);
+        if ((tool->scope & want) == 0)
+        {
+            sds available = edc_toolbox_names_for_scope(ctx->tb, want);
+            edc_error_set(&error, EDC_ERR_INVAL, "Error: %s is not available to this task%s. Available: %s", name,
+                          want == 0 ? " (it declares no tools)" : "",
+                          sdslen(available) > 0 ? available : "(none)");
+            log_info("toolbox: refused %s for task %s (scope %u)", name,
+                     ctx->task ? edc_id_str(ctx->task->task_id) : "(no task)", want);
+            sdsfree(available);
+            callback(ctx, NULL, error);
+            return;
+        }
+
         if (!edc_tool_validate_params(tool, args, &error))
         {
             callback(ctx, NULL, error);

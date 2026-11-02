@@ -5,6 +5,7 @@
  * SERVICE_PUMP message runs -- so the tests exercise the real path. */
 
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_service.h"
@@ -62,7 +63,7 @@ static void tick_self_rearm(struct edc_service *svc, void *ud)
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_service_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -225,6 +226,7 @@ static void test_real_loop_timer(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_register_and_pump();
     test_multiple_services_independent();
     test_unregister();

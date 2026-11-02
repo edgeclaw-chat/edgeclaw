@@ -1,4 +1,5 @@
 ﻿#include "edc_app.h"
+#include "edc_scheduler.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
@@ -13,17 +14,59 @@
 #include "edc_llm_request.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
-#include "edc_state_serializer.h"
+#include "edc_state_store.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
+#include "edc_toolbox.h"
+#include "edc_toolset.h"
 #include "edc_turn.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+
+/* ── The tool registry, plugged into the two consumers that sit below it ────
+ *
+ * The kernel renders the system prompt and the actor assembles the request, but neither may
+ * include the toolbox (//src/toolbox depends on //src/kernel, so the reverse is a cycle).
+ * Both take a function pointer instead, installed here -- the one place that owns everything. */
+
+/* The system prompt's tool section: what the model is told it has, in prose. */
+static sds app_tool_section(void *ctx)
+{
+    return edc_toolset_render_prompt((struct edc_toolbox *)ctx, EDC_TOOL_SCOPE_NORMAL, NULL);
+}
+
+/* A group's declaration set, resolved once and then frozen (docs/pi-toolset-plan.zh.md, I2:
+ * one conversation must send the same `tools` bytes every turn). Returning NULL would make
+ * the request fall back to the process-wide array, so this always answers when there is a
+ * toolbox. */
+static cJSON *app_group_tools(void *ctx, struct edc_task *task)
+{
+    struct edc_toolbox *tb = (struct edc_toolbox *)ctx;
+    if (!tb)
+        return NULL;
+    struct edc_task_group *group = task ? task->group : NULL;
+    if (!group)
+        return tb->schemas; /* no group to freeze against: the process-wide set */
+
+    if (!group->tools_decl)
+    {
+        /* Once per group (then cached in tools_decl), so a full history load here is fine:
+         * the per-request path never recomputes the tool set. */
+        cJSON *hist = edc_task_group_history_msgs(group, 0, -1);
+        group->tools_decl = edc_toolset_resolve(tb, hist, EDC_TOOL_SCOPE_NORMAL);
+        if (hist)
+            cJSON_Delete(hist);
+        group->toolset_epoch++;
+        log_info("toolset: group %s declares %d tools (epoch %u)", edc_id_str(group->group_id),
+                 group->tools_decl ? cJSON_GetArraySize(group->tools_decl) : 0, group->toolset_epoch);
+    }
+    return group->tools_decl;
+}
 
 /* ── Composition root: defined ONLY here (opaque) ────────────
  * Outside reads through the accessors; userland receives its own few pieces
@@ -99,9 +142,11 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
         return NULL;
     }
 
-    /* The master key is intentionally NOT wiped here: the /connect command
-     * re-encrypts the API key when the user updates the provider at runtime,
-     * so the key must stay available (it remains mlock()ed). */
+    /* The master key is deliberately NOT wiped here, and stays resident until shutdown:
+     * /connect re-encrypts the API key when the user updates the provider at runtime, and
+     * the write path stores whatever encryption returns -- with the key gone it would
+     * overwrite the saved key with an empty string and still report success. This is the
+     * documented contract in edc_secret.h; read that before adding a wipe. */
 
     /* The master switch was loaded from config.json (default on). The CLI flag,
      * when given, overrides it for this run only: sandbox_override < 0 keeps the
@@ -167,6 +212,13 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     edc_toolbox_actor_bind_scheduler(app->toolbox_actor, app->scheduler);
     edc_llm_request_bind_scheduler(app->scheduler, app->llm_actor, app->toolbox ? app->toolbox->schemas : NULL,
                                    app->toolbox ? app->toolbox->memory_schemas : NULL);
+
+    /* The registry, in the two places that need it but sit below the toolbox in the
+     * layering: the system prompt's tool section and the per-group declaration set
+     * (docs/pi-toolset-plan.zh.md). Both are rendered from the same registry, so they cannot
+     * disagree with the request's `tools` field. */
+    edc_context_set_tool_section_provider(app_tool_section, app->toolbox);
+    edc_llm_request_bind_group_tools(app_group_tools, app->toolbox);
 
     edc_actor_runner_start(app->runner);
 
@@ -307,13 +359,20 @@ void edc_app_free(struct edc_app *app)
      * scheduler. */
     edc_app_shutdown(app);
 
-    /* Freeing the scheduler also frees the session store it created. */
+    /* Freeing the scheduler also frees the in-memory session manager it created. */
     edc_scheduler_free(app->scheduler);
 
     if (app->config)
         edc_config_free(app->config);
     if (app->toolbox)
         edc_toolbox_free(app->toolbox);
+
+    /* The SQLite connection is a process-wide singleton owned by the state store, so nothing
+     * above closes it. Leaving it open at exit loses more than the memory: the four fds
+     * (db, -wal, -shm, lock) stay open, the WAL is never checkpointed back into the one file
+     * that `edgeclaw db` inspects, and `PRAGMA optimize` never runs. Close it last, once every
+     * consumer is gone; the call is idempotent and a no-op if the store was never opened. */
+    edc_state_store_close();
 
     edc_secret_cleanup();
     free(app);

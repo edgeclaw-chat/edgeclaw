@@ -16,6 +16,7 @@
 #include "utlist_fix.h"
 
 #include <ctype.h>
+#include <inttypes.h> /* PRId64 / PRIu64 */
 #ifdef _WIN32
 /* Windows ships no POSIX <regex.h>; PCRE2 provides a drop-in wrapper. */
 #include <pcre2posix.h>
@@ -145,6 +146,59 @@ static struct edc_memo_event *append_event(struct edc_session_memory *m, uint64_
     return e;
 }
 
+/* ── Restore (load path) ───────────────────────────────────────
+ *
+ * The store reads rows and must reproduce what was saved EXACTLY -- the seq that orders the
+ * notice, the timestamps the index shows, the entry's created_seq/updated_seq which are the
+ * optimistic-concurrency "rev". The mutators above assign those themselves (add_event stamps
+ * "now", upsert_entry leaves them to the caller), so restoring through them would renumber
+ * the log on every restart. These take the values as stored.
+ *
+ * They live here, not in the store, because this module owns the shape: whoever else needs
+ * to read or write these tables calls these rather than touching the arrays. */
+struct edc_memo_event *edc_session_memory_restore_event(struct edc_session_memory *m, uint64_t seq, uint64_t ts,
+                                                       const char *entry_id, const char *kind_name,
+                                                       const char *title, const char *summary, uint32_t changed)
+{
+    struct edc_memo_event *e =
+        append_event(m, seq, ts, entry_id, edc_memo_event_classify_kind(kind_name), title, summary);
+    /* Restored verbatim: the mask describes a change that already happened, and
+     * re-deriving it from current content is impossible (the old value is gone). 0 keeps
+     * its "unknown" meaning for rows written before v8. */
+    if (e)
+        e->changed = changed;
+    return e;
+}
+
+struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
+                                                       const char *title, const char *summary, const char *detail,
+                                                       const char *sources, const char *proposed_by,
+                                                       uint64_t created_seq, uint64_t updated_seq,
+                                                       uint64_t created_at, uint64_t updated_at, bool superseded)
+{
+    if (!m || !id)
+        return NULL;
+    void *grown = grow_array(m->entries, &m->entry_cap, sizeof(*m->entries), m->entry_count + 1);
+    if (!grown)
+        return NULL;
+    m->entries = grown;
+
+    struct edc_memo_entry *e = &m->entries[m->entry_count++];
+    memset(e, 0, sizeof(*e));
+    e->id = dup_or_null(id);
+    e->title = dup_or_null(title);
+    e->summary = dup_or_null(summary);
+    e->detail = detail ? sdsnew(detail) : NULL;
+    e->sources = dup_or_null(sources);
+    e->proposed_by = dup_or_null(proposed_by);
+    e->created_seq = created_seq;
+    e->updated_seq = updated_seq;
+    e->created_at = created_at;
+    e->updated_at = updated_at;
+    e->superseded = superseded;
+    return e;
+}
+
 uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
                                       enum edc_memo_event_kind kind, const char *title, const char *summary)
 {
@@ -226,6 +280,101 @@ static sds index_line_for(const struct edc_memo_entry *e)
     line = sdscatprintf(line, " (%s)", when);
     sdsfree(when);
     return line;
+}
+
+/* ── Baseline catalogue: the OTHER channel (see edc_session_memory_catalogue) ──
+ *
+ * Two channels, two jobs, deliberately different formats:
+ *   catalogue (this)  -- "what exists": once per task, cheapest possible row
+ *   notice            -- "what changed": per change, priced row with kind + summary
+ *
+ * Sharing ONE renderer was the original mistake: the notice was spending ~122 tok per
+ * line (measured) to deliver what a reader only browses -- while the same money would
+ * have bought the whole catalogue (≈33 tok per line).
+ *
+ * The catalogue row carries id + title ONLY (no summary, no timestamp, no kind). That is
+ * a deliberate CONSTRAINT, not an oversight: the catalogue's job is "which of these is
+ * worth fetching", and the fetch is memory_get (≈1079 tok). Adding summaries would
+ * quadruple the catalogue (measured: 5597 → 1376 tok for 37 entries) to save decisions
+ * that the next call makes better anyway.
+ *
+ * `index_line_for()` must NOT be changed to do this: it is shared by memory_list /
+ * memory_search / the L2 curation and compaction materials / `/session memo`, and the
+ * curators compare summaries to spot entries that belong together. */
+static sds catalogue_line_for(const struct edc_memo_entry *e)
+{
+    return sdscatprintf(sdsempty(), "- [%s]%s %s", e->id ? e->id : "?",
+                        (e->superseded ? " (retired)" : ""), e->title ? e->title : "(untitled)");
+}
+
+static int memo_entry_cmp_id(const void *pa, const void *pb)
+{
+    const struct edc_memo_entry *a = *(const struct edc_memo_entry *const *)pa;
+    const struct edc_memo_entry *b = *(const struct edc_memo_entry *const *)pb;
+    const uint64_t na = entry_id_num(a->id), nb = entry_id_num(b->id);
+    if (na < nb)
+        return -1;
+    return na > nb ? 1 : 0;
+}
+
+/* The catalogue card for a task that has never received one. `token_budget` bounds the
+ * row count by PRICE, not by count: rows differ in length, so a fixed cap would either
+ * waste budget on short titles or blow it on long ones.
+ *
+ * Ordering is id-ascending ON PURPOSE -- identical to memory_list, so `memory_list offset
+ * n` continues exactly where the catalogue stopped. That is what makes the "… N more"
+ * tail a HANDOFF rather than a dead end.
+ *
+ * Rendered from `entries[]` (live entries), never from the event table: the event table
+ * keeps DELETED tombstones, so listing from it once produced `共 37 条` above `… 70 more`
+ * (10 + 70 ≠ 37) -- 43 of those "entries" no longer existed.
+ *
+ * NULL when there is nothing to say (no entries at all): the caller then injects nothing. */
+sds edc_session_memory_catalogue(const struct edc_session_memory *m, size_t token_budget)
+{
+    if (!m || m->entry_count == 0)
+        return NULL;
+
+    struct edc_memo_entry **sorted = malloc(m->entry_count * sizeof(*sorted));
+    if (!sorted)
+        return NULL;
+    for (size_t i = 0; i < m->entry_count; i++)
+        sorted[i] = &m->entries[i];
+    qsort(sorted, m->entry_count, sizeof(*sorted), memo_entry_cmp_id);
+
+    sds body = sdsempty();
+    int64_t spent = 0;
+    size_t shown = 0;
+    for (size_t i = 0; i < m->entry_count; i++)
+    {
+        sds line = catalogue_line_for(sorted[i]);
+        const int64_t cost = edc_token_estimate_text(line);
+        /* Always show at least one row, even if a single title exceeds the budget: a card
+         * that says "N entries" and lists none tells the reader nothing it can act on. */
+        if (shown > 0 && spent + cost > (int64_t)token_budget)
+        {
+            sdsfree(line);
+            break;
+        }
+        if (sdslen(body))
+            body = sdscat(body, "\n");
+        body = sdscatsds(body, line);
+        sdsfree(line);
+        spent += cost;
+        shown++;
+    }
+    free(sorted);
+
+    sds out = sdscatprintf(sdsempty(), "## Session Memory  (共 %zu 条)\n", m->entry_count);
+    out = sdscatsds(out, body);
+    sdsfree(body);
+    if (shown < m->entry_count)
+        out = sdscatprintf(out, "\n… %zu more（memory_list %zu 50 接着看）", m->entry_count - shown, shown);
+    out = sdscat(out,
+                 "\n\nThis is the INDEX only (id + title): no summary, no detail. Fetch an entry with "
+                 "memory_get <id> before relying on it; search with memory_search <patterns>.");
+
+    return out;
 }
 
 sds edc_session_memory_index_lines(const struct edc_session_memory *m, size_t offset, size_t n, size_t *out_total)
@@ -429,12 +578,133 @@ sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char
     return NULL;
 }
 
+/* ── summary ⊆ detail: the fact-coverage invariant (see the header) ── */
+
+static bool memo_hex_lower(int c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+static bool memo_word_char(int c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+/* Specification vocabulary, not facts: the memory tools and the field names they take. A
+ * summary saying "use memory_search" or "pass expected_rev" is describing how to work, not
+ * naming something the detail has to resolve. Kept deliberately tiny -- every name here is
+ * a hole in the check. */
+static bool memo_is_spec_name(const char *s, size_t len)
+{
+    static const char *const kNames[] = {
+        "memory_search", "memory_list", "memory_get", "memory_update", "memory_supersede", "memory_write",
+        "memory_delete", "expected_rev", "entry_id", "created_seq", "updated_seq", "session_id", NULL,
+    };
+    for (size_t i = 0; kNames[i]; i++)
+        if (strlen(kNames[i]) == len && strncmp(kNames[i], s, len) == 0)
+            return true;
+    return false;
+}
+
+/* One fact, checked against the detail: present => nothing to report. */
+static void memo_check_fact(sds *rep, size_t *missing, const char *detail, const char *fact, size_t len)
+{
+    if (len == 0 || len >= 64)
+        return;
+    char buf[64];
+    memcpy(buf, fact, len);
+    buf[len] = '\0';
+    if (detail && strstr(detail, buf))
+        return;
+    (*missing)++;
+    if (rep)
+    {
+        if (sdslen(*rep))
+            *rep = sdscat(*rep, ", ");
+        *rep = sdscatprintf(*rep, "`%s`", buf);
+    }
+}
+
+size_t edc_session_memory_uncovered_facts(const char *summary, const char *detail, sds *out_report)
+{
+    if (out_report)
+        *out_report = NULL;
+    if (!summary || !summary[0] || !detail || !detail[0])
+        return 0;
+
+    sds rep = sdsempty();
+    size_t missing = 0;
+    const size_t n = strlen(summary);
+
+    /* 1) commit ids: a run of [0-9a-f] 7..40 long that carries at least one a-f LETTER. The
+     * letter requirement is what keeps dates (`20251230`) and byte counts out -- they are
+     * all-digit runs, and treating them as commit ids would make the check useless. */
+    for (size_t i = 0; i < n;)
+    {
+        if (!memo_hex_lower((unsigned char)summary[i]) || (i > 0 && memo_word_char((unsigned char)summary[i - 1])))
+        {
+            i++;
+            continue;
+        }
+        size_t j = i;
+        while (j < n && memo_hex_lower((unsigned char)summary[j]))
+            j++;
+        if (j < n && memo_word_char((unsigned char)summary[j]))
+        {
+            i = j;
+            continue;
+        }
+        const size_t len = j - i;
+        if (len >= 7 && len <= 40)
+        {
+            bool has_letter = false;
+            for (size_t k = i; k < j; k++)
+                if (summary[k] >= 'a' && summary[k] <= 'f')
+                    has_letter = true;
+            if (has_letter)
+                memo_check_fact(&rep, &missing, detail, summary + i, len);
+        }
+        i = j;
+    }
+
+    /* 2) snake_case identifiers: function / column / table names, equally unrewritable. */
+    for (size_t i = 0; i < n;)
+    {
+        const char c = summary[i];
+        if (!((c >= 'a' && c <= 'z') || c == '_') || (i > 0 && memo_word_char((unsigned char)summary[i - 1])))
+        {
+            i++;
+            continue;
+        }
+        size_t j = i;
+        while (j < n && memo_word_char((unsigned char)summary[j]))
+            j++;
+        const size_t len = j - i;
+        if (len >= 3)
+        {
+            bool has_us = false;
+            for (size_t k = i; k < j; k++)
+                if (summary[k] == '_')
+                    has_us = true;
+            if (has_us && !memo_is_spec_name(summary + i, len))
+                memo_check_fact(&rep, &missing, detail, summary + i, len);
+        }
+        i = j;
+    }
+
+    if (out_report)
+        *out_report = rep;
+    else
+        sdsfree(rep);
+    return missing;
+}
+
 sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *title, const char *summary,
                                     const char *detail, const char *proposed_by)
 {
     if (!m || !title)
         return NULL;
-    sds id = sdscatprintf(sdsempty(), "m%llu", (unsigned long long)(m->next_entry_id + 1));
+    sds id = sdscatprintf(sdsempty(), "m%" PRIu64, m->next_entry_id + 1);
     struct edc_memo_entry *e = edc_session_memory_upsert_entry(m, id, title, summary, detail, NULL);
     if (!e)
     {
@@ -455,19 +725,37 @@ sds edc_session_memory_create_entry(struct edc_session_memory *m, const char *ti
 /* Curation instruction: same family as the fold instruction -- the system section of
  * a self-contained request, constant text (so the L2 call's prefix is stable). The
  * output contract is the six-section summary. */
-/* ── Compaction task: an LLM round whose only job is to make the memory smaller ──
+/* ── Compaction task: an LLM task whose only job is to make the memory smaller ──
  *
  * Same nature as the fold task: a system task (sink SESSION_MEMORY, its own turn, tools =
  * the memory tools) started when the entry table outgrows its cap, prompted to merge /
  * condense / drop and rebuild the index. It has to be told apart from the CURATION task,
  * which shares its sink and tools, so it carries its own system prompt (the request picks
- * it by task->memo_kind, see edc_llm_request.c). */
+ * it by task->memo_kind, see edc_llm_request.c).
+ *
+ * The task does NOT see the memory's content: its material is the WHOLE INDEX (id / rev /
+ * updated / title / summary) and it calls memory_get for whatever it means to rewrite. Two
+ * reasons, both learned the hard way:
+ *   1. the dump was unbounded -- entry detail has no length cap, so the material grew with
+ *      the memory, and every request carried the details the model had just written;
+ *   2. asking ONE RESPONSE to rewrite the whole table hit max_tokens, and a `length`
+ *      response carries no tool calls: nothing landed at all (see edc_executor.c).
+ * So: the whole index in (only the full picture shows that two far-apart entries are the
+ * same subject), detail on demand, short replies, as many tool turns as it needs. The index
+ * is small by construction, so no slicing and no budget of its own is called for. */
 
 static const char kCompactSystemPrompt[] =
     "You are compacting this session's shared memory. Nobody is waiting on a conversation: "
     "your only job is to make the memory SMALLER while keeping what is durable.\n"
     "\n"
-    "The whole memory is in this turn. You may:\n"
+    "You get the INDEX, not the content: each line carries id / rev / updated / title / summary. "
+    "Call memory_get on an entry BEFORE you rewrite or delete it -- never guess or invent what "
+    "an entry says. Others rewrote entries too, so read before you touch.\n"
+    "\n"
+    "The whole index is in this turn. Judge globally with it: entries whose\n"
+    "subjects overlap belong together even when they sit far apart in the list.\n"
+    "\n"
+    "You may:\n"
     "- MERGE entries that belong together into one: memory_update the survivor with the union, "
     "then memory_delete the entries it absorbed.\n"
     "- CONDENSE a verbose entry into its decision plus the reason, dropping narration, "
@@ -480,50 +768,128 @@ static const char kCompactSystemPrompt[] =
     "- Never lose durable knowledge to save space. A decision, a constraint, a gotcha or an "
     "external fact the next session would need must survive somewhere.\n"
     "- Keep what cannot be recovered otherwise: paths, commands, error text, numbers.\n"
+    "- summary ⊆ detail (enforced, the write is refused otherwise): every concrete fact you\n"
+    "  leave in a summary -- commit ids, snake_case identifiers -- must also be in that entry's\n"
+    "  detail. When you condense, move facts DOWN into the detail rather than keeping them in\n"
+    "  the summary alone: a summary-only fact is unresolvable for a reader that stops there.\n"
+    "- CHANGING `detail` REQUIRES RESENDING `summary` (enforced): the summary is the entry's\n"
+    "  materialized view. A condensed detail with a stale summary leaves the memory saying\n"
+    "  something false, so restate the summary in the same memory_update item.\n"
     "- When two entries cover the same thing, keep the content of the one updated LATER "
-    "(the dump shows each entry's `updated`); if you cannot tell, keep both and note it.\n"
-    "- Nothing about this round belongs in the memory: do not write an entry saying you "
+    "(the index shows each entry's `updated`); if you cannot tell, keep both and note it.\n"
+    "- Nothing about this task belongs in the memory: do not write an entry saying you "
     "compacted it.\n"
     "- Do not invent facts. If two entries disagree and you cannot tell which is right, keep "
     "both and say so in the summary.\n"
     "\n"
-    "Goal: the entry count back under the cap, and the memory materially smaller.\n";
+    "One response must stay short: one line of text, with the tool calls carrying the changes.\n"
+    "A long reply gets cut at max_tokens, and a cut reply loses the tool calls in it. Work\n"
+    "through the index with as many short turns as you need, and answer DONE on a single line\n"
+    "when the memory is under the cap.\n";
 
 const char *edc_session_memory_compact_prompt(void)
 {
     return kCompactSystemPrompt;
 }
 
-/* The material: every entry, with the fields a rewrite needs (id, rev, title, summary,
- * detail). The curator's prompt embeds group memories; this one embeds the memory itself,
- * because compacting needs nothing from the outside world. */
+/* Summary shown per index line in the compaction material. Long enough to recognize the
+ * entry, short enough that a full table stays cheap; the model fetches the rest. */
+#define COMPACT_SUMMARY_MAX 240
+
+static void compact_append_clipped(sds *out, const char *text, size_t max)
+{
+    if (!text || !text[0])
+        return;
+    size_t n = strlen(text);
+    if (n <= max)
+    {
+        *out = sdscat(*out, text);
+        return;
+    }
+    /* Cut on a UTF-8 boundary: the prompts are full of Chinese, and a split codepoint
+     * would be shipped to the provider as a replacement char. */
+    size_t cut = max;
+    while (cut > 0 && ((unsigned char)text[cut] & 0xc0) == 0x80)
+        cut--;
+    sds head = sdsnewlen(text, cut);
+    *out = sdscatprintf(*out, "%s…", head);
+    sdsfree(head);
+}
+
+/* Stalest first (an entry nobody has touched for a while is the likelier merge / condense /
+ * drop candidate, and it is the ordering a reader can act on top-to-bottom). Fills *out with
+ * indices into m->entries (caller frees); returns the count. */
+static size_t compact_order(const struct edc_session_memory *m, size_t **out)
+{
+    *out = NULL;
+    if (!m || m->entry_count == 0)
+        return 0;
+    size_t *idx = malloc(m->entry_count * sizeof(*idx));
+    if (!idx)
+        return 0;
+    size_t k = 0;
+    for (size_t i = 0; i < m->entry_count; i++)
+    {
+        const struct edc_memo_entry *e = &m->entries[i];
+        const uint64_t rev = e->updated_seq ? e->updated_seq : e->created_seq;
+        size_t j = k++;
+        while (j > 0)
+        {
+            const struct edc_memo_entry *p = &m->entries[idx[j - 1]];
+            const uint64_t prev = p->updated_seq ? p->updated_seq : p->created_seq;
+            /* Ties broken by id so the order is deterministic across runs. */
+            if (prev < rev || (prev == rev && entry_id_num(p->id) <= entry_id_num(e->id)))
+                break;
+            idx[j] = idx[j - 1];
+            j--;
+        }
+        idx[j] = i;
+    }
+    *out = idx;
+    return k;
+}
+
+/* The material: the instruction plus the WHOLE index (id / rev / updated / title / summary,
+ * stalest first). No entry content: the model calls memory_get for what it means to rewrite
+ * (the compaction system prompt says so). The full index -- never a slice -- is what lets it
+ * see that two far-apart entries are the same subject, and it is small by construction. */
 static sds build_compact_prompt(struct edc_session *session)
 {
     struct edc_session_memory *m = session ? session->memo : NULL;
     sds out = sdscatprintf(sdsempty(),
                            "## Compact the session memory\n"
                            "It holds %zu entries; the cap is %d. Bring it back under the cap and make it\n"
-                           "smaller. Every entry follows (id / rev / title / summary / detail); use\n"
-                           "memory_update (with the rev as expected_rev) and memory_delete.\n",
+                           "smaller. The material is the INDEX only: id / rev / updated / title / summary,\n"
+                           "no content. Call memory_get for any entry you rewrite or delete, and pass the\n"
+                           "`rev` below as expected_rev to memory_update.\n"
+                           "\n"
+                           "The whole index is below, so judge globally: entries whose subjects overlap\n"
+                           "belong together even when they are far apart in the list. Work in short turns --\n"
+                           "read a few, write a few, repeat -- and stop when it is under the cap.\n"
+                           "\n"
+                           "## Index (stalest first)\n",
                            m ? m->entry_count : (size_t)0, EDC_SESSION_MEMORY_COMPACT_ENTRIES);
     if (!m || m->entry_count == 0)
         return out;
 
-    /* Ids are handed out in ascending order and a delete keeps the array in order, so the
-     * dump reads in the same order as memory_list. */
-    for (size_t i = 0; i < m->entry_count; i++)
+    size_t *idx = NULL;
+    const size_t n = compact_order(m, &idx);
+    for (size_t i = 0; i < n; i++)
     {
-        const struct edc_memo_entry *e = &m->entries[i];
+        const struct edc_memo_entry *e = &m->entries[idx[i]];
         sds when = edc_datetime_format_min((time_t)(e->updated_at ? e->updated_at : e->created_at));
-        out = sdscatprintf(out, "\n- id: %s  rev: %llu  updated: %s%s\n", e->id, (unsigned long long)e->updated_seq,
-                           when, e->superseded ? "  (retired)" : "");
-        sdsfree(when);
-        out = sdscatprintf(out, "  title: %s\n", e->title ? e->title : "(untitled)");
+        out = sdscatprintf(out, "[%s]%s rev %" PRIu64 " — %s", e->id ? e->id : "?",
+                           (e->superseded ? " (retired)" : ""), e->updated_seq,
+                           e->title ? e->title : "(untitled)");
         if (e->summary && e->summary[0])
-            out = sdscatprintf(out, "  summary: %s\n", e->summary);
-        if (e->detail && sdslen(e->detail) > 0)
-            out = sdscatprintf(out, "  detail: %s\n", e->detail);
+        {
+            out = sdscat(out, " — ");
+            compact_append_clipped(&out, e->summary, COMPACT_SUMMARY_MAX);
+        }
+        out = sdscatprintf(out, " (%s)\n", when);
+        sdsfree(when);
     }
+    free(idx);
     return out;
 }
 
@@ -532,7 +898,7 @@ int edc_session_memory_hold_task(struct edc_task *task)
     if (!task || !task->group || !task->group->session)
         return 0;
     if (edc_task_is_memory_sink(task))
-        return 0; /* the round itself is never held (a finished task is NOT skipped -- see
+        return 0; /* the compaction itself is never held (a finished task is NOT skipped -- see
                    * edc_group_fold_hold_task: the resume door hands us those) */
 
     struct edc_task_group *sys = edc_session_find_system_group(task->group->session);
@@ -556,8 +922,8 @@ bool edc_session_memory_compact_due(struct edc_session *session)
     if (!session || !session->memo)
         return false;
     const struct edc_session_memory *m = session->memo;
-    /* Over the cap, and it has GROWN since the last round was started: a round that could
-     * not get under the cap must not immediately start another one. */
+    /* Over the cap, and it has GROWN since the last compaction was started: a compaction
+     * that could not get under the cap must not immediately start another one. */
     if (m->entry_count <= EDC_SESSION_MEMORY_COMPACT_ENTRIES || m->entry_count <= m->compact_at_entries)
         return false;
     /* One system task per session at a time (the same gate the fold uses). */
@@ -571,6 +937,7 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
     if (edc_scheduler_has_pending_system_task(session))
         return NULL; /* one at a time */
 
+    struct edc_session_memory *m = session->memo;
     sds prompt = build_compact_prompt(session);
     struct edc_task *task =
         edc_scheduler_spawn_system_task_as(sched, session, "compact session memory", EDC_SINK_SESSION_MEMORY);
@@ -582,13 +949,13 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
     /* Same sink as curation, different prompt: this is what tells the two apart. */
     task->memo_kind = EDC_MEMO_KIND_COMPACT;
 
-    /* Barrier over the WHOLE session: every task that is still going waits for this round, so
+    /* Barrier over the WHOLE session: every task that is still going waits for this compaction, so
      * the memory is not rewritten underneath a task that is mid-flight, and they pick up
      * afterwards. Same shape as the fold's barrier -- and the same safety property: a
-     * TASK_DEP_BARRIER is released by its source ending EITHER way, so a compaction round that
+     * TASK_DEP_BARRIER is released by its source ending EITHER way, so a compaction that
      * dies (or is cancelled) releases the tasks it was holding instead of taking them with it.
      *
-     * What "waits" means concretely: a task that is between rounds (about to send its next
+     * What "waits" means concretely: a task that is between LLM rounds (about to send its next
      * request) parks at AWAIT_DEPS and is woken by the release; one whose LLM call is already
      * in flight finishes that call -- the fold behaves the same way, and it is the request
      * boundary that is the safe point, not the middle of a round. */
@@ -612,12 +979,15 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
         sdsfree(prompt);
         return NULL;
     }
+    const size_t material_len = sdslen(prompt);
+    const int64_t material_tokens = edc_token_estimate_text(prompt);
     sdsfree(prompt);
-    /* Remember the size we tried at, so a round that cannot shrink below the cap does not
-     * start another one until the memory grows again. */
-    session->memo->compact_at_entries = session->memo->entry_count;
-    log_info("L2 memo compact start: session=%s task=%s entries=%zu", session->session_id, task->task_id,
-             session->memo->entry_count);
+    /* Remember the size we tried at, so a compaction that cannot shrink below the cap does
+     * not start another one until the memory grows again. */
+    m->compact_at_entries = m->entry_count;
+    log_info("L2 memo compact start: session=%s task=%s entries=%zu cap=%d material=%zuB(~%" PRId64 " tok)",
+             edc_id_str(session->session_id), edc_id_str(task->task_id), m->entry_count,
+             EDC_SESSION_MEMORY_COMPACT_ENTRIES, material_len, material_tokens);
     return task;
 }
 
@@ -650,6 +1020,15 @@ static const char kCurateSystemPrompt[] =
     "  exact paths / commands / error text. Never progress logs, todos or transient\n"
     "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- summary ⊆ detail (enforced, the write is refused otherwise): every concrete fact you\n"
+    "  put in the summary -- commit ids, snake_case identifiers -- MUST also appear in the\n"
+    "  detail. The summary is what other tasks read WITHOUT fetching the detail, so a fact\n"
+    "  that lives only there is lost to them. Paths and numbers are encouraged in detail;\n"
+    "  keep them out of the summary unless the detail repeats them.\n"
+    "- CHANGING `detail` REQUIRES RESENDING `summary` (enforced): the summary is the entry's\n"
+    "  materialized view, so a detail rewrite without it leaves the summary describing a state\n"
+    "  that no longer exists. When you condense or rewrite a detail, restate its summary in the\n"
+    "  same memory_update item. You already have both from your memory_get.\n"
     "- TIME IS A HINT, NOT A GATE: every history line carries its timestamp and every entry\n"
     "  carries when it was last updated. If the material is NEWER than an entry, reconcile it\n"
     "  (update to the new truth, or retire it); if the material is OLDER than the entry (the\n"
@@ -690,7 +1069,7 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
                     continue;
                 any = true;
                 sds when = edc_datetime_format_min((time_t)g->memory_updated_at);
-                out = sdscatprintf(out, "\n### group %s (memory last updated %s)\n%s", g->group_id ? g->group_id : "?",
+                out = sdscatprintf(out, "\n### group %s (memory last updated %s)\n%s", edc_id_str(g->group_id),
                                    when, g->memory);
                 sdsfree(when);
             }
@@ -708,7 +1087,7 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
             sds when = edc_datetime_format_min((time_t)group->memory_updated_at);
             sds covers = edc_datetime_format_min((time_t)group->memory_covers_to);
             out = sdscatprintf(out, "Group %s — memory last updated %s (covers up to %s).\n",
-                               group->group_id ? group->group_id : "?", when, covers);
+                               edc_id_str(group->group_id), when, covers);
             sdsfree(when);
             sdsfree(covers);
         }
@@ -783,8 +1162,8 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
         }
     }
 
-    log_info("L2 memo start: session=%s from group=%s task=%s entries=%zu", session->session_id,
-             (folded_group && folded_group->group_id) ? folded_group->group_id : "?", task->task_id,
+    log_info("L2 memo start: session=%s from group=%s task=%s entries=%zu", edc_id_str(session->session_id),
+             edc_id_str(folded_group ? folded_group->group_id : 0), edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -817,7 +1196,7 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
         return NULL;
     }
     sdsfree(prompt);
-    log_info("L2 memo start (manual): session=%s task=%s entries=%zu", session->session_id, task->task_id,
+    log_info("L2 memo start (manual): session=%s task=%s entries=%zu", edc_id_str(session->session_id), edc_id_str(task->task_id),
              session->memo->entry_count);
     return task;
 }
@@ -876,6 +1255,15 @@ static const char kExtractSystemPrompt[] =
     "  exact paths / commands / error text. Never progress logs, todos or transient\n"
     "  conclusions.\n"
     "- Keep entries small: title <= 80 chars, summary <= 240 chars, detail holds the rest.\n"
+    "- summary ⊆ detail (enforced, the write is refused otherwise): every concrete fact you\n"
+    "  put in the summary -- commit ids, snake_case identifiers -- MUST also appear in the\n"
+    "  detail. The summary is what other tasks read WITHOUT fetching the detail, so a fact\n"
+    "  that lives only there is lost to them. Paths and numbers are encouraged in detail;\n"
+    "  keep them out of the summary unless the detail repeats them.\n"
+    "- CHANGING `detail` REQUIRES RESENDING `summary` (enforced): the summary is the entry's\n"
+    "  materialized view, so a detail rewrite without it leaves the summary describing a state\n"
+    "  that no longer exists. When you condense or rewrite a detail, restate its summary in the\n"
+    "  same memory_update item. You already have both from your memory_get.\n"
     "- TIME IS A HINT, NOT A GATE: every history line carries its timestamp and every entry\n"
     "  carries when it was last updated. If the material is NEWER than an entry, reconcile it\n"
     "  (update to the new truth, or retire it); if the material is OLDER than the entry (the\n"
@@ -900,8 +1288,22 @@ struct extract_piece
     struct edc_turn *turn;
     size_t turn_index; /* index in the member's committed turns queue */
     size_t msg_index;  /* absolute index within that turn */
-    long long tokens;
+    /* The message itself, owned by this piece: messages live in the store now, so the
+     * column holds the copies it was built from and frees them when done. */
+    cJSON *msg;
+    int64_t tokens;
 };
+
+/* Free the column, including the message copies the pieces own. */
+static void extract_free_pieces(struct extract_piece *ps, size_t cnt)
+{
+    if (!ps)
+        return;
+    for (size_t i = 0; i < cnt; i++)
+        if (ps[i].msg)
+            cJSON_Delete(ps[i].msg);
+    free(ps);
+}
 
 /* Flatten one member's committed turns, from each turn's memo_prefix onwards, into the
  * column. Only committed turns are read -- extraction never touches an in-flight turn
@@ -909,12 +1311,15 @@ struct extract_piece
 static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, struct edc_task *t, struct edc_turn *turn,
                          size_t turn_index)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t from = (turn->memo_prefix > 0) ? (size_t)turn->memo_prefix : 0;
     if (from > len)
         from = len;
     for (size_t mi = from; mi < len; mi++)
     {
+        cJSON *msg = edc_turn_msg_at(turn, (int)mi);
+        if (!msg)
+            continue;
         if (*cnt == *cap)
         {
             *cap = *cap ? *cap * 2 : 64;
@@ -925,7 +1330,8 @@ static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, st
         fp->turn = turn;
         fp->turn_index = turn_index;
         fp->msg_index = mi;
-        fp->tokens = edc_token_estimate_msg(turn->messages.data[turn->messages.head + mi]);
+        fp->msg = msg;
+        fp->tokens = edc_token_estimate_msg(msg);
     }
 }
 
@@ -934,7 +1340,7 @@ static void extract_push(struct extract_piece **ps, size_t *cnt, size_t *cap, st
  * earlier in content order is covered whole. */
 struct edc_extract_cut
 {
-    const char *task_id;
+    int64_t task_id; /* 0 = none */
     uint32_t turn;
     uint32_t prefix;
 };
@@ -958,7 +1364,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
 {
     if (out_cut)
     {
-        out_cut->task_id = NULL;
+        out_cut->task_id = 0;
         out_cut->turn = 0;
         out_cut->prefix = 0;
     }
@@ -972,11 +1378,11 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
     if (cnt == 0)
     {
         free(members);
-        free(ps);
+        extract_free_pieces(ps, cnt);
         return NULL;
     }
 
-    long long total = 0;
+    int64_t total = 0;
     for (size_t i = 0; i < cnt; i++)
         total += ps[i].tokens;
 
@@ -988,7 +1394,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
     size_t cut_at = cnt; /* index of the first NOT-covered piece */
     if (total > EDC_FOLD_MAX_CORPUS_TOKENS)
     {
-        long long acc = 0;
+        int64_t acc = 0;
         cut_at = 0;
         while (cut_at < cnt && acc + ps[cut_at].tokens <= EDC_FOLD_MAX_CORPUS_TOKENS)
         {
@@ -997,8 +1403,8 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         }
         if (cut_at == 0)
             cut_at = 1;
-        log_info("L2 memo extract: group %s corpus %lld > cap %d — extracting the oldest %zu of %zu msgs",
-                 group->group_id, total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
+        log_info("L2 memo extract: group %s corpus %" PRId64 " > cap %d — extracting the oldest %zu of %zu msgs",
+                 edc_id_str(group->group_id), total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
     }
 
     if (out_cut)
@@ -1015,7 +1421,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
             struct extract_piece *last = &ps[cnt - 1];
             out_cut->task_id = last->task->task_id;
             out_cut->turn = (uint32_t)last->turn_index;
-            out_cut->prefix = (uint32_t)edc_queue_length(&last->turn->messages);
+            out_cut->prefix = (uint32_t)last->turn->msg_count;
         }
     }
 
@@ -1023,7 +1429,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
                            "## Group history to extract from\n"
                            "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
                            "content order) that has NOT reached the session memory yet.\n\n",
-                           group->group_id ? group->group_id : "?");
+                           edc_id_str(group->group_id));
     if (group->memory && sdslen(group->memory) > 0)
     {
         /* Neither the group memory's text nor its entries are here, but its recency is:
@@ -1042,9 +1448,9 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         if (tk != cur)
         {
             cur = tk;
-            out = sdscatprintf(out, "\n### [task %s] %s\n", tk->task_id, tk->description ? tk->description : "");
+            out = sdscatprintf(out, "\n### [task %s] %s\n", edc_id_str(tk->task_id), tk->description ? tk->description : "");
         }
-        cJSON *m = ps[i].turn->messages.data[ps[i].turn->messages.head + ps[i].msg_index];
+        cJSON *m = ps[i].msg;
         if (cJSON_GetStringValue(cJSON_GetObjectItem(m, "role")))
         {
             /* One line, with the message's wall-clock time and (for a tool call) its
@@ -1070,7 +1476,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
                       "   related exists.\n");
 
     free(members);
-    free(ps);
+    extract_free_pieces(ps, cnt);
     return out;
 }
 
@@ -1089,62 +1495,13 @@ size_t edc_task_group_extractable_msg_count(struct edc_task_group *group)
         for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
         {
             struct edc_turn *turn = t->turns.data[qi];
-            size_t len = edc_queue_length(&turn->messages);
+            size_t len = (size_t)turn->msg_count;
             size_t from = (turn->memo_prefix > 0) ? (size_t)turn->memo_prefix : 0;
             if (from < len)
                 total += len - from;
         }
     }
     return total;
-}
-
-/* Parse a message's wall-clock timestamp ("%Y-%m-%d %H:%M:%S", local time, see
- * edc_turn_add_message). 0 when absent or unparseable. sscanf instead of strptime:
- * the latter is POSIX but not declared without an XOPEN macro. */
-static time_t parse_wall_clock(const char *s)
-{
-    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
-    if (!s || sscanf(s, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6)
-        return 0;
-
-    struct tm tm;
-    memset(&tm, 0, sizeof(tm));
-    tm.tm_year = y - 1900;
-    tm.tm_mon = mo - 1;
-    tm.tm_mday = d;
-    tm.tm_hour = h;
-    tm.tm_min = mi;
-    tm.tm_sec = sec;
-    tm.tm_isdst = -1;
-    return mktime(&tm);
-}
-
-/* Newest committed message timestamp in the group (the last time anything happened). */
-static time_t group_last_activity(struct edc_task_group *group)
-{
-    time_t best = 0;
-    struct edc_task *t;
-    LL_FOREACH2(group->members, t, group_next)
-    {
-        if (edc_task_is_memory_sink(t))
-            continue;
-        for (size_t qi = t->turns.head; qi < t->turns.tail; qi++)
-        {
-            struct edc_turn *turn = t->turns.data[qi];
-            for (size_t mi = turn->messages.head; mi < turn->messages.tail; mi++)
-            {
-                cJSON *m = turn->messages.data[mi];
-                cJSON *ts = cJSON_GetObjectItem(m, "ts");
-                if (ts && cJSON_IsString(ts))
-                {
-                    time_t v = parse_wall_clock(ts->valuestring);
-                    if (v > best)
-                        best = v;
-                }
-            }
-        }
-    }
-    return best;
 }
 
 bool edc_session_memory_extract_due(struct edc_task_group *group, const struct edc_config *conf, time_t now)
@@ -1157,15 +1514,23 @@ bool edc_session_memory_extract_due(struct edc_task_group *group, const struct e
     if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
         return false;
 
-    /* Idle: every member (memory sinks aside) is finished -- nobody is running. */
-    struct edc_task *t;
-    LL_FOREACH2(group->members, t, group_next)
-    {
-        if (edc_task_is_memory_sink(t))
-            continue;
-        if (!edc_task_is_finished(t))
-            return false;
-    }
+    /* Idle: no member (memory sinks aside) can still advance on its own, AND it has been
+     * that way long enough. The window is measured from the moment the group BECAME idle
+     * (busy_members dropped to zero), never from the newest message: a task that ran for
+     * fifteen minutes and was then stopped leaves a group that is idle only now, and its
+     * silence says nothing about whether the user has walked away. The reverse case -- a
+     * group that has been idle since long before its last message -- is the same rule:
+     * what matters is how long nobody has been working, not how old the text is.
+     *
+     * busy_members == 0 with idle_since == 0 means nobody has observed this group idle in
+     * this process yet (it was just loaded); refuse rather than guess -- the next scan's
+     * recount stamps it, so extraction starts one full window later instead of early. */
+    if (group->busy_members > 0)
+        return false;
+    if (group->idle_since == 0)
+        return false;
+    if (now < group->idle_since + EDC_MEMO_EXTRACT_IDLE_SECS)
+        return false;
 
     if (edc_task_group_extractable_msg_count(group) == 0)
         return false;
@@ -1175,12 +1540,6 @@ bool edc_session_memory_extract_due(struct edc_task_group *group, const struct e
     if (edc_group_fold_due(group, conf))
         return false;
     if (edc_group_fold_in_flight(group))
-        return false;
-
-    time_t last = group_last_activity(group);
-    if (last == 0)
-        return false; /* no usable timestamp -- do not guess */
-    if (now < last + EDC_MEMO_EXTRACT_IDLE_SECS)
         return false;
 
     return true;
@@ -1210,7 +1569,7 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
     }
     task->memo_kind = EDC_MEMO_KIND_EXTRACT;
     task->sink_group = group;
-    task->memo_cut_task_id = cut.task_id ? strdup(cut.task_id) : NULL;
+    task->memo_cut_task_id = cut.task_id;
     task->memo_cut_turn = cut.turn;
     task->memo_cut_prefix = cut.prefix;
 
@@ -1219,15 +1578,15 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
      * what any request sends. */
     if (!edc_scheduler_attach_input(sched, task, prompt))
     {
-        log_error("L2 memo extract: could not attach the prompt for group %s — nothing started", group->group_id);
+        log_error("L2 memo extract: could not attach the prompt for group %s — nothing started", edc_id_str(group->group_id));
         edc_task_mark_failed(task); /* failure also releases dependents */
         sdsfree(prompt);
         edc_session_memory_extract_note_failure(group);
         return NULL;
     }
     sdsfree(prompt);
-    log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", session->session_id,
-             group->group_id, task->task_id, task->memo_cut_task_id ? task->memo_cut_task_id : "(none)",
+    log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", edc_id_str(session->session_id),
+             edc_id_str(group->group_id), edc_id_str(task->task_id), edc_id_str(task->memo_cut_task_id),
              task->memo_cut_turn, task->memo_cut_prefix);
     return task;
 }
@@ -1253,9 +1612,15 @@ bool edc_session_memory_extract_try(struct edc_scheduler *sched, struct edc_sess
         struct edc_task_group *g;
         DL_FOREACH(sess->groups, g)
         {
+            /* Reconcile the busy count before reading it. Every life change already
+             * notifies the group (edc_task_move / force_move / attach / load), so this is
+             * normally a no-op; it is here so a path that changes a life some other way can
+             * only cost one delayed window, never a group stuck "busy" forever. It is also
+             * where a freshly loaded group (idle_since == 0) gets its stamp. */
+            edc_task_group_refresh_busy(g, now);
             if (!edc_session_memory_extract_due(g, conf, now))
                 continue;
-            log_info("L2 memo extract trigger: group %s idle, %zu msgs pending", g->group_id,
+            log_info("L2 memo extract trigger: group %s idle, %zu msgs pending", edc_id_str(g->group_id),
                      edc_task_group_extractable_msg_count(g));
             struct edc_task *task = extract_start(sched, sess, g);
             if (task)
@@ -1277,9 +1642,9 @@ void edc_session_memory_extract_note_failure(struct edc_task_group *group)
     if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
         log_error("L2 memo extract: group %s failed %d times in a row — automatic extraction is paused for this "
                   "group (do new work in it, or fold it, to try again)",
-                  group->group_id, group->memo_extract_failures);
+                  edc_id_str(group->group_id), group->memo_extract_failures);
     else
-        log_info("L2 memo extract: group %s failure %d/%d", group->group_id, group->memo_extract_failures,
+        log_info("L2 memo extract: group %s failure %d/%d", edc_id_str(group->group_id), group->memo_extract_failures,
                  EDC_MEMO_EXTRACT_MAX_FAILURES);
 }
 
@@ -1287,7 +1652,7 @@ void edc_session_memory_extract_note_progress(struct edc_task_group *group)
 {
     if (!group || group->memo_extract_failures == 0)
         return;
-    log_info("L2 memo extract: group %s failure streak cleared (was %d)", group->group_id,
+    log_info("L2 memo extract: group %s failure streak cleared (was %d)", edc_id_str(group->group_id),
              group->memo_extract_failures);
     group->memo_extract_failures = 0;
 }
@@ -1296,14 +1661,14 @@ void edc_session_memory_extract_note_progress(struct edc_task_group *group)
 
 static void extract_turn_whole(struct edc_turn *turn)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     if ((size_t)turn->memo_prefix < len)
         turn->memo_prefix = (int)len;
 }
 
 static void extract_turn_prefix(struct edc_turn *turn, uint32_t prefix)
 {
-    size_t len = edc_queue_length(&turn->messages);
+    size_t len = (size_t)turn->msg_count;
     size_t want = prefix;
     if (want > len)
         want = len;
@@ -1317,7 +1682,7 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     if (!group || !task->memo_cut_task_id)
     {
         log_error("L2 memo extract: task %s carries no resolvable cut — watermark unchanged",
-                  (task && task->task_id) ? task->task_id : "(null)");
+                  edc_id_str(task ? task->task_id : 0));
         edc_session_memory_extract_note_failure(group);
         return false;
     }
@@ -1327,7 +1692,7 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     struct edc_task *cut_member = NULL;
     for (size_t i = 0; i < n && !cut_member; i++)
     {
-        if (members[i]->task_id && strcmp(members[i]->task_id, task->memo_cut_task_id) == 0)
+        if (task->memo_cut_task_id > 0 && members[i]->task_id == task->memo_cut_task_id)
             cut_member = members[i];
     }
 
@@ -1339,7 +1704,7 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     if (!cut_member || !cut_turn)
     {
         log_error("L2 memo extract: cut (task=%s turn=%u) does not resolve in group %s — watermark unchanged",
-                  task->memo_cut_task_id, task->memo_cut_turn, group->group_id);
+                  edc_id_str(task->memo_cut_task_id), task->memo_cut_turn, edc_id_str(group->group_id));
         free(members);
         edc_session_memory_extract_note_failure(group);
         return false;
@@ -1370,8 +1735,8 @@ bool edc_session_memory_extract_land(struct edc_task *task)
     free(members);
 
     edc_session_memory_extract_note_progress(group);
-    log_info("L2 memo extract done: group %s advanced %zu turns, cut at task %s turn %u msg %u", group->group_id,
-             advanced_turns, task->memo_cut_task_id, task->memo_cut_turn, task->memo_cut_prefix);
+    log_info("L2 memo extract done: group %s advanced %zu turns, cut at task %s turn %u msg %u", edc_id_str(group->group_id),
+             advanced_turns, edc_id_str(task->memo_cut_task_id), task->memo_cut_turn, task->memo_cut_prefix);
     return true;
 }
 
@@ -1461,6 +1826,17 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
             *out_rev = e->updated_seq;
         return EDC_MEMO_WRITE_CONFLICT;
     }
+    /* Which fields actually change (see EDC_MEMO_F_*): the notice renders CHANGED FIELDS
+     * for an `updated` line instead of re-printing the summary, so this must be read
+     * BEFORE the overwrites below. Computed here rather than at the call sites, so no
+     * writer can forget it. */
+    uint32_t changed = 0;
+    if (title && (!e->title || strcmp(title, e->title) != 0))
+        changed |= EDC_MEMO_F_TITLE;
+    if (summary && (!e->summary || strcmp(summary, e->summary) != 0))
+        changed |= EDC_MEMO_F_SUMMARY;
+    if (detail && (!e->detail || strcmp(detail, e->detail) != 0))
+        changed |= EDC_MEMO_F_DETAIL;
     /* Given fields overwrite; missing ones stay. */
     if (title)
     {
@@ -1481,6 +1857,10 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
     uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_UPDATED, e->title, e->summary);
     e->updated_seq = seq;
     e->updated_at = (uint64_t)edc_datetime_now();
+    /* Stamp the mask on the event just appended (add_event cannot know it: it only sees
+     * strings). */
+    if (m->event_count > 0 && m->events[m->event_count - 1].seq == seq)
+        m->events[m->event_count - 1].changed = changed;
     if (out_rev)
         *out_rev = seq;
     memo_trim_if_due(m);
@@ -1506,6 +1886,9 @@ bool edc_session_memory_supersede(struct edc_session_memory *m, const char *cons
         uint64_t seq = edc_session_memory_add_event(m, ids[i], EDC_MEMO_SUPERSEDED, e->title, e->summary);
         e->updated_seq = seq;
         e->updated_at = (uint64_t)edc_datetime_now();
+        /* The only field that changed is the retirement flag. */
+        if (m->event_count > 0 && m->events[m->event_count - 1].seq == seq)
+            m->events[m->event_count - 1].changed = EDC_MEMO_F_RETIRED;
     }
     memo_trim_if_due(m);
     return true;
@@ -1610,6 +1993,26 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         return NULL;
     }
 
+    /* Backlog guard: a task that fell far behind (or a fresh one on a huge event table)
+     * must not be drip-fed one line per request forever. Past BACKLOG_FACTOR * cap, stop
+     * listing and DECLARE the abandonment -- the reader is told how many changes it is not
+     * seeing and how to look at the current state instead. That is the difference from the
+     * old "newest cap, advance to next_seq" behaviour: there the skipped changes vanished
+     * without a trace. */
+    if (npick > cap * 3)
+    {
+        free(picked);
+        sds out = sdscatprintf(sdsempty(),
+                               "## Session Memory Updates  (注意：%zu 项变化积压 / 记忆共 %zu 条)\n"
+                               "Backlog too large to list one by one — these changes are NOT being reported. "
+                               "Use memory_list / memory_search to read the CURRENT state; the change feed will "
+                               "resume from now on.",
+                               npick, m->entry_count);
+        if (out_max_injected)
+            *out_max_injected = m->next_seq;
+        return out;
+    }
+
     /* Sort ascending by seq (pick is "first seen" order, not monotonic), then take the NEWEST cap. */
     for (size_t i = 1; i < npick; i++)
     {
@@ -1623,12 +2026,18 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         picked[j] = cur;
     }
 
-    /* The newest cap (overflow is reported as a count). */
-    size_t first = (npick > cap) ? (npick - cap) : 0;
-    size_t shown = npick - first;
+    /* FIFO: deliver the OLDEST pending changes first, so `out_max_injected` (the seq the
+     * watermark advances to) never jumps over an undelivered one. The older "newest cap +
+     * advance to next_seq" pair was self-consistent as a SUMMARY (what was skipped is
+     * declared by "N more" and reachable via memory_list), but it silently DROPPED changes
+     * a task never saw. Delivering in order is the only way "every change is either
+     * delivered or explicitly declared" can hold -- and the watermark below is what makes
+     * it a cursor. */
+    size_t first = 0;
+    size_t shown = (npick > cap) ? cap : npick;
 
     sds body = sdsempty();
-    for (size_t i = first; i < npick; i++)
+    for (size_t i = first; i < first + shown; i++)
     {
         const struct edc_memo_event *ev = picked[i];
         const struct edc_memo_entry *en = NULL;
@@ -1653,6 +2062,45 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         }
         body = sdscatprintf(body, "- [%s] %s: %s", ev->entry_id, edc_memo_event_kind_name(ev->kind),
                             en && en->title ? en->title : (ev->title ? ev->title : "(untitled)"));
+        if (ev->kind == EDC_MEMO_UPDATED && ev->changed)
+        {
+            /* LAYERED RENDERING: for a change, name the FIELDS, do not re-print the content.
+             * The reader's question is "is this worth a memory_get?", and which field moved
+             * answers it better than the content does: a summary/detail change means the
+             * knowledge itself moved, a title change is usually just wording. The full
+             * summary is deliberately NOT repeated -- it is the expensive part (~100 tok)
+             * and the catalogue/memory_list already carry it for the entries that matter. */
+            static const struct
+            {
+                uint32_t bit;
+                const char *name;
+            } kFields[] = {
+                {EDC_MEMO_F_TITLE, "title"},
+                {EDC_MEMO_F_SUMMARY, "summary"},
+                {EDC_MEMO_F_DETAIL, "detail"},
+                {EDC_MEMO_F_RETIRED, "retired"},
+            };
+            sds fields = sdsempty();
+            for (size_t f = 0; f < sizeof(kFields) / sizeof(kFields[0]); f++)
+            {
+                if (!(ev->changed & kFields[f].bit))
+                    continue;
+                if (sdslen(fields))
+                    fields = sdscat(fields, "+");
+                fields = sdscat(fields, kFields[f].name);
+            }
+            if (sdslen(fields))
+            {
+                body = sdscatprintf(body, " (%s changed)", fields);
+                sdsfree(fields);
+                body = sdscatprintf(body, " (%s)", when);
+                sdsfree(when);
+                continue;
+            }
+            sdsfree(fields);
+        }
+        /* created / superseded / old archives (changed == 0): carry the content, because
+         * the reader has no other way to know what the entry now says. */
         const char *sum = (en && en->summary && en->summary[0]) ? en->summary : ev->summary;
         if (sum && sum[0])
             body = sdscatprintf(body, " — %s", sum);
@@ -1661,13 +2109,15 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
         sdsfree(when);
     }
 
-    sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (共 %zu 条)\n", m->entry_count);
+    sds out = sdscatprintf(sdsempty(), "## Session Memory Updates  (本次 %zu 项变化 / 记忆共 %zu 条)\n", npick,
+                           m->entry_count);
     if (seen < m->pruned_before)
-        out = sdscatprintf(out, "[events up to seq %llu were compacted away — the index/search hold the full picture]\n",
-                           (unsigned long long)m->pruned_before);
+        out = sdscatprintf(out, "[events up to seq %" PRIu64 " were compacted away — the index/search hold the full picture]\n",
+                           m->pruned_before);
     out = sdscatsds(out, body);
+    sdsfree(body); /* copied into out: the per-event listing is not needed past this point */
     if (npick > shown)
-        out = sdscatprintf(out, "\n… %zu more（memory_search <patterns> / memory_list [offset] [n] / memory_get <ids>）",
+        out = sdscatprintf(out, "\n… %zu more（memory_list [offset] [n] / memory_search <patterns> / memory_get <ids>）",
                            npick - shown);
     else
         out = sdscat(out, "\n（memory_list / memory_search / memory_get 可查完整内容）");
@@ -1680,12 +2130,16 @@ sds edc_session_memory_notice(const struct edc_session_memory *m, uint64_t seen,
                  "into a related entry; memory_write only when nothing related exists. memory_update needs the "
                  "entry's `rev` as expected_rev.");
 
+    /* Watermark = the last seq ACTUALLY delivered (FIFO window), not next_seq: with the window
+     * starting at the oldest pending change, this is a cursor that guarantees the next request
+     * continues exactly where this one stopped. The "N more" line tells the reader the rest is
+     * pending, so an unreported change is never silently marked as seen. */
+    uint64_t watermark = m->next_seq;
+    if (shown > 0)
+        watermark = picked[first + shown - 1]->seq;
     free(picked);
-    /* The watermark advances to the HEADER: the "newest cap" window guarantees the
-     * newest is included, and cap-truncated old events are covered by the notice's
-     * "N more" + memory_list/memory_search (see the header). */
     if (out_max_injected)
-        *out_max_injected = m->next_seq;
+        *out_max_injected = watermark;
     return out;
 }
 
@@ -1695,8 +2149,12 @@ void edc_session_memory_adopt_task(struct edc_session *session, struct edc_task 
 {
     if (!session || !task || !session->memo)
         return;
-    /* 0 = "has seen nothing" => the first request carries a backfill notice (newest cap). */
+    /* A new task has received NOTHING: no change notice (there is no "since you last
+     * looked" for it) and no catalogue. Two separate pieces of state, both cleared
+     * (schema v8 -- `memo_seen_seq == 0` used to carry both meanings at once). */
     task->memo_seen_seq = 0;
+    task->memo_baseline_done = false;
+    task->memo_notice_catalogue = false;
 }
 
 void edc_session_memory_note_proposer(struct edc_memo_entry *entry, const char *task_id)

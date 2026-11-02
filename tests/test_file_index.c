@@ -92,6 +92,20 @@ int main(void)
         CHECK(edc_file_index_query(ws, "A.T", buf, sizeof(buf)) == 1, "case-insensitive");
     }
 
+    TEST("a space in the last component is an ordinary byte (quoted references complete)");
+    {
+        /* Its own directory, created here: a name with a space would otherwise add a row to
+         * the exact-list assertions above. `@"my file.txt"` has to be completable, and the
+         * space must not be a separator here -- in a reference it is the quote's job. */
+        char d[512];
+        snprintf(d, sizeof(d), "%s/spaced", ws);
+        mkdir(d, 0777);
+        snprintf(p, sizeof(p), "%s/my file.txt", d);
+        touch(p);
+        const size_t n = edc_file_index_query(ws, "spaced/my fi", buf, sizeof(buf));
+        CHECK(n == 1 && strstr(buf, "my file.txt") != NULL, "the row comes back with its space");
+    }
+
     TEST("a typed prefix keeps the noisy directories available");
     {
         CHECK(edc_file_index_query(ws, "bu", buf, sizeof(buf)) == 1, "'bu' finds build/");

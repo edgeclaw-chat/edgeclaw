@@ -7,6 +7,7 @@
  *
  * Harness copied from test_commands_task_new. */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_config.h"
 #include "edc_compat.h"
@@ -141,9 +142,9 @@ static void complete_all_tasks(struct edc_session *sess)
 /* The first user message of a turn -- what the model actually receives. */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
@@ -163,9 +164,11 @@ static void write_prompt(const char *ws, const char *name, const char *content)
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_prompt_ws";
+    const char *ws = edc_test_workspace();
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/prompts", ws, ws);
+    /* Create the prompts/ directory only: the workspace itself must survive, the store is
+     * open on it. */
+    snprintf(cmd, sizeof(cmd), "mkdir -p %s/prompts", ws);
     if (system(cmd) != 0)
         return 1;
 
@@ -358,7 +361,7 @@ int main(void)
         CHECK(older != NULL && sess->foreground_group != older, "the older group is not in front");
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s focus", older ? older->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(older ? older->group_id : 0));
         const int groups_before = count_groups(sess);
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
@@ -368,7 +371,7 @@ int main(void)
         CHECK(older && last_member(older) && last_member(older)->group == older, "it joined the named group");
 
         TEST("--group accepts a QUOTED id");
-        snprintf(line, sizeof(line), "/prompt review --group \"%s\" focus", older ? older->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group \"%s\" focus", edc_id_str(older ? older->group_id : 0));
         const int tasks_before_q = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
         CHECK(count_tasks(sess) == tasks_before_q + 1, "the quotes are stripped, so the group is found");
@@ -387,7 +390,7 @@ int main(void)
             edc_task_group_mark_orphaned(doomed); /* what a departed leader leaves behind */
 
             char line[256];
-            snprintf(line, sizeof(line), "/prompt review --group %s focus", doomed->group_id);
+            snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(doomed->group_id));
             const int tasks_before = count_tasks(sess);
             drive_command(cfg, sm, sched, line);
 
@@ -427,7 +430,7 @@ int main(void)
         CHECK(target != NULL && sess->foreground_group != target, "the target is not the group in front");
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group=%s focus", target ? target->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group=%s focus", edc_id_str(target ? target->group_id : 0));
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
         CHECK(count_tasks(sess) == tasks_before + 1, "a task was created");
@@ -442,7 +445,7 @@ int main(void)
         if (sys && sys->group)
         {
             char line[256];
-            snprintf(line, sizeof(line), "/prompt review --group %s focus", sys->group->group_id);
+            snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(sys->group->group_id));
             const int tasks_before = count_tasks(sess);
             drive_command(cfg, sm, sched, line);
             CHECK(count_tasks(sess) == tasks_before, "nothing was created");
@@ -471,7 +474,7 @@ int main(void)
         CHECK(busy != NULL && sess->foreground_group != busy, "the busy group is not the group in front");
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s queued", busy ? busy->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s queued", edc_id_str(busy ? busy->group_id : 0));
         const int tasks_before = count_tasks(sess);
         drive_command(cfg, sm, sched, line);
 
@@ -491,7 +494,7 @@ int main(void)
         struct edc_task_group *front = sess->foreground_group;
 
         char line[256];
-        snprintf(line, sizeof(line), "/prompt review --group %s --bg alongside", busy ? busy->group_id : "none");
+        snprintf(line, sizeof(line), "/prompt review --group %s --bg alongside", edc_id_str(busy ? busy->group_id : 0));
         drive_command(cfg, sm, sched, line);
 
         struct edc_task *t = last_member(busy);
@@ -540,9 +543,7 @@ int main(void)
         CHECK(in && strstr(in, "-strict") != NULL, "`-strict` was substituted into the body");
     }
 
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
-    if (system(cmd) != 0)
-        printf("  (cleanup failed)\n");
+    /* store still open: nothing to remove */
 
     /* ── /skill: 正文当输入 + 用户输入（无占位符 → 追加）+ desc 用用户原话 ── */
 

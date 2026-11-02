@@ -1,4 +1,5 @@
 #include "edc_task.h"
+#include "test_ws.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
 #include "log.h"
@@ -20,10 +21,9 @@ static int passed = 0;
 static void test_group_history_lifecycle(void)
 {
     T("group_new creates empty history array");
-    struct edc_task *l = edc_task_new("gh-1", "s-1", "gh-1", "leader", edc_channel_adapter);
+    struct edc_task *l = edc_task_new(edc_test_id("gh-1"), edc_test_session_id("s-1"), edc_test_id("gh-1"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
-    C(g->history != NULL, "history non-NULL");
-    C(cJSON_GetArraySize(g->history) == 0, "history starts empty");
+    C(edc_task_group_history_count(g) == 0, "history starts empty");
     edc_task_group_free(g);
 }
 
@@ -32,7 +32,7 @@ static void test_group_history_lifecycle(void)
 static void test_group_history_accumulation(void)
 {
     T("STOP sync adds messages to group->history");
-    struct edc_task *l = edc_task_new("gh-acc-1", "s-2", "gh-acc-1", "L", edc_channel_adapter);
+    struct edc_task *l = edc_task_new(edc_test_id("gh-acc-1"), edc_test_session_id("s-2"), edc_test_id("gh-acc-1"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
 
     /* Simulate turn completion sync (as done in STOP handler) */
@@ -40,29 +40,25 @@ static void test_group_history_accumulation(void)
     edc_turn_add_user_message(turn, "hello");
     edc_turn_add_assistant_message(turn, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"hi\"}"));
 
-    /* Sync: copy messages to group history */
-    for (size_t qi = turn->messages.head; qi < turn->messages.tail; qi++)
-    {
-        cJSON_AddItemReferenceToArray(g->history, turn->messages.data[qi]);
-    }
-    C(cJSON_GetArraySize(g->history) == 2, "2 messages synced");
+    /* Sync: the turn's messages enter the history (as ids; the store holds the rows). */
+    edc_task_group_history_add_turn(g, turn);
+    C(edc_task_group_history_count(g) == 2, "2 messages synced");
 
     /* Second turn */
     struct edc_turn *turn2 = edc_turn_new();
     edc_turn_add_user_message(turn2, "world");
     edc_turn_add_assistant_message(turn2, cJSON_Parse("{\"role\":\"assistant\",\"content\":\"there\"}"));
 
-    for (size_t qi = turn2->messages.head; qi < turn2->messages.tail; qi++)
-    {
-        cJSON_AddItemReferenceToArray(g->history, turn2->messages.data[qi]);
-    }
-    C(cJSON_GetArraySize(g->history) == 4, "4 messages after second turn");
+    edc_task_group_history_add_turn(g, turn2);
+    C(edc_task_group_history_count(g) == 4, "4 messages after second turn");
 
-    /* Verify content */
-    cJSON *m0 = cJSON_GetArrayItem(g->history, 0);
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user") == 0, "msg0 is user");
-    cJSON *m3 = cJSON_GetArrayItem(g->history, 3);
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m3, "role")), "assistant") == 0, "msg3 is assistant");
+    /* Verify content through the slot API. */
+    cJSON *m0 = edc_task_group_history_at(g, 0);
+    C(m0 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "role")), "user") == 0, "msg0 is user");
+    cJSON *m3 = edc_task_group_history_at(g, 3);
+    C(m3 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m3, "role")), "assistant") == 0, "msg3 is assistant");
+    cJSON_Delete(m0);
+    cJSON_Delete(m3);
 
     edc_turn_free(turn);
     edc_turn_free(turn2);
@@ -74,20 +70,19 @@ static void test_group_history_accumulation(void)
 static void test_group_isolation(void)
 {
     T("different groups have independent history");
-    struct edc_task *l1 = edc_task_new("iso-1", "s-3", "iso-1", "G1L", edc_channel_adapter);
+    struct edc_task *l1 = edc_task_new(edc_test_id("iso-1"), edc_test_session_id("s-3"), edc_test_id("iso-1"), "G1L", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(l1);
 
-    struct edc_task *l2 = edc_task_new("iso-2", "s-3", "iso-2", "G2L", edc_channel_adapter);
+    struct edc_task *l2 = edc_task_new(edc_test_id("iso-2"), edc_test_session_id("s-3"), edc_test_id("iso-2"), "G2L", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(l2);
 
     /* Add message to g1 only */
     struct edc_turn *t = edc_turn_new();
     edc_turn_add_user_message(t, "g1 msg");
-    for (size_t qi = t->messages.head; qi < t->messages.tail; qi++)
-        cJSON_AddItemReferenceToArray(g1->history, t->messages.data[qi]);
+    edc_task_group_history_add_turn(g1, t);
 
-    C(cJSON_GetArraySize(g1->history) == 1, "g1 has 1 msg");
-    C(cJSON_GetArraySize(g2->history) == 0, "g2 remains empty (isolated)");
+    C(edc_task_group_history_count(g1) == 1, "g1 has 1 msg");
+    C(edc_task_group_history_count(g2) == 0, "g2 remains empty (isolated)");
 
     edc_turn_free(t);
     edc_task_group_free(g1);
@@ -99,11 +94,11 @@ static void test_group_isolation(void)
 static void test_task_group_pointer(void)
 {
     T("task->group pointer set on add, cleared on remove");
-    struct edc_task *l = edc_task_new("gp-1", "s-4", "gp-1", "L", edc_channel_adapter);
+    struct edc_task *l = edc_task_new(edc_test_id("gp-1"), edc_test_session_id("s-4"), edc_test_id("gp-1"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
     C(l->group == g, "leader task->group set");
 
-    struct edc_task *m = edc_task_new("gp-2", "s-4", "gp-1", "M", edc_channel_adapter);
+    struct edc_task *m = edc_task_new(edc_test_id("gp-2"), edc_test_session_id("s-4"), edc_test_id("gp-1"), "M", edc_channel_adapter);
     edc_task_group_add_task(g, m);
     C(m->group == g, "member task->group set");
 
@@ -119,8 +114,8 @@ static void test_task_group_pointer(void)
 static void test_join_source_notify(void)
 {
     T("JOIN source notifies its dependents");
-    struct edc_task *src = edc_task_new("ar-src", "s-5", "ar-src", "source", edc_channel_adapter);
-    struct edc_task *dst = edc_task_new("ar-dst", "s-5", "ar-dst", "dest", edc_channel_adapter);
+    struct edc_task *src = edc_task_new(edc_test_id("ar-src"), edc_test_session_id("s-5"), edc_test_id("ar-src"), "source", edc_channel_adapter);
+    struct edc_task *dst = edc_task_new(edc_test_id("ar-dst"), edc_test_session_id("s-5"), edc_test_id("ar-dst"), "dest", edc_channel_adapter);
 
     /* Set up groups */
     struct edc_task_group *g_src = edc_task_group_new(src);
@@ -159,7 +154,7 @@ static void test_join_source_notify(void)
 static void test_no_dep_stays(void)
 {
     T("task without dependents stays COMPLETED in the tree");
-    struct edc_task *t = edc_task_new("nd-1", "s-6", "nd-1", "standalone", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("nd-1"), edc_test_session_id("s-6"), edc_test_id("nd-1"), "standalone", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(t);
 
     sds out = sdsnew("standalone result");
@@ -181,7 +176,7 @@ static void test_no_dep_stays(void)
 static void test_context_messages_iteration(void)
 {
     T("context_messages includes turn messages via EdcQueue iteration");
-    struct edc_task *t = edc_task_new("ctx-1", "s-7", "ctx-1", "ctx test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("ctx-1"), edc_test_session_id("s-7"), edc_test_id("ctx-1"), "ctx test", edc_channel_adapter);
 
     /* Add completed turns to the queue */
     struct edc_turn *turn1 = edc_turn_new();
@@ -218,7 +213,7 @@ static void test_context_messages_iteration(void)
 static void test_large_group_history(void)
 {
     T("group history with 100 turns (200 messages)");
-    struct edc_task *l = edc_task_new("big-1", "s-8", "big-1", "L", edc_channel_adapter);
+    struct edc_task *l = edc_task_new(edc_test_id("big-1"), edc_test_session_id("s-8"), edc_test_id("big-1"), "L", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(l);
 
     for (int i = 0; i < 100; i++)
@@ -233,18 +228,17 @@ static void test_large_group_history(void)
         cJSON_AddStringToObject(amsg, "content", buf);
         edc_turn_add_assistant_message(t, amsg);
 
-        for (size_t qi = t->messages.head; qi < t->messages.tail; qi++)
-            cJSON_AddItemReferenceToArray(g->history, t->messages.data[qi]);
-
+        edc_task_group_history_add_turn(g, t);
         edc_turn_free(t);
     }
 
-    C(cJSON_GetArraySize(g->history) == 200, "200 messages in history");
+    C(edc_task_group_history_count(g) == 200, "200 messages in history");
     edc_task_group_free(g);
 }
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Group-level 稳定性测试 ===");
     log_info("");
 

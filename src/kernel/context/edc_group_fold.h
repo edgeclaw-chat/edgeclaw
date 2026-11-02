@@ -2,6 +2,7 @@
 #define __BC_GROUP_FOLD_H__
 
 #include "sds.h"
+#include <stdint.h>
 #include <stdbool.h>
 
 struct edc_scheduler;
@@ -80,7 +81,7 @@ extern bool edc_group_fold_try(struct edc_scheduler *sched, struct edc_session_m
 
 struct edc_fold_cut
 {
-    const char *task_id;
+    int64_t task_id; /* the member the cut landed in */
     uint32_t turn;
     uint32_t prefix;
 };
@@ -151,5 +152,16 @@ extern void edc_group_fold_note_failure(struct edc_task_group *group);
  *  manual fold, and new committed content in the group (a new turn = new
  *  situation, worth retrying). Starting a fold does NOT reset it. */
 extern void edc_group_fold_note_progress(struct edc_task_group *group);
+
+/** The files the folded work read / modified, as newline-separated text: a projection of
+ *  `group->fold_files` (which is where the data actually lives -- `group->memory` holds the
+ *  summary body only). They cover the folded corpus only: a snapshot taken when a fold
+ *  lands, not a live view, and `exec_shell` calls are not tracked at all.
+ *
+ *  Either out param may be NULL. Each receives a newline-separated list with a trailing
+ *  newline, or NULL when that list is empty. Returns the number of entries found.
+ *
+ *  The ONE reader: `/group files` renders this, `/group info` counts it. */
+extern int edc_group_fold_tracked_files(const struct edc_task_group *group, sds *out_reads, sds *out_writes);
 
 #endif

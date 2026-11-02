@@ -10,6 +10,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* mkdtemp lives in <unistd.h> on macOS and in <stdlib.h> on glibc; including both is
+ * the portable answer. */
+#include <unistd.h>
 
 static int passed = 0;
 static int failed = 0;

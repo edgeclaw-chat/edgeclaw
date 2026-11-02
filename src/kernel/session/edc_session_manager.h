@@ -2,6 +2,7 @@
 #define __BC_SESSION_MANAGER_H__
 
 #include "sds.h"
+#include <stdint.h>
 #include <cJSON.h>
 #include <stdbool.h>
 
@@ -17,21 +18,16 @@ struct edc_session_manager
     int session_count;
     int active_index; /* index into sessions[] */
 
-    /* Monotonic high-water for session ids, advanced by every creation and
-     * persisted in <workspace>/.session_seq, so an id is NEVER reused -- reuse
-     * would make a new session inherit a removed one's directory and its
-     * session.json / chat.jsonl / tasks.idx. */
-    long long next_session_id;
+    /* Session ids come from the database now (sessions.session_id is an INTEGER PRIMARY KEY
+     * AUTOINCREMENT, see edc_state_store_insert_session_new): there is no counter here and
+     * no <workspace>/.session_seq. AUTOINCREMENT is what guarantees an id is never reused --
+     * reuse would make a new session inherit a removed one's directory and its chat.jsonl. */
     sds sessions_dir; /* workspace/ -- session dirs live here */
-    sds index_path;   /* workspace/sessions.json */
     struct edc_config *config;
 
-    /* task_id -> session_id for sessions NOT loaded this run, built lazily by
-     * parsing each unloaded session.json once. It only ever describes the frozen
-     * on-disk state of unloaded sessions, so loaded sessions win via the
-     * in-memory lookup and no write-side sync is needed. */
-    struct edc_task_index_entry *task_index;
-    bool task_index_built;
+    /* No task_id -> session_id index: it was a uthash filled by parsing every unloaded
+     * session's state file, and the database answers the same question with one primary-key
+     * lookup (edc_state_store_session_for_task). Nothing here to keep in sync after a save. */
 };
 
 extern struct edc_session_manager *edc_session_manager_new(struct edc_config *config);
@@ -45,7 +41,7 @@ extern int edc_session_manager_index_of(struct edc_session_manager *sm, const ch
  *  monotonic counter persisted in <workspace>/.task_seq, so a hit is unambiguous.
  *  When |owner_out| is non-NULL it receives the owning session on success, or NULL
  *  on failure. */
-extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
+extern struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, int64_t task_id,
                                                           struct edc_session **owner_out);
 
 /** Hand every task in memory to |cb| (session list x group list x member list).
@@ -56,7 +52,7 @@ extern void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc
 
 /** Owning session of |task_id| when it is not loaded yet, via the lazily-built
  *  index. Loaded sessions are not indexed here; callers search memory first. */
-extern struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id);
+extern struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, int64_t task_id);
 
 /** Drop the cached task-id index (rebuilt on next lookup). Only needed when
  *  persisted state changed behind the manager's back (tests / external tooling). */
@@ -83,7 +79,9 @@ extern bool edc_session_manager_rename(struct edc_session_manager *sm, const cha
 
 extern sds edc_session_manager_list(struct edc_session_manager *sm);
 
-/** Save the index (sessions.json) and then the active session. */
+/** Save the index (sessions.json). Session state is NOT part of this: it needs a
+ *  scheduler, so it is written by edc_session_store_save_all_sessions_state() /
+ *  edc_session_store_save_session_state_tagged() (src/kernel/session/edc_state_store.h). */
 extern void edc_session_manager_save_all(struct edc_session_manager *sm);
 
 /** Persist the state of every session LOADED in this run (exit path). Sessions

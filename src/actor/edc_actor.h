@@ -37,7 +37,6 @@ typedef enum
                                    * the timer callback never mutates state itself. */
 } edc_actor_msg_type_t;
 
-extern const char *edc_actor_msg_type_s(edc_actor_msg_type_t type);
 typedef void (*edc_actor_data_free_fn)(void *);
 
 struct edc_actor_msg
@@ -70,6 +69,12 @@ typedef struct
     edc_actor_t **actors;
     int actor_count;
     int actor_capacity;
+    /* Set by the CREATING thread once uv_thread_create succeeds, cleared by the join.
+     * `running` cannot serve this purpose: it is set inside the thread, so a runner that is
+     * stopped immediately after start would look "not running", skip the join, be freed --
+     * and the thread would then touch freed memory. (Found by valgrind when a headless run
+     * created the app and, having nothing to do, tore it down at once.) */
+    volatile int thread_started;
     volatile int running;
 } edc_actor_runner_t;
 

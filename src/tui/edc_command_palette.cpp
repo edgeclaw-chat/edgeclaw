@@ -127,6 +127,51 @@ void CommandPalette::SetShellOptionSource(std::vector<CommandFact> rows)
     shell_option_rows_ = std::move(rows);
 }
 
+namespace
+{
+// A `#12` / `#12-20` range at the END of |text|: the length of the suffix, or 0. Same shape
+// the mention parser accepts (src/shell/edc_mention.c: range_suffix), so what completion
+// treats as a range is what the pass will treat as one.
+size_t MentionRangeSuffix(const std::string &text)
+{
+    const size_t hash = text.rfind('#');
+    if (hash == std::string::npos)
+        return 0;
+    size_t i = hash + 1;
+    const size_t first = i;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '9')
+        i++;
+    if (i == first)
+        return 0;
+    if (i < text.size() && text[i] == '-')
+    {
+        i++;
+        const size_t second = i;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9')
+            i++;
+        if (i == second)
+            return 0;
+    }
+    return i == text.size() ? text.size() - hash : 0;
+}
+
+bool IsMentionSpace(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// Does this path need quoting to survive the trip back through the mention parser? A space
+// is the obvious one; a `#` would be read as a line range and a quote character would end
+// the reference early. Quoting is what makes the file name reachable at all.
+bool MentionNeedsQuotes(const std::string &path)
+{
+    for (char c : path)
+        if (IsMentionSpace(c) || c == '#')
+            return true;
+    return false;
+}
+} // namespace
+
 CommandPalette::MentionHit CommandPalette::ParseMention(const std::string &content, int cursor)
 {
     MentionHit hit;
@@ -135,27 +180,71 @@ CommandPalette::MentionHit CommandPalette::ParseMention(const std::string &conte
     if (cursor == 0)
         return hit;
 
-    // The LAST '@' before the caret, with no whitespace between it and the caret, and at
-    // the line start or right after whitespace (so "foo@bar" and "@Override in a word"
-    // never trigger).
+    // The LAST '@' before the caret, at the line start or right after whitespace (so
+    // "foo@bar" and "@Override in a word" never trigger).
     const size_t at = content.rfind('@', static_cast<size_t>(cursor) - 1);
     if (at == std::string::npos || static_cast<int>(at) >= cursor)
         return hit;
-    if (at > 0)
+    if (at > 0 && !IsMentionSpace(content[at - 1]))
+        return hit;
+
+    const size_t caret = static_cast<size_t>(cursor);
+    size_t body = at + 1;
+
+    /* Quoted: `@"…"`, `@'…'` or `@$'…'`. The quote rules are the pass's (which are the
+     * lexer's), so a space inside the quotes is part of the path -- that is the whole point
+     * of quoting, and it is exactly what completion has to follow. */
+    char quote = 0;
+    if (body < caret && content[body] == '$' && body + 1 < caret && content[body + 1] == '\'')
     {
-        const char prev = content[at - 1];
-        if (prev != ' ' && prev != '\t' && prev != '\n')
-            return hit;
+        quote = '\'';
+        body += 2;
     }
-    for (size_t i = at + 1; i < static_cast<size_t>(cursor); i++)
+    else if (body < caret && (content[body] == '"' || content[body] == '\''))
     {
-        if (content[i] == ' ' || content[i] == '\t' || content[i] == '\n')
-            return hit;
+        quote = content[body];
+        body++;
     }
+
+    if (quote)
+    {
+        // A closing quote ends the reference: there is nothing left to complete.
+        for (size_t i = body; i < caret; i++)
+        {
+            if (quote == '"' && content[i] == '\\' && i + 1 < caret)
+            {
+                i++; // \" and \\ are not the closing quote
+                continue;
+            }
+            if (content[i] == quote)
+                return hit;
+        }
+        hit.active = true;
+        hit.begin = static_cast<int>(at);
+        hit.quoted = true;
+        hit.quote = quote;
+        hit.query = content.substr(body, caret - body);
+        return hit;
+    }
+
+    // Unquoted: the reference ends at whitespace (the pass's rule).
+    for (size_t i = body; i < caret; i++)
+        if (IsMentionSpace(content[i]))
+            return hit;
 
     hit.active = true;
     hit.begin = static_cast<int>(at);
-    hit.query = content.substr(at + 1, static_cast<size_t>(cursor) - at - 1);
+    hit.query = content.substr(body, caret - body);
+
+    /* A trailing line range is part of the reference but not part of the NAME, so it is
+     * kept out of the query: `@a.c#1` must still list `a.c`. (The pass reads `#digits` as a
+     * range too, so this is the same reading, not a second rule.) */
+    const size_t range_len = MentionRangeSuffix(hit.query);
+    if (range_len > 0)
+    {
+        hit.range = hit.query.substr(hit.query.size() - range_len);
+        hit.query.resize(hit.query.size() - range_len);
+    }
     return hit;
 }
 
@@ -164,13 +253,45 @@ std::string CommandPalette::MentionInsert() const
     if (items_.empty() || selected_ < 0 || selected_ >= static_cast<int>(items_.size()))
         return "";
     const model::CommandFact &item = items_[static_cast<size_t>(selected_)];
-    /* The directory the query already points into: accepting it means "this directory",
-     * so the mention is finished (trailing space) rather than opened for the next level. */
-    if (item.mention_completes)
-        return "@" + item.text + " ";
+
+    /* A directory reference opens the next level (no trailing space), EXCEPT the directory
+     * the query already names -- accepting that one means "this directory", so it finishes
+     * the mention instead of descending into itself. */
     const std::string &row = item.text;
     const bool dir = !row.empty() && row.back() == '/';
-    return "@" + row + (dir ? "" : " ");
+    const bool finishes = item.mention_completes || !dir;
+
+    /* Quote when the user's reference is already quoted, or when the path could not be read
+     * back without it (a space or a `#` would end it or turn into a line range). The quote
+     * character avoids the path's own quotes; `"` escapes its `"` for the same reason. */
+    bool quoted = mention_quoted_ || MentionNeedsQuotes(row);
+    char quote = mention_quote_ ? mention_quote_ : '"';
+    if (!mention_quoted_)
+        quote = row.find('"') == std::string::npos ? '"' : '\'';
+
+    std::string path = row;
+    if (quoted && quote == '"')
+    {
+        std::string escaped;
+        for (char c : path)
+        {
+            if (c == '"' || c == '\\')
+                escaped += '\\';
+            escaped += c;
+        }
+        path = escaped;
+    }
+
+    std::string out = "@";
+    if (quoted)
+        out += quote;
+    out += path;
+    if (quoted && finishes)
+        out += quote;
+    out += mention_range_;
+    if (finishes)
+        out += ' ';
+    return out;
 }
 
 bool CommandPalette::Update(const std::string &content, int cursor)
@@ -202,6 +323,12 @@ bool CommandPalette::Update(const std::string &content, int cursor)
     {
         mode_ = Mode::Mention;
         trigger_ = hit.begin;
+        /* How the reference is written travels with the rows, because MentionInsert() must
+         * answer in the same notation the user is typing: a quoted reference is completed
+         * with quotes, a `#12` suffix is put back. */
+        mention_quoted_ = hit.quoted;
+        mention_quote_ = hit.quote;
+        mention_range_ = hit.range;
         items_ = file_rows_;
         open_ = !items_.empty();
         return open_;
@@ -413,6 +540,13 @@ std::string CommandPalette::Accept() const
             return prefix + common + (whole ? " " : "");
         return prefix + CompletionOf(items_[selected_].text);
     }
+
+    /* A file reference is spliced the same way AcceptSelected() does it: the rows are
+     * PATHS, not words, so the generic word-grower below would split `@"my file.txt"` on the
+     * space it is supposed to protect. Both keys therefore mean "take the row" inside a
+     * mention -- and HasMore() reads this, so it agrees. */
+    if (mode_ == Mode::Mention)
+        return MentionInsert();
 
     // 1. Complete the ONE word being typed ("/sess" -> "/session "): Tab grows a token, it
     //    does not swallow a whole candidate row.

@@ -17,13 +17,19 @@
  * Returns true on success. */
 bool edc_secret_init(bool confirm_password, const char *edc_home);
 
-/* Clean up the secret module. Zeros master key from memory. */
+/* Clean up the secret module. Zeros master key from memory.
+ *
+ * THE MASTER KEY STAYS RESIDENT FOR THE WHOLE PROCESS, by design, and this is the only
+ * call that wipes it. The obvious alternative -- wipe it right after edc_config_load()
+ * has decrypted what it needs -- does not work here: `/connect` re-encrypts a new API key
+ * at runtime, and edc_config_update_llm() writes whatever edc_secret_encrypt() returns,
+ * so with the key gone it would overwrite the stored key with an empty string and then
+ * report success. Until that write path can obtain the key again, "keys stay available"
+ * is the contract. The cost is that the key lives in memory until exit; it is mlock()ed
+ * (see lock_master_key) to keep it out of swap.
+ *
+ * Do not add a "lockdown after load" call without also fixing that write path. */
 void edc_secret_cleanup(void);
-
-/* Lock down the secret module: zero the master key and unlock the
- * memory page. Call this after edc_config_load() completes — the
- * master key is no longer needed once all config secrets are decrypted. */
-void edc_secret_lockdown(void);
 
 /* Encrypt a plaintext string.
  * Returns a string prefixed with BC_SECRET_PREFIX followed by base64 ciphertext,

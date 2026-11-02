@@ -4,12 +4,18 @@
 #include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
 #include "edc_session.h"
-#include "edc_state_serializer.h"
+#include "edc_state_store.h"
+/* Both were pulled in transitively through edc_state_serializer.h until that file went
+ * away; include what this file actually uses rather than relying on the next header to
+ * do it. */
+#include "edc_task.h"
+#include "edc_task_group.h"
 #include "log.h"
 #include "sds.h"
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <dirent.h>
+#include <inttypes.h> /* PRId64 */
 #include <errno.h>
 #include <string.h>
 
@@ -31,120 +37,11 @@
  * archives and orphaned directories.
  * Pure stdio, no uv file loop (session manager unit tests do not init file utils). */
 
-static sds edc_sm_session_seq_path(struct edc_session_manager *sm)
-{
-    if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
-        return NULL;
-    return edc_path_join(sm->config->workspace, ".session_seq", NULL);
-}
-
-static void edc_sm_persist_session_seq(struct edc_session_manager *sm)
-{
-    sds path = edc_sm_session_seq_path(sm);
-    if (!path)
-        return;
-
-    sds tmp = sdscatprintf(sdsempty(), "%s.tmp", path);
-    FILE *f = fopen(tmp, "w");
-    if (!f && errno == ENOENT && sm->config && sm->config->workspace)
-    {
-        /* On a fresh environment the workspace dir may not exist yet: create it and retry. */
-        mkdir(sm->config->workspace, 0755);
-        f = fopen(tmp, "w");
-    }
-    if (!f)
-    {
-        log_debug("session_seq: open %s for write failed: %s", tmp, strerror(errno));
-    }
-    else
-    {
-        if (fprintf(f, "%lld\n", sm->next_session_id) < 0)
-            log_debug("session_seq: write %s failed: %s", tmp, strerror(errno));
-        fclose(f);
-        EdcError *rerr = NULL;
-        if (!edc_file_rename_replace(tmp, path, &rerr))
-        {
-            log_warn("session_seq: %s", rerr ? rerr->message : "rename failed");
-            if (rerr)
-                edc_error_free(rerr);
-        }
-    }
-    sdsfree(tmp);
-    sdsfree(path);
-}
-
-static void edc_sm_load_session_seq(struct edc_session_manager *sm)
-{
-    sds path = edc_sm_session_seq_path(sm);
-    if (!path)
-        return;
-
-    FILE *f = fopen(path, "r");
-    sdsfree(path);
-    if (!f)
-        return; /* first run / missing file: keep the in-memory initial value */
-
-    long long v = 0;
-    if (fscanf(f, "%lld", &v) == 1 && v > sm->next_session_id)
-        sm->next_session_id = v;
-    fclose(f);
-}
-
-/* Observe a known number (an id in the index, or a leftover session dir name on
- * disk) into the high-water mark. Only the decimal tail of "s<N>" / "sess-<N>" is
- * recognized, matching the issuing format. */
-static void edc_sm_observe_session_id(struct edc_session_manager *sm, const char *id)
-{
-    if (!sm || !id || !*id)
-        return;
-
-    const char *num = NULL;
-    if (strncmp(id, "sess-", 5) == 0)
-        num = id + 5;
-    else if (id[0] == 's')
-        num = id + 1;
-    if (!num || num[0] < '0' || num[0] > '9')
-        return;
-
-    char *end = NULL;
-    long long n = strtoll(num, &end, 10);
-    if (end == num || (end && *end != '\0'))
-        return;
-
-    if (n >= sm->next_session_id)
-    {
-        sm->next_session_id = n + 1;
-        edc_sm_persist_session_seq(sm);
-    }
-}
-
-/* Also observe existing session dirs under workspace: /session remove only takes a
- * session out of the index and leaves the directory, so a max-number session deleted
- * before this change is "not in the index, directory still there". */
-static void edc_sm_observe_session_dirs(struct edc_session_manager *sm)
-{
-    if (!sm || !sm->config || !sm->config->workspace || sdslen(sm->config->workspace) == 0)
-        return;
-
-    DIR *d = opendir(sm->config->workspace);
-    if (!d)
-        return;
-
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL)
-        edc_sm_observe_session_id(sm, e->d_name);
-    closedir(d);
-}
-
-static sds edc_sm_gen_session_id(struct edc_session_manager *sm)
-{
-    long long id = sm->next_session_id > 0 ? sm->next_session_id : 1;
-    sm->next_session_id = id + 1;
-    /* Persist the high-water mark on allocation: even if the session is later
-     * /session remove'd, the same number is not issued again after a restart. */
-    edc_sm_persist_session_seq(sm);
-    return sdscatprintf(sdsempty(), "s%lld", id);
-}
+/* The session id is allocated by the database now (sessions.session_id is an INTEGER
+ * PRIMARY KEY AUTOINCREMENT), so there is no counter, no <ws>/.session_seq, and no
+ * "observe the directories to recover the high-water mark" pass. The invariant that file
+ * existed for -- an id is NEVER reused, because a new session would otherwise land on a
+ * removed session's directory and replay its chat.jsonl -- is what AUTOINCREMENT provides. */
 
 static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
 {
@@ -165,185 +62,95 @@ static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
 
 /* ── Index persistence ─────────────────────────────────────── */
 
-static cJSON *edc_sm_build_index(struct edc_session_manager *sm)
+/* The session list is a QUERY now, not a file. sessions.json restated the `sessions` table
+ * and the two could disagree -- an imported session sat invisible in the database until the
+ * file was rewritten by hand. `is_active` was the one fact the table lacked; it is a column
+ * now (with a partial unique index), so "where am I" survives a kill like everything else.
+ *
+ * What replaced edc_sm_save_index(): edc_session_manager_create / _switch / _stop each
+ * write the one row they changed. Nothing rewrites the whole list. */
+
+/* Persist which session is active. Called at every point that moves it. */
+static void edc_sm_persist_active(struct edc_session_manager *sm)
 {
-    cJSON *root = cJSON_CreateObject();
-    cJSON *arr = cJSON_CreateArray();
-
-    for (int i = 0; i < sm->session_count; i++)
-    {
-        struct edc_session *s = sm->sessions[i];
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "id", s->session_id);
-        cJSON_AddStringToObject(obj, "name", s->name ? s->name : s->session_id);
-        cJSON_AddStringToObject(obj, "created_at", s->created_at ? s->created_at : "");
-        cJSON_AddItemToArray(arr, obj);
-    }
-
-    cJSON_AddItemToObject(root, "sessions", arr);
-    if (sm->active_index >= 0 && sm->active_index < sm->session_count)
-        cJSON_AddStringToObject(root, "active_session_id", sm->sessions[sm->active_index]->session_id);
-
-    return root;
-}
-
-static void edc_sm_save_index(struct edc_session_manager *sm)
-{
-    /* No index path = this store has no disk destination (a hand-built in-memory
-     * store in tests): skip rather than crash, same rule as edc_session_save_state's
-     * handling of history_dir. */
-    if (!sm->index_path)
+    if (!sm || sm->active_index < 0 || sm->active_index >= sm->session_count)
         return;
-
-    cJSON *root = edc_sm_build_index(sm);
-    char *json_str = cJSON_Print(root);
-    EdcError *err = NULL;
-
-    /* ensure directory exists */
-    sds dir = edc_path_dirname(sm->index_path);
-    mkdir(dir, 0755);
-    sdsfree(dir);
-
-    if (!edc_file_write(sm->index_path, json_str, (ssize_t)strlen(json_str), &err))
-    {
-        log_error("failed to save sessions.json: %s", err ? err->message : "unknown");
-        if (err)
-            edc_error_free(err);
-    }
-
-    cJSON_free(json_str);
-    cJSON_Delete(root);
+    struct edc_session *s = sm->sessions[sm->active_index];
+    if (!s || s->session_id <= 0)
+        return;
+    if (!edc_state_store_open(sm->config))
+        return; /* no store (a hand-built test manager): memory only, as before */
+    edc_state_store_set_active_session(s->session_id);
 }
 
 /* ── Load ──────────────────────────────────────────────────── */
 
 bool edc_session_manager_load(struct edc_session_manager *sm)
 {
-    /* 1. Try to load index */
-    EdcError *err = NULL;
-    sds content = edc_file_read(sm->index_path, &err);
+    if (!sm)
+        return false;
 
-    if (!content)
+    /* The session list is the `sessions` table. sessions.json used to hold it too, and the
+     * two copies could disagree -- an imported session sat in the database invisible until
+     * the file was rewritten by hand. Opening the store here (idempotent) is what makes this
+     * possible: the manager is built before anything else, so before this change there was
+     * no database to ask. */
+    if (!edc_state_store_open(sm->config))
     {
-        edc_error_free(err);
-        /* No existing sessions — create default */
+        log_error("session manager: cannot open the state store at %s",
+                  sm->config && sm->config->workspace ? sm->config->workspace : "?");
+        return false;
+    }
+
+    struct edc_session_row *rows = NULL;
+    int n = 0;
+    if (!edc_state_store_list_sessions(&rows, &n))
+    {
+        log_error("session manager: cannot read the session list");
+        return false;
+    }
+
+    if (n == 0)
+    {
+        edc_session_rows_free(rows, 0);
+        /* A brand-new workspace: one session, and it is the active one. */
         struct edc_session *def = edc_session_manager_create(sm, "default");
         if (!def)
             return false;
-        edc_sm_save_index(sm);
-        return true;
-    }
-
-    cJSON *root = cJSON_Parse(content);
-    if (!root)
-    {
-        sdsfree(content);
-        /* fallback: create default */
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-            return false;
-        return true;
-    }
-
-    cJSON *arr = cJSON_GetObjectItem(root, "sessions");
-    if (!arr || !cJSON_IsArray(arr))
-    {
-        cJSON_Delete(root);
-        sdsfree(content);
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-            return false;
-        return true;
-    }
-
-    int count = cJSON_GetArraySize(arr);
-    if (count == 0)
-    {
-        cJSON_Delete(root);
-        sdsfree(content);
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-            return false;
-        return true;
-    }
-
-    sm->sessions = g_new0(struct edc_session *, count);
-    sm->session_count = count;
-
-    cJSON *active_id_json = cJSON_GetObjectItem(root, "active_session_id");
-    const char *active_id =
-        active_id_json && cJSON_IsString(active_id_json) ? cJSON_GetStringValue(active_id_json) : NULL;
-
-    for (int i = 0; i < count; i++)
-    {
-        cJSON *obj = cJSON_GetArrayItem(arr, i);
-        if (!obj)
-            continue;
-
-        cJSON *id_j = cJSON_GetObjectItem(obj, "id");
-        cJSON *name_j = cJSON_GetObjectItem(obj, "name");
-        cJSON *created_j = cJSON_GetObjectItem(obj, "created_at");
-
-        const char *id = id_j && cJSON_IsString(id_j) ? cJSON_GetStringValue(id_j) : NULL;
-        const char *name = name_j && cJSON_IsString(name_j) ? cJSON_GetStringValue(name_j) : NULL;
-
-        if (!id)
-            continue;
-
-        struct edc_session *s = edc_session_new(sm->config, id, name ? name : id);
-        if (!s)
-            continue;
-
-        /* restore timestamps */
-        if (created_j && cJSON_IsString(created_j) && strlen(cJSON_GetStringValue(created_j)) > 0)
-        {
-            sdsfree(s->created_at);
-            s->created_at = sdsnew(cJSON_GetStringValue(created_j));
-        }
-
-        sm->sessions[i] = s;
-
-        if (active_id && strcmp(id, active_id) == 0)
-            sm->active_index = i;
-    }
-
-    /* Compact out NULL entries */
-    int write = 0;
-    for (int i = 0; i < count; i++)
-    {
-        if (sm->sessions[i])
-        {
-            if (write != i)
-                sm->sessions[write] = sm->sessions[i];
-            write++;
-        }
-    }
-    sm->session_count = write;
-
-    /* Clamp active_index */
-    if (sm->active_index < 0 || sm->active_index >= sm->session_count)
         sm->active_index = 0;
-
-    /* Numbers seen in the index also feed the high-water mark: compatible with old
-     * archives lacking .session_seq (on the first run of this change, the index's max
-     * must not be reissued). */
-    for (int i = 0; i < sm->session_count; i++)
-        edc_sm_observe_session_id(sm, sm->sessions[i]->session_id);
-
-    /* If nothing loaded, create default */
-    if (sm->session_count == 0)
-    {
-        struct edc_session *def = edc_session_manager_create(sm, "default");
-        if (!def)
-        {
-            cJSON_Delete(root);
-            sdsfree(content);
-            return false;
-        }
+        edc_sm_persist_active(sm);
+        return true;
     }
 
-    cJSON_Delete(root);
-    sdsfree(content);
+    sm->sessions = g_new0(struct edc_session *, n);
+    sm->session_count = n;
+    int active_idx = -1;
+    for (int i = 0; i < n; i++)
+    {
+        char idbuf[32];
+        snprintf(idbuf, sizeof(idbuf), "%" PRId64, rows[i].session_id);
+        struct edc_session *s = edc_session_new(sm->config, rows[i].session_id,
+                                                rows[i].name && *rows[i].name ? rows[i].name : idbuf);
+        if (!s)
+        {
+            edc_session_rows_free(rows, n);
+            return false;
+        }
+        s->created_at = rows[i].created_at;
+        s->last_active = rows[i].last_active;
+        sm->sessions[i] = s;
+        if (rows[i].is_active)
+            active_idx = i;
+    }
+    edc_session_rows_free(rows, n);
+
+    /* No recorded active session (a database written before is_active existed): pick the
+     * newest and record the choice, so the next start is deterministic. */
+    if (active_idx < 0)
+        active_idx = n - 1;
+    sm->active_index = active_idx;
+    edc_sm_persist_active(sm);
+
     return true;
 }
 
@@ -355,15 +162,9 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     sm->config = config;
     sm->active_index = -1;
     sm->sessions_dir = sdsnew(config->workspace);
-    sm->index_path = edc_path_join(config->workspace, "sessions.json", NULL);
-    sm->next_session_id = 1;
 
-    /* Restore the previous run's high-water mark, load the index (which also feeds
-     * the numbers it lists), then observe leftover session dirs -- the order ensures
-     * next_session_id exceeds every used number before any create. */
-    edc_sm_load_session_seq(sm);
-    edc_sm_observe_session_dirs(sm);
-
+    /* No high-water mark to restore and no directory scan to recover it: the database
+     * allocates session ids and never reuses one. */
     if (!edc_session_manager_load(sm))
     {
         edc_session_manager_free(sm);
@@ -374,14 +175,11 @@ struct edc_session_manager *edc_session_manager_new(struct edc_config *config)
     struct edc_session *active = edc_session_manager_get_active(sm);
     if (active)
     {
-        sdsfree(active->last_active);
-        active->last_active = edc_datetime_timestamp();
+        active->last_active = (uint64_t)edc_datetime_now();
     }
 
     return sm;
 }
-
-static void sm_task_index_free(struct edc_session_manager *sm);
 
 void edc_session_manager_free(struct edc_session_manager *sm)
 {
@@ -394,10 +192,8 @@ void edc_session_manager_free(struct edc_session_manager *sm)
     for (int i = 0; i < sm->session_count; i++)
         edc_session_free(sm->sessions[i]);
 
-    sm_task_index_free(sm);
     free(sm->sessions);
     sdsfree(sm->sessions_dir);
-    sdsfree(sm->index_path);
     free(sm);
 }
 
@@ -410,6 +206,26 @@ struct edc_session *edc_session_manager_get_active(struct edc_session_manager *s
     return sm->sessions[sm->active_index];
 }
 
+/* Does the TEXT the user typed spell the session with this id?
+ *
+ * An id's text form is its integer, and that is the only form recognised here. Anything else
+ * -- including the old "s13" spelling -- falls through to the name comparison in the caller,
+ * which is the correct answer: "s13" is not this session's id, and after the directories were
+ * renamed it is not a name either.
+ *
+ * Keeping a prefix-stripping branch here bought nothing once the output side settled on one
+ * form, and it was actively misleading: it implied the "s<id>" spelling still existed
+ * somewhere. Tolerating an input format is only free while that format is still produced by
+ * something. */
+static bool edc_sm_id_matches(int64_t session_id, const char *typed)
+{
+    if (!typed || !*typed || session_id <= 0)
+        return false;
+    char *end = NULL;
+    const int64_t v = strtoll(typed, &end, 10);
+    return end != typed && end && *end == '\0' && v == session_id;
+}
+
 struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, const char *name_or_id)
 {
     if (!sm || !name_or_id)
@@ -417,7 +233,7 @@ struct edc_session *edc_session_manager_find(struct edc_session_manager *sm, con
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        if (strcmp(s->session_id, name_or_id) == 0)
+        if (edc_sm_id_matches(s->session_id, name_or_id))
             return s;
         if (s->name && strcmp(s->name, name_or_id) == 0)
             return s;
@@ -432,7 +248,7 @@ int edc_session_manager_index_of(struct edc_session_manager *sm, const char *nam
     for (int i = 0; i < sm->session_count; i++)
     {
         struct edc_session *s = sm->sessions[i];
-        if (strcmp(s->session_id, name_or_id) == 0)
+        if (edc_sm_id_matches(s->session_id, name_or_id))
             return i;
         if (s->name && strcmp(s->name, name_or_id) == 0)
             return i;
@@ -440,7 +256,7 @@ int edc_session_manager_index_of(struct edc_session_manager *sm, const char *nam
     return -1;
 }
 
-struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, const char *task_id,
+struct edc_task *edc_session_manager_find_task_any(struct edc_session_manager *sm, int64_t task_id,
                                                    struct edc_session **owner_out)
 {
     if (owner_out)
@@ -490,119 +306,43 @@ void edc_session_manager_foreach_task(struct edc_session_manager *sm, edc_sessio
     }
 }
 
-/* ── task id index (unloaded sessions) ───────────────────────
- * When looking up a task id across sessions and the owner is unloaded, all we need
- * is "which session it is in". There is no tasks.idx sidecar (single source of truth
- * = session.json): the first lookup parses each unloaded session's session.json once
- * into a uthash, then locates in O(1).
- *
- * Invariant: an unloaded session is never modified during the whole run (changing it
- * requires loading it first), so this table always equals "the disk-frozen state of
- * unloaded sessions"; loaded sessions are covered by the in-memory lookup and new
- * tasks are always in a loaded session, so no write-side sync is needed. */
-
-struct edc_task_index_entry
-{
-    sds task_id;
-    sds session_id;
-    UT_hash_handle hh;
-};
-
-static void sm_task_index_add(struct edc_session_manager *sm, const char *task_id, const char *session_id)
-{
-    if (!sm || !task_id || !task_id[0] || !session_id)
-        return;
-    struct edc_task_index_entry *e = NULL;
-    HASH_FIND(hh, sm->task_index, task_id, strlen(task_id), e);
-    if (e)
-        return; /* task ids are globally unique → first wins */
-    e = g_new0(struct edc_task_index_entry, 1);
-    e->task_id = sdsnew(task_id);
-    e->session_id = sdsnew(session_id);
-    HASH_ADD_KEYPTR(hh, sm->task_index, e->task_id, sdslen(e->task_id), e);
-}
-
-/* Parse session.json once to collect task ids, for locating an unloaded session's owner. */
-static void sm_task_index_ingest_session_json(struct edc_session_manager *sm, struct edc_session *s)
-{
-    sds path = edc_path_join(s->history_dir, "session.json", NULL);
-    if (!edc_file_exists(path))
-    {
-        sdsfree(path);
-        return;
-    }
-    EdcError *err = NULL;
-    sds content = edc_file_read(path, &err);
-    sdsfree(path);
-    if (!content)
-    {
-        if (err)
-            edc_error_free(err);
-        return;
-    }
-    cJSON *json = cJSON_Parse(content);
-    sdsfree(content);
-    if (!json)
-        return;
-
-    cJSON *tasks = cJSON_GetObjectItem(json, "tasks");
-    if (cJSON_IsArray(tasks))
-    {
-        int n = cJSON_GetArraySize(tasks);
-        for (int i = 0; i < n; i++)
-        {
-            const char *tid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(tasks, i), "task_id"));
-            if (tid && tid[0])
-                sm_task_index_add(sm, tid, s->session_id);
-        }
-    }
-    cJSON_Delete(json);
-}
-
-static void sm_task_index_build(struct edc_session_manager *sm)
-{
-    for (int i = 0; i < sm->session_count; i++)
-    {
-        struct edc_session *s = sm->sessions[i];
-        if (!s || s->state_loaded)
-            continue; /* loaded -> memory wins, do not index */
-        sm_task_index_ingest_session_json(sm, s);
-    }
-    sm->task_index_built = true;
-}
-
-static void sm_task_index_free(struct edc_session_manager *sm)
-{
-    struct edc_task_index_entry *e, *tmp;
-    HASH_ITER(hh, sm->task_index, e, tmp)
-    {
-        HASH_DEL(sm->task_index, e);
-        sdsfree(e->task_id);
-        sdsfree(e->session_id);
-        free(e);
-    }
-    sm->task_index = NULL;
-    sm->task_index_built = false;
-}
+/* ── Locating the owner of a task ──────────────────────────────────────────
+ * This used to be a uthash cache filled by parsing every unloaded session's session.json
+ * (sm_task_index_*: ~80 lines). With SQLite there is nothing to cache -- the owner is one
+ * primary-key lookup, and the database is always current, whereas the old index had to be
+ * invalidated by hand after every save. Deleted rather than kept alongside, per the
+ * design doc §6.2. */
 
 void edc_session_manager_reset_task_index(struct edc_session_manager *sm)
 {
-    if (sm)
-        sm_task_index_free(sm);
+    /* Kept as a no-op so call sites (created/saved/loaded) do not all have to change this
+     * round; there is no index left to invalidate. Stage 4 removes it. */
+    (void)sm;
 }
 
-struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, const char *task_id)
+struct edc_session *edc_session_manager_session_for_task(struct edc_session_manager *sm, int64_t task_id)
 {
-    if (!sm || !task_id)
+    if (!sm || task_id <= 0)
         return NULL;
-    if (!sm->task_index_built)
-        sm_task_index_build(sm);
 
-    struct edc_task_index_entry *e = NULL;
-    HASH_FIND(hh, sm->task_index, task_id, strlen(task_id), e);
-    if (!e)
+    /* An in-memory session wins: it is authoritative and may hold a task that has not
+     * been flushed yet (nothing wrote this run). */
+    for (int i = 0; i < sm->session_count; i++)
+    {
+        struct edc_session *s = sm->sessions[i];
+        if (!s)
+            continue;
+        if (edc_session_find_task(s, task_id))
+            return s;
+    }
+
+    /* Otherwise ask the store: one primary-key lookup. */
+    char *owner = edc_state_store_session_for_task(task_id);
+    if (!owner)
         return NULL;
-    return edc_session_manager_find(sm, e->session_id);
+    struct edc_session *found = edc_session_manager_find(sm, owner);
+    free(owner);
+    return found;
 }
 
 /* ── Operations ────────────────────────────────────────────── */
@@ -617,11 +357,52 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
     if (!sm)
         return NULL;
 
-    sds id = edc_sm_gen_session_id(sm);
     sds sname = (name && strlen(name) > 0) ? sdsnew(name) : edc_sm_gen_session_name(sm);
 
+    /* The row comes first: that is what allocates the id. */
+    /* Allocate an id, then check that its directory is FREE.
+     *
+     * /session remove takes the session out of the index and the database but leaves its
+     * directory behind (it holds chat.jsonl, which the TUI reads). A fresh id landing on
+     * such a directory would hand a new session the removed one's transcript. The old
+     * design avoided this with a <ws>/.session_seq high-water mark plus a directory scan;
+     * the database allocates now, so the check happens here instead: take an id, and if
+     * "s<id>" already exists, drop the row and take the next one. AUTOINCREMENT never
+     * reuses a number, so the loop always terminates at a free directory.
+     */
+    int64_t id = 0;
+    bool allocated = false;
+    for (int attempt = 0; attempt < 1024 && !allocated; attempt++)
+    {
+        if (!edc_state_store_insert_session_new(sname, &id))
+        {
+            log_error("session create: the store could not allocate a session id");
+            sdsfree(sname);
+            return NULL;
+        }
+        sds dir = edc_session_dir_name(id);
+        sds path = edc_path_join(sm->config->workspace, dir, NULL);
+        const bool taken = edc_file_exists(path);
+        sdsfree(path);
+        sdsfree(dir);
+        if (!taken)
+        {
+            allocated = true;
+            break;
+        }
+        /* Taken by a removed session's leftovers: give this id back and ask for the next. */
+        edc_state_store_delete_session(id);
+        log_info("session create: id %" PRId64 " is taken by an existing directory, trying the next",
+                 (int64_t)id);
+    }
+    if (!allocated)
+    {
+        log_error("session create: could not find a free session id");
+        sdsfree(sname);
+        return NULL;
+    }
+
     struct edc_session *s = edc_session_new_with_workdir(sm->config, id, sname, workdir);
-    sdsfree(id);
     sdsfree(sname);
 
     if (!s)
@@ -638,11 +419,12 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
     sm->session_count = new_count;
     sm->active_index = sm->session_count - 1;
 
-    sdsfree(s->last_active);
-    s->last_active = edc_datetime_timestamp();
+    s->last_active = (uint64_t)edc_datetime_now();
 
-    edc_sm_save_index(sm);
-    log_info("created session: id=%s name=%s", s->session_id, s->name);
+    /* One row, not a rewritten list: creation is a database write now. */
+    edc_state_store_ensure_session(s->session_id, s->name, s->created_at);
+    edc_sm_persist_active(sm);
+    log_info("created session: id=%s name=%s", edc_id_str(s->session_id), s->name);
     return s;
 }
 
@@ -671,19 +453,17 @@ bool edc_session_manager_switch(struct edc_session_manager *sm, const char *name
     struct edc_session *old = edc_session_manager_get_active(sm);
     if (old)
     {
-        sdsfree(old->last_active);
-        old->last_active = edc_datetime_timestamp();
+        old->last_active = (uint64_t)edc_datetime_now();
     }
 
     /* Switch */
     sm->active_index = idx;
     struct edc_session *new_sess = sm->sessions[idx];
 
-    sdsfree(new_sess->last_active);
-    new_sess->last_active = edc_datetime_timestamp();
+    new_sess->last_active = (uint64_t)edc_datetime_now();
 
-    edc_sm_save_index(sm);
-    log_info("switched to session: id=%s name=%s", new_sess->session_id, new_sess->name);
+    edc_sm_persist_active(sm);
+    log_info("switched to session: id=%s name=%s", edc_id_str(new_sess->session_id), new_sess->name);
     return true;
 }
 
@@ -710,7 +490,7 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
      * session's state. For an id/name-only shell (never activated in this run)
      * the file on disk is the newer copy, and writing the shell would wipe it. */
     if (to_stop->state_loaded)
-        edc_session_save_state(to_stop, NULL);
+        edc_session_save_state_tagged(to_stop, NULL, "sm:stop");
 
     /* Remove from array */
     int new_count = sm->session_count - 1;
@@ -733,18 +513,17 @@ bool edc_session_manager_stop(struct edc_session_manager *sm, const char *name_o
     if (sm->active_index >= sm->session_count)
         sm->active_index = sm->session_count - 1;
 
-    log_info("stopped session: id=%s name=%s", to_stop->session_id, to_stop->name);
+    log_info("stopped session: id=%s name=%s", edc_id_str(to_stop->session_id), to_stop->name);
     edc_session_free(to_stop);
 
     /* Update active session's last_active */
     struct edc_session *active = edc_session_manager_get_active(sm);
     if (active)
     {
-        sdsfree(active->last_active);
-        active->last_active = edc_datetime_timestamp();
+        active->last_active = (uint64_t)edc_datetime_now();
     }
 
-    edc_sm_save_index(sm);
+    edc_sm_persist_active(sm);
     return true;
 }
 
@@ -763,8 +542,8 @@ bool edc_session_manager_rename(struct edc_session_manager *sm, const char *name
     sdsfree(s->name);
     s->name = sdsnew(new_name);
 
-    edc_sm_save_index(sm);
-    log_info("renamed session %s to %s", s->session_id, new_name);
+    edc_state_store_ensure_session(s->session_id, s->name, s->created_at);
+    log_info("renamed session %s to %s", edc_id_str(s->session_id), new_name);
     return true;
 }
 
@@ -781,10 +560,16 @@ sds edc_session_manager_list(struct edc_session_manager *sm)
         size_t msg_count = edc_session_get_message_count(s);
         bool active = (i == sm->active_index);
 
-        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", s->session_id, s->name ? s->name : "(unnamed)",
+        result = sdscatprintf(result, "- `[%s]` **%s**%s\n", edc_id_str(s->session_id),
+                              s->name ? s->name : "(unnamed)",
                               active ? " · **current**" : "");
-        result = sdscatprintf(result, "  - messages: %zu · created: %s\n", msg_count,
-                              s->created_at ? s->created_at : "unknown");
+        {
+            /* Formatted here, at the presentation edge: the value itself is an integer. */
+            sds created = s->created_at ? edc_datetime_format((time_t)s->created_at) : NULL;
+            result = sdscatprintf(result, "  - messages: %zu · created: %s\n", msg_count,
+                                  created ? created : "unknown");
+            sdsfree(created);
+        }
     }
     if (sm->session_count == 0)
         result = sdscat(result, "_No sessions._\n");
@@ -799,12 +584,14 @@ void edc_session_manager_save_all(struct edc_session_manager *sm)
     if (!sm)
         return;
 
-    /* Save active session's history */
-    struct edc_session *active = edc_session_manager_get_active(sm);
-    if (active)
-
-    /* Save index */
-    edc_sm_save_index(sm);
+    /* Session state is not written here: this function has no scheduler, and since the
+     * move to the store every per-session save needs one. The paths that want the tree on
+     * disk are edc_session_store_save_all_sessions_state() and
+     * edc_session_store_save_session_state_tagged(), and both call
+     * edc_session_manager_save_loaded_states() after this.
+     *
+     * What is left is the one fact this layer owns: which session is active. */
+    edc_sm_persist_active(sm);
 }
 
 void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, struct edc_scheduler *sched)
@@ -822,6 +609,6 @@ void edc_session_manager_save_loaded_states(struct edc_session_manager *sm, stru
          * exactly how a session "loses" its workdir after a restart. */
         if (!s || !s->state_loaded)
             continue;
-        edc_session_save_state(s, sched);
+        edc_session_save_state_tagged(s, sched, "sm:save-loaded");
     }
 }

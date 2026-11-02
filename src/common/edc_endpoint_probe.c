@@ -65,8 +65,15 @@ static void probe_on_event(struct edc_https_request *req, int ev, void *data)
 bool edc_endpoint_probe(const char *cacert_path, const char *api_url, const char *api_key, int timeout_ms, char *out,
                         size_t cap)
 {
-    if (out && cap)
-        out[0] = 0;
+    /* |out| is how this function reports what happened, so it is required rather than
+     * optional: the old "if (out && cap) out[0] = 0;" guard cleared a non-NULL buffer
+     * but every message below then reached snprintf(out, cap, ...) unconditionally, so
+     * out == NULL with cap > 0 was undefined behaviour. Reject it up front instead --
+     * every caller passes a stack buffer (see edc_app_test_endpoint). */
+    if (!out || cap == 0)
+        return false;
+    out[0] = 0;
+
     if (!api_url || !api_url[0])
     {
         snprintf(out, cap, "no base URL");

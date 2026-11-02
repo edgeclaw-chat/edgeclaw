@@ -29,6 +29,7 @@
  * 本测试不依赖 secret/网络/真实 home: 不构造 app, 直接驱动 toolbox 与 task。
  */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_context.h"
@@ -135,7 +136,7 @@ static void test_attach_and_reminder(void)
 
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-attach", "s", "g", "test", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-attach"), edc_test_session_id("s"), edc_test_id("g"), "test", edc_channel_adapter);
     C(task->todos == NULL, "fresh task has no todos");
 
     cJSON *args = cJSON_Parse("{"
@@ -263,7 +264,7 @@ static void test_attach_and_reminder(void)
 static void test_no_list_planning_guide(void)
 {
     T("task without list / empty list -> planning guide; NULL task -> NULL");
-    struct edc_task *task = edc_task_new("t-nolist", "s", "g", "no list", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-nolist"), edc_test_session_id("s"), edc_test_id("g"), "no list", edc_channel_adapter);
     cJSON *r = edc_context_make_todo_reminder(task);
     C(r != NULL, "task without list still gets a tail message (planning guide)");
     const char *c = cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"));
@@ -278,7 +279,7 @@ static void test_no_list_planning_guide(void)
     /* 空数组挂载 (防御路径): 等价于无清单 → 规划引导 */
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *t2 = edc_task_new("t-empty", "s", "g", "empty", edc_channel_adapter);
+    struct edc_task *t2 = edc_task_new(edc_test_id("t-empty"), edc_test_session_id("s"), edc_test_id("g"), "empty", edc_channel_adapter);
     t2->todos = cJSON_CreateArray();
     r = edc_context_make_todo_reminder(t2);
     C(r != NULL && is_planning_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(r, "content"))),
@@ -296,7 +297,7 @@ static void test_validation_gate(void)
     T("failed validation does NOT attach the list");
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-bad", "s", "g", "bad", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-bad"), edc_test_session_id("s"), edc_test_id("g"), "bad", edc_channel_adapter);
 
     cJSON *bad = cJSON_Parse("{\"items\":[{\"content\":\"x\",\"status\":\"bogus\",\"priority\":\"high\"}]}");
     struct edc_toolbox_call_ctx *ctx =
@@ -360,7 +361,7 @@ static void test_state_summary_all_done(void)
     T("state summary when every item completed");
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-done", "s", "g", "all done", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-done"), edc_test_session_id("s"), edc_test_id("g"), "all done", edc_channel_adapter);
 
     task->todos = cJSON_Parse("["
                                  "{\"content\":\"pack\",\"status\":\"completed\",\"priority\":\"low\"},"
@@ -403,7 +404,7 @@ static void test_todo_sync_gap_throttle(void)
 {
     T("llm_request_poke accumulates; fires once at gap then resets; note_todo_sync resets");
 
-    struct edc_task *task = edc_task_new("t-gap", "s", "g", "gap", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-gap"), edc_test_session_id("s"), edc_test_id("g"), "gap", edc_channel_adapter);
     C(task->todo_sync_gap == 0, "fresh task gap == 0");
 
     /* 前 gap-1 次请求 (对话) 未达阈值 → 从不提醒 */
@@ -446,7 +447,7 @@ static void test_tools_todo_resets_gap(void)
 
     struct edc_config *conf = g_new0(struct edc_config, 1);
     struct edc_toolbox *tb = edc_toolbox_new(conf, NULL, NULL);
-    struct edc_task *task = edc_task_new("t-reset", "s", "g", "reset", edc_channel_adapter);
+    struct edc_task *task = edc_task_new(edc_test_id("t-reset"), edc_test_session_id("s"), edc_test_id("g"), "reset", edc_channel_adapter);
 
     /* 模拟已隔了 7 次请求没同步 */
     task->todo_sync_gap = 7;
@@ -497,16 +498,16 @@ static void test_append_system_part(void)
     T("append_system_part: pure head (ref/copy), group memory order, fallback pristine");
 
     /* ── history 分支: 引用 history[0], 头部无规划引导 ── */
-    struct edc_task *t1 = edc_task_new("ap-1", "s", "g", "no list", edc_channel_adapter);
+    struct edc_task *t1 = edc_task_new(edc_test_id("ap-1"), edc_test_session_id("s"), edc_test_id("g"), "no list", edc_channel_adapter);
     struct edc_task_group *g1 = edc_task_group_new(t1);
     cJSON *sys0 = cJSON_CreateObject();
     cJSON_AddStringToObject(sys0, "role", "system");
     cJSON_AddStringToObject(sys0, "content", "SYS0_BASE");
-    cJSON_AddItemToArray(g1->history, sys0);
+    edc_task_group_history_add_owned(g1, sys0);
     cJSON *usr = cJSON_CreateObject();
     cJSON_AddStringToObject(usr, "role", "user");
     cJSON_AddStringToObject(usr, "content", "hi");
-    cJSON_AddItemToArray(g1->history, usr);
+    edc_task_group_history_add_owned(g1, usr);
 
     cJSON *msgs = cJSON_CreateArray();
     sds pristine = NULL;
@@ -514,8 +515,10 @@ static void test_append_system_part(void)
     C(n == 1, "head = base reference only (no planning guide in head anymore)");
     C(pristine == NULL, "no pristine in history branch");
     cJSON *m0 = cJSON_GetArrayItem(msgs, 0);
-    C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == sys0->child,
-      "history[0] attached by REFERENCE (aliases role/content), not deep copy");
+    /* The head is an OWNED copy now: the history keeps ids (or, for the system prompt, an
+     * in-memory node) and hands out copies, so a request cannot alias -- or free -- the
+     * group's node. The prompt is a few KB, so the copy costs nothing measurable. */
+    C(m0 != NULL && !(m0->type & cJSON_IsReference), "head message is owned by the request");
     C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "SYS0_BASE") == 0,
       "referenced content readable through array");
     C(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "CURRENT TASK SYSTEM STATE") == NULL &&
@@ -523,9 +526,13 @@ static void test_append_system_part(void)
           strstr(cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content")), "<system-reminder>") == NULL,
       "head message stays pure (no reminder sections/marker)");
     cJSON_Delete(msgs);
-    C(strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g1->history, 0), "content")), "SYS0_BASE") ==
-          0,
-      "history[0] survives msgs delete (reference did not transfer/copy)");
+    {
+        cJSON *h0 = edc_task_group_history_at(g1, 0);
+        C(h0 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")), "SYS0_BASE") == 0,
+          "history[0] survives msgs delete");
+        if (h0)
+            cJSON_Delete(h0);
+    }
 
     /* todo 引导独立于头部: no-list task 的 reminder = 规划引导 (owned), 模拟
      * app 把它作为队尾消息塞进请求数组 → 落在 base 引用之后 */
@@ -560,15 +567,20 @@ static void test_append_system_part(void)
     /* 顺序: 常量 (system prompt) 在前, 易变的 (group memory) 在后 —— 折叠落地只作废后者
      * 之后的内容, 前缀 (系统提示词) 仍命中 cache。 */
     cJSON *m0b = cJSON_GetArrayItem(msgs, 0);
-    C(m0b != NULL && (m0b->type & cJSON_IsReference) && m0b->child == sys0->child,
-      "base attached by reference and comes FIRST (it is the constant part)");
+    /* The head is an OWNED copy of the history's first slot (requests never alias the
+     * group's node), and the ORDERING is what this pins: constant part first. */
+    C(m0b != NULL && !(m0b->type & cJSON_IsReference),
+      "base is owned by the request and comes FIRST (it is the constant part)");
     const char *h1 = cJSON_GetStringValue(cJSON_GetObjectItem(m0b, "content"));
     C(h1 && strcmp(h1, "SYS0_BASE") == 0, "head base stays PURE even when task has a todo list");
     C(strstr(h1, "CURRENT TASK SYSTEM STATE") == NULL && strstr(h1, "INSTRUCTIONS FOR THIS TURN") == NULL &&
           strstr(h1, "<system-reminder>") == NULL,
       "no reminder sections/marker anywhere in the head");
     cJSON *mem1 = cJSON_GetArrayItem(msgs, 1);
-    C(mem1 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem1, "content")), "## Group Memory\nMEM-SUMMARY") == 0,
+    /* The stored memory is a summary BODY (no trailing newline) and the tracked-file
+     * blocks are rendered on top of it, so the message always ends with exactly one
+     * newline -- with or without any files tracked. */
+    C(mem1 && strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(mem1, "content")), "## Group Memory\nMEM-SUMMARY\n") == 0,
       "group memory comes AFTER the system prompt (mutable part last)");
 
     cJSON *r2 = edc_context_make_todo_reminder(t1);
@@ -593,8 +605,8 @@ static void test_append_system_part(void)
     /* ── fallback: group 空历史 + conf → 现拼纯净 prompt 经 out_pristine 交还;
      *    写回 group history 属调用方; todo 仍只在队尾 reminder ── */
     struct edc_config *conf = g_new0(struct edc_config, 1);
-    conf->workspace = sdsnew("/tmp/test-session");
-    struct edc_task *t2 = edc_task_new("ap-2", "s", "g", "no list", edc_channel_adapter);
+    conf->workspace = sdsnew(edc_test_workspace());
+    struct edc_task *t2 = edc_task_new(edc_test_id("ap-2"), edc_test_session_id("s"), edc_test_id("g"), "no list", edc_channel_adapter);
     struct edc_task_group *g2 = edc_task_group_new(t2);
 
     msgs = cJSON_CreateArray();
@@ -607,7 +619,7 @@ static void test_append_system_part(void)
     const char *f0 = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
     C(f0 && strcmp(f0, pristine) == 0, "fallback request content == pristine");
     C(head_has_no_reminder(f0), "pure prompt has no todo section or reminder marker at all");
-    C(cJSON_GetArraySize(g2->history) == 0, "context does NOT write group history (caller's job)");
+    C(edc_task_group_history_count(g2) == 0, "context does NOT write group history (caller's job)");
 
     /* fallback + 无清单: 队尾 reminder = 规划引导 */
     cJSON *pg = edc_context_make_todo_reminder(t2);
@@ -639,12 +651,16 @@ static void test_append_system_part(void)
         cJSON *sys_hist = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_hist, "role", "system");
         cJSON_AddStringToObject(sys_hist, "content", pristine);
-        cJSON_AddItemToArray(g2->history, sys_hist);
+        edc_task_group_history_add_owned(g2, sys_hist);
     }
-    C(cJSON_GetArraySize(g2->history) == 1 &&
-          strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g2->history, 0), "content")), pristine) ==
-              0,
-      "caller-side write-back keeps shared history pure");
+    {
+        cJSON *h0 = edc_task_group_history_at(g2, 0);
+        C(edc_task_group_history_count(g2) == 1 && h0 &&
+          strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(h0, "content")), pristine) == 0,
+          "caller-side write-back keeps shared history pure");
+        if (h0)
+            cJSON_Delete(h0);
+    }
 
     cJSON *tm = edc_context_make_todo_reminder(t2);
     C(tm != NULL && is_todo_reminder(cJSON_GetStringValue(cJSON_GetObjectItem(tm, "content"))),
@@ -656,16 +672,15 @@ static void test_append_system_part(void)
       "tail reminder carries fresh list state + per-turn sync instruction");
     cJSON_Delete(tm);
 
-    /* 写回后再次组装 → 走引用分支 (history[0] 纯净), 且仍无 todo 混入头部 */
+    /* 写回后再次组装 → 走 history 分支 (history[0] 纯净), 且仍无 todo 混入头部 */
     msgs = cJSON_CreateArray();
     pristine = NULL;
     n = edc_context_append_system_part(msgs, conf, g2, NULL, &pristine);
-    C(n == 1 && pristine == NULL, "after write-back: head = reference, no pristine");
+    C(n == 1 && pristine == NULL, "after write-back: head from history, no pristine");
     m0 = cJSON_GetArrayItem(msgs, 0);
-    C(m0 != NULL && (m0->type & cJSON_IsReference) && m0->child == cJSON_GetArrayItem(g2->history, 0)->child,
-      "post-write-back request references history[0]");
+    C(m0 != NULL && !(m0->type & cJSON_IsReference), "post-write-back head is owned by the request");
     const char *pw = cJSON_GetStringValue(cJSON_GetObjectItem(m0, "content"));
-    C(head_has_no_reminder(pw), "referenced history[0] is pure (todo only at tail)");
+    C(head_has_no_reminder(pw), "history[0] is pure (todo only at tail)");
     cJSON_Delete(msgs);
     sdsfree(pristine);
     edc_task_group_free(g2); /* 连带释放 t2 / todos */
@@ -675,6 +690,7 @@ static void test_append_system_part(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_attach_and_reminder();
     test_no_list_planning_guide();
     test_validation_gate();

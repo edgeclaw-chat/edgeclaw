@@ -5,16 +5,17 @@
  * until the fold lands), and that it does not pollute the folded group. */
 
 #include "edc_compat.h"
+#include "test_ws.h"
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_executor.h"
 #include "edc_group_fold.h"
+#include "edc_fold_files.h"
 #include "edc_llm_actor.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
-#include "edc_state_serializer.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_token_estimate.h"
@@ -70,7 +71,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_group_fold_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -99,19 +100,19 @@ static struct edc_config *cfg_not_due(struct edc_config *cfg, struct edc_task_gr
 
 /* Folding takes a real scheduler (a plain struct, no constructor).
  * Build a group of finished, turn-bearing (foldable) tasks. */
-static void add_foldable_task(struct edc_session *session, struct edc_task_group *group, const char *id,
+static void add_foldable_task(struct edc_session *session, struct edc_task_group *group, int64_t id,
                               uint32_t completion_seq, int msgs_per_task, const char *text)
 {
     struct edc_task *t = edc_task_new(id, session->session_id, group->group_id, text, edc_channel_adapter);
     edc_task_group_add_task(group, t);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     for (int i = 0; i < msgs_per_task; i++)
     {
         cJSON *m = cJSON_CreateObject();
         cJSON_AddStringToObject(m, "role", "user");
         cJSON_AddStringToObject(m, "content", text);
-        edc_queue_push(&turn->messages, m);
+        edc_turn_add_message(turn, m);
     }
     edc_task_add_turn(t, turn);
     edc_task_await_exec(t);
@@ -124,15 +125,13 @@ static void add_foldable_task(struct edc_session *session, struct edc_task_group
  * LLM 请求发出去了"; 响应由测试用 edc_executor_advance_llm_resp 灌回来 —— 与真实
  * 路径 (llm actor → scheduler → executor) 的差别只在传输。 */
 static int g_send_llm_calls = 0;
-static sds g_last_llm_task_id = NULL; /* 最近一次 send_llm 的任务 id (闸门断言用) */
+static int64_t g_last_llm_task_id; /* 最近一次 send_llm 的任务 id (闸门断言用); 0 = 无 */
 static void stub_send_llm(struct edc_scheduler *sched, struct edc_task *task, void *request_id)
 {
     (void)sched;
     (void)request_id;
     g_send_llm_calls++;
-    if (g_last_llm_task_id)
-        sdsfree(g_last_llm_task_id);
-    g_last_llm_task_id = task ? sdsnew(task->task_id) : NULL;
+    g_last_llm_task_id = task ? task->task_id : 0;
 }
 
 /* 折叠任务也是**普通任务**: 起折叠只把 prompt 装上, "跑"发生在消息末尾的调度
@@ -152,6 +151,15 @@ static int count_folded(struct edc_task_group *group)
         if (edc_task_has_folded_turns(t))
             n++;
     }
+    return n;
+}
+
+static int count_groups_in(struct edc_session *session)
+{
+    int n = 0;
+    struct edc_task_group *g;
+    DL_FOREACH(session->groups, g)
+        n++;
     return n;
 }
 
@@ -177,9 +185,9 @@ static void test_prompt_and_due(void)
     TEST("触发判据 + prompt (半量策略 / 现有记忆 / output / max_seq)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-prompt", "Prompt");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-prompt"), "Prompt");
 
-    struct edc_task *leader = edc_task_new("1", "sess-prompt", "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-prompt"), edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
@@ -189,7 +197,7 @@ static void test_prompt_and_due(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
 
     /* 先给这个组一份旧记忆: 它同时是 (a) token 估算的一个来源 —— 让 ctx 有非零值,
@@ -216,9 +224,9 @@ static void test_prompt_and_due(void)
     group->memory = sdsnew("# Old memory\n- something remembered");
 
     /* 再加三个已完成任务: seq 2,3,4,各 4 条消息 → 未折叠 = 4*3 + leader的1 = 13 */
-    add_foldable_task(session, group, "2", 2, 4, "task two");
-    add_foldable_task(session, group, "3", 3, 4, "task three");
-    add_foldable_task(session, group, "4", 4, 4, "task four");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
+    add_foldable_task(session, group, edc_test_id("3"), 3, 4, "task three");
+    add_foldable_task(session, group, edc_test_id("4"), 4, 4, "task four");
 
     size_t unfolded = edc_task_group_unfolded_msg_count(group);
     CHECK(unfolded == 13, "未折叠消息数 = 13");
@@ -243,7 +251,7 @@ static void test_prompt_and_due(void)
         /* 小组 (整组还不到 keep_recent 20k) 退化成"压最老一半": 13 条 → 留最新 6 条,
          * 语料 = 前 7 条 = leader(1) + task 2(4) + task 3 的前 2 条。切点落在 task 3
          * 的 turn **内部** —— 这就是 split turn (消息级水位, 不是整 turn)。 */
-        CHECK(cut.task_id && strcmp(cut.task_id, "3") == 0, "切点落在 task 3");
+        CHECK(cut.task_id == edc_test_id("3"), "切点落在 task 3");
         CHECK(cut.turn == 0, "task 3 的第 0 个 turn");
         CHECK(cut.prefix == 2, "折到该 turn 的第 2 条 (留 2 条当细节)");
         CHECK(strstr(prompt, "[task 3]") != NULL, "半折的成员也在语料里");
@@ -257,7 +265,7 @@ static void test_prompt_and_due(void)
 
     /* 消息条数彻底没有发言权: 500 条未折叠消息 + 宽窗口 ⇒ 仍然不折。
      * (把任何"按条数触发"改回来都会在这里红 —— 阈值 <= 500 都拦得住。) */
-    add_foldable_task(session, group, "9", 9, 500, "a very chatty task");
+    add_foldable_task(session, group, edc_test_id("9"), 9, 500, "a very chatty task");
     CHECK(edc_task_group_unfolded_msg_count(group) >= 500, "前置: 未折叠消息 500 条");
     CHECK(!edc_group_fold_due(group, cfg_win(cfg, 1000000)), "500 条未折叠消息也压不动 1M 窗口");
 
@@ -274,13 +282,13 @@ static void test_fold_runs_as_a_system_task(void)
     TEST("起折叠: 建 system task → 产出经 sink 写进记忆 → 回收");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-fold", "Fold");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-fold"), "Fold");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task *leader = edc_task_new("1", "sess-fold", "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-fold"), edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
@@ -290,16 +298,16 @@ static void test_fold_runs_as_a_system_task(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
 
     for (int i = 2; i <= 4; i++)
     {
         char id[8];
         snprintf(id, sizeof(id), "%d", i);
-        add_foldable_task(session, group, id, (uint32_t)i, 4, "foldable work");
+        add_foldable_task(session, group, edc_test_id(id), (uint32_t)i, 4, "foldable work");
     }
-    size_t group_hist_before = cJSON_GetArraySize(group->history);
+    size_t group_hist_before = (size_t)edc_task_group_history_count(group);
     size_t group_msgs_before = edc_task_group_unfolded_msg_count(group);
     uint32_t epoch_before = group->fold_epoch;
 
@@ -316,7 +324,7 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(fold != NULL, "折叠任务出现了");
     CHECK(fold->sink == EDC_SINK_GROUP_MEMORY, "sink = GROUP_MEMORY (产出写记忆, 不回话)");
     CHECK(fold->sink_group == group, "知道产出该写进哪个组");
-    CHECK(fold->fold_cut_task_id && strcmp(fold->fold_cut_task_id, "3") == 0, "知道切点落在哪个成员");
+    CHECK(fold->fold_cut_task_id && fold->fold_cut_task_id == edc_test_id("3"), "知道切点落在哪个成员");
     CHECK(fold->fold_cut_turn == 0 && fold->fold_cut_prefix == 2, "以及切在它的第 0 个 turn 的第 2 条");
     CHECK(edc_task_awaits_exec(fold), "已派发 (在等 LLM 回话)");
     CHECK(fold->active_turn != NULL, "带着它的 input (折叠 prompt)");
@@ -324,7 +332,7 @@ static void test_fold_runs_as_a_system_task(void)
      * edc_group_fold_system_prompt() 现拼, 见 tests/test_llm_request.c 的
      * "折叠请求是自足的")。从前它住这个组的 history[0], 而那个槽位不落盘 ——
      * 重启后加载期会把它填成主提示词, 摘要调用就背上了 EdgeClaw 的人设。 */
-    CHECK(cJSON_GetArraySize(sg->history) == 0, "系统组没有共享 header (折叠说明随请求走)");
+    CHECK(edc_task_group_history_count(sg) == 0, "系统组没有共享 header (折叠说明随请求走)");
 
     /* 该 session 已有折叠在飞: 不再起第二次 (免得两次折叠看见半成品记忆)。 */
     CHECK(edc_scheduler_has_pending_system_task(session), "有折叠在飞");
@@ -359,23 +367,23 @@ static void test_fold_runs_as_a_system_task(void)
     /* history 现在由 turns 派生 (折叠落地时重建): system prompt + 未折叠消息。
      * 旧断言 "== group_hist_before" 在这个夹具里是空转的 —— add_foldable_task
      * 从不往 history 里写, 两边都是 0。 */
-    CHECK(cJSON_GetArraySize(group->history) == 1 + edc_task_group_unfolded_msg_count(group),
+    CHECK(edc_task_group_history_count(group) == 1 + edc_task_group_unfolded_msg_count(group),
           "history = system prompt + 未折叠消息 (被折的 5 条已剪掉; 折叠任务的消息也不进来)");
     CHECK(group->member_count == 4, "折叠任务不在被折叠的组里 (它在系统组)");
     CHECK(edc_task_group_unfolded_msg_count(group) == group_msgs_before - 7,
           "该组的未折叠消息数只少了被折的那 7 条 (13 → 6)");
     CHECK(fold->completion_seq == 0, "折叠任务不占 session 的完成序号 (不是用户的完成次序里的一环)");
     {
-        struct edc_task *t3 = edc_task_group_find_task(group, "3");
-        struct edc_task *t4 = edc_task_group_find_task(group, "4");
+        struct edc_task *t3 = edc_task_group_find_task(group, edc_test_id("3"));
+        struct edc_task *t4 = edc_task_group_find_task(group, edc_test_id("4"));
         CHECK(t3 && t4 && edc_task_has_folded_turns(t3) && !edc_task_has_folded_turns(t4),
               "切点成员被半折, 切点之后的 task 4 完全没动");
         if (t3 && t3->turns.tail > t3->turns.head)
         {
             struct edc_turn *t3turn = t3->turns.data[t3->turns.head];
-            CHECK(t3turn->folded_prefix == 2 && edc_queue_length(&t3turn->messages) == 4,
+            CHECK(t3turn->folded_prefix == 2 && t3turn->msg_count == 4,
                   "task 3 那个 turn 折了 2 条、留 2 条 (消息级水位, 不是整 turn)");
-            CHECK(cJSON_GetArraySize(group->history) == 1 + edc_task_group_unfolded_msg_count(group),
+            CHECK(edc_task_group_history_count(group) == 1 + edc_task_group_unfolded_msg_count(group),
                   "历史里剩下的正好是未折叠段 (半折 turn 的尾巴在)");
         }
     }
@@ -389,7 +397,7 @@ static void test_fold_runs_as_a_system_task(void)
     struct edc_fold_cut cut2;
     memset(&cut2, 0, sizeof(cut2));
     sds prompt2 = edc_group_fold_build_prompt(group, NULL, &cut2);
-    CHECK(prompt2 && cut2.task_id && strcmp(cut2.task_id, "4") == 0 && cut2.prefix == 1,
+    CHECK(prompt2 && cut2.task_id == edc_test_id("4") && cut2.prefix == 1,
           "第二轮切点推进到 task 4 的第 1 条 (剩 6 条未折叠 → 留 3 条)");
     if (prompt2)
     {
@@ -412,13 +420,13 @@ static void test_fold_failure_keeps_memory(void)
     TEST("折叠失败: 记忆与水位原样, 折叠任务照常回收 (下一轮再折)");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-fail", "Fail");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-fail"), "Fail");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task *leader = edc_task_new("1", "sess-fail", "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-fail"), edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
@@ -428,9 +436,9 @@ static void test_fold_failure_keeps_memory(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
-    add_foldable_task(session, group, "2", 2, 6, "work");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 6, "work");
     group->memory = sdsnew("# memory before");
     uint32_t epoch_before = group->fold_epoch;
 
@@ -470,13 +478,13 @@ static void test_fold_task_is_persisted(void)
     TEST("折叠任务在跑的时候落盘: 盘上有它、有系统组; 读回后置回就绪");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-disk", "Disk");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-disk"), "Disk");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task *leader = edc_task_new("1", "sess-disk", "1", "leader", edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), edc_test_session_id("sess-disk"), edc_test_id("1"), "leader", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
@@ -486,33 +494,33 @@ static void test_fold_task_is_persisted(void)
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", "leader work");
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
-    add_foldable_task(session, group, "2", 2, 6, "work");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 6, "work");
 
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
     CHECK(fold != NULL, "折叠在飞");
     pump_schedule(sched);
 
-    cJSON *j = edc_state_serialize(session, sched);
-    CHECK(j != NULL, "可序列化");
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "tasks")) == 4, "tasks 块含折叠任务与策展任务 (落盘)");
-    CHECK(cJSON_GetArraySize(cJSON_GetObjectItem(j, "groups")) == 2, "groups 块含系统组 (落盘)");
+    CHECK(edc_state_store_flush(session, sched), "可落盘");
 
-    struct edc_session *s2 = edc_session_new(cfg, "sess-disk", "Disk");
+    struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-disk"), "Disk");
     struct edc_scheduler *s2s = edc_scheduler_new(cfg);
     install_resolver(s2s, s2);
-    CHECK(edc_state_deserialize(j, s2, s2s), "读回成功");
+    CHECK(edc_state_store_load(s2, s2s), "读回成功");
+    /* The counts the document used to be inspected for: folding task, curation task and
+     * the user's own are all reachable from the loaded tree. */
+    CHECK(count_groups_in(s2) == 2, "两个组都落盘了 (用户组 + 系统组)");
+    CHECK(count_tasks_in(s2) == 4, "四个任务都落盘了 (含折叠与策展)");
     struct edc_task_group *sg2 = edc_session_find_system_group(s2);
     CHECK(sg2 != NULL && edc_task_group_is_system(sg2), "系统组读回来");
     struct edc_task *fold2 = sg2 ? sg2->members : NULL;
     CHECK(fold2 != NULL, "折叠任务读回来");
     CHECK(fold2 && edc_task_is_ready(fold2) && edc_task_is_alive(fold2),
           "未完成的折叠任务读回后置回就绪 (重启续跑), 不是 INTERRUPTED");
-    CHECK(fold2 && fold2->sink_group && strcmp(fold2->sink_group->group_id, group->group_id) == 0,
+    CHECK(fold2 && fold2->sink_group && fold2->sink_group->group_id == group->group_id,
           "sink_group 解析回目标组");
 
-    cJSON_Delete(j);
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_session_free(s2);
@@ -531,22 +539,22 @@ static void test_try_scans_all_sessions(void)
     struct edc_config *cfg = make_config();
 
     /* 第一个 session: 没有可折叠内容 (扫到它 → 不折) */
-    struct edc_session *idle = edc_session_new(cfg, "sess-try-idle", "TryIdle");
-    struct edc_task *ileader = edc_task_new("11", "sess-try-idle", "11", "idle leader", edc_channel_adapter);
+    struct edc_session *idle = edc_session_new(cfg, edc_test_session_id("sess-try-idle"), "TryIdle");
+    struct edc_task *ileader = edc_task_new(edc_test_id("11"), edc_test_session_id("sess-try-idle"), edc_test_id("11"), "idle leader", edc_channel_adapter);
     struct edc_task_group *igroup = edc_task_group_new(ileader);
     edc_session_add_group(idle, igroup);
     edc_task_await_exec(ileader);
     edc_task_mark_completed(ileader);
 
     /* 第二个 session: 可折叠的内容只在这里 —— 只有"扫全部"才会命中 */
-    struct edc_session *busy = edc_session_new(cfg, "sess-try-busy", "TryBusy");
-    struct edc_task *bleader = edc_task_new("21", "sess-try-busy", "21", "busy leader", edc_channel_adapter);
+    struct edc_session *busy = edc_session_new(cfg, edc_test_session_id("sess-try-busy"), "TryBusy");
+    struct edc_task *bleader = edc_task_new(edc_test_id("21"), edc_test_session_id("sess-try-busy"), edc_test_id("21"), "busy leader", edc_channel_adapter);
     struct edc_task_group *bgroup = edc_task_group_new(bleader);
     edc_session_add_group(busy, bgroup);
     edc_task_await_exec(bleader);
     edc_task_mark_completed(bleader);
     bleader->completion_seq = 1;
-    add_foldable_task(busy, bgroup, "22", 2, 4, "foldable in the second session");
+    add_foldable_task(busy, bgroup, edc_test_id("22"), 2, 4, "foldable in the second session");
     cfg_due(cfg, bgroup); /* 这个组"该折" —— 只有它该折 */
 
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -598,9 +606,9 @@ static void test_try_scans_all_sessions(void)
  *  ═══════════════════════════════════════════════════════ */
 
 /* 建一个"该折"的组骨架: leader (seq1, 一条 user 消息)。 */
-static struct edc_task_group *make_foldable_group(struct edc_session *session, const char *sid, const char *leader_text)
+static struct edc_task_group *make_foldable_group(struct edc_session *session, int64_t sid, const char *leader_text)
 {
-    struct edc_task *leader = edc_task_new("1", sid, "1", leader_text, edc_channel_adapter);
+    struct edc_task *leader = edc_task_new(edc_test_id("1"), sid, edc_test_id("1"), leader_text, edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(leader);
     edc_session_add_group(session, group);
     edc_task_await_exec(leader);
@@ -610,7 +618,7 @@ static struct edc_task_group *make_foldable_group(struct edc_session *session, c
     cJSON *lm = cJSON_CreateObject();
     cJSON_AddStringToObject(lm, "role", "user");
     cJSON_AddStringToObject(lm, "content", leader_text);
-    edc_queue_push(&lturn->messages, lm);
+    edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
     return group;
 }
@@ -621,16 +629,16 @@ static void test_fold_preempts_running_member(void)
 
     struct edc_config *cfg = make_config();
     cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
-    struct edc_session *session = edc_session_new(cfg, "sess-preempt", "Preempt");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-preempt"), "Preempt");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-preempt", "leader work");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-preempt"), "leader work");
 
     /* 一个在飞的成员: LLM 已发, 正在等回包 (AWAIT_EXEC)。 */
-    struct edc_task *run = edc_task_new("9", "sess-preempt", group->group_id, "running", edc_channel_adapter);
+    struct edc_task *run = edc_task_new(edc_test_id("9"), edc_test_session_id("sess-preempt"), group->group_id, "running", edc_channel_adapter);
     edc_task_group_add_task(group, run);
     edc_scheduler_attach_input(sched, run, "in flight");
     edc_task_await_exec(run);
@@ -649,7 +657,7 @@ static void test_fold_preempts_running_member(void)
 
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "只发出折叠的请求");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, fold->task_id) == 0, "发的是折叠");
+    CHECK(g_last_llm_task_id == fold->task_id, "发的是折叠");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -662,16 +670,16 @@ static void test_fold_holds_next_llm_send(void)
 
     struct edc_config *cfg = make_config();
     cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
-    struct edc_session *session = edc_session_new(cfg, "sess-sendhold", "SendHold");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-sendhold"), "SendHold");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-sendhold", "leader work");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-sendhold"), "leader work");
 
     /* 一个成员: 工具链正在跑 (AWAIT_TOOLS + 账本一条)。 */
-    struct edc_task *m = edc_task_new("8", "sess-sendhold", group->group_id, "worker", edc_channel_adapter);
+    struct edc_task *m = edc_task_new(edc_test_id("8"), edc_test_session_id("sess-sendhold"), group->group_id, "worker", edc_channel_adapter);
     edc_task_group_add_task(group, m);
     edc_scheduler_attach_input(sched, m, "do work");
     edc_task_await_exec(m);
@@ -703,7 +711,7 @@ static void test_fold_holds_next_llm_send(void)
     /* 表里没动, 扫描先驱动折叠 (m 在 AWAIT_DEPS, 不会被驱动)。 */
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 1, "被挂住的成员没有被驱动");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, fold->task_id) == 0, "只驱动了折叠");
+    CHECK(g_last_llm_task_id == fold->task_id, "只驱动了折叠");
 
     /* 折叠落地 → 释放成员 → 扫描驱动它发请求。 */
     struct edc_llm_actor_resp resp;
@@ -728,7 +736,7 @@ static void test_fold_holds_next_llm_send(void)
 
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 2, "扫描驱动的是 L2");
-    CHECK(g_last_llm_task_id && l2 && strcmp(g_last_llm_task_id, l2->task_id) == 0, "发的是策展任务");
+    CHECK(g_last_llm_task_id && l2 && g_last_llm_task_id == l2->task_id, "发的是策展任务");
 
     /* 结算 L2 ⇒ 成员才被释放并驱动 */
     struct edc_llm_actor_resp l2resp;
@@ -743,7 +751,7 @@ static void test_fold_holds_next_llm_send(void)
 
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 3, "现在为成员发出请求");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, m->task_id) == 0, "发的是那个成员");
+    CHECK(g_last_llm_task_id == m->task_id, "发的是那个成员");
 
     sdsfree(resp.content);
     edc_session_free(session);
@@ -757,15 +765,15 @@ static void test_group_held_until_fold_lands(void)
 
     struct edc_config *cfg = make_config();
     cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
-    struct edc_session *session = edc_session_new(cfg, "sess-hold", "Hold");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-hold"), "Hold");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-hold", "leader work");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-hold"), "leader work");
 
-    struct edc_task *held = edc_task_new("7", "sess-hold", group->group_id, "held", edc_channel_adapter);
+    struct edc_task *held = edc_task_new(edc_test_id("7"), edc_test_session_id("sess-hold"), group->group_id, "held", edc_channel_adapter);
     edc_task_group_add_task(group, held);
     edc_scheduler_attach_input(sched, held, "queued work");
     CHECK(edc_task_is_ready(held), "held 就绪、有 turn");
@@ -813,7 +821,7 @@ static void test_group_held_until_fold_lands(void)
 
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 3, "策展之后成员被驱动");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, held->task_id) == 0, "驱动的是被挂住的成员");
+    CHECK(g_last_llm_task_id == held->task_id, "驱动的是被挂住的成员");
     CHECK(edc_task_awaits_exec(held), "成员现在在跑");
 
     sdsfree(resp.content);
@@ -857,16 +865,16 @@ static void test_resume_held_while_fold_in_flight(void)
 
     struct edc_config *cfg = make_config();
     cfg_win(cfg, 1000000); /* 宽窗口 ⇒ 自动路径不动, 本用例只走显式起折 */
-    struct edc_session *session = edc_session_new(cfg, "sess-resume", "Resume");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-resume"), "Resume");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
     g_send_llm_calls = 0;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-resume", "leader work");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-resume"), "leader work");
 
     /* 起折时它是终态 (CANCELLED), 所以没被挂 dep; 之后 resume。 */
-    struct edc_task *t = edc_task_new("7", "sess-resume", group->group_id, "resume me", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id("7"), edc_test_session_id("sess-resume"), group->group_id, "resume me", edc_channel_adapter);
     edc_task_group_add_task(group, t);
     edc_scheduler_attach_input(sched, t, "resume me");
     edc_task_mark_cancelled(t);
@@ -932,7 +940,7 @@ static void test_resume_held_while_fold_in_flight(void)
     /* 扫一次：该被驱动的是链上的 L2，**不是** t（t 的边还没被放行）。 */
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 2, "折叠落地后只驱动了 L2");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, t->task_id) != 0, "没有为 t 发请求 (它仍被扣着)");
+    CHECK(g_last_llm_task_id != t->task_id, "没有为 t 发请求 (它仍被扣着)");
     CHECK(!edc_task_is_running(t), "t 没在跑");
     CHECK(settle_l2(sched, session) != NULL, "链上有 L2 可结算");
 
@@ -958,7 +966,7 @@ static void test_fold_before_request(void)
     TEST("请求前触发: 组该折时, 待发成员先停在 AWAIT_DEPS, 出去的是折叠的请求");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-pre-drive", "PreDrive");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-pre-drive"), "PreDrive");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
@@ -973,14 +981,14 @@ static void test_fold_before_request(void)
     sm.config = cfg;
     sched->sessions = &sm;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-pre-drive", "leader work");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-pre-drive"), "leader work");
     /* 语料只有 leader 那一条: 这一折会把它整条吃掉, 落地后组里没有可折叠的 =
      * 不会再有第二次 (用例后面要数请求数, 不能有第二折)。 */
     cfg_due(cfg, group);
 
     /* 一个"即将发请求"的成员: READY + active_turn。 */
     /* id 不用数字: 折叠任务由生成器给号, 数字会撞上 (上一版就撞了 "9")。 */
-    struct edc_task *ready = edc_task_new("drv-99", "sess-pre-drive", group->group_id, "next", edc_channel_adapter);
+    struct edc_task *ready = edc_task_new(edc_test_id("drv-99"), edc_test_session_id("sess-pre-drive"), group->group_id, "next", edc_channel_adapter);
     edc_task_group_add_task(group, ready);
     edc_scheduler_attach_input(sched, ready, "about to run");
     CHECK(edc_task_is_ready(ready), "成员待发请求");
@@ -992,7 +1000,7 @@ static void test_fold_before_request(void)
 
     CHECK(edc_scheduler_has_pending_system_task(session), "扫描自己起了折叠");
     CHECK(g_send_llm_calls == 1, "只发出一次请求");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, ready->task_id) != 0, "出去的不是待发成员");
+    CHECK(g_last_llm_task_id != ready->task_id, "出去的不是待发成员");
     CHECK(edc_task_awaits_deps(ready), "待发成员被 park 到 AWAIT_DEPS (复用 B1, 零新机制)");
     CHECK(!edc_task_is_running(ready), "它自己没被驱动");
 
@@ -1012,7 +1020,7 @@ static void test_fold_before_request(void)
 
     pump_schedule(sched);
     CHECK(g_send_llm_calls == 3, "释放后它自己的请求才出去 (折叠 + L2 + 它)");
-    CHECK(g_last_llm_task_id && strcmp(g_last_llm_task_id, ready->task_id) == 0, "驱动的是被 park 的那个");
+    CHECK(g_last_llm_task_id == ready->task_id, "驱动的是被 park 的那个");
 
     sdsfree(resp.content);
     edc_session_free(session);
@@ -1027,7 +1035,7 @@ static void test_fold_on_non_settling_advance(void)
     TEST("触发时机 (a): 一次不结算的推进 (工具应答那种) 也会带起折叠");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-advance", "Advance");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-advance"), "Advance");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
@@ -1041,12 +1049,12 @@ static void test_fold_on_non_settling_advance(void)
     sm.config = cfg;
     sched->sessions = &sm;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-advance", "leader work");
-    add_foldable_task(session, group, "2", 2, 1, "second work");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-advance"), "leader work");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 1, "second work");
     cfg_due(cfg, group);
 
     /* 一个在飞的成员: 不在 READY, 所以挂载点 (b) 不会看它 (只有"即将发请求"才触发)。 */
-    struct edc_task *flying = edc_task_new("adv-1", "sess-advance", group->group_id, "flying", edc_channel_adapter);
+    struct edc_task *flying = edc_task_new(edc_test_id("adv-1"), edc_test_session_id("sess-advance"), group->group_id, "flying", edc_channel_adapter);
     edc_task_group_add_task(group, flying);
     edc_scheduler_attach_input(sched, flying, "mid turn");
     edc_task_await_exec(flying);
@@ -1086,10 +1094,10 @@ static void test_fold_on_non_settling_advance(void)
 static void add_big_task(struct edc_session *session, struct edc_task_group *group, uint32_t seq, size_t chars,
                          const char *tag)
 {
-    struct edc_task *t = edc_task_new(tag, session->session_id, group->group_id, tag, edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(tag), session->session_id, group->group_id, tag, edc_channel_adapter);
     edc_task_group_add_task(group, t);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     char *buf = malloc(chars + 32);
     int n = snprintf(buf, chars + 32, "TAG%s:", tag);
     memset(buf + n, 'a', chars);
@@ -1098,7 +1106,7 @@ static void add_big_task(struct edc_session *session, struct edc_task_group *gro
     cJSON_AddStringToObject(m, "role", "user");
     cJSON_AddStringToObject(m, "content", buf);
     free(buf);
-    edc_queue_push(&turn->messages, m);
+    edc_turn_add_message(turn, m);
     edc_task_add_turn(t, turn);
     edc_task_await_exec(t);
     edc_task_mark_completed(t);
@@ -1113,8 +1121,8 @@ static void test_cut_keeps_recent_tokens(void)
     /* (a) 三条 ~25k token 的大消息 + 一条小 leader: 从队尾数, 最新那条自己就够了
      *     ⇒ 只留它。"压最老一半"会留 2 条 (cnt=4) ⇒ 这条用例能分辨两种策略。 */
     {
-        struct edc_session *session = edc_session_new(cfg, "sess-budget", "Budget");
-        struct edc_task_group *group = make_foldable_group(session, "sess-budget", "tiny leader");
+        struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-budget"), "Budget");
+        struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-budget"), "tiny leader");
         add_big_task(session, group, 2, 100000, "2");
         add_big_task(session, group, 3, 100000, "3");
         add_big_task(session, group, 4, 100000, "4");
@@ -1123,7 +1131,7 @@ static void test_cut_keeps_recent_tokens(void)
         memset(&cut, 0, sizeof(cut));
         sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
         CHECK(prompt != NULL, "拿到 prompt");
-        CHECK(cut.task_id && strcmp(cut.task_id, "4") == 0 && cut.turn == 0 && cut.prefix == 0,
+        CHECK(cut.task_id == edc_test_id("4") && cut.turn == 0 && cut.prefix == 0,
               "只留最新那条 (~25k ≥ 20k), 切点在它前面 (turn 边界)");
         if (prompt)
         {
@@ -1137,8 +1145,8 @@ static void test_cut_keeps_recent_tokens(void)
 
     /* (b) 老的都小、最新一条大: 预算只看 token (条数轴上"半量"会折掉两条)。 */
     {
-        struct edc_session *session = edc_session_new(cfg, "sess-budget-b", "BudgetB");
-        struct edc_task_group *group = make_foldable_group(session, "sess-budget-b", "tiny leader");
+        struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-budget-b"), "BudgetB");
+        struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-budget-b"), "tiny leader");
         add_big_task(session, group, 2, 8, "2");
         add_big_task(session, group, 3, 8, "3");
         add_big_task(session, group, 4, 100000, "4");
@@ -1146,7 +1154,7 @@ static void test_cut_keeps_recent_tokens(void)
         struct edc_fold_cut cut;
         memset(&cut, 0, sizeof(cut));
         sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
-        CHECK(cut.task_id && strcmp(cut.task_id, "4") == 0 && cut.prefix == 0,
+        CHECK(cut.task_id == edc_test_id("4") && cut.prefix == 0,
               "大的那条自己顶满预算 ⇒ 只留它 (小的全进语料)");
         if (prompt)
         {
@@ -1158,15 +1166,15 @@ static void test_cut_keeps_recent_tokens(void)
 
     /* (c) 小-大-小: 从队尾数到"大"那条才够预算 ⇒ 它整条留下, **不切在它内部**。 */
     {
-        struct edc_session *session = edc_session_new(cfg, "sess-budget-c", "BudgetC");
-        struct edc_task_group *group = make_foldable_group(session, "sess-budget-c", "tiny leader");
+        struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-budget-c"), "BudgetC");
+        struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-budget-c"), "tiny leader");
         add_big_task(session, group, 2, 100000, "2");
         add_big_task(session, group, 3, 8, "3");
 
         struct edc_fold_cut cut;
         memset(&cut, 0, sizeof(cut));
         sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
-        CHECK(cut.task_id && strcmp(cut.task_id, "2") == 0 && cut.prefix == 0,
+        CHECK(cut.task_id == edc_test_id("2") && cut.prefix == 0,
               "切点落在那条大消息**之前** (整条留作细节)");
         if (prompt)
         {
@@ -1200,7 +1208,7 @@ static void push_big_msg(struct edc_turn *turn, size_t chars, const char *tag)
 /* 一个完成的 leader + 一个**在飞**成员 (3 条各 ~25k token 的 active turn)。 */
 static struct edc_task_group *make_inflight_group(struct edc_session *session, struct edc_scheduler *sched,
                                                   struct edc_task **out_running, struct edc_task **out_older,
-                                                  struct edc_task **out_cancelled, const char *sid)
+                                                  struct edc_task **out_cancelled, int64_t sid)
 {
     struct edc_task_group *group = make_foldable_group(session, sid, "old leader");
     /* 另一个在飞成员: 它整条进语料 (切点落在后面那个成员上), 落地时它的 active turn
@@ -1208,15 +1216,15 @@ static struct edc_task_group *make_inflight_group(struct edc_session *session, s
     /* 一个**取消**掉的成员: 留着半个 turn (取消只表示停下, turn 不删), 它不是
      * ALIVE ⇒ 语料**不收**它的 active turn ⇒ 落地也不许折它 (折了就是静默丢内容)。
      * 它的已提交 turn 照样是组历史的一部分, 照样可折。 */
-    struct edc_task *cancelled = edc_task_new("7", sid, group->group_id, "cancelled half", edc_channel_adapter);
+    struct edc_task *cancelled = edc_task_new(edc_test_id("7"), sid, group->group_id, "cancelled half", edc_channel_adapter);
     edc_task_group_add_task(group, cancelled);
     {
         struct edc_turn *ct = edc_turn_new();
-        ct->task_id = strdup(cancelled->task_id);
+        ct->task_id = cancelled->task_id;
         cJSON *cm = cJSON_CreateObject();
         cJSON_AddStringToObject(cm, "role", "user");
         cJSON_AddStringToObject(cm, "content", "cancelled committed message");
-        edc_queue_push(&ct->messages, cm);
+        edc_turn_add_message(ct, cm);
         edc_task_add_turn(cancelled, ct);
     }
     edc_scheduler_attach_input(sched, cancelled, "cancelled half turn");
@@ -1224,12 +1232,12 @@ static struct edc_task_group *make_inflight_group(struct edc_session *session, s
     if (out_cancelled)
         *out_cancelled = cancelled;
 
-    struct edc_task *older = edc_task_new("8", sid, group->group_id, "older running", edc_channel_adapter);
+    struct edc_task *older = edc_task_new(edc_test_id("8"), sid, group->group_id, "older running", edc_channel_adapter);
     edc_task_group_add_task(group, older);
     edc_scheduler_attach_input(sched, older, "older running input");
     out_older ? (*out_older = older) : (void)0;
 
-    struct edc_task *running = edc_task_new("9", sid, group->group_id, "running", edc_channel_adapter);
+    struct edc_task *running = edc_task_new(edc_test_id("9"), sid, group->group_id, "running", edc_channel_adapter);
     edc_task_group_add_task(group, running);
     edc_scheduler_attach_input(sched, running, "running input");
     push_big_msg(running->active_turn, 100000, "0");
@@ -1243,13 +1251,13 @@ static void test_cut_inside_active_turn(void)
 {
     TEST("P2a-4b: 折在飞 turn 的前缀 ⇒ active_turn->folded_prefix (请求侧按它切片)");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-inflight", "Inflight");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-inflight"), "Inflight");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
     struct edc_task *running = NULL, *older = NULL, *cancelled = NULL;
-    struct edc_task_group *group = make_inflight_group(session, sched, &running, &older, &cancelled, "sess-inflight");
+    struct edc_task_group *group = make_inflight_group(session, sched, &running, &older, &cancelled, edc_test_session_id("sess-inflight"));
     uint32_t epoch_before = group->fold_epoch;
 
     struct edc_fold_cut cut;
@@ -1257,9 +1265,9 @@ static void test_cut_inside_active_turn(void)
     sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
     CHECK(prompt != NULL, "在飞 turn 也算语料");
     /* active turn = input + 3 条大消息 = 4 条; 最新那条自己 ≥ 20k ⇒ 只留它, prefix = 3。 */
-    CHECK(cut.task_id && strcmp(cut.task_id, "9") == 0 && cut.turn == EDC_FOLD_CUT_ACTIVE_TURN && cut.prefix == 3,
+    CHECK(cut.task_id == edc_test_id("9") && cut.turn == EDC_FOLD_CUT_ACTIVE_TURN && cut.prefix == 3,
           "切点落在在飞 turn 内部 (留最新那条, 前三条进语料)");
-    CHECK(cut.prefix == edc_queue_length(&running->active_turn->messages) - 1, "留的正好是最新那条");
+    CHECK(cut.prefix == running->active_turn->msg_count - 1, "留的正好是最新那条");
     if (prompt)
     {
         CHECK(strstr(prompt, "TAG0:") && strstr(prompt, "TAG1:") && strstr(prompt, "running input"),
@@ -1282,19 +1290,19 @@ static void test_cut_inside_active_turn(void)
         CHECK(running->active_turn && running->active_turn->folded_prefix == 3,
               "active turn 的前缀 = 3 (这条前缀就是 req->turn_begin 的来源)");
         CHECK(group->fold_epoch == epoch_before + 1, "落地 bump fold_epoch");
-        CHECK(edc_queue_length(&running->active_turn->messages) - running->active_turn->folded_prefix == 1,
+        CHECK(running->active_turn->msg_count - running->active_turn->folded_prefix == 1,
               "在飞 turn 只剩那一条未折叠的细节");
     }
     /* 6 条里"压一半"会切在 prefix 1, 尾巴 token 预算切在 3 ⇒ 能分辨两种策略。 */
     CHECK(cut.prefix != 1, "不是'压最老一半'的结果 (半量会切在 prefix 1)");
     CHECK(older && older->active_turn &&
-              older->active_turn->folded_prefix == (int)edc_queue_length(&older->active_turn->messages),
+              older->active_turn->folded_prefix == (int)older->active_turn->msg_count,
           "整条进语料的在飞成员: active turn 被整折 (不是只折已提交的 turn)");
     CHECK(cancelled && cancelled->active_turn && cancelled->active_turn->folded_prefix == 0,
           "取消成员的半个 turn 没进语料 ⇒ 落地也不折它 (折了就是丢内容)");
     CHECK(cancelled && cancelled->turns.tail > cancelled->turns.head &&
               ((struct edc_turn *)cancelled->turns.data[cancelled->turns.head])->folded_prefix ==
-                  (int)edc_queue_length(&((struct edc_turn *)cancelled->turns.data[cancelled->turns.head])->messages),
+                  ((struct edc_turn *)cancelled->turns.data[cancelled->turns.head])->msg_count,
           "但它的**已提交** turn 照折 (那是组历史的一部分)");
 
     edc_session_free(session);
@@ -1321,17 +1329,340 @@ static void push_msg(struct edc_turn *turn, const char *role, const char *tag, s
     edc_turn_add_message(turn, m);
 }
 
+/* ── R5b: 折叠里的文件追踪 ────────────────────────────────────── */
+
+/* 一条 assistant 消息，带一次 |tool|(path=|path|) 调用 —— 就是追踪器读取的形状。 */
+static void push_tool_call(struct edc_turn *turn, const char *tool, const char *path)
+{
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", "assistant");
+    cJSON_AddNullToObject(m, "content");
+    cJSON *calls = cJSON_AddArrayToObject(m, "tool_calls");
+    cJSON *call = cJSON_CreateObject();
+    cJSON_AddStringToObject(call, "id", "call_1");
+    cJSON_AddStringToObject(call, "type", "function");
+    cJSON *fn = cJSON_AddObjectToObject(call, "function");
+    cJSON_AddStringToObject(fn, "name", tool);
+    sds args = sdscatprintf(sdsempty(), "{\"path\":\"%s\"}", path);
+    cJSON_AddStringToObject(fn, "arguments", args);
+    sdsfree(args);
+    cJSON_AddItemToArray(calls, call);
+    edc_turn_add_message(turn, m);
+}
+
+/* 一个已完成的成员：一 turn 一条 user 消息（折叠语料的基本单位）。 */
+static struct edc_task *add_completed_member(struct edc_session *session, struct edc_task_group *group,
+                                             int64_t sid, const char *id, const char *text, int seq)
+{
+    struct edc_task *t = edc_task_new(edc_test_id(id), sid, group->group_id, text, edc_channel_adapter);
+    edc_task_group_add_task(group, t);
+    edc_task_await_exec(t);
+    edc_task_mark_completed(t);
+    t->completion_seq = seq;
+    struct edc_turn *turn = edc_turn_new();
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", "user");
+    cJSON_AddStringToObject(m, "content", text);
+    edc_turn_add_message(turn, m);
+    edc_task_add_turn(t, turn);
+    return t;
+}
+
+static size_t count_occurrences(const char *hay, const char *needle)
+{
+    size_t n = 0;
+    for (const char *q = hay; (q = strstr(q, needle)) != NULL; q += strlen(needle))
+        n++;
+    return n;
+}
+
+static void test_fold_tracks_touched_files(void)
+{
+    TEST("R5b: 折叠把 tool call 里的文件路径收进结构，并渲染成两个块");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-files"), "Files");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-files"), "leader work");
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t, "read_file", "src/a.c");
+    push_tool_call(t, "list_dir", "src/"); /* 目录：不是"读文件"，不进清单 */
+    push_tool_call(t, "edit_file", "src/b.c");
+    push_tool_call(t, "write_file", "src/c.c");
+    push_tool_call(t, "exec_shell", "not-a-file"); /* 非文件工具：不进清单 */
+    /* 宽窗口下"折最老一半"，后一半是保留的细节 —— 把填充消息放后面，让 tool call 落进语料。 */
+    for (int i = 0; i < 4; i++)
+        push_msg(t, "user", "FILL", 200, NULL);
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠任务起来了");
+    if (fold)
+    {
+        CHECK(fold->fold_files && fold->fold_files->read_n == 1, "语料里的读操作挂到了折叠任务上（list_dir 不算）");
+        CHECK(fold->fold_files && fold->fold_files->read_n == 1 &&
+                  strcmp(fold->fold_files->read[0], "src/a.c") == 0,
+              "读的是 src/a.c，目录 src/ 没进来");
+        edc_group_fold_deliver_memory(fold, "# Summary\n- work done");
+
+        /* 落地后：结构持有清单，memory 只有正文。 */
+        CHECK(group->fold_files && group->fold_files->modified_n == 2, "改过的文件进了结构（edit 与 write 同桶）");
+        CHECK(group->memory && strstr(group->memory, "<read-files>") == NULL,
+              "memory 里不再存块（块是渲染物，模型改不动数据）");
+        CHECK(group->memory && strcmp(group->memory, "# Summary\n- work done") == 0, "memory 就是摘要正文");
+
+        /* 渲染出来才是模型看到的东西。 */
+        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        CHECK(strstr(rendered, "<read-files>\nsrc/a.c\n</read-files>") != NULL, "读块按首次出现顺序渲染");
+        CHECK(strstr(rendered, "<modified-files>\nsrc/b.c\nsrc/c.c\n</modified-files>") != NULL, "改块渲染出来");
+        CHECK(strstr(rendered, "src/\n") == NULL, "目录没有混进读块");
+        CHECK(strstr(rendered, "not-a-file") == NULL, "非文件工具不进清单");
+        CHECK(strncmp(rendered, "# Summary", 9) == 0, "摘要本体仍在最前面");
+        sdsfree(rendered);
+    }
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_fold_files_accumulate_across_folds(void)
+{
+    TEST("R5b: 第二次落地取并集（旧的从 memory 带过来，不丢也不重复）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-files2"), "Files2");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-files2"), "leader work");
+    struct edc_turn *t0 = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t0, "edit_file", "a.c");
+    push_msg(t0, "user", "FILL", 200, NULL); /* 让 a.c 落在被折的那一半 */
+
+    /* 第一次折叠走完整路径：语料 -> 抽取 -> 落地。 */
+    struct edc_task *fold1 = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold1 != NULL, "第一次折叠起来了");
+    if (fold1)
+        edc_group_fold_deliver_memory(fold1, "# Summary 1");
+    CHECK(group->fold_files && edc_fold_files_count(group->fold_files) == 1, "第一次折叠记下 a.c");
+
+    /* 第二次只测"落地时的合并"：抽取侧已由上一个用例覆盖，这里直接给一个带新清单的
+     * 折叠任务 -- 关键是被折掉的那批 turn 已经不在了，a.c 只能从结构里带过来。 */
+    struct edc_task *fold2 = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    CHECK(fold2 != NULL, "第二个折叠任务");
+    if (fold2)
+    {
+        fold2->sink_group = group;
+        fold2->fold_files = edc_fold_files_new();
+        edc_fold_files_add_modified(fold2->fold_files, "b.c");
+        edc_group_fold_deliver_memory(fold2, "# Summary 2");
+    }
+
+    CHECK(group->fold_files && group->fold_files->modified_n == 2, "旧条目还在，新条目并入");
+    sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(strstr(rendered, "<modified-files>\na.c\nb.c\n</modified-files>") != NULL,
+          "并集按旧->新顺序，无重复");
+    CHECK(count_occurrences(rendered, "\na.c\n") == 1, "a.c 只出现一次");
+    sdsfree(rendered);
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_fold_files_are_capped_and_idempotent(void)
+{
+    TEST("R5b: 清单上限 50 条（留最近的），同一份 memory 重复落地不涨");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-files3"), "Files3");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-files3"), "leader work");
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    for (int i = 0; i < 60; i++)
+    {
+        sds path = sdscatprintf(sdsempty(), "src/f%02d.c", i);
+        push_tool_call(t, "read_file", path);
+        sdsfree(path);
+    }
+    for (int i = 0; i < 60; i++)
+        push_msg(t, "user", "FILL", 200, NULL); /* 一半被折、一半留作细节 */
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠任务起来了");
+    if (fold)
+        edc_group_fold_deliver_memory(fold, "# Summary");
+
+    /* 60 条里只留最近 50 条：f00..f09 丢掉，f10 起保留。 */
+    CHECK(group->fold_files && group->fold_files->read_n == 50, "正好 50 条");
+    {
+        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        CHECK(strstr(rendered, "src/f00.c") == NULL, "最老的被挤出（上限 50）");
+        CHECK(strstr(rendered, "src/f10.c") != NULL, "第 11 条是保留区间的第一条");
+        CHECK(strstr(rendered, "src/f59.c") != NULL, "最新的在");
+        CHECK(count_occurrences(rendered, ".c\n") == 50, "渲染出来的也是 50 条");
+        sdsfree(rendered);
+    }
+
+    /* 幂等：同一份 content 再落一次，结构与渲染都不该涨（回显的块被剥掉）。 */
+    sds before = edc_fold_files_render(group->memory, group->fold_files);
+    if (fold)
+        edc_group_fold_deliver_memory(fold, "# Summary");
+    sds after = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(strcmp(before, after) == 0, "重复落地得到同一份渲染结果");
+    CHECK(group->fold_files && group->fold_files->read_n == 50, "结构也没涨");
+    sdsfree(before);
+    sdsfree(after);
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* 回归: 模型把上一轮的 <read-files> / <modified-files> 回显进新摘要。
+ *
+ * 这不是边角情况: 从第二次折叠起, 语料里就带着 <previous-summary> (即旧 memory),
+ * 而 kUpdateSummaryInstruction 要求"输出完整新摘要" —— 模型照抄那两个块是常规行为。
+ * without_block 就在这条路径上, 曾经在第二轮 strstr() 读已经释放的内存
+ * (use-after-free: "smallbin double linked list corrupted"; 当时所有测试都喂不带块的
+ * 摘要, 循环体一次没执行过, 所以没被抓到)。 */
+static void test_fold_echoed_blocks_are_stripped(void)
+{
+    TEST("R5b: 模型回显旧块时去掉它, 只有一份（without_block 回归）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-echo"), "Echo");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-echo"), "leader work");
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t, "read_file", "keep.c");
+    push_tool_call(t, "edit_file", "old.c");
+    for (int i = 0; i < 4; i++)
+        push_msg(t, "user", "FILL", 200, NULL);
+
+    struct edc_task *fold1 = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold1 != NULL, "第一次折叠起来了");
+    if (!fold1)
+    {
+        edc_session_free(session);
+        edc_scheduler_free(sched);
+        edc_config_free(cfg);
+        return;
+    }
+    edc_group_fold_deliver_memory(fold1, "# Summary 1");
+    CHECK(group->fold_files && group->fold_files->read_n == 1 && group->fold_files->modified_n == 1,
+          "第一次落地：读 1 条、改 1 条");
+
+    /* 第二次: 摘要把旧 memory 的两个块原样抄回来（模型做的事）。 */
+    struct edc_task *fold2 = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    CHECK(fold2 != NULL, "第二个折叠任务");
+    if (fold2)
+    {
+        fold2->sink_group = group;
+        edc_group_fold_deliver_memory(fold2, "# Summary 2\n\n<read-files>\nkeep.c\n</read-files>\n\n"
+                                              "<modified-files>\nold.c\n</modified-files>\n");
+    }
+
+    /* 回显的块进不了 memory：body 只有正文。模型改写块既不能重复条目，也不能新增条目
+     * —— 这是"数据在结构里、块只是投影"最直接的收益。 */
+    CHECK(group->memory && strcmp(group->memory, "# Summary 2") == 0, "落地的 memory 只剩正文");
+    sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(strncmp(rendered, "# Summary 2", 11) == 0, "渲染后新摘要在最前面");
+    CHECK(count_occurrences(rendered, "<read-files>") == 1, "只剩一份 read 块");
+    CHECK(count_occurrences(rendered, "<modified-files>") == 1, "只剩一份 modified 块");
+    CHECK(count_occurrences(rendered, "\nkeep.c\n") == 1, "路径没有被重复");
+    CHECK(count_occurrences(rendered, "\nold.c\n") == 1, "改过的路径也没有被重复");
+    CHECK(strstr(rendered, "# Summary 1") == NULL, "旧摘要正文没有被抄进来");
+    sdsfree(rendered);
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* 读取口: /group files 与 /group info 都走 edc_group_fold_tracked_files()。这里钉住
+ * 它给出的条数与两份清单内容 —— 命令层只是排版。 */
+static void test_tracked_files_reader(void)
+{
+    TEST("R5b: tracked_files 读取口（条数 + 两份清单 + 未折叠/空组的空态）");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-reader"), "Reader");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+    g_send_llm_calls = 0;
+
+    /* ① 从没折过: 0 条, 两个出参都是 NULL。 */
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-reader"), "leader work");
+    sds reads = (sds) "sentinel";
+    sds writes = (sds) "sentinel";
+    CHECK(edc_group_fold_tracked_files(group, &reads, &writes) == 0, "没折过 ⇒ 0 条");
+    CHECK(reads == NULL && writes == NULL, "没折过 ⇒ 两个清单都是 NULL");
+
+    /* ② 折一次, 再读。 */
+    struct edc_turn *t = (struct edc_turn *)group->leader->turns.data[group->leader->turns.head];
+    push_tool_call(t, "read_file", "src/a.c");
+    push_tool_call(t, "list_dir", "src/");
+    push_tool_call(t, "edit_file", "src/b.c");
+    push_tool_call(t, "write_file", "src/c.c");
+    for (int i = 0; i < 4; i++)
+        push_msg(t, "user", "FILL", 200, NULL);
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "折叠任务起来了");
+    if (fold)
+        edc_group_fold_deliver_memory(fold, "# Summary");
+
+    reads = NULL;
+    writes = NULL;
+    CHECK(edc_group_fold_tracked_files(group, &reads, &writes) == 3, "1 读（list_dir 不算）+ 2 改 = 3 条");
+    CHECK(reads && strstr(reads, "src/a.c"), "读清单有 src/a.c");
+    CHECK(reads && strstr(reads, "src/\n") == NULL, "目录不在读清单里");
+    CHECK(writes && strstr(writes, "src/b.c") && strstr(writes, "src/c.c"), "改清单有两项");
+
+    /* ③ 出参可以为 NULL（只要条数）。 */
+    CHECK(edc_group_fold_tracked_files(group, NULL, NULL) == 3, "两个出参都能省");
+    /* ④ NULL 组不崩。 */
+    CHECK(edc_group_fold_tracked_files(NULL, NULL, NULL) == 0, "NULL 组 ⇒ 0 条");
+
+    sdsfree(reads);
+    sdsfree(writes);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 static void test_cut_never_orphans_tool_results(void)
 {
     TEST("切点合法性: 第一条留下的消息不能是工具结果 (往回退到它的 assistant, pi §4)");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-orphan", "Orphan");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-orphan"), "Orphan");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-orphan", "old leader");
-    struct edc_task *running = edc_task_new("9", "sess-orphan", group->group_id, "running", edc_channel_adapter);
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-orphan"), "old leader");
+    struct edc_task *running = edc_task_new(edc_test_id("9"), edc_test_session_id("sess-orphan"), group->group_id, "running", edc_channel_adapter);
     edc_task_group_add_task(group, running);
     edc_scheduler_attach_input(sched, running, "running input"); /* m0: user */
     struct edc_turn *turn = running->active_turn;
@@ -1361,7 +1692,7 @@ static void test_cut_never_orphans_tool_results(void)
     sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
     CHECK(prompt != NULL, "拿到 prompt");
     /* 朴素的尾巴预算会切在 m2 (工具结果) 上 ⇒ 孤儿。回退一条到 m1 (assistant)。 */
-    CHECK(cut.task_id && strcmp(cut.task_id, "9") == 0 && cut.prefix == 1,
+    CHECK(cut.task_id == edc_test_id("9") && cut.prefix == 1,
           "切点回退到 assistant(tool_calls), 不是切在工具结果上");
     CHECK(cut.prefix != 2, "朴素切点 (m2 = 工具结果) 被拒了");
     if (prompt)
@@ -1379,7 +1710,7 @@ static void test_cut_never_orphans_tool_results(void)
     {
         edc_group_fold_deliver_memory(fold, "# Merged\n- folded");
         CHECK(turn->folded_prefix == 1, "前缀 = 1 (请求从 m1 开始发)");
-        cJSON *first_kept = turn->messages.data[turn->messages.head + turn->folded_prefix];
+        cJSON *first_kept = edc_turn_msg_at(turn, turn->folded_prefix);
         cJSON *role = cJSON_GetObjectItem(first_kept, "role");
         CHECK(role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") != 0,
               "留下的第一条不是工具结果 (不会孤儿)");
@@ -1394,13 +1725,13 @@ static void test_prompt_initial_variant_names_the_sections(void)
 {
     TEST("P2b: 没有旧记忆 = 首次摘要, 指令逐段点名 pi §8 的六段格式");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-initial", "Initial");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-initial"), "Initial");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-initial", "old leader");
-    add_foldable_task(session, group, "2", 2, 4, "task two");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-initial"), "old leader");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
     CHECK(group->memory == NULL, "组还没有记忆 (首次)");
 
     struct edc_fold_cut cut;
@@ -1427,7 +1758,7 @@ static void test_prompt_initial_variant_names_the_sections(void)
     CHECK(fold != NULL, "带着 focus 也能起折");
     if (fold && fold->active_turn)
     {
-        cJSON *m = fold->active_turn->messages.data[fold->active_turn->messages.head];
+        cJSON *m = edc_turn_msg_at(fold->active_turn, 0);
         cJSON *content = m ? cJSON_GetObjectItem(m, "content") : NULL;
         CHECK(content && cJSON_IsString(content) && strstr(content->valuestring, "\n\nAdditional focus: keep the build flags") != NULL,
               "focus 以 Additional focus: 追加在指令之后");
@@ -1445,13 +1776,13 @@ static void test_truncated_summary_discards_fold(void)
 {
     TEST("P2b: 摘要被截断 ⇒ 折叠失败, 记忆与切点原样不动 (半截摘要不许当 checkpoint)");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-trunc", "Trunc");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-trunc"), "Trunc");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-trunc", "old leader");
-    add_foldable_task(session, group, "2", 2, 4, "task two");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-trunc"), "old leader");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
     group->memory = sdsnew("# Full memory\n- everything remembered");
 
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
@@ -1487,21 +1818,21 @@ static void test_no_split_turn_at_boundary(void)
 {
     TEST("P2b/pi §5: 切点在 turn 边界 ⇒ 不带 split-turn 段 (指令不乱加)");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-boundary", "Boundary");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-boundary"), "Boundary");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
     /* 三个成员各一条消息: 整组远小于 keep_recent ⇒ 压最老一半 = 折 2 条, 切点落在
      * 第三个成员那条消息上 (它正好是 turn 的第一条) ⇒ 切在 turn 边界。 */
-    struct edc_task_group *group = make_foldable_group(session, "sess-boundary", "old leader");
-    add_foldable_task(session, group, "2", 2, 1, "task two");
-    add_foldable_task(session, group, "3", 3, 1, "task three");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-boundary"), "old leader");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 1, "task two");
+    add_foldable_task(session, group, edc_test_id("3"), 3, 1, "task three");
 
     struct edc_fold_cut cut;
     memset(&cut, 0, sizeof(cut));
     sds prompt = edc_group_fold_build_prompt(group, NULL, &cut);
     CHECK(prompt != NULL, "拿到 prompt");
-    CHECK(cut.task_id && strcmp(cut.task_id, "3") == 0 && cut.prefix == 0, "切在 task 3 那条消息之前 (prefix 0)");
+    CHECK(cut.task_id == edc_test_id("3") && cut.prefix == 0, "切在 task 3 那条消息之前 (prefix 0)");
     if (prompt)
     {
         CHECK(strstr(prompt, "Turn Context (split turn)") == NULL, "没有 split-turn 段");
@@ -1517,13 +1848,13 @@ static void test_no_split_turn_at_boundary(void)
 /* P2 判据 (docs/pi-alignment.md §2.4): "折叠请求装得下" —— 在触发线上起折时,
  * 交给摘要器的语料必须小于 window - reserve, 否则**折叠请求自己**就超窗
  * (那正是 P2 从"按条数"改成"向窗口要空间"要消掉的隐患)。 */
-static void add_big_member(struct edc_session *session, struct edc_task_group *group, const char *id,
+static void add_big_member(struct edc_session *session, struct edc_task_group *group, int64_t id,
                            uint32_t seq, const char *tag)
 {
     struct edc_task *t = edc_task_new(id, session->session_id, group->group_id, tag, edc_channel_adapter);
     edc_task_group_add_task(group, t);
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(t->task_id);
+    turn->task_id = t->task_id;
     push_big_msg(turn, 100000, tag); /* ascii/4 ≈ 25k token */
     edc_task_add_turn(t, turn);
     edc_task_await_exec(t);
@@ -1537,14 +1868,14 @@ static void test_fold_request_fits_the_window(void)
     TEST("P2 判据: 触发线上起折 ⇒ 折叠 prompt 装在 window - reserve 里");
 
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-fit", "Fit");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-fit"), "Fit");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-fit", "leader work");
-    add_big_member(session, group, "2", 2, "two");
-    add_big_member(session, group, "3", 3, "three");
-    add_big_member(session, group, "4", 4, "four");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-fit"), "leader work");
+    add_big_member(session, group, edc_test_id("2"), 2, "two");
+    add_big_member(session, group, edc_test_id("3"), 3, "three");
+    add_big_member(session, group, edc_test_id("4"), 4, "four");
 
     /* 真路径在成员完成时把它的 turn 并进组历史 (合成夹具这里补上这一步)。 */
     edc_task_group_rebuild_history(group);
@@ -1565,7 +1896,7 @@ static void test_fold_request_fits_the_window(void)
     {
         long long pt = edc_token_estimate_text(prompt);
         log_info("  fit: ctx=%lld budget=%lld prompt=%lld cut=%s/%u/%u", ctx, budget, pt,
-                 cut.task_id ? cut.task_id : "(null)", cut.turn, cut.prefix);
+                 edc_id_str(cut.task_id), cut.turn, cut.prefix);
         CHECK(pt < budget, "prompt < window - reserve (否则折叠请求自己超窗)");
         CHECK(strstr(prompt, "TAGtwo:") != NULL, "老成员进语料");
         CHECK(strstr(prompt, "TAGfour:") == NULL, "最新那条留在细节里 (尾部预算生效)");
@@ -1581,13 +1912,13 @@ static void test_unresolvable_cut_folds_nothing(void)
 {
     TEST("切点解析不出来 ⇒ fail-closed: 只写记忆, 什么都不折 (绝不折进记忆没覆盖的消息)");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-nocut", "NoCut");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-nocut"), "NoCut");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
     struct edc_task *running = NULL, *older = NULL, *cancelled = NULL;
-    struct edc_task_group *group = make_inflight_group(session, sched, &running, &older, &cancelled, "sess-nocut");
+    struct edc_task_group *group = make_inflight_group(session, sched, &running, &older, &cancelled, edc_test_session_id("sess-nocut"));
     uint32_t epoch_before = group->fold_epoch;
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
     CHECK(fold != NULL, "折叠起来了");
@@ -1595,8 +1926,7 @@ static void test_unresolvable_cut_folds_nothing(void)
         return;
 
     /* 切点指着一条不存在的成员 —— 落地必须拒绝"猜"。 */
-    free(fold->fold_cut_task_id);
-    fold->fold_cut_task_id = strdup("no-such-task");
+    fold->fold_cut_task_id = edc_test_id("no-such-task");
     edc_group_fold_deliver_memory(fold, "# Merged\n- nothing folded");
 
     CHECK(group->memory && strstr(group->memory, "nothing folded") != NULL, "记忆照写");
@@ -1613,13 +1943,13 @@ static void test_cut_active_turn_committed_before_landing(void)
 {
     TEST("P2a-4b: 折叠期间在飞 turn 自己提交了 ⇒ 前缀落在它的新位置 (队列末尾)");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-commit", "Commit");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-commit"), "Commit");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
     struct edc_task *running = NULL, *older = NULL, *cancelled = NULL;
-    struct edc_task_group *group = make_inflight_group(session, sched, &running, &older, &cancelled, "sess-commit");
+    struct edc_task_group *group = make_inflight_group(session, sched, &running, &older, &cancelled, edc_test_session_id("sess-commit"));
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
     CHECK(fold != NULL, "折叠起来了");
     struct edc_turn *active = running->active_turn;
@@ -1663,21 +1993,21 @@ static void test_corpus_is_capped(void)
 {
     TEST("(b) 语料超上限 ⇒ 切点往回收: 宁可多留细节, 也不发一发超压缩比的请求");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-corpus-cap", "CorpusCap");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-corpus-cap"), "CorpusCap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
 
     /* 8 条各 ~25k token 的完成成员。尾部预算 (keep_recent) 单独作用只会留最新那一条
      * ⇒ 语料 ~175k, 是上限 131072 的 1.3 倍 —— 那正是"要求模型 13:1 压缩"的现场。 */
-    struct edc_task_group *group = make_foldable_group(session, "sess-corpus-cap", "tiny leader");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-corpus-cap"), "tiny leader");
     for (uint32_t seq = 2; seq <= 9; seq++)
     {
         char id[8];
         snprintf(id, sizeof(id), "%u", seq);
-        struct edc_task *t = edc_task_new(id, "sess-corpus-cap", group->group_id, id, edc_channel_adapter);
+        struct edc_task *t = edc_task_new(edc_test_id(id), edc_test_session_id("sess-corpus-cap"), group->group_id, id, edc_channel_adapter);
         edc_task_group_add_task(group, t);
         struct edc_turn *turn = edc_turn_new();
-        turn->task_id = strdup(t->task_id);
+        turn->task_id = t->task_id;
         push_big_msg_n(turn, 100000, id);
         edc_task_add_turn(t, turn);
         edc_task_await_exec(t);
@@ -1692,7 +2022,7 @@ static void test_corpus_is_capped(void)
     CHECK(prompt != NULL, "拿到 prompt");
     /* 上限把切点从 "9" (尾部预算的结果) 收到 "7": 语料 = leader + 2..6
      * = 11 + 5 x 25010 = 125061 <= 131072; 再加一条 (150071) 就超。 */
-    CHECK(cut.task_id && strcmp(cut.task_id, "7") == 0,
+    CHECK(cut.task_id == edc_test_id("7"),
           "切点被上限收到 task 7 (尾部预算单独作用会切在最新的 9)");
     if (prompt)
     {
@@ -1715,13 +2045,13 @@ static void test_fold_failure_cap(void)
 {
     TEST("(c) 连续失败到上限 ⇒ 自动折叠停手; 手动折叠是唯一的重启开关");
     struct edc_config *cfg = make_config();
-    struct edc_session *session = edc_session_new(cfg, "sess-failcap", "FailCap");
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-failcap"), "FailCap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_resolver(sched, session);
     sched->send_llm = stub_send_llm;
 
-    struct edc_task_group *group = make_foldable_group(session, "sess-failcap", "old leader");
-    add_foldable_task(session, group, "2", 2, 4, "task two");
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-failcap"), "old leader");
+    add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
     cfg_due(cfg, group); /* 这个组一定"该折" */
 
     CHECK(edc_group_fold_due(group, cfg), "基线: 该折");
@@ -1752,7 +2082,7 @@ static void test_fold_failure_cap(void)
 
     /* 组里又有了**已提交内容**也清零 (调度器那条钩子: 成员完成 = 新情况, 值得再试)。 */
     group->fold_failures = EDC_FOLD_MAX_FAILURES;
-    struct edc_task *member = edc_task_new("99", "sess-failcap", group->group_id, "later work", edc_channel_adapter);
+    struct edc_task *member = edc_task_new(edc_test_id("99"), edc_test_session_id("sess-failcap"), group->group_id, "later work", edc_channel_adapter);
     edc_task_group_add_task(group, member);
     edc_task_await_exec(member);
     edc_task_mark_completed(member);
@@ -1773,6 +2103,7 @@ static void test_fold_failure_cap(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     test_prompt_and_due();
     test_fold_runs_as_a_system_task();
     test_fold_failure_keeps_memory();
@@ -1786,6 +2117,11 @@ int main(void)
     test_fold_on_non_settling_advance();
     test_cut_keeps_recent_tokens();
     test_cut_inside_active_turn();
+    test_fold_tracks_touched_files();
+    test_fold_files_accumulate_across_folds();
+    test_fold_files_are_capped_and_idempotent();
+    test_fold_echoed_blocks_are_stripped();
+    test_tracked_files_reader();
     test_cut_never_orphans_tool_results();
     test_prompt_initial_variant_names_the_sections();
     test_truncated_summary_discards_fold();

@@ -24,6 +24,7 @@
  */
 
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -65,7 +66,7 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
-#define TEST_WS "/tmp/test_edc_reactivate_ws"
+#define TEST_WS edc_test_workspace()
 
 /* Simulate the STOP path of sched_handle_llm_resp for a finished turn:
  * record the turn's messages into group history *by reference*, then commit
@@ -75,7 +76,6 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
                                    const char *assistant)
 {
     struct edc_turn *turn = edc_turn_new();
-    turn->task_id = strdup(task->task_id);
     edc_turn_add_user_message(turn, user);
     cJSON *am = cJSON_CreateObject();
     cJSON_AddStringToObject(am, "role", "assistant");
@@ -85,11 +85,9 @@ static void commit_turn_into_group(struct edc_session *sess, struct edc_task *ta
 
     if (task->group && task->active_turn)
     {
-        for (size_t qi = task->active_turn->messages.head; qi < task->active_turn->messages.tail; qi++)
-        {
-            cJSON *item = task->active_turn->messages.data[qi];
-            edc_task_group_history_add_ref(task->group, item);
-        }
+        /* The history takes the turn's messages as ids; nothing is borrowed any more,
+         * which is precisely what removed the use-after-free this test was written for. */
+        edc_task_group_history_add_turn(task->group, task->active_turn);
     }
     edc_task_commit_active_turn(task);
 }
@@ -114,14 +112,17 @@ static struct edc_task_group *run_task(struct edc_scheduler *sched, struct edc_s
 static int touch_group_history(struct edc_task_group *g)
 {
     int seen = 0;
-    size_t total = g->history ? cJSON_GetArraySize(g->history) : 0;
-    for (size_t i = 0; i < total; i++)
+    const int total = edc_task_group_history_count(g);
+    for (int i = 0; i < total; i++)
     {
-        cJSON *m = cJSON_GetArrayItem(g->history, i);
+        cJSON *m = edc_task_group_history_at(g, i);
+        if (!m)
+            continue;
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *content = cJSON_GetObjectItem(m, "content");
         if (role && cJSON_IsString(role) && content && cJSON_IsString(content))
             seen++;
+        cJSON_Delete(m);
     }
     return seen;
 }
@@ -153,18 +154,18 @@ static int count_messages_containing(struct edc_session *s, const char *needle)
                 struct edc_turn *turn = (struct edc_turn *)t->turns.data[i];
                 if (!turn)
                     continue;
-                for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
+                for (int j = 0; j < turn->msg_count; j++)
                 {
-                    cJSON *content = cJSON_GetObjectItem((cJSON *)turn->messages.data[j], "content");
+                    cJSON *content = cJSON_GetObjectItem((cJSON *)edc_turn_msg_at(turn, j), "content");
                     if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
                         n++;
                 }
             }
             if (t->active_turn)
             {
-                for (size_t j = t->active_turn->messages.head; j < t->active_turn->messages.tail; j++)
+                for (int j = 0; j < t->active_turn->msg_count; j++)
                 {
-                    cJSON *content = cJSON_GetObjectItem((cJSON *)t->active_turn->messages.data[j], "content");
+                    cJSON *content = cJSON_GetObjectItem((cJSON *)edc_turn_msg_at(t->active_turn, j), "content");
                     if (content && cJSON_IsString(content) && strstr(content->valuestring, needle))
                         n++;
                 }
@@ -176,9 +177,9 @@ static int count_messages_containing(struct edc_session *s, const char *needle)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* no rm: the store is open on this workspace */
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", TEST_WS);
     system(cmd);
 
@@ -195,7 +196,7 @@ int main(void)
     /* Second session; create_ex makes it active, so put A back in front. */
     struct edc_session *sb = edc_session_manager_create_ex(sm, "B", NULL);
     CHECK(sb != NULL, "second session created");
-    sm->active_index = edc_session_manager_index_of(sm, sa->session_id);
+    sm->active_index = edc_session_manager_index_of(sm, edc_id_str(sa->session_id));
 
     edc_actor_t *channel_actor = edc_channel_actor_new();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -206,12 +207,12 @@ int main(void)
     CHECK(touch_group_history(ga) == 2, "A's group history readable before switching");
 
     /* Switch A -> B, run a task, then switch back B -> A. */
-    switch_to(cfg, sm, sched, channel_actor, sb->session_id);
+    switch_to(cfg, sm, sched, channel_actor, edc_id_str(sb->session_id));
     CHECK(edc_session_manager_get_active(sm) == sb, "B is the active session after switch");
     struct edc_task_group *gb = run_task(sched, sb, "task-b-1");
     CHECK(touch_group_history(gb) == 2, "B's group history readable");
 
-    switch_to(cfg, sm, sched, channel_actor, sa->session_id);
+    switch_to(cfg, sm, sched, channel_actor, edc_id_str(sa->session_id));
     CHECK(edc_session_manager_get_active(sm) == sa, "A is the active session again");
     CHECK(sa->state_loaded, "A still flagged loaded (in-memory authoritative)");
     CHECK(count_messages_containing(sa, "task-a-1") == 1, "A->messages survived re-activation");
@@ -225,8 +226,7 @@ int main(void)
     edc_channel_actor_free(channel_actor);
     edc_session_manager_free(sm);
     edc_config_free(cfg);
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    /* no rm: the store is open on this workspace */
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

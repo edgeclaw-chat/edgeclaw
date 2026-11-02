@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,6 +80,47 @@ sds edc_file_read(const char *path, EdcError **error)
     return result;
 }
 
+/* edc_file_read() with a ceiling, decided BEFORE any memory is allocated.
+ *
+ * This exists because "read the whole file" is not a safe primitive when the file is chosen by
+ * the model or pasted by the user: a 10 GB file is a 10 GB malloc. The stat comes first, so an
+ * oversized file costs one syscall instead of an out-of-memory death.
+ *
+ * |max_bytes| = 0 means "no ceiling" (the caller has its own reason to trust the size).
+ * |out_size| receives the real size whenever it could be determined -- including when the call
+ * is refused, so the message can say HOW big the file is and what to do about it. */
+sds edc_file_read_capped(const char *path, size_t max_bytes, size_t *out_size, EdcError **error)
+{
+    if (out_size)
+        *out_size = 0;
+
+    uv_fs_t req;
+    int r = (int)uv_fs_stat(g_file_loop, &req, path, NULL);
+    if (r < 0)
+    {
+        edc_error_set(error, EDC_ERR_FAILED, "stat '%s' failed: %s", path, uv_strerror(r));
+        uv_fs_req_cleanup(&req);
+        return NULL;
+    }
+    const size_t size = (size_t)req.statbuf.st_size;
+    const bool is_dir = (req.statbuf.st_mode & S_IFDIR) != 0;
+    uv_fs_req_cleanup(&req);
+
+    if (out_size)
+        *out_size = size;
+    if (is_dir)
+    {
+        edc_error_set(error, EDC_ERR_INVAL, "'%s' is a directory", path);
+        return NULL;
+    }
+    if (max_bytes > 0 && size > max_bytes)
+    {
+        edc_error_set(error, EDC_ERR_INVAL, "'%s' is %zu bytes, over the %zu-byte limit", path, size, max_bytes);
+        return NULL;
+    }
+    return edc_file_read(path, error);
+}
+
 bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError **error)
 {
     size_t write_len = (len < 0) ? strlen(content) : (size_t)len;
@@ -107,46 +149,6 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
         return false;
     }
     return true;
-}
-
-bool edc_file_rename_replace(const char *src, const char *dst, EdcError **error)
-{
-    if (!src || !dst)
-    {
-        edc_error_set(error, EDC_ERR_INVAL, "rename: NULL path");
-        return false;
-    }
-#ifdef _WIN32
-    /* The CRT's rename() refuses to overwrite (errno EEXIST), which breaks every
-     * ".tmp -> real" state save after the first one. MoveFileExW replaces the
-     * destination and takes UTF-8 paths through the wide API. */
-    wchar_t *wsrc = edc_utf8_to_wide(src);
-    wchar_t *wdst = edc_utf8_to_wide(dst);
-    BOOL ok = FALSE;
-    DWORD err = ERROR_INVALID_PARAMETER;
-    if (wsrc && wdst)
-    {
-        ok = MoveFileExW(wsrc, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-        if (!ok)
-            err = GetLastError();
-    }
-    free(wsrc);
-    free(wdst);
-    if (!ok)
-    {
-        edc_error_set(error, EDC_ERR_FAILED, "rename '%s' -> '%s' failed: Windows error %lu", src, dst,
-                      (unsigned long)err);
-        return false;
-    }
-    return true;
-#else
-    if (rename(src, dst) != 0)
-    {
-        edc_error_set(error, EDC_ERR_FAILED, "rename '%s' -> '%s' failed: %s", src, dst, strerror(errno));
-        return false;
-    }
-    return true;
-#endif
 }
 
 /* True when the resolved parent directory of |path| lives inside |root|.
@@ -352,7 +354,11 @@ bool edc_dir_foreach(const char *path, edc_dir_entry_cb cb, void *userdata, EdcE
 
     if (hFind == INVALID_HANDLE_VALUE)
     {
-        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %lu", path, GetLastError());
+        /* DWORD is 32 bits by definition (Win32 API); say so instead of %lu, which is 32 on
+         * Windows but 64 on LP64 -- a format that happens to match the platform here and
+         * would be wrong the moment this value were anything else. */
+        edc_error_set(error, EDC_ERR_FAILED, "FindFirstFile '%s' failed: %" PRIu32, path,
+                      (uint32_t)GetLastError());
         return false;
     }
 

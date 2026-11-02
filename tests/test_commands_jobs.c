@@ -11,6 +11,7 @@
  *
  * Harness copied from test_commands_task_new. */
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
@@ -119,9 +120,9 @@ static const char *last_task_input(struct edc_session *sess)
         LL_FOREACH2(g->members, t, group_next)
         last = t;
     }
-    if (!last || !last->active_turn || last->active_turn->messages.tail == last->active_turn->messages.head)
+    if (!last || !last->active_turn || last->active_turn->msg_count == 0)
         return NULL;
-    cJSON *msg = last->active_turn->messages.data[last->active_turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(last->active_turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
@@ -172,11 +173,10 @@ static int jobs_in_file(const char *workspace, const char *name, bool *found)
 
 int main(void)
 {
-    const char *ws = "/tmp/test_commands_jobs_ws";
+    const char *ws = edc_test_workspace();
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
-        return 1;
+    /* workspace created once; the store stays open on it */
+
 
     static const char *kJobs =
         "{\"jobs\":["
@@ -295,9 +295,7 @@ int main(void)
         CHECK(!edc_file_is_regular(path), "and no file was invented by a read");
     }
 
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
-    if (system(cmd) != 0)
-        printf("  (cleanup failed)\n");
+    /* store still open: nothing to remove */
 
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;

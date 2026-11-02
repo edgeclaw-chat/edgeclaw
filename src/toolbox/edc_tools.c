@@ -37,6 +37,8 @@ void edc_tool_free(struct edc_tool *tool)
 
     sdsfree(tool->name);
     sdsfree(tool->desc);
+    sdsfree(tool->snippet);
+    sdsfree(tool->guidelines);
 
     if (tool->priv_free_fn && tool->priv)
     {
@@ -56,8 +58,40 @@ struct edc_tool *edc_tool_new(const char *name, const char *desc, struct edc_too
     tool->exec = exec;
     tool->priv = NULL;
     tool->priv_free_fn = NULL;
+    /* Defaults keep every existing registration behaving as before: an ordinary tool,
+     * declared in the `tools` field. A setter opts into something narrower. */
+    tool->scope = EDC_TOOL_SCOPE_NORMAL;
+    tool->exposure = EDC_TOOL_EXPOSURE_DIRECT;
 
     return tool;
+}
+
+void edc_tool_set_snippet(struct edc_tool *tool, const char *snippet)
+{
+    if (!tool)
+        return;
+    sdsfree(tool->snippet);
+    tool->snippet = snippet ? sdsnew(snippet) : NULL;
+}
+
+void edc_tool_set_guidelines(struct edc_tool *tool, const char *lines)
+{
+    if (!tool)
+        return;
+    sdsfree(tool->guidelines);
+    tool->guidelines = lines ? sdsnew(lines) : NULL;
+}
+
+void edc_tool_set_scope(struct edc_tool *tool, uint32_t scope)
+{
+    if (tool)
+        tool->scope = scope;
+}
+
+void edc_tool_set_exposure(struct edc_tool *tool, uint8_t exposure)
+{
+    if (tool)
+        tool->exposure = exposure;
 }
 
 /* Kept out of edc_tool_new so the existing constructions did not have to grow a NULL arg. */
@@ -89,6 +123,8 @@ struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_t
     tool->exec = exec;
     tool->priv = NULL;
     tool->priv_free_fn = NULL;
+    tool->scope = EDC_TOOL_SCOPE_NORMAL;
+    tool->exposure = EDC_TOOL_EXPOSURE_DIRECT;
 
     return tool;
 }

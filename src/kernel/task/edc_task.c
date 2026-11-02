@@ -5,11 +5,16 @@
 #include "edc_context.h"
 #include "edc_session.h"
 #include "edc_task_group.h"
+#include "edc_state_store.h"
+#include "edc_token_estimate.h"
+#include "edc_turn.h"
 #include "utlist_fix.h"
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 /* The old state-name mapping is retired (R3b): the display name has one source,
  * edc_task_state_str, derived from (step, life). */
@@ -190,6 +195,41 @@ edc_task_end edc_task_classify_end(const char *name)
     return EDC_END_NONE;
 }
 
+/* The persistence spelling of a dependency edge, and its inverse. Lives here rather than in
+ * the serializer because the STORE writes and reads these directly now; every other enum in
+ * this file already has the same name/classify pair. */
+const char *edc_task_dep_type_name(edc_task_dep_type t)
+{
+    switch (t)
+    {
+    case TASK_DEP_JOIN:
+        return "JOIN";
+    case TASK_DEP_SEQUENCE:
+        return "SEQUENCE";
+    case TASK_DEP_BARRIER:
+        return "BARRIER";
+    case TASK_DEP_UNLESS:
+        return "UNLESS";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+edc_task_dep_type edc_task_classify_dep_type(const char *name)
+{
+    if (!name)
+        return TASK_DEP_JOIN;
+    if (strcmp(name, "JOIN") == 0)
+        return TASK_DEP_JOIN;
+    if (strcmp(name, "SEQUENCE") == 0)
+        return TASK_DEP_SEQUENCE;
+    if (strcmp(name, "BARRIER") == 0)
+        return TASK_DEP_BARRIER;
+    if (strcmp(name, "UNLESS") == 0)
+        return TASK_DEP_UNLESS;
+    return TASK_DEP_JOIN;
+}
+
 const char *edc_task_fail_name(edc_task_fail fail)
 {
     switch (fail)
@@ -283,6 +323,11 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
         return false;
     if (!edc_task_is_valid_transition(task->step, task->life, step, life))
         return false;
+    /* Read the old "can still advance" answer before the write, so the group's idle clock
+     * is only touched when that answer actually changed. ALIVE -> ALIVE (a step change
+     * inside a running task) leaves busy_members alone, and so does every terminal ->
+     * terminal rewrite. */
+    const bool was_finished = edc_task_is_finished(task);
     task->step = step;
     task->life = life;
     /* The reason for a past end belongs to that end: a task that can move again has no
@@ -298,6 +343,12 @@ bool edc_task_move(struct edc_task *task, edc_task_step step, edc_task_life life
             task->blocked_by = NULL;
         }
     }
+    /* The one place a member's terminal-ness changes: tell the group, so `idle_since`
+     * says when the group actually BECAME idle. Every runtime transition comes through
+     * here (mark_completed / failed / cancelled / skipped / blocked / interrupted are
+     * wrappers), which is why the recount can live in one spot. */
+    if (task->group && !edc_task_is_memory_sink(task) && was_finished != edc_task_is_finished(task))
+        edc_task_group_refresh_busy(task->group, time(NULL));
     return true;
 }
 
@@ -376,8 +427,16 @@ bool edc_task_mark_blocked(struct edc_task *task, edc_task_life life, const stru
         free(task->blocked_by);
         task->blocked_by = NULL;
     }
-    if (source && source->task_id)
-        task->blocked_by = strdup(source->task_id);
+    /* blocked_by is informational text that outlives the source task, so the numeric id is
+     * rendered here instead of being stored as an id. strdup, not sdscatprintf: this field
+     * is freed with free() everywhere else in the file, and an sds header would turn that
+     * into an invalid free. */
+    if (source && source->task_id > 0)
+    {
+        char idbuf[32];
+        snprintf(idbuf, sizeof(idbuf), "%" PRId64, source->task_id);
+        task->blocked_by = strdup(idbuf);
+    }
     /* A cascaded task will not produce either, so it passes the cascade on -- through the
      * SAME broadcast its life implies, exactly as the stop and failure paths do. */
     if (life == EDC_LIFE_CANCELLED)
@@ -483,19 +542,24 @@ void edc_task_force_move(struct edc_task *task, edc_task_step step, edc_task_lif
 {
     if (!task)
         return;
+    const bool was_finished = edc_task_is_finished(task);
     task->step = step;
     task->life = life;
+    /* Same bookkeeping as edc_task_move: `/task resume` comes through here (INTERRUPTED
+     * -> ALIVE via edc_task_resume), and a resumed member makes its group busy again. */
+    if (task->group && !edc_task_is_memory_sink(task) && was_finished != edc_task_is_finished(task))
+        edc_task_group_refresh_busy(task->group, time(NULL));
 }
 
 /* ── Lifetime ──────────────────────────────────────────────── */
 
-struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id, const char *desc,
+struct edc_task *edc_task_new(int64_t task_id, int64_t session_id, int64_t group_id, const char *desc,
                               edc_channel_type channel_type)
 {
     struct edc_task *task = g_new0(struct edc_task, 1);
-    task->task_id = strdup(task_id);
-    task->session_id = strdup(session_id);
-    task->group_id = strdup(group_id);
+    task->task_id = task_id;
+    task->session_id = session_id;
+    task->group_id = group_id;
     task->description = strdup(desc ? desc : "");
     /* A new task is "parked with input, waiting to be dispatched" -- there is no
      * "waiting for user input" phase, so it starts at (READY, ALIVE) (the old
@@ -512,23 +576,40 @@ struct edc_task *edc_task_new(const char *task_id, const char *session_id, const
     return task;
 }
 
-static cJSON *turn_user_message(struct edc_turn *turn)
+static cJSON *turn_user_message_at(struct edc_turn *turn, int *out_ord)
 {
+    if (out_ord)
+        *out_ord = -1;
     if (!turn)
         return NULL;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *msg = (cJSON *)turn->messages.data[i];
+        cJSON *msg = edc_turn_msg_at(turn, i);
+        if (!msg)
+            continue;
         const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "role"));
         if (!role || strcmp(role, "user") != 0)
+        {
+            cJSON_Delete(msg);
             continue;
+        }
         /* Pass output (synthetic) is not what the user typed: only their own line. */
         cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
         if (synthetic && cJSON_IsTrue(synthetic))
+        {
+            cJSON_Delete(msg);
             continue;
-        return msg;
+        }
+        if (out_ord)
+            *out_ord = i;
+        return msg; /* the caller owns it */
     }
     return NULL;
+}
+
+static cJSON *turn_user_message(struct edc_turn *turn)
+{
+    return turn_user_message_at(turn, NULL);
 }
 
 void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload)
@@ -538,7 +619,8 @@ void edc_task_set_user_origin(struct edc_task *task, const char *mid, const stru
     if (!mid && edc_payload_empty(payload))
         return;
 
-    cJSON *msg = turn_user_message(task->active_turn);
+    int ord = -1;
+    cJSON *msg = turn_user_message_at(task->active_turn, &ord);
     if (!msg)
         return;
 
@@ -551,12 +633,22 @@ void edc_task_set_user_origin(struct edc_task *task, const char *mid, const stru
     {
         cJSON *map = cJSON_CreateObject();
         if (!map)
+        {
+            cJSON_Delete(msg);
             return;
+        }
         for (int k = 0; k < payload->n; k++)
             cJSON_AddStringToObject(map, payload->items[k].key, payload->items[k].text);
         cJSON_DeleteItemFromObject(msg, "payload");
         cJSON_AddItemToObject(msg, "payload", map);
     }
+
+    /* The row is the truth: a decoration that is not written back disappears on the next
+     * read (and after a restart). Re-write at the same position, then drop the copy. */
+    if (ord >= 0)
+        edc_msg_append(task->active_turn->task_id, task->active_turn->turn_ord, ord, msg,
+                       edc_token_estimate_msg(msg));
+    cJSON_Delete(msg);
 }
 
 cJSON *edc_task_user_payload(struct edc_task *task)
@@ -569,7 +661,14 @@ cJSON *edc_task_user_payload(struct edc_task *task)
         for (size_t i = task->turns.tail; i > task->turns.head && !msg; i--)
             msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
     }
-    return msg ? cJSON_GetObjectItem(msg, "payload") : NULL;
+    if (!msg)
+        return NULL;
+    /* The message is a query result owned here; the caller gets its own copy of the
+     * payload because the message itself does not survive this call any more. */
+    cJSON *payload = cJSON_GetObjectItem(msg, "payload");
+    cJSON *out = payload ? cJSON_Duplicate(payload, 1) : NULL;
+    cJSON_Delete(msg);
+    return out;
 }
 
 cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
@@ -579,39 +678,43 @@ cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid)
 
     /* The in-flight turn first (a message sent moments ago is what a recall right after
      * sending asks for), then the committed ones newest-first. */
-    cJSON *hit = NULL;
     struct edc_turn *active = task->active_turn;
     if (active)
     {
         cJSON *msg = turn_user_message(active);
-        const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
-        if (found && strcmp(found, mid) == 0)
-            hit = cJSON_GetObjectItem(msg, "payload");
+        if (msg)
+        {
+            const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
+            cJSON *payload = cJSON_GetObjectItem(msg, "payload");
+            cJSON *out = (found && strcmp(found, mid) == 0 && payload) ? cJSON_Duplicate(payload, 1) : NULL;
+            cJSON_Delete(msg);
+            if (out)
+                return out;
+        }
     }
-    for (size_t i = task->turns.tail; i > task->turns.head && !hit; i--)
+    for (size_t i = task->turns.tail; i > task->turns.head; i--)
     {
         cJSON *msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
+        if (!msg)
+            continue;
         const char *found = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "mid"));
-        if (found && strcmp(found, mid) == 0)
-            hit = cJSON_GetObjectItem(msg, "payload");
+        cJSON *payload = cJSON_GetObjectItem(msg, "payload");
+        cJSON *out = (found && strcmp(found, mid) == 0 && payload) ? cJSON_Duplicate(payload, 1) : NULL;
+        cJSON_Delete(msg);
+        if (out)
+            return out;
     }
-    return hit;
+    return NULL;
 }
 
-struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
+struct edc_task *edc_task_fork(struct edc_task *parent, int64_t task_id, const char *desc,
                                uint32_t fork_point_completion_seq, edc_channel_type channel_type)
 {
     if (!parent)
         return NULL;
 
-    char auto_id[64];
-    if (!task_id)
-    {
-        static int fork_seq = 0;
-        snprintf(auto_id, sizeof(auto_id), "ft%d", ++fork_seq);
-        task_id = auto_id;
-    }
-
+    /* task_id 0 = "the store assigns one": the caller persists the child and reads the id
+     * back (see edc_scheduler_task_create). There is no in-memory id source any more. */
     struct edc_task *child = edc_task_new(task_id, parent->session_id, parent->group_id, desc, channel_type);
     child->forked_from = parent;
     child->fork_point_completion_seq = fork_point_completion_seq;
@@ -621,16 +724,17 @@ struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, con
 
 /* ── fork snapshot ────────────────────────────────────────── */
 
-struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
-                                         const char *snapshot_task_id)
+struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, int64_t dst_session_id,
+                                         int64_t dst_group_id, int64_t dst_task_id,
+                                         int dst_turn_ord)
 {
-    (void)session; /* the turn holds its own messages now */
     if (!task)
         return NULL;
 
-    struct edc_turn *snap = edc_turn_new();
-    if (snapshot_task_id)
-        snap->task_id = strdup(snapshot_task_id);
+    /* Messages are written to the store as they are appended, so the destination key must
+     * be known up front -- including the ordinal, which is the caller's decision (the
+     * destination may already have an in-flight turn at 0). */
+    struct edc_turn *snap = edc_turn_new_for(dst_session_id, dst_group_id, dst_task_id, dst_turn_ord);
 
     for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
     {
@@ -638,11 +742,23 @@ struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_sessi
         if (!turn)
             continue;
 
-        for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
-            edc_queue_push(&snap->messages, cJSON_Duplicate((cJSON *)turn->messages.data[mj], 1));
+        cJSON *arr = edc_turn_msgs(turn, 0, turn->msg_count);
+        if (!arr)
+            continue;
+        while (cJSON_GetArraySize(arr) > 0)
+        {
+            cJSON *copy = cJSON_DetachItemFromArray(arr, 0);
+            /* A copied message MUST NOT keep the source's identity: messages.id is the
+             * primary key, so re-inserting the same id would replace the original row and
+             * the parent would lose that message. Dropping the field makes
+             * edc_turn_add_message mint a fresh one. */
+            cJSON_DeleteItemFromObject(copy, "id");
+            edc_turn_add_message(snap, copy);
+        }
+        cJSON_Delete(arr);
     }
 
-    if (edc_queue_length(&snap->messages) == 0)
+    if (snap->msg_count == 0)
     {
         edc_turn_free(snap);
         return NULL;
@@ -739,9 +855,6 @@ void edc_task_free(struct edc_task *task)
      * only mattered to a still-live host. */
     edc_task_drain_moves(task, NULL, NULL);
 
-    free(task->task_id);
-    free(task->group_id);
-    free(task->session_id);
     free(task->description);
 
     if (task->raw_input)
@@ -749,8 +862,7 @@ void edc_task_free(struct edc_task *task)
 
     if (task->output)
         sdsfree(task->output);
-    free(task->fold_cut_task_id);
-    free(task->memo_cut_task_id);
+    edc_fold_files_free(task->fold_files);
 
     if (task->redirect_stdout)
         sdsfree(task->redirect_stdout);
@@ -769,6 +881,21 @@ void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn)
 {
     if (!task || !turn)
         return;
+    /* Position IS the storage key. A turn built before its position was known (a fork
+     * snapshot, a test that constructs turns directly) is re-keyed here, and its message
+     * rows move with it -- rebinding without moving would orphan the conversation. In
+     * production the key is already correct at creation, so the move is a no-op. */
+    /* Only a turn with a PLACEHOLDER owner is re-keyed. A turn that already names this
+     * task was created with the ordinal its caller wanted (a fork snapshot parked at 1
+     * next to the in-flight turn at 0), and the queue length is not the right answer for
+     * it -- recomputing would move it onto the in-flight turn's rows. */
+    if (turn->task_id == 0 || turn->task_id != task->task_id)
+    {
+        const int ord = (int)edc_queue_length(&task->turns);
+        edc_msg_turn_move(turn->task_id, turn->turn_ord, task->session_id, task->group_id,
+                          task->task_id, ord);
+        edc_turn_set_key(turn, task->session_id, task->group_id, task->task_id, ord);
+    }
     edc_queue_push(&task->turns, turn);
 }
 
@@ -791,10 +918,10 @@ size_t edc_task_message_count(const struct edc_task *task)
     {
         struct edc_turn *turn = (struct edc_turn *)task->turns.data[i];
         if (turn)
-            n += edc_queue_length(&turn->messages);
+            n += (size_t)turn->msg_count;
     }
     if (task->active_turn)
-        n += edc_queue_length(&task->active_turn->messages);
+        n += (size_t)task->active_turn->msg_count;
     return n;
 }
 
@@ -818,8 +945,14 @@ static void collect_user_msgs(const struct edc_turn *turn, sds *out)
 {
     if (!turn || !out)
         return;
-    for (size_t j = turn->messages.head; j < turn->messages.tail; j++)
-        append_user_msg((const cJSON *)turn->messages.data[j], out);
+    for (int j = 0; j < turn->msg_count; j++)
+    {
+        cJSON *msg = edc_turn_msg_at(turn, j);
+        if (!msg)
+            continue;
+        append_user_msg(msg, out);
+        cJSON_Delete(msg); /* it is a query result, not the stored instance */
+    }
 }
 
 sds edc_task_user_input(const struct edc_task *task, const cJSON *session_messages)
@@ -861,8 +994,8 @@ bool edc_task_llm_request_poke(struct edc_task *task)
 
 /* ── Token accounting ──────────────────────────────────────── */
 
-void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
-                        long long total_tokens, long long cached_tokens)
+void edc_task_add_usage(struct edc_task *task, int64_t prompt_tokens, int64_t completion_tokens,
+                        int64_t total_tokens, int64_t cached_tokens)
 {
     if (!task)
         return;
@@ -896,9 +1029,8 @@ void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long lon
          * turn (exec_done appends the assistant message after this call), so it
          * describes the request as it was sent. */
         task->last_fold_epoch = task->group ? task->group->fold_epoch : 0;
-        task->last_hist_len =
-            (task->group && task->group->history) ? cJSON_GetArraySize(task->group->history) : 0;
-        task->last_turn_len = task->active_turn ? (int)task->active_turn->messages.tail : 0;
+        task->last_hist_len = edc_task_group_history_count(task->group);
+        task->last_turn_len = task->active_turn ? task->active_turn->msg_count : 0;
     }
 }
 
@@ -913,6 +1045,15 @@ void edc_task_memo_commit(struct edc_task *task)
      * not call it, so the next request resends it -- idempotent and harmless. */
     if (task->memo_notice_seq > task->memo_seen_seq)
         task->memo_seen_seq = task->memo_notice_seq;
+    /* Same discipline for the catalogue: it is only "delivered" once a response came back
+     * for the request that carried it. A memory that was EMPTY at that moment sends no
+     * card (nothing to list), so the flag stays clear and the next request tries again --
+     * which is exactly right: the task still has never seen an index. */
+    if (task->memo_notice_catalogue)
+    {
+        task->memo_baseline_done = true;
+        task->memo_notice_catalogue = false;
+    }
 }
 
 /* ── Dependencies (IPC) ────────────────────────────────────── */
@@ -1125,8 +1266,10 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
      *   - only EDC_END_BLOCKED (a stop, its own failure and a `||` skip stay explicit);
      *   - only when the source completing NOW is the one that blocked it (blocked_by):
      *     some OTHER dependency finishing says nothing about whether it may run again. */
-    if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id &&
-        strcmp(target->blocked_by, source->task_id) == 0 && !edc_task_awaits_deps(target))
+    char source_id_text[32];
+    snprintf(source_id_text, sizeof(source_id_text), "%" PRId64, source->task_id);
+    if (target->end == EDC_END_BLOCKED && target->blocked_by && source->task_id > 0 &&
+        strcmp(target->blocked_by, source_id_text) == 0 && !edc_task_awaits_deps(target))
     {
         /* The note the cascade wrote ("[failed: its dependency … ]") described a state that
          * is over: the task is about to move again, and leaving it there makes /task output
@@ -1141,9 +1284,8 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
              * again because the dependency it was blocked on produced. A queue advance and
              * a cascade are routine / already announced, so they carry no notice. */
             task_record_move(source, target, EDC_MOVE_UNBLOCKED,
-                             sdscatprintf(sdsempty(), "`%s` is running again — its dependency `%s` produced.",
-                                          target->task_id ? target->task_id : "?",
-                                          source->task_id ? source->task_id : "?"));
+                             sdscatprintf(sdsempty(), "`%" PRId64 "` is running again — its dependency `%" PRId64 "` produced.",
+                                          (int64_t)target->task_id, (int64_t)source->task_id));
     }
 
     if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
@@ -1352,7 +1494,7 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
                           ? "so the output it was waiting for is not available -- resume that one to get it"
                           : "so this task cannot go on -- resume that one first";
     if (source->task_id)
-        edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s %s, %s]", source->task_id,
+        edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: its dependency %s %s, %s]", edc_id_str(source->task_id),
                                                  what, why));
     else
         edc_task_set_output(target, sdscatprintf(sdsempty(), "[failed: a dependency %s, %s]", what, why));
@@ -1576,11 +1718,15 @@ static bool task_turn_has_tool_response(struct edc_turn *turn, size_t upto, cons
 {
     for (size_t i = 0; i < upto; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, (int)i);
+        if (!m)
+            continue;
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
-        if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
-            strcmp(tcid->valuestring, call_id) == 0)
+        const bool hit = role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid &&
+                         cJSON_IsString(tcid) && strcmp(tcid->valuestring, call_id) == 0;
+        cJSON_Delete(m);
+        if (hit)
             return true;
     }
     return false;
@@ -1592,18 +1738,22 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
     if (!turn)
         return;
 
-    /* Scan only the pre-existing messages: tool messages added here are not iterated.
-     * The queue reallocs on append, so the base pointer is re-read each round (do not
-     * cache the array's first address). */
-    size_t n = turn->messages.tail;
+    /* Scan only the pre-existing messages: tool messages added below are not iterated.
+     * Each message is a query result owned here, so every exit path frees it. */
+    size_t n = (size_t)turn->msg_count;
     for (size_t i = 0; i < n; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, (int)i);
+        if (!m)
+            continue;
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *tcs = cJSON_GetObjectItem(m, "tool_calls");
         if (!role || !cJSON_IsString(role) || strcmp(role->valuestring, "assistant") != 0 || !tcs ||
             !cJSON_IsArray(tcs))
+        {
+            cJSON_Delete(m);
             continue;
+        }
 
         cJSON *tc = NULL;
         cJSON_ArrayForEach(tc, tcs)
@@ -1627,6 +1777,7 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
              * response and must not count as incomplete. */
             edc_task_tool_call_remove(task, id->valuestring);
         }
+        cJSON_Delete(m);
     }
 }
 
@@ -1683,7 +1834,7 @@ size_t edc_task_turn_msg_count(struct edc_task *task)
     for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
     {
         struct edc_turn *turn = task->turns.data[qi];
-        n += edc_queue_length(&turn->messages);
+        n += (size_t)turn->msg_count;
     }
     return n;
 }
@@ -1697,7 +1848,7 @@ size_t edc_task_unfolded_msg_count(struct edc_task *task)
     for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
     {
         struct edc_turn *turn = task->turns.data[qi];
-        size_t len = edc_queue_length(&turn->messages);
+        size_t len = (size_t)turn->msg_count;
         size_t folded = (turn->folded_prefix > 0) ? (size_t)turn->folded_prefix : 0;
         if (folded > len)
             folded = len;
@@ -1749,10 +1900,14 @@ cJSON *edc_task_get_context_messages(struct edc_task *task, struct edc_config *c
     for (size_t qi = task->turns.head; qi < task->turns.tail; qi++)
     {
         struct edc_turn *turn = task->turns.data[qi];
-        for (size_t mj = turn->messages.head; mj < turn->messages.tail; mj++)
+        cJSON *arr = edc_turn_msgs(turn, 0, turn->msg_count);
+        if (arr)
         {
-            cJSON *item = turn->messages.data[mj];
-            cJSON_AddItemReferenceToArray(messages, item);
+            /* Ownership moves into `messages`: the query result is freed below and must
+             * not leave references behind. */
+            while (cJSON_GetArraySize(arr) > 0)
+                cJSON_AddItemToArray(messages, cJSON_DetachItemFromArray(arr, 0));
+            cJSON_Delete(arr);
         }
     }
 

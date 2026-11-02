@@ -1153,6 +1153,8 @@ static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
         edc_tool_new("device_upload",
                      "Upload a file from the host to a remote device agent (supports chunked transfer for large files)",
                      params, edc_tool_device_upload_exec_async);
+    edc_tool_set_snippet(tool, "Upload a file to the remote device");
+    edc_tool_set_guidelines(tool, "Transfers to the device; the local path is read through the sandbox.");
     edc_toolbox_register(tb, tool);
     return tool;
 }
@@ -1171,6 +1173,8 @@ static struct edc_tool *edc_tool_create_device_download(struct edc_toolbox *tb)
         "device_download",
         "Download a file from a remote device agent to the host (supports chunked transfer for large files)", params,
         edc_tool_device_download_exec_async);
+    edc_tool_set_snippet(tool, "Download a file from the remote device");
+    edc_tool_set_guidelines(tool, "Writes the local copy through the sandbox.");
     edc_toolbox_register(tb, tool);
     return tool;
 }

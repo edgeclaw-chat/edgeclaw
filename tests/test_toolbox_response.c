@@ -30,6 +30,7 @@
  * (driving task trees is the scan's subject, not this file's). */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_error.h"
@@ -140,6 +141,20 @@ static void probe_finish(int i, const char *result)
     cb(c->ctx, sdsnew(result), NULL);
 }
 
+/* Finish with a result sds AND an error, which is what edc_tools_memory does
+ * (`callback(ctx, err, edc_error_new(...))` where `err` is the message it built). The
+ * actor's callback keeps the error and must release the result -- overwriting the variable
+ * leaked one sds per failed memory call. */
+static void probe_finish_with_result_and_error(int i, const char *result, const char *error_message)
+{
+    struct probe_call *c = &probe.call[i];
+    void (*cb)(struct edc_toolbox_call_ctx *, sds, EdcError *) = c->cb;
+    if (!cb)
+        return;
+    c->cb = NULL;
+    cb(c->ctx, sdsnew(result), edc_error_new(EDC_ERR_INVAL, "%s", error_message));
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  Ports the scheduler drives
  *  ══════════════════════════════════════════════════════════════ */
@@ -177,7 +192,7 @@ static void close_handle_cb(uv_handle_t *handle, void *arg)
 static void harness_up(struct harness *h, int max_output)
 {
     h->cfg = g_new0(struct edc_config, 1);
-    h->cfg->workspace = sdsnew("/tmp/test_toolbox_response_ws");
+    h->cfg->workspace = sdsnew(edc_test_workspace());
     h->cfg->tool_max_output_size = max_output;
 
     h->sched = edc_scheduler_new(h->cfg);
@@ -264,9 +279,9 @@ static const char *turn_tool_content(struct edc_turn *turn, const char *call_id)
 {
     if (!turn)
         return NULL;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, i);
         cJSON *role = cJSON_GetObjectItem(m, "role");
         cJSON *tcid = cJSON_GetObjectItem(m, "tool_call_id");
         if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0 && tcid && cJSON_IsString(tcid) &&
@@ -281,9 +296,9 @@ static int turn_count_tool_msgs(struct edc_turn *turn)
     int n = 0;
     if (!turn)
         return 0;
-    for (size_t i = turn->messages.head; i < turn->messages.tail; i++)
+    for (int i = 0; i < turn->msg_count; i++)
     {
-        cJSON *m = turn->messages.data[i];
+        cJSON *m = edc_turn_msg_at(turn, i);
         cJSON *role = cJSON_GetObjectItem(m, "role");
         if (role && cJSON_IsString(role) && strcmp(role->valuestring, "tool") == 0)
             n++;
@@ -294,7 +309,7 @@ static int turn_count_tool_msgs(struct edc_turn *turn)
 /* A task parked in AWAIT_TOOLS with a live turn: "tool calls are out". */
 static struct edc_task *new_waiting_task(const char *id, const char *const *call_ids, int count)
 {
-    struct edc_task *t = edc_task_new(id, "sess-tb", id, "toolbox response test", edc_channel_adapter);
+    struct edc_task *t = edc_task_new(edc_test_id(id), edc_test_session_id("sess-tb"), edc_test_id(id), "toolbox response test", edc_channel_adapter);
     edc_task_await_exec(t);
     edc_task_await_tools(t);
     seed_tool_turn(t, call_ids, count);
@@ -364,6 +379,46 @@ static void test_round_trip_two_nodes(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Case 1b: a tool that fails AND hands over a result sds
+ *
+ *  The memory tools do this: they build the error message as an sds, pass it as the
+ *  result, and wrap the same text in an EdcError. The actor keeps the error, so it has to
+ *  release the result -- it used to overwrite the variable and leak the string, once per
+ *  failed memory call. Run under valgrind, this case is the difference.
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_result_and_error_together(void)
+{
+    TEST("a call that returns BOTH a result and an error keeps the error and frees the result");
+    struct harness h;
+    harness_up(&h, 100000);
+
+    const char *ids[] = {"c1"};
+    struct edc_task *t = new_waiting_task("t1b", ids, 1);
+    edc_task_tool_call_add(t, "c1", "t_probe", cJSON_Parse("{}"));
+
+    void *rid = (void *)0x100b;
+    edc_scheduler_register_task(h.sched, t, rid);
+    edc_toolbox_actor_redispatch(h.tb_actor, h.sched, t, rid);
+    pump(&h);
+    CHECK(probe.calls == 1, "the tool was entered");
+
+    probe_finish_with_result_and_error(0, "the message the tool built", "session memory is not reachable");
+    pump(&h);
+
+    const char *content = turn_tool_content(t->active_turn, "c1");
+    CHECK(content != NULL, "the turn got a tool message");
+    CHECK(content && strstr(content, "session memory is not reachable") != NULL,
+          "the ERROR is what reaches the model, not the result it superseded");
+    CHECK(content && strstr(content, "the message the tool built") == NULL,
+          "and the superseded result is not duplicated into it");
+    CHECK(content && strstr(content, "Analyze the error above") != NULL, "with the retry hint");
+
+    edc_task_free(t);
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Case 2: a tool that cannot run still answers
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -419,10 +474,17 @@ static void test_result_truncated(void)
 
     const char *content = turn_tool_content(t->active_turn, "c1");
     CHECK(content != NULL, "the result still arrives");
-    CHECK(content && strncmp(content, "0123456789", 10) == 0, "kept from the start, up to the cap");
-    CHECK(content && strstr(content, "ABCDEFGHIJ") == NULL, "the tail is really gone");
-    CHECK(content && strstr(content, "[Result truncated to") != NULL, "with the truncation notice");
-    CHECK(content && strstr(content, "total length: 20") != NULL, "that names the original length");
+    /* The notice is at the HEAD, deliberately: a preview is cut from the front, so a notice
+     * appended at the tail is exactly the part that disappears when something else caps the
+     * result again (which is what used to happen to the grep/find caps). */
+    CHECK(content && strstr(content, "[truncated: showing") != NULL, "a truncation notice comes first");
+    CHECK(content && strstr(content, "20 bytes") != NULL, "naming the original size");
+    CHECK(content && strstr(content, "0123456789") != NULL, "the preview keeps the start");
+    CHECK(content && strstr(content, "ABCDEFGHIJ") == NULL, "the tail is not in the message");
+    /* And the whole thing is recoverable: either a path to read, or an explicit statement
+     * that it could not be saved (never silence about where it went). */
+    CHECK(content && (strstr(content, "[full output: ") != NULL || strstr(content, "could not be saved") != NULL),
+          "the message says where the rest is");
 
     edc_task_free(t);
     harness_down(&h);
@@ -500,6 +562,8 @@ static void test_started_after_cancel(void)
 
 int main(void)
 {
+    test_result_and_error_together();
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== toolbox actor response side tests ===");
     log_info("");
 

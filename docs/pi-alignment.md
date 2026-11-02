@@ -14,7 +14,7 @@
 | **什么时候折** | `tokens > contextWindow − reserveTokens`（默认 16k） | **只剩 token 轴**：`ctx > 窗口 − reserve`；窗口默认 **1M**，`<= 0` 在启动时被修成默认值（2026-10-10，见 §2.9） | **P2 ✅**（消息条数轴已整条退休） |
 | **折到哪里** | 从尾部往前累加到 `keepRecentTokens`(20k) 的**合法切点** | **折最老的一半**（按 task / 消息数） | **P2** 改尾部 token 预算 |
 | **切点安全** | 永不切在 `toolResult` 上 | `edc_llm_history_safe_start` 把起点回退到非 tool 消息 | ✅ 已具备 |
-| **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | "concise markdown" 一句，只有 `## Existing Group Memory` 前缀 | **P2** 采纳格式与迭代规则 + 卫生检查 |
+| **摘要怎么生成** | 结构化 6 段 + 文件追踪 + **迭代更新**指令 + `maxTokens` 上限 + 失败判定 | ~~"concise markdown" 一句~~ **2026-10-21 更正：6 段 + 迭代 + split turn + max_tokens(32768) + 文件追踪，均已落地** | ~~**P2**~~ ✅ 完成 |
 | **窗口爆了怎么办** | 三类溢出识别 → 压缩 → **重试一次** | 三类溢出识别 → **一条带数字的提示**（不自动恢复，裁决 #10） | **P3 ✅** |
 | **摘要调用的成本** | 计入会话 usage | 折叠任务在**系统组**，用量记在系统组 | 已知，不改 |
 
@@ -126,7 +126,7 @@ long long edc_context_estimate_text(const char *s);
 - **触发**：`edc_group_fold_due` = `foldable > 0 && unfolded_msgs >= group_fold_msg_threshold`（默认 500，你配 200）。**纯消息条数**。
 - **切点**：`edc_group_fold_build_prompt` = 按 `completion_seq` 排序后，从最老开始按"消息数 ≤ 未折叠总数的一半"选一批 task；**折最老一半**，`max_seq` = 最后被选中的 task 的 `completion_seq`。
 - **屏障**：起折给组内每个非终态成员挂 `SEQUENCE` dep（B1）；在飞成员到下一个请求边界才 park。
-- **摘要**：`## Existing Group Memory` + `## New Completed Tasks`（每条 `role: content` + `output:`）+ 一句 "Merge … Output ONLY the merged Group Memory as concise markdown."。**没有**结构化格式、没有迭代规则、没有 `max_tokens`。
+- **摘要**：~~`## Existing Group Memory` + 一句 "concise markdown"，没有结构化格式/迭代规则/`max_tokens`~~ **2026-10-21 更正：这一段的现状描述已过期** —— `edc_group_fold.c` 现在有 `kInitialSummaryInstruction`（6 段）、`kUpdateSummaryInstruction`（迭代更新）、`kSplitTurnInstruction`、`EDC_FOLD_SUMMARY_MAX_TOKENS = 32768`，以及 code 侧抽取的 `<read-files>`/`<modified-files>`。
 - **落地**：`edc_group_fold_deliver_memory` 写 `group->memory`，把 `completion_seq <= fold_max_seq` 的已完成 task 标 `turns_folded`，推 `folded_through_completion_seq`。**只要内容非空就写**（无卫生检查）。
 - **失败**：折叠任务走一般错误路径 → task ERROR；**记忆与水位不动**；下一次有 task 完成、又满足条数阈值 → 再折一次。
 - **折叠范围**：只折**已完成** task 的 turns（`edc_task_is_foldable` = `COMPLETED && !turns_folded && sink != GROUP_MEMORY`）。**正在跑的长任务永远不会被压**。
@@ -350,7 +350,7 @@ start → 屏障 → prompt → 落地路径。
 | **P2b** | ✅ **已完成（2026-10-09，commit `3b9baf6`）** 摘要 prompt 结构化（6 段 + `<previous-summary>` 迭代 + focus）、折叠请求 `max_tokens` 且截断不当 checkpoint、手动 `/group fold [id] [focus]`、split-turn 段 | 中 | `edc_group_fold.*`、`edc_llm_actor.*`、`edc_llm_request.c`、`edc_executor.*`、`edc_scheduler.*`、`edc_commands.c` |
 | **P2b 卫生** | ✅ **已完成（2026-10-09，commit `824ebc8`）** 四条落地前检查齐（非空 / 正常结束 / 非截断 / **无工具调用**）；"折叠请求装得下"钉成用例 | 小 | `edc_executor.c`、`tests/test_system_task.c`、`tests/test_group_fold.c` |
 | **P3** | ✅ **已完成（2026-10-09，分支 `memory`）** 分类器 + 三个检测点 + 一条带数字的提示（**不自动恢复**，裁决 #10）；顺带找回 `context_length_exceeded` 这个一直白丢的信号 | 小 | `executor/edc_llm_error_kind.{c,h}`、`edc_executor.{c,h}`、`edc_scheduler.c`、两个新测试 |
-| **P4（可选）** | ⏸ 文件操作累积追踪（pi 的 `<read-files>`/`<modified-files>`）—— 用户 2026-10-09 裁决**先不做** | 小 | `edc_executor.c`、`edc_llm_request.c` |
+| **P4（可选）** | ~~⏸ 文件操作累积追踪（pi 的 `<read-files>`/`<modified-files>`）—— 用户 2026-10-09 裁决**先不做**~~ **✅ 2026-10-22 更正：已落地**（`b5a8737` 抽取+累积；`20d563a` 查看出口 `/group files` + 修掉 `without_block` 的 UAF），见 `product-alignment.zh.md` R5 | 小 | `edc_group_fold.{c,h}`、`edc_commands.c` |
 
 **流程**（按仓里规矩）：一期一 commit；每期先给判据再动代码；`bazel clean` 后 `bazel build //...` + 全量 `bazel test //src/tui:all //tests:all --nocache_test_results`；变异自检**必须打到生产者**（`test_session_snapshot` 那种真生产者用例，不能只喂手写 JSON）；A/B 五夹具（`smoke`/`switch`/`bg`/`cancel`/`fold`）比对，其中 **`fold` 夹具是这套改动的主战场**。
 
@@ -405,7 +405,7 @@ start → 屏障 → prompt → 落地路径。
 
 **11. 死键 `memory_compress_threshold`** —— ✅ **已定 A（清掉）并落地（2026-10-09）**：删 `tools/ab/ab.py` 夹具里那条；`src/` 本来就没读者。你 `config.json` 里那条我改不到（在可写路径外），留着无害 —— 想清就 `python3 -c "import json,pathlib;p=pathlib.Path.home()/'.edgeclaw/config.json';d=json.loads(p.read_text());d.pop('memory_compress_threshold',None);p.write_text(json.dumps(d,indent='\t',ensure_ascii=False))"`。
 
-**12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：**用户 2026-10-09 裁决 A —— 先不做**（P4 候选保留）。
+**12. 文件操作追踪**（pi 的 `<read-files>` / `<modified-files>`，跨多次压缩累积）：~~**用户 2026-10-09 裁决 A —— 先不做**（P4 候选保留）~~ **✅ 2026-10-22 更正：已落地。** 抽取/累积在 `b5a8737`；查看出口 `/group files [id]` + `without_block` 的 use-after-free 修复在 `20d563a`；**2026-10-23 起清单是结构化数据**（`struct edc_fold_files`，`group->memory` 只存正文、两个块每请求渲染），与 pi 的 `details` 数组同一形态。当前状态、语义差异（`read\modified`、`list_dir` 不算读）与排序/cap 的有意偏离见 `product-alignment.zh.md` §3.5 与 R5。
 
 ---
 
@@ -617,7 +617,7 @@ v5 的 `group.folded_through_completion_seq` + `task.turns_folded` → 每个 tu
 | **`## Current Time`（时间戳）** | ❌ 违反第一条 ⇒ **已删**（连 `{{time}}` 占位符与那个参数一起清掉；身份头补一句常量行："这个提示词没有时钟，要时间就跑 `date`"） |
 | `## Current Running Directory` / OS / workspace | ✅ 会话内常量（pi 自己也有 `<cwd>`） |
 | 权限表（sandbox 路径） | ✅ 会话配置；只在 config / 绑新 workdir 时变（那是会话事件，pi §7 的"结构性变化 ⇒ 新前缀"） |
-| bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ✅ 与 pi 的 `<project_context>` 同性质：会话事件时读一次。**`SOUL.md` / `USER.md` 已删**（见 §2.12） |
+| bootstrap（`AGENTS.md` / `TOOLS.md` / 可选 `IDENTITY.md`） | ~~✅ 与 pi 的 `<project_context>` 同性质~~ **2026-10-21 推翻：`BOOTSTRAP_FILES` 整套取消**。工作区不是提示词的来源（只在首次运行铺一次、之后永不更新），契约改由 `edc_context_build_contract()` 运行时生成；`TOOLS.md` / `AGENTS.md` 都已从种子工作区删除，`IDENTITY.md` 随数组一起去掉。`AGENTS.md` 只剩项目维度这一个身份（`~/.edgeclaw/AGENTS.md` + workdir 向上遍历） |
 | 全局记忆 `MEMORY.md` | ✅ **2026-10-10 整套删除**（见 §2.13）：正文先移出提示词，随后连机制一起退休 —— 它是 agent 自己会写、且没有渐进式披露/去重/通知的文件 |
 | 技能清单 | ✅ pi `<skills>` 同款（只放索引，正文惰性读） |
 | session 记忆常量提示 | ✅ 常量（无条数、无内容） |
@@ -677,7 +677,11 @@ pi 没有这一层）；工作目录就是 workspace 时那 5 个文件会被**�
 **用户自己那份也删了**（2026-10-10 裁决）：`~/.edgeclaw/workspace/HEARTBEAT.md` 里那条"时钟哨兵"
 任务一并丢掉 —— 反正本仓库没有任何东西会去执行它（要周期任务，用真实现的 `crontab` 工具）。
 
-**仍然保留的**：`AGENTS.md`（行为契约）、`TOOLS.md`（工具速查）—— 它们与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。`TOOLS.md` 与 provider 的 tools 字段确有部分重复，但它是"给人看的清单 + 额外说明（设备、通道）"，暂留。
+**仍然保留的**：`AGENTS.md`（行为契约）—— 它与 pi 的 `<project_context>` 同类（人写、会话事件时读一次）。
+
+> **2026-10-21 更正**：`TOOLS.md` 已**删除**（不生成、不打包）。上面"暂留"的判断被推翻：它是一份手写副本，
+> 长期描述着 `web_search` / `web_fetch` / `message` / `spawn` 四个注册表里没有的工具；而工具清单本来就在
+> 每次请求的 `tools` 字段里。`AGENTS.md` 里的 `## Available Tools` 清单也一并收掉。见 `docs/pi-toolset-plan.zh.md`。
 
 ## §2.13 删掉 MEMORY.md 机制（2026-10-10）
 

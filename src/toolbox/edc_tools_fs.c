@@ -1,13 +1,16 @@
 ﻿#include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_platform.h"
 #include "edc_sandbox.h"
 #include "edc_scheduler.h"
+#include "edc_string_utils.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
 #include "sds.h"
 #include "utarray.h"
 #include <edc_param_types.h>
+#include <inttypes.h> /* PRId64 */
 #include <string.h>
 
 static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
@@ -37,9 +40,8 @@ static UT_icd ut_uint_icd = {sizeof(unsigned int), NULL, NULL, NULL};
  *      is a use-after-free. Everything the pool needs is copied into the job on the
  *      runner.
  *   2. ctx is safe by contrast. call_ctx is managed by the toolbox's inflight registry
- *      and is freed only in the callback -- holding it across this hop is architecture
- *      the code already supports (the "TODO: async exec" note at the end of
- *      edc_toolbox_actor.c was its placeholder; the shell already does this).
+ *      and is freed only in the callback -- holding it across this hop is the architecture
+ *      every async tool uses (the shell does the same with its spawn/exit pair).
  *
  * Aside (no behaviour change): the pool defaults to 4. Four stuck fs ops make later ones
  * queue, but the runner stays alive -- exactly the goal of this change. No deadline for
@@ -56,6 +58,10 @@ struct fs_job
     sds content;                             /* write_file's body */
     sds old_text;                            /* edit_file */
     sds new_text;
+    /* read_file's line window (1-based offset; 0 limit = the tool's own ceiling). Set on the
+     * runner, read on the pool. */
+    int64_t offset;
+    int64_t limit;
     bool replace_all;
     int64_t occurrence;
     int64_t line_hint;
@@ -115,7 +121,8 @@ static struct fs_job *edc_fs_job_new(struct edc_toolbox_call_ctx *ctx,
 /* Runner half: sandbox check -> enqueue. On failure reply on the runner directly (same path as the old synchronous failure). */
 static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args, const char *tool_name, bool write,
                                   void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *),
-                                  sds (*io)(struct fs_job *, EdcError **))
+                                  sds (*io)(struct fs_job *, EdcError **),
+                                  void (*fill)(struct fs_job *, cJSON *))
 {
     const char *path = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(args, "path"));
     EdcError *error = NULL;
@@ -126,8 +133,12 @@ static void edc_fs_kick_path_tool(struct edc_toolbox_call_ctx *ctx, cJSON *args,
         callback(ctx, NULL, error);
         return;
     }
-    uv_queue_work(ctx->tb->scheduler->loop, &edc_fs_job_new(ctx, callback, io, tool_name, path, safe)->req,
-                  edc_fs_work_cb, edc_fs_after_cb);
+    struct fs_job *job = edc_fs_job_new(ctx, callback, io, tool_name, path, safe);
+    /* |fill| runs on the runner, before the job is handed to the pool: this is where a tool
+     * copies the rest of its arguments (the pool must never touch `args`, §4.4). */
+    if (fill)
+        fill(job, args);
+    uv_queue_work(ctx->tb->scheduler->loop, &job->req, edc_fs_work_cb, edc_fs_after_cb);
 }
 
 /*
@@ -147,17 +158,196 @@ static void edc_tool_list_dir_cb(const char *name, int type, void *userdata)
     lctx->result = sdscatprintf(lctx->result, "%s%s\n", prefix, name);
 }
 
+/* The largest file a tool will read AT ALL. Larger than what read_file returns (64 KiB) on
+ * purpose: paging through a big file must work, so the ceiling is on "one read", not on "the
+ * file". Past this, the answer is "use offset/limit" or "this file cannot be edited", never an
+ * allocation the process may not survive. */
+#define EDC_READ_MAX_BYTES_TOTAL ((size_t)8 * 1024 * 1024)
+
+static sds fs_read_for_tool_capped_sized(const char *path, size_t max_bytes, size_t *size_out,
+                                        bool *had_bom, EdcError **error);
+
+/* ── A leading UTF-8 BOM: metadata on Windows, content elsewhere ─────────────
+ *
+ * PowerShell writes UTF-8 WITH a BOM by default (and so do most Windows editors), so a file the
+ * model has just created through exec_shell starts with U+FEFF. Left in, it shows up as an
+ * invisible character in read_file's result AND makes edit_file's first-line match fail
+ * against a string that looks identical to the one on screen.
+ *
+ * Stripped here, at the TOOL boundary, and NOT inside edc_file_read(): that reader also feeds
+ * config and session state, where the bytes must stay exactly as they are on every platform.
+ * Whether a BOM is metadata at all is the platform's answer (edc_platform_bom_is_metadata).
+ *
+ * |had_bom| reports what was dropped, so a rewrite can put it back: an edit must not change
+ * bytes it was not asked to change. */
+static sds fs_read_for_tool(const char *path, bool *had_bom, EdcError **error)
+{
+    /* A tool never reads an unbounded file: the path came from the model, so the size is not
+     * something this process gets to trust (a 10 GB file used to be a 10 GB malloc). The
+     * ceiling is checked before the read; read_file can still see any file by paging with
+     * offset, and edit_file refuses and says why. */
+    return fs_read_for_tool_capped_sized(path, EDC_READ_MAX_BYTES_TOTAL, NULL, had_bom, error);
+}
+
+/* |size_out| is the file's size as the reader saw it, which is what tells "over the limit"
+ * apart from "could not read": an unreadable file has no size worth reporting. */
+/* Strip a leading UTF-8 BOM when the platform treats one as metadata, reporting what was
+ * dropped so a rewrite can put it back.
+ *
+ * Pure, and it takes the platform's answer as an argument rather than asking for it, because
+ * edc_platform_bom_is_metadata() is a compile-time constant (true only on Windows). Without
+ * the parameter the stripping branch is unreachable on a POSIX host, which is how a broken
+ * caller -- edit_file reading through the raw reader, so had_bom was always false and the
+ * restore branch below was dead -- went unnoticed for as long as it did.
+ *
+ * |content| is owned by the caller and is either returned unchanged or freed. */
+sds edc_fs_strip_bom_for_tool(sds content, bool bom_is_metadata, bool *had_bom)
+{
+    if (had_bom)
+        *had_bom = false;
+    if (!content || !bom_is_metadata)
+        return content;
+    if (sdslen(content) < 3 || memcmp(content, "\xEF\xBB\xBF", 3) != 0)
+        return content;
+
+    if (had_bom)
+        *had_bom = true;
+    return edc_str_strip_utf8_bom(content);
+}
+
+static sds fs_read_for_tool_capped_sized(const char *path, size_t max_bytes, size_t *size_out,
+                                        bool *had_bom, EdcError **error)
+{
+    if (size_out)
+        *size_out = 0;
+
+    size_t size = 0;
+    sds content = edc_file_read_capped(path, max_bytes, &size, error);
+    if (size_out)
+        *size_out = size;
+    return edc_fs_strip_bom_for_tool(content, edc_platform_bom_is_metadata(), had_bom);
+}
+
+/* read_file's own ceilings. They exist because the tool has to bound itself: the toolbox's
+ * generic cap (tool_max_output_size, 10 KB by default) cuts from the head with no idea where
+ * the next line starts, so a model that hit it could never ask for the rest. This tool
+ * declares keep_full_output (see edc_tool_create_read_file) and applies these instead, with a
+ * marker that says which lines were returned and how to continue. */
+#define EDC_READ_MAX_LINES ((int64_t)2000)
+#define EDC_READ_MAX_BYTES ((size_t)64 * 1024)
+
+/* Count the lines of |content|. A trailing newline does not open an extra empty line. */
+static int64_t count_lines(const char *p, size_t len)
+{
+    if (len == 0)
+        return 0;
+    int64_t n = 0;
+    const char *q = p;
+    const char *end = p + len;
+    while ((q = memchr(q, '\n', (size_t)(end - q))) != NULL)
+    {
+        n++;
+        q++;
+    }
+    return (p[len - 1] == '\n') ? n : n + 1;
+}
+
+/* Take the requested window out of |content|.
+ *
+ * Two linear passes (count, then locate) rather than a per-line seek: the first version
+ * re-scanned from the start for every line it collected, which is quadratic and would stall
+ * the pool thread on a large file.
+ *
+ * When the window is not the whole file, one line at the HEAD says which lines it holds. The
+ * head is deliberate: a result that is long enough to be cut is cut from the front, so a
+ * trailer would be exactly the part that disappears (the shell tool's notices sit at the head
+ * for the same reason). */
+sds edc_fs_read_file_window(const char *p, size_t len, int64_t offset, int64_t limit_in)
+{
+    const int64_t total = count_lines(p, len);
+    const int64_t limit = (limit_in > 0) ? limit_in : EDC_READ_MAX_LINES;
+    if (offset < 1)
+        offset = 1;
+
+    if (total == 0 || offset > total)
+        return sdscatprintf(sdsempty(), "[no line %" PRId64 ": the file has %" PRId64 " line(s)]\n", offset, total);
+
+    /* One pass to locate [start, stop): from `offset`, take lines while both budgets allow.
+     * Always on a line boundary, so the model never gets half a line to guess at. */
+    size_t pos = 0, start = 0, stop = 0;
+    int64_t lineno = 0, taken = 0;
+    while (pos < len)
+    {
+        size_t nl = pos;
+        while (nl < len && p[nl] != '\n')
+            nl++;
+        const size_t line_end = (nl < len) ? nl + 1 : nl;
+        lineno++;
+
+        if (lineno < offset)
+        {
+            pos = line_end;
+            continue;
+        }
+        if (taken >= limit)
+            break;
+        if (taken == 0)
+            start = pos;
+        else if ((line_end - start) > EDC_READ_MAX_BYTES)
+            break; /* the byte budget ends the window, on a boundary */
+        stop = line_end;
+        taken++;
+        pos = line_end;
+    }
+
+    /* A single line can be longer than the whole budget (a minified bundle, a base64 blob).
+     * Then the window cannot end on a boundary: cut it, and say so -- the alternative is
+     * handing the model a megabyte it never asked for. */
+    size_t body_len = stop - start;
+    const bool line_cut = body_len > EDC_READ_MAX_BYTES;
+    if (line_cut)
+        body_len = EDC_READ_MAX_BYTES;
+
+    const bool whole = (offset == 1) && (taken == total) && (stop == len) && !line_cut;
+    sds out = sdsempty();
+    if (!whole)
+        out = sdscatprintf(out, "[lines %" PRId64 "-%" PRId64 " of %" PRId64 "%s]\n", offset, offset + taken - 1,
+                           (int64_t)total, line_cut ? ", cut at 64 KiB" : "");
+    out = sdscatlen(out, p + start, body_len);
+
+    /* How to fetch the rest -- worth saying only when something is left. */
+    if (line_cut)
+        out = sdscat(out, "\n[that line is longer than 64 KiB and was cut]\n");
+    else if (!whole && (offset + taken - 1) < total)
+        out = sdscatprintf(out, "\n[more lines follow: pass offset=%" PRId64 " to continue]\n", offset + taken);
+
+    return out;
+}
+
 static sds edc_tool_read_file_io(struct fs_job *job, EdcError **error)
 {
     EdcError *gerror = NULL;
-    sds content = edc_file_read(job->safe_path, &gerror);
+    size_t size = 0;
+    sds content = edc_file_read_capped(job->safe_path, EDC_READ_MAX_BYTES_TOTAL, &size, &gerror);
     if (!content)
     {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+        /* Refused for size, not for I/O: say what to do, not just how big it is. A message
+         * that stops at "8 MB is too big" leaves the model with no next step. */
+        if (size > EDC_READ_MAX_BYTES_TOTAL)
+            edc_error_set(error, EDC_ERR_INVAL,
+                          "Error: '%s' is %zu bytes, over the %zu-byte single-read limit. This tool cannot "
+                          "page a file this large; use exec_shell (e.g. `sed -n '1,200p'`, `head`, `tail`) "
+                          "to read a range.",
+                          job->arg_path ? job->arg_path : "(file)", size, EDC_READ_MAX_BYTES_TOTAL);
+        else
+            edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
         edc_error_free(gerror);
         return NULL;
     }
-    return content;
+    /* The window is computed from the bytes; |content| stays owned here. */
+    sds window = edc_fs_read_file_window(content, sdslen(content), job->offset > 0 ? job->offset : 1, job->limit);
+    sdsfree(content);
+    return window;
 }
 
 static sds edc_tool_write_file_io(struct fs_job *job, EdcError **error)
@@ -194,11 +384,23 @@ static sds edc_tool_list_dir_io(struct fs_job *job, EdcError **error)
 }
 
 
+/* Runner half: the two window arguments are copied into the job here, because the pool
+ * thread must not read `args` (§4.4). Absent/0 keeps the defaults (offset 1, limit 2000). */
+static void read_file_fill(struct fs_job *job, cJSON *args)
+{
+    cJSON *j = cJSON_GetObjectItemCaseSensitive(args, "offset");
+    if (j && cJSON_IsNumber(j) && j->valuedouble > 0)
+        job->offset = (int64_t)j->valuedouble;
+    j = cJSON_GetObjectItemCaseSensitive(args, "limit");
+    if (j && cJSON_IsNumber(j) && j->valuedouble > 0)
+        job->limit = (int64_t)j->valuedouble;
+}
+
 static void edc_tool_exec_read_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                           void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    edc_fs_kick_path_tool(ctx, args, "read_file", false, callback, edc_tool_read_file_io);
+    edc_fs_kick_path_tool(ctx, args, "read_file", false, callback, edc_tool_read_file_io, read_file_fill);
 }
 
 static void edc_tool_create_read_file(struct edc_toolbox *tb)
@@ -207,7 +409,17 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
     const char *desc = "Read the contents of a file at the given path.";
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), true));
-    edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_read_file_async));
+    LL_APPEND(params, edc_tool_param_new("offset", edc_param_int_type("1-based line to start from (default 1)", 1, G_MAXINT64), false));
+    LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("How many lines to read (default 2000)", 1, 100000), false));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_read_file_async);
+    edc_tool_set_snippet(tool, "Read a file (whole, or a line range)");
+    /* Both halves of this are now true: the window really exists (offset/limit), and the tool
+     * really bounds itself at 2000 lines or 64 KiB -- which is why it keeps its output whole
+     * instead of letting the generic cap cut it mid-line with no way to continue. */
+    edc_tool_set_guidelines(tool, "A read returns at most 2000 lines or 64 KiB; when a file is longer the "
+                                  "first line says which lines you got, and offset fetches the rest.");
+    edc_tool_set_keep_full_output(tool, true);
+    edc_toolbox_register(tb, tool);
 }
 
 static void edc_tool_exec_write_file_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
@@ -239,14 +451,16 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), true));
     LL_APPEND(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), true));
 
-    edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_write_file_async));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_write_file_async);
+    edc_tool_set_snippet(tool, "Write a file (missing parent directories are created)");
+    edc_toolbox_register(tb, tool);
 }
 
 static void edc_tool_exec_list_dir_async(struct edc_toolbox_call_ctx *ctx, struct edc_tool *tool, cJSON *args,
                                          void (*callback)(struct edc_toolbox_call_ctx *, sds, EdcError *))
 {
     (void)tool;
-    edc_fs_kick_path_tool(ctx, args, "list_dir", false, callback, edc_tool_list_dir_io);
+    edc_fs_kick_path_tool(ctx, args, "list_dir", false, callback, edc_tool_list_dir_io, NULL);
 }
 
 static void edc_tool_create_list_dir(struct edc_toolbox *tb)
@@ -256,7 +470,10 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
 
     struct edc_tool_param *params = NULL;
     LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), true));
-    edc_toolbox_register(tb, edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async));
+    struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async);
+    edc_tool_set_snippet(tool, "List one directory level");
+    edc_tool_set_guidelines(tool, "One level only -- it does not recurse.");
+    edc_toolbox_register(tb, tool);
 }
 
 static sds edc_edit_file_try_create(const char *path, sds safe_path, const char *old_text, const char *new_text,
@@ -283,7 +500,7 @@ static sds edc_edit_file_try_create(const char *path, sds safe_path, const char 
     if (old_text && old_text[0] == '\0')
     {
         EdcError *gerror = NULL;
-        sds content = edc_file_read(safe_path, &gerror);
+        sds content = fs_read_for_tool(safe_path, NULL, &gerror);
         if (!content)
         {
             if (gerror)
@@ -370,7 +587,7 @@ static void edc_edit_file_format_match_list(const char *content, size_t content_
             else
                 ctx = sdscatprintf(ctx, "%c", c);
         }
-        *out = sdscatprintf(*out, "\n  [%u] line %ld: \"%s\"", i + 1, (long)ln, ctx);
+        *out = sdscatprintf(*out, "\n  [%u] line %" PRId64 ": \"%s\"", i + 1, ln, ctx);
         sdsfree(ctx);
     }
     if (count > max_preview)
@@ -392,8 +609,8 @@ static bool edc_edit_file_select_by_occurrence(unsigned int count, int64_t occur
 {
     if ((uint64_t)occurrence > count)
     {
-        edc_error_set(error, EDC_ERR_EXEC, "Error: occurrence %ld out of range; old_text appears %u times.",
-                      (long)occurrence, count);
+        edc_error_set(error, EDC_ERR_EXEC,
+                      "Error: occurrence %" PRId64 " out of range; old_text appears %u times.", occurrence, count);
         return false;
     }
     unsigned int idx = (unsigned int)(occurrence - 1);
@@ -427,8 +644,9 @@ static bool edc_edit_file_select_by_line_hint(const char *content, size_t conten
     {
         sds msg = sdsempty();
         edc_edit_file_format_match_list(content, content_len, positions, line_nums, old_len, count, 5, &msg);
-        edc_error_set(error, EDC_ERR_EXEC, "Error: line_hint %ld is ambiguous; old_text appears %u times.%s",
-                      (long)line_hint, count, msg);
+        edc_error_set(error, EDC_ERR_EXEC,
+                      "Error: line_hint %" PRId64 " is ambiguous; old_text appears %u times.%s", line_hint,
+                      count, msg);
         sdsfree(msg);
         return false;
     }
@@ -524,7 +742,10 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     sds created = edc_edit_file_try_create(path, safe_path, old_text, new_text, error);
     if (created || *error)
     {
-        sdsfree(safe_path);
+        /* safe_path is the JOB's, freed by edc_fs_after_cb -- like the cleanup path below
+         * says. It was freed here as well, so every edit_file that took this early return
+         * ("Successfully created ...", "File not found", "already exists and is not empty")
+         * released the same sds twice and aborted the process with "free(): invalid pointer". */
         return created;
     }
 
@@ -535,12 +756,32 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     sds result = NULL;
 
     EdcError *gerror = NULL;
-    content = edc_file_read(safe_path, &gerror);
-    if (!content)
+    bool had_bom = false;
     {
-        edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-        edc_error_free(gerror);
-        goto cleanup;
+        size_t size = 0;
+        /* Through the TOOL reader, not edc_file_read_capped(): only that one strips a leading
+         * BOM and reports it, and the report is what puts it back on write. Reading with the
+         * raw reader left had_bom permanently false, so the restore branch below was dead
+         * code and an edit silently dropped the BOM of any file that had one -- which on
+         * Windows is most files PowerShell created. It also means old_text now matches the
+         * same text read_file shows, which is the reason the strip exists at all. */
+        content = fs_read_for_tool_capped_sized(safe_path, EDC_READ_MAX_BYTES_TOTAL, &size, &had_bom, &gerror);
+        if (!content)
+        {
+            if (size > EDC_READ_MAX_BYTES_TOTAL)
+                /* No paging here on purpose: old_text must be matched against the WHOLE file,
+                 * so a partial read would silently miss (or hit the wrong) region. Refusing is
+                 * the honest answer. */
+                edc_error_set(error, EDC_ERR_INVAL,
+                              "Error: '%s' is %zu bytes, over the %zu-byte limit for an edit. old_text has to "
+                              "be matched against the whole file, so this tool cannot work piecewise; use "
+                              "exec_shell (sed/perl) for a change this size.",
+                              path ? path : "(file)", size, EDC_READ_MAX_BYTES_TOTAL);
+            else
+                edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
+            edc_error_free(gerror);
+            goto cleanup;
+        }
     }
     size_t content_len = sdslen(content);
 
@@ -560,14 +801,24 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 
     if (expected_replacements > 0 && utarray_len(selected) != (unsigned int)expected_replacements)
     {
-        edc_error_set(error, EDC_ERR_EXEC, "Error: expected %ld replacements but would make %u.",
-                      (long)expected_replacements, (unsigned)utarray_len(selected));
+        edc_error_set(error, EDC_ERR_EXEC,
+                      "Error: expected %" PRId64 " replacements but would make %u.", expected_replacements,
+                      (unsigned)utarray_len(selected));
         goto cleanup;
     }
 
     sds new_content;
     edc_edit_file_apply_replacements(content, content_len, old_text, old_len, new_text, positions, selected,
                                      &new_content);
+
+    /* An edit must not change bytes it was not asked to change: a file that had a BOM still has
+     * one afterwards. sdscatsds copies its argument, so the old handle is released here. */
+    if (had_bom)
+    {
+        sds with_bom = sdscatsds(sdsnewlen("\xEF\xBB\xBF", 3), new_content);
+        sdsfree(new_content);
+        new_content = with_bom;
+    }
 
     if (!edc_file_write(safe_path, new_content, -1, error))
     {
@@ -688,6 +939,8 @@ static void edc_tool_create_edit_file(struct edc_toolbox *tb)
     struct edc_tool_param *params[] = {
         path, old_text, new_text, replace_all, occurrence, line_hint, expected_replacements, NULL};
     struct edc_tool *tool = edc_tool_new_v(name, desc, params, edc_tool_exec_edit_file_async);
+    edc_tool_set_snippet(tool, "Replace an exact snippet in a file (disambiguate when it repeats)");
+    edc_tool_set_guidelines(tool, "Read the file first: old_text must match it byte for byte.");
     edc_toolbox_register(tb, tool);
 }
 

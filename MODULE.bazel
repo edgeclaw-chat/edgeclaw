@@ -65,6 +65,14 @@ bazel_dep(name = "pcre2", version = "10.49")
 
 bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
 
+# Session state persistence.
+# The BCR module ships SQLite's stock compile options, which this project cannot use as-is
+# (DQS=3, load_extension() compiled in, memstat=1, a global mutex per allocation). Those are
+# injected from .bazelrc with --per_file_copt rather than by patching the module's BUILD --
+# the same place the mbedtls config is customised. tests/test_sqlite_hardening asserts they
+# actually took effect.
+bazel_dep(name = "sqlite3", version = "3.53.4")
+
 bazel_dep(name = "rules_python", version = "1.7.0")
 
 # Hedron's Compile Commands Extractor for Bazel

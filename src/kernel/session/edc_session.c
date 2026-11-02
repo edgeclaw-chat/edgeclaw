@@ -7,7 +7,8 @@
 #include "edc_datetime_utils.h"
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
-#include "edc_state_serializer.h"
+#include "edc_state_probe.h"
+#include "edc_state_store.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -16,13 +17,14 @@
 #include "sds.h"
 #include "utlist_fix.h"
 #include <errno.h>
+#include <inttypes.h> /* PRId64 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-struct edc_session *edc_session_new(struct edc_config *config, const char *session_id, const char *name)
+struct edc_session *edc_session_new(struct edc_config *config, int64_t session_id, const char *name)
 {
     return edc_session_new_with_workdir(config, session_id, name, NULL);
 }
@@ -66,7 +68,7 @@ bool edc_session_set_workdir(struct edc_session *session, const char *workdir, E
     session->workdir = sdsnew(resolved);
     sdsfree(resolved);
 
-    log_info("session %s bound to working directory %s", session->session_id, session->workdir);
+    log_info("session %s bound to working directory %s", edc_id_str(session->session_id), session->workdir);
     return true;
 }
 
@@ -136,16 +138,31 @@ sds edc_session_resolve_workdir(const char *base, const char *workdir, EdcError 
     return out ? out : sdsnew(".");
 }
 
-struct edc_session *edc_session_new_with_workdir(struct edc_config *config, const char *session_id, const char *name,
+sds edc_session_dir_name(int64_t session_id)
+{
+    /* An sds copy of the id's text form. edc_id_str() returns a rotating buffer, so it
+     * cannot be stored; this is the storing variant, and it spells the id exactly the same
+     * way -- one representation, no prefix. */
+    return sdscatprintf(sdsempty(), "%" PRId64, session_id);
+}
+
+struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int64_t session_id, const char *name,
                                                  const char *workdir)
 {
     struct edc_session *session = g_new0(struct edc_session, 1);
-    session->session_id = strdup(session_id ? session_id : "sess-1");
-    session->name = sdsnew(name && strlen(name) > 0 ? name : session->session_id);
-    session->created_at = edc_datetime_timestamp();
-    session->last_active = edc_datetime_timestamp();
+    session->session_id = session_id;
+    {
+        /* The name falls back to the id, rendered the one way an id is rendered. */
+        session->name = sdsnew(name && strlen(name) > 0 ? name : edc_id_str(session_id));
+    }
+    session->created_at = (uint64_t)edc_datetime_now();
+    session->last_active = session->created_at;
     session->config = config;
-    session->history_dir = edc_path_join(config->workspace, session->session_id, NULL);
+    {
+        sds dir = edc_session_dir_name(session_id);
+        session->history_dir = edc_path_join(config->workspace, dir, NULL);
+        sdsfree(dir);
+    }
     session->next_completion_seq = 1;
     session->memo = edc_session_memory_new();
 
@@ -157,8 +174,8 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, cons
         EdcError *error = NULL;
         if (!edc_session_set_workdir(session, workdir, &error))
         {
-            log_warn("session %s: cannot bind working directory '%s': %s", session->session_id, workdir,
-                     error ? error->message : "unknown");
+            log_warn("session %s: cannot bind working directory '%s': %s", edc_id_str(session->session_id),
+                     workdir, error ? error->message : "unknown");
             edc_error_free(error);
             edc_session_free(session);
             return NULL;
@@ -185,10 +202,7 @@ void edc_session_free(struct edc_session *session)
     session->groups = NULL;
 
     edc_session_memory_free(session->memo);
-    free(session->session_id);
     sdsfree(session->name);
-    sdsfree(session->created_at);
-    sdsfree(session->last_active);
     sdsfree(session->history_dir);
     sdsfree(session->workdir);
     sdsfree(session->last_local_cmd);
@@ -211,10 +225,10 @@ size_t edc_session_get_message_count(struct edc_session *session)
             {
                 struct edc_turn *turn = (struct edc_turn *)t->turns.data[i];
                 if (turn)
-                    n += edc_queue_length(&turn->messages);
+                    n += (size_t)turn->msg_count;
             }
             if (t->active_turn)
-                n += edc_queue_length(&t->active_turn->messages);
+                n += (size_t)t->active_turn->msg_count;
         }
     }
     return n;
@@ -244,14 +258,14 @@ void edc_session_remove_group(struct edc_session *session, struct edc_task_group
     group->session = NULL;
 }
 
-struct edc_task_group *edc_session_find_group(struct edc_session *session, const char *group_id)
+struct edc_task_group *edc_session_find_group(struct edc_session *session, int64_t group_id)
 {
     if (!session || !group_id)
         return NULL;
     struct edc_task_group *group;
     DL_FOREACH(session->groups, group)
     {
-        if (strcmp(group->group_id, group_id) == 0)
+        if (group->group_id == group_id)
             return group;
     }
     return NULL;
@@ -271,7 +285,7 @@ struct edc_task_group *edc_session_find_system_group(struct edc_session *session
     return NULL;
 }
 
-struct edc_task *edc_session_find_task(struct edc_session *session, const char *task_id)
+struct edc_task *edc_session_find_task(struct edc_session *session, int64_t task_id)
 {
     if (!session || !task_id)
         return NULL;
@@ -340,14 +354,14 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
             }
             if (bucket == k_state_order_n)
             {
-                log_warn("status: task %s reports an unknown state '%s'", t->task_id, state);
+                log_warn("status: task %s reports an unknown state '%s'", edc_id_str(t->task_id), state);
                 continue;
             }
             state_counts[bucket]++;
         }
     }
 
-    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", session->session_id,
+    sds out = sdscatprintf(sdsempty(), "## Session Status `[%s] %s`%s\n\n", edc_id_str(session->session_id),
                            edc_session_get_name(session), is_current ? " · current" : " · background");
     out = sdscatprintf(out, "- **State**: %s\n", is_current ? "current (live)" : "background");
     out = sdscatprintf(out, "- **Working Directory**: %s\n",
@@ -371,10 +385,10 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
 
     if (is_current)
     {
-        out = sdscatprintf(out, "- **Foreground group**: %s\n", foreground_group_id ? foreground_group_id : "(none)");
+        out = sdscatprintf(out, "- **Foreground group**: %s\n", foreground_group_id);
         struct edc_task *active = session->active_task;
         if (active)
-            out = sdscatprintf(out, "- **Active task**: %s%s%s\n", active->task_id,
+            out = sdscatprintf(out, "- **Active task**: %s%s%s\n", edc_id_str(active->task_id),
                                (active->description && *active->description) ? " — " : "",
                                active->description ? active->description : "");
         else
@@ -386,164 +400,209 @@ sds edc_session_status_text(struct edc_session *session, bool is_current, const 
     }
 
     out = sdscatprintf(out, "- **Messages**: %zu\n", edc_session_get_message_count(session));
-    out = sdscatprintf(out, "- **Last Active**: %s\n", session->last_active ? session->last_active : "unknown");
+    {
+        sds when = edc_datetime_format((time_t)session->last_active);
+        out = sdscatprintf(out, "- **Last Active**: %s\n", when ? when : "unknown");
+        sdsfree(when);
+    }
     return out;
 }
 
 /* ── Full state persistence ────────────────────────────────── */
 
-bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched)
+/* ── Where state actually lives now ─────────────────────────────────────────
+ * These two functions are the ONLY door the rest of the kernel uses for persistence, so
+ * the move to SQLite stops here: the signatures are unchanged and every call site (all
+ * 18 of them) is untouched. What used to be "serialize the tree, write session.json,
+ * rename" is now "one transaction against <workspace>/edgeclaw.db".
+ *
+ * The legacy session.json is neither read nor deleted -- this is a development build with
+ * no migration path by design (design doc §3.3), so an old file is simply ignored with one
+ * WARN. It is left on disk because deleting someone's history on the first run of a new
+ * build is not this function's decision to make. */
+
+/* Log the legacy-file warning at most once per session per process: save_state is called
+ * at every tool boundary, and a warning per call would bury the log. */
+static void warn_legacy_state_file_once(struct edc_session *session)
 {
-    if (!session || !session->history_dir)
-        return false;
-
-    /* A quarantined session must not persist (see state_quarantined): its in-memory
-     * form is just the shell after a failed load, and writing it would occupy the
-     * session.json slot, so a later restored file would be overwritten on the next
-     * exit. Blocked here because save_state is the common exit of every persist path. */
-    if (session->state_quarantined)
-    {
-        log_warn("save_state: refusing to persist quarantined session %s (session.json.broken holds the real state)",
-                 session->session_id ? session->session_id : "?");
-        return false;
-    }
-
-    cJSON *root = edc_state_serialize(session, sched);
-    if (!root)
-    {
-        log_error("save_state: edc_state_serialize returned NULL");
-        return false;
-    }
-
-    /* Compact serialization: cJSON_Print's pretty JSON is several times larger, and
-       session.json is only loaded internally, never read by humans. */
-    char *json_str = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!json_str)
-        return false;
-
+    if (!session || session->legacy_state_warned || !session->history_dir)
+        return;
     sds path = edc_path_join(session->history_dir, "session.json", NULL);
-    sds tmp = edc_path_join(session->history_dir, "session.json.tmp", NULL);
-    EdcError *err = NULL;
-
-    /* ensure directory exists (with parents) */
+    if (edc_file_exists(path))
     {
-        EdcError *mk_err = NULL;
-        edc_dir_create_with_parents(session->history_dir, 0755, &mk_err);
-        if (mk_err)
-        {
-            log_warn("save_state: mkdir %s: %s", session->history_dir, mk_err->message);
-            edc_error_free(mk_err);
-        }
+        log_warn("state_store: ignoring legacy %s -- this build keeps session state in "
+                 "<workspace>/edgeclaw.db. The old file is left untouched; remove it "
+                 "yourself once you no longer need it.",
+                 path);
     }
-
-    bool ok = edc_file_write(tmp, json_str, (ssize_t)strlen(json_str), &err);
-    cJSON_free(json_str);
-
-    if (!ok)
-    {
-        log_error("save_state: write to %s failed: %s", tmp, err ? err->message : "unknown");
-        if (err)
-            edc_error_free(err);
-        sdsfree(path);
-        sdsfree(tmp);
-        return false;
-    }
-
-    /* atomic replace (POSIX rename / Windows MoveFileEx REPLACE_EXISTING) */
-    {
-        EdcError *rerr = NULL;
-        bool renamed = edc_file_rename_replace(tmp, path, &rerr);
-        if (!renamed)
-        {
-            log_error("save_state: %s", rerr ? rerr->message : "rename failed");
-            if (rerr)
-                edc_error_free(rerr);
-            sdsfree(path);
-            sdsfree(tmp);
-            return false;
-        }
-    }
-
     sdsfree(path);
-    sdsfree(tmp);
-
-    return true;
+    session->legacy_state_warned = true;
 }
 
-/* ── Load guardrail (lesson from the v1->v2 incident) ─────────
- * An unparseable/unmigratable session.json is renamed to quarantine it, so the
- * process does not later overwrite it with an empty session -- that incident was
- * "persist anyway after a failed load" wiping s7's task structure. */
-static void session_quarantine_state(struct edc_session *session, const char *path, const char *why)
+/* The body. The store call is the only thing that gets timed; the cost it reports back
+ * (bytes appended to the WAL, rows changed) is what the probe records as "bytes written".
+ * Note what is NOT here any more: a second serialization of the tree. It moved to the
+ * wrapper, after the clock stopped -- see edc_session_save_state_tagged. */
+static bool session_save_state_impl(struct edc_session *session, struct edc_scheduler *sched,
+                                    struct edc_state_flush_cost *out_cost)
 {
-    sds broken = edc_path_join(session->history_dir, "session.json.broken", NULL);
-    EdcError *rerr = NULL;
-    if (edc_file_rename_replace(path, broken, &rerr))
-        log_warn("load_state: quarantined %s -> %s (%s)", path, broken, why);
-    else
-        log_error("load_state: cannot quarantine %s (%s): %s", path, why, rerr ? rerr->message : "rename failed");
-    if (rerr)
-        edc_error_free(rerr);
-    sdsfree(broken);
-    /* Whether or not the rename worked, this session's slot is no longer this
-     * process's responsibility: on failure the original file is still at path and a
-     * persist would overwrite it; on success a persist would write an empty shell. */
-    session->state_quarantined = true;
-    log_error("load_state: %s is quarantined — this run will NOT persist it; restore %s/session.json.broken and restart",
-              session->session_id ? session->session_id : "?", session->history_dir ? session->history_dir : "?");
+    if (out_cost)
+    {
+        out_cost->io_bytes = -1;
+        out_cost->rows = -1;
+    }
+
+    if (!session || session->session_id <= 0)
+        return false;
+
+    /* A quarantined session must not persist: its in-memory form is just the shell after
+     * a failed load, so writing it would overwrite a newer database copy with nothing.
+     * (The quarantine flag itself is set by the loader; stage 4 replaces this with a
+     * per-session `broken` column.) */
+    if (session->state_quarantined)
+    {
+        log_warn("save_state: refusing to persist quarantined session %s",
+                 edc_id_str(session->session_id));
+        return false;
+    }
+
+    if (!edc_state_store_open(session->config))
+        return false;
+
+    warn_legacy_state_file_once(session);
+
+    const bool ok = edc_state_store_flush_measured(session, sched, out_cost);
+
+    return ok;
+}
+
+/* tag names the call site ("r8:pre_dispatch", "settle:cancelled", ...) so the
+ * baseline CSV can answer "how many flushes does one tool boundary cause" --
+ * the number that decides how much work the stage-2 SYNC/DEFERRED merge window
+ * has to do. Unknown tags are harmless. */
+bool edc_session_save_state_tagged(struct edc_session *session, struct edc_scheduler *sched,
+                                   const char *tag)
+{
+    const bool probe = edc_state_probe_enabled();
+    struct edc_state_flush_cost cost = {-1, -1};
+
+    const uint64_t t0 = probe ? edc_state_probe_now_ns() : 0;
+    const bool ok = session_save_state_impl(session, sched, probe ? &cost : NULL);
+    const uint64_t t1 = probe ? edc_state_probe_now_ns() : 0;
+
+    if (probe)
+    {
+        /* Everything below happens AFTER t1: instrumentation must never be what the timer
+         * sees.
+         *
+         * doc_bytes used to be "the tree serialized a second time". There is no tree any
+         * more -- flush binds the structs directly -- so there is no document whose size
+         * could be reported, and the number it produced described a copy that no longer
+         * exists. It is reported as 0 and the CSV column is documented as retired; the
+         * column that still means something is `io_bytes` (pages the pager actually wrote),
+         * which is measured inside the transaction. Re-deriving an equivalent figure here
+         * would be a second estimator to keep in step with the writer, which is the same
+         * mistake in a smaller form. */
+        const size_t doc_bytes = 0;
+        long n_tasks = 0;
+        long n_msgs = 0;
+
+        if (session)
+        {
+            struct edc_task_group *g;
+            DL_FOREACH(session->groups, g)
+                n_tasks += g->member_count;
+            n_msgs = (int64_t)edc_session_get_message_count(session);
+        }
+
+        edc_state_probe_save(t1 - t0, doc_bytes, cost.io_bytes, cost.rows, n_tasks, n_msgs, ok,
+                             session ? edc_id_str(session->session_id) : NULL, tag);
+    }
+    return ok;
+}
+
+/* tag names the call site ("r8:pre_dispatch", "settle:cancelled", ...) so the
+ * baseline CSV can answer "how many flushes does one tool boundary cause" --
+ * the number that decides how much work the stage-2 SYNC/DEFERRED merge window
+ * has to do. Unknown tags are harmless. */
+bool edc_session_save_state(struct edc_session *session, struct edc_scheduler *sched)
+{
+    return edc_session_save_state_tagged(session, sched, "direct");
+}
+
+/* Body with the measured quantities reported back: how many rows the store produced, and
+ * what the loader made of them (tasks / messages) -- the "O(history)" side of the cost. */
+static bool session_load_state_impl(struct edc_session *session, struct edc_scheduler *sched,
+                                    int64_t *out_rows, int64_t *out_tasks, int64_t *out_msgs)
+{
+    *out_rows = 0;
+    *out_tasks = 0;
+    *out_msgs = 0;
+
+    if (!session || session->session_id <= 0)
+        return false;
+
+    if (!edc_state_store_open(session->config))
+        return false;
+
+    warn_legacy_state_file_once(session);
+
+    /* Tell the two "nothing loaded" cases apart BEFORE loading: a session that was never
+     * written may legitimately be saved as an empty tree, but a session that IS in the
+     * database and failed to read must never be overwritten -- that is the v1->v2 incident
+     * this guardrail exists for (a failed load followed by a persist wiped s7). */
+    const bool had_rows = edc_state_store_has_session(session->session_id);
+
+    if (!edc_state_store_load(session, sched))
+    {
+        if (had_rows)
+        {
+            session->state_quarantined = true;
+            log_error("load_state: %s exists in the database but could not be read -- this "
+                      "run will NOT persist it (otherwise the half-built session would "
+                      "overwrite the real one)",
+                      edc_id_str(session->session_id));
+        }
+        return false;
+    }
+
+    {
+        struct edc_task_group *g;
+        DL_FOREACH(session->groups, g)
+            *out_tasks += g->member_count;
+        *out_msgs = (int64_t)edc_session_get_message_count(session);
+    }
+
+    /* "file_bytes" used to be the size of session.json. The new backend has no single
+     * file to measure, so the column now reports what the load had to produce: rows
+     * (messages + tasks). It is a different unit and is named `rows` in the CSV -- keeping
+     * the old name here would have invited exactly the wrong reading. */
+    *out_rows = *out_msgs + *out_tasks;
+    return true;
 }
 
 bool edc_session_load_state(struct edc_session *session, struct edc_scheduler *sched)
 {
-    if (!session || !session->history_dir)
-        return false;
+    const bool probe = edc_state_probe_enabled();
+    const uint64_t t0 = probe ? edc_state_probe_now_ns() : 0;
 
-    sds path = edc_path_join(session->history_dir, "session.json", NULL);
+    /* int64_t, not long: session_load_state_impl() and edc_state_probe_load() both take
+     * int64_t*, and on a 32-bit target `long` is only 32 bits wide -- passing `long*` there
+     * is an incompatible pointer type (an error with modern GCC, and a silent truncation
+     * before that). It compiled on aarch64 only because `long` happens to be 64-bit there. */
+    int64_t rows = 0;
+    int64_t n_tasks = 0;
+    int64_t n_msgs = 0;
+    const bool ok = session_load_state_impl(session, sched, &rows, &n_tasks, &n_msgs);
+    const uint64_t t1 = probe ? edc_state_probe_now_ns() : 0;
 
-    if (!edc_file_exists(path))
-    {
-        /* new session — no state file yet */
-        sdsfree(path);
-        return false;
-    }
-
-    EdcError *err = NULL;
-    sds content = edc_file_read(path, &err);
-    if (!content)
-    {
-        log_warn("load_state: read %s failed: %s", path, err ? err->message : "unknown");
-        if (err)
-            edc_error_free(err);
-        sdsfree(path);
-        return false;
-    }
-
-    cJSON *json = cJSON_Parse(content);
-    sdsfree(content);
-
-    if (!json)
-    {
-        log_error("load_state: failed to parse %s (corrupt JSON)", path);
-        session_quarantine_state(session, path, "corrupt JSON");
-        sdsfree(path);
-        return false;
-    }
-
-    int src_version = edc_state_json_version(json);
-    bool ok = edc_state_deserialize(json, session, sched);
-    cJSON_Delete(json);
-
-    if (!ok)
-    {
-        log_error("load_state: deserialize failed for %s (version %d)", path, src_version);
-        session_quarantine_state(session, path, "deserialize failed");
-        sdsfree(path);
-        return false;
-    }
-
-    sdsfree(path);
-    return true;
+    /* Every ATTEMPT is recorded, including the ones that found nothing: "we activated 40
+     * sessions and none of them had rows" and "we never load anything" must not look the
+     * same. ok=0 with rows=0 is the brand-new-session case, not a failure. */
+    if (probe)
+        edc_state_probe_load(t1 - t0, rows, ok, n_tasks, n_msgs,
+                             session ? edc_id_str(session->session_id) : NULL, "startup");
+    return ok;
 }
 
 /* ── Multi-session support ─────────────────────────────────── */
@@ -574,5 +633,8 @@ const char *edc_session_get_name(struct edc_session *session)
 {
     if (!session)
         return NULL;
-    return session->name ? session->name : session->session_id;
+    if (session->name)
+        return session->name;
+    /* No name: show the id, which is a number. */
+    return edc_id_str(session->session_id);
 }

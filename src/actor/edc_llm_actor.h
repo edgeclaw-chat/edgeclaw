@@ -17,13 +17,18 @@ typedef struct
 
 struct edc_llm_actor_req
 {
-    EdcQueue *turn;
-    /* This turn's send start (0 = the whole turn): if a fold cut inside the turn, its
-     * prefix is already in the group memory and must not be sent again. The producer
-     * (edc_llm_request) sets it from active_turn->folded_prefix. */
-    size_t turn_begin;
+    /* The in-flight turn's messages that still have to be sent, as an OWNED array: from
+     * its folded_prefix to the end. It used to be (EdcQueue *turn, turn_begin) pointing
+     * into the live turn; messages are rows now, so the producer loads the span and hands
+     * the array over. NULL = nothing to append. */
+    cJSON *turn_tail;
     cJSON *history;
     cJSON *tools;
+    /* Stable per-conversation key for the provider's automatic prefix cache (OpenAI's
+     * `prompt_cache_key`): one conversation's requests then share a cache shard instead of
+     * landing on whichever shard the load balancer picks. The producer sets it from the
+     * group id; NULL = the field is not sent. Freed with the request. */
+    sds cache_key;
     bool history_owned; /* Phase 5: true = history needs cJSON_Delete */
     cJSON *tail_parts;  /* owned by req: an ARRAY of role=system messages appended in
                            order at the absolute tail of messages (after the turn).
@@ -49,9 +54,14 @@ void edc_llm_api_conf_update_free(void *ptr);
 
 extern edc_actor_t *edc_llm_actor_new(struct edc_config *config);
 extern void edc_llm_actor_free(edc_actor_t *actor);
-extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools, EdcQueue *turn);
+extern struct edc_llm_actor_req *edc_llm_actor_req_new(cJSON *msg_lst, cJSON *tools);
 extern void edc_llm_actor_req_free(struct edc_llm_actor_req *req);
 extern struct edc_llm_actor_resp *edc_llm_actor_resp_new();
 extern void edc_llm_actor_resp_free(struct edc_llm_actor_resp *resp);
+
+/* Whether a chat-completions message key may travel to the provider. Everything else in a
+ * stored message is ours (the folded-paste payload, a tool-set delta's bookkeeping) and is
+ * dropped on the way out -- see llm_add_wire_message. Exposed so a test can pin the policy. */
+extern bool edc_llm_wire_key_is_standard(const char *key);
 
 #endif

@@ -5,6 +5,7 @@
 #include "log.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <sched.h>
 #include <stdio.h>
@@ -231,7 +232,7 @@ static bool ns_mount_special_fs(const char *path, int flag)
         fstype = "pstore";
         break;
     default:
-        log_debug("edc_ns_sandbox: no mount type for fs 0x%lx at %s", (unsigned long)sfs.f_type, path);
+        log_debug("edc_ns_sandbox: no mount type for fs 0x%" PRIx64 " at %s", (uint64_t)sfs.f_type, path);
         return false;
     }
 

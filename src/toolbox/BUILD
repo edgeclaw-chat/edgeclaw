@@ -16,8 +16,10 @@ cc_library(
         "edc_tools_device_shell.c",
         "edc_tools_fs.c",
         "edc_tools_memory.c",
+        "edc_tools_search.c",
         "edc_tools_shell.c",
         "edc_tools_todo.c",
+        "edc_toolset.c",
     ],
     hdrs = [
         "edc_output_buf.h",
@@ -30,8 +32,10 @@ cc_library(
         "edc_tools_device_shell.h",
         "edc_tools_fs.h",
         "edc_tools_memory.h",
+        "edc_tools_search.h",
         "edc_tools_shell.h",
         "edc_tools_todo.h",
+        "edc_toolset.h",
     ],
     includes = ["."],
     deps = [
@@ -48,7 +52,9 @@ cc_library(
         "@sds//:sds",
         "@uthash//:uthash",
     ] + select({
-        "//:windows": [],
+        # Windows has no system <regex.h>; grep uses pcre2's POSIX wrapper there (the same
+        # arrangement as the kernel's session-memory regex).
+        "//:windows": ["@pcre2//:pcre2-posix"],
         "//conditions:default": [
             "//src/device:device",
             "@lwip//:lwip",

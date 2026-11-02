@@ -13,6 +13,7 @@
  */
 
 #include "edc_compat.h"
+#include "edc_task.h"  /* edc_id_str() */
 #include "edc_config.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -75,22 +76,12 @@ static void wipe_workspace(const char *ws)
 }
 
 /* Numeric suffix of an "s<N>" / "sess-<N>" id; -1 when it is not that shape. */
-static long long sid_num(const char *id)
+/* The id is a number now (INTEGER PRIMARY KEY AUTOINCREMENT), so "the number in it" is
+ * the value itself. Kept as a function so the assertions below still read as
+ * "B's number is beyond A's". */
+static long long sid_num(int64_t id)
 {
-    if (!id)
-        return -1;
-    if (strncmp(id, "sess-", 5) == 0)
-        id += 5;
-    else if (id[0] == 's')
-        id += 1;
-    else
-        return -1;
-
-    char *end = NULL;
-    long long n = strtoll(id, &end, 10);
-    if (end == id || (end && *end != '\0'))
-        return -1;
-    return n;
+    return (long long)id;
 }
 
 static bool dir_exists(const char *p)
@@ -115,7 +106,7 @@ static void test_ids_advance(void)
     struct edc_session *b = edc_session_manager_create_ex(sm, "B", NULL);
     CHECK(b != NULL, "session B created");
 
-    CHECK(a && b && strcmp(a->session_id, b->session_id) != 0, "A and B have different ids");
+    CHECK(a && b && a->session_id != b->session_id, "A and B have different ids");
     CHECK(a && b && strcmp(a->history_dir, b->history_dir) != 0, "A and B use different directories");
     CHECK(a && b && sid_num(b->session_id) > sid_num(a->session_id), "B's id is beyond A's");
 
@@ -141,7 +132,7 @@ static void test_no_reuse_after_remove(void)
     char removed_dir[512] = {0};
     if (b)
     {
-        snprintf(removed_id, sizeof(removed_id), "%s", b->session_id);
+        snprintf(removed_id, sizeof(removed_id), "%s", edc_id_str(b->session_id));
         snprintf(removed_dir, sizeof(removed_dir), "%s", b->history_dir);
     }
 
@@ -149,7 +140,8 @@ static void test_no_reuse_after_remove(void)
 
     struct edc_session *c = edc_session_manager_create_ex(sm, "C", NULL);
     CHECK(c != NULL, "session C created");
-    CHECK(c && strcmp(c->session_id, removed_id) != 0, "C does not reuse the removed id");
+    CHECK(c && strcmp(edc_id_str(c->session_id), removed_id) != 0,
+          "C does not reuse the removed id");
     CHECK(c && strcmp(c->history_dir, removed_dir) != 0, "C does not land on the removed directory");
 
     edc_session_manager_free(sm);
@@ -172,7 +164,7 @@ static void test_no_reuse_across_restart(void)
     CHECK(b != NULL, "session B created");
     char removed_id[64] = {0};
     if (b)
-        snprintf(removed_id, sizeof(removed_id), "%s", b->session_id);
+        snprintf(removed_id, sizeof(removed_id), "%s", edc_id_str(b->session_id));
     CHECK(edc_session_manager_stop(sm, removed_id), "B removed");
     edc_session_manager_free(sm);
 
@@ -182,8 +174,10 @@ static void test_no_reuse_across_restart(void)
     CHECK(sm2 != NULL, "restarted manager created");
     struct edc_session *c = edc_session_manager_create_ex(sm2, "C", NULL);
     CHECK(c != NULL, "session C created after restart");
-    CHECK(c && strcmp(c->session_id, removed_id) != 0, "C does not reuse the removed id after restart");
-    CHECK(c && sid_num(c->session_id) > sid_num(removed_id), "C's id is beyond the removed one");
+    CHECK(c && strcmp(edc_id_str(c->session_id), removed_id) != 0,
+          "C does not reuse the removed id after restart");
+    CHECK(c && (long long)c->session_id > strtoll(removed_id + (removed_id[0] == 's' ? 1 : 0), NULL, 10),
+          "C's id is beyond the removed one");
 
     edc_session_manager_free(sm2);
     edc_config_free(cfg);
@@ -216,8 +210,11 @@ static void test_orphan_dir_seeding(void)
     CHECK(sm2 != NULL, "manager created on the upgraded workspace");
     struct edc_session *c = edc_session_manager_create_ex(sm2, "C", NULL);
     CHECK(c != NULL, "session C created");
-    CHECK(c && sid_num(c->session_id) > 7, "C's id is past the orphan directory's number");
-    CHECK(c && strcmp(c->session_id, "s7") != 0, "C does not collide with the orphan directory");
+    /* The invariant is "does not land on an existing directory", not "is numerically past
+     * it". The old design scanned the workspace to raise a counter above every s<N> it
+     * found; the database allocates now, so the guard is the allocation loop that skips an
+     * id whose directory already exists (edc_session_manager_create_ex). */
+    CHECK(c && c->session_id != 7, "C does not collide with the orphan directory s7");
     char new_dir[512];
     if (c)
     {

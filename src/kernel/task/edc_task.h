@@ -3,11 +3,15 @@
 
 #include "edc_config.h"
 #include "edc_containers.h"
+#include "edc_fold_files.h"
 #include "edc_task_types.h"
 #include "edc_turn.h"
 #include "sds.h"
 #include <cJSON.h>
+#include <inttypes.h> /* PRId64 */
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stddef.h>
 
 struct edc_session;
@@ -141,11 +145,35 @@ struct edc_tool_call_record
     struct edc_tool_call_record *next;
 };
 
+/* Render an id for a log line ("%s ...", edc_id_str(task->task_id)).
+ *
+ * Ids are numbers now and the log format strings are all %s, so this keeps those calls
+ * unchanged instead of rewriting every message to %" PRId64 ". A small rotating buffer works
+ * because a single log call never needs more than a few ids at once; it is NOT thread
+ * safe, and logging already assumes that. */
+static inline const char *edc_id_str(int64_t id)
+{
+    static char bufs[4][24];
+    static int next;
+    char *b = bufs[next];
+    next = (next + 1) % 4;
+    if (id > 0)
+        snprintf(b, sizeof(bufs[0]), "%" PRId64, id);
+    else
+        snprintf(b, sizeof(bufs[0]), "(none)");
+    return b;
+}
+
 struct edc_task
 {
-    char *task_id;    /* PID */
-    char *group_id;   /* PGID -- the leader's task_id */
-    char *session_id; /* SID */
+    /* Numeric ids. The database assigns task_id (INTEGER PRIMARY KEY on INSERT) and
+     * group_id is the leader's task_id, so both are integers. They used to be strings from
+     * a process-wide counter whose high-water mark had to be persisted in .task_seq --
+     * an open/write/rename per allocation, for something SQLite does on INSERT.
+     * 0 = not assigned yet (a task under construction, or "no such group"). */
+    int64_t task_id;    /* PID */
+    int64_t group_id;   /* PGID -- the leader's task_id */
+    int64_t session_id; /* SID: the sessions table key, a number like task_id */
 
     char *description; /* user-visible */
     /* The raw text the user typed, before the shell parser (the parsed form is
@@ -198,10 +226,10 @@ struct edc_task
 
     /* Usage accumulated over the task's whole lifetime, for the sidebar; not used
      * for scheduling. */
-    long long tokens_prompt;
-    long long tokens_completion;
-    long long tokens_total;
-    long long tokens_cached;
+    int64_t tokens_prompt;
+    int64_t tokens_completion;
+    int64_t tokens_total;
+    int64_t tokens_cached;
 
     /* How big the conversation had grown after the most recent reply: that
      * response's usage.total_tokens (its prompt *and* its completion) -- what was
@@ -213,7 +241,7 @@ struct edc_task
      * request: it is a sum of two counts, so a provider that folds reasoning
      * content into completion_tokens (which need not be sent back) makes it a
      * slight over-estimate of what the next request will carry. */
-    long long last_total_tokens;
+    int64_t last_total_tokens;
 
     /* Where that reply sat in the group's context, so the tail appended after it
      * can be estimated instead of guessed: the group history length and the
@@ -234,10 +262,10 @@ struct edc_task
      * it advances in the bookkeeping after a request
      * is sent (cancel/failure do NOT advance, so the same patch is resent).
      *
-     * Birth point adopted from the session: `memo_seen_seq = session->memo->next_seq`
-     * -- a new task gets the full index on its first round, so a "patch" says
-     * nothing to it. Old archives (migration) read back 0, and the migrated table
-     * is empty too (next_seq = 0), so both agree.
+     * Birth point adopted from the session: `memo_seen_seq = 0`, i.e. "has seen
+     * nothing", so its FIRST request carries a backfill notice (the newest `cap`
+     * events + a total count). That is deliberate: a newly created group must be able
+     * to see what the session already knows, or it starts blind.
      *
      * `last_prefix_tokens` = estimated tokens of the session memory block + patch
      * at anchor time (P4b onward): the ctx estimate adds
@@ -245,6 +273,19 @@ struct edc_task
      * systematically late. P4a only persists this field, no readers yet. */
     uint64_t memo_seen_seq;
     uint64_t last_prefix_tokens;
+
+    /* Whether this task has received the memory CATALOGUE (the "what exists" card,
+     * id + title). Persisted (schema v8) because it is real state, not a sentinel: the
+     * earlier encoding -- `memo_seen_seq == 0` -- conflated it with "the change cursor
+     * sits at the beginning of the feed" and could not express "the catalogue was
+     * delivered while the memory was still empty". */
+    bool memo_baseline_done;
+
+    /* Set when the request actually carried the catalogue; promoted into
+     * `memo_baseline_done` by `edc_task_memo_commit` once the response returns. A
+     * cancelled/failed request therefore leaves the flag clear and the catalogue is sent
+     * again -- idempotent, like the notice. In-memory only: it describes one request. */
+    bool memo_notice_catalogue;
 
     /* Largest event seq the last request INCLUDED (in-memory only). It is promoted
      * to `memo_seen_seq` only once the response really returns
@@ -302,9 +343,14 @@ struct edc_task
      * older binary): the landing then has nothing to apply and reports it.
      * Filled by the folding side; the task itself does not interpret them. */
     struct edc_task_group *sink_group;
-    char *fold_cut_task_id;
+    int64_t fold_cut_task_id; /* 0 = none */
     uint32_t fold_cut_turn;
     uint32_t fold_cut_prefix;
+    /* Files named by the tool calls in THIS fold's corpus, collected while the prompt is
+     * built and merged into the group's list at landing (R5b "file tracking"). A fold drops
+     * the turns it summarizes, so without this the model keeps a narrative of what happened
+     * but loses the list of files it read and changed. Owned by the task. */
+    struct edc_fold_files *fold_files;
 
     /* Where one EXTRACT round's cut went, exactly like the fold cut above: the member
      * it falls in, that member's turn index, and how many leading messages of that
@@ -313,7 +359,7 @@ struct edc_task
      * reads an in-flight turn), so there is no active-turn sentinel. A NULL task id
      * means no cut was recorded (the landing then advances nothing and counts one
      * failure). Filled by the extraction side; the task does not interpret them. */
-    char *memo_cut_task_id;
+    int64_t memo_cut_task_id; /* 0 = none */
     uint32_t memo_cut_turn;
     uint32_t memo_cut_prefix;
 
@@ -326,7 +372,7 @@ struct edc_task
     struct edc_task *prev, *next; /* session-wide list */
 };
 
-extern struct edc_task *edc_task_new(const char *task_id, const char *session_id, const char *group_id,
+extern struct edc_task *edc_task_new(int64_t task_id, int64_t session_id, int64_t group_id,
                                      const char *desc, edc_channel_type channel_type);
 /* Park the frontend's folded-paste map on this task's own user message, as a `payload`
  * object inside the message JSON. It rides with the message, so fork (cJSON_Duplicate in
@@ -346,25 +392,28 @@ struct edc_payload;
  * nothing happens. */
 extern void edc_task_set_user_origin(struct edc_task *task, const char *mid, const struct edc_payload *payload);
 
-/** The folded-paste map parked on this task's user message with |mid| (borrowed), or NULL.
+/** The folded-paste map parked on this task's user message with |mid|, or NULL.
  *  Read-only scan of the committed turns plus the in-flight one -- what the "payload by
- *  mid" pull answers from. */
+ *  mid" pull answers from. RETURNS A COPY the caller must cJSON_Delete. */
 extern cJSON *edc_task_find_user_payload(struct edc_task *task, const char *mid);
 
-/** The folded-paste map of this task's own user message (borrowed), or NULL. Used by the
- *  frontend to show the line the way it was typed: the message text is the expanded one. */
+/** The folded-paste map of this task's own user message, or NULL. Used by the
+ *  frontend to show the line the way it was typed: the message text is the expanded one.
+ *  RETURNS A COPY the caller must cJSON_Delete. */
 extern cJSON *edc_task_user_payload(struct edc_task *task);
 
-extern struct edc_task *edc_task_fork(struct edc_task *parent, const char *task_id, const char *desc,
+extern struct edc_task *edc_task_fork(struct edc_task *parent, int64_t task_id, const char *desc,
                                       uint32_t fork_point_completion_seq, edc_channel_type channel_type);
 extern void edc_task_free(struct edc_task *task);
 
-/** Deep-copy all of the task's turn messages into one synthetic snapshot turn.
- *  Handles both flushed and unflushed messages. NULL when the task has none; the
- *  caller frees the turn. Used by fork rule 2 to recover a parent's own turns
- *  after L1 folding. */
-extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, struct edc_session *session,
-                                                const char *snapshot_task_id);
+/** Deep-copy all of the task's turn messages into one synthetic turn (turn 0 of the
+ *  destination). Messages are written to the store under (dst_session_id, dst_group_id,
+ *  dst_task_id) with fresh identities, so the source rows are untouched.
+ *  NULL when the task has none; the caller owns the returned turn. Used by fork rule 2 to
+ *  recover a parent's own turns after L1 folding. */
+extern struct edc_turn *edc_task_snapshot_turns(struct edc_task *task, int64_t dst_session_id,
+                                                int64_t dst_group_id, int64_t dst_task_id,
+                                                int dst_turn_ord);
 
 /* State machine write points, named by intent: the caller says what it wants, and
  * (step, life) is validated. Returns false when the transition is rejected. */
@@ -486,8 +535,8 @@ extern bool edc_task_llm_request_poke(struct edc_task *task);
 
 /** Add one LLM response's usage to the task's token account. All-zero usage is a
  *  no-op; total <= 0 falls back to prompt + completion. */
-extern void edc_task_add_usage(struct edc_task *task, long long prompt_tokens, long long completion_tokens,
-                               long long total_tokens, long long cached_tokens);
+extern void edc_task_add_usage(struct edc_task *task, int64_t prompt_tokens, int64_t completion_tokens,
+                               int64_t total_tokens, int64_t cached_tokens);
 
 extern void edc_task_add_turn(struct edc_task *task, struct edc_turn *turn);
 extern void edc_task_commit_active_turn(struct edc_task *task);

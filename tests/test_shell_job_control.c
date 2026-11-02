@@ -25,6 +25,7 @@
  * text. No channel actor ⇒ replies go nowhere.
  */
 #include "edc_channel_actor.h"
+#include "test_ws.h"
 #include "edc_commands.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -66,9 +67,9 @@ static int passed = 0, failed = 0;
 /* The first user message of a turn -- what the model actually receives. */
 static const char *first_user_content(struct edc_turn *turn)
 {
-    if (!turn || turn->messages.tail == turn->messages.head)
+    if (!turn || turn->msg_count == 0)
         return NULL;
-    cJSON *msg = turn->messages.data[turn->messages.head];
+    cJSON *msg = edc_turn_msg_at(turn, 0);
     return cJSON_GetStringValue(cJSON_GetObjectItem(msg, "content"));
 }
 
@@ -408,7 +409,7 @@ int main(void)
     const int before_opt = task_count(sess);
     {
         char optline[128];
-        snprintf(optline, sizeof(optline), "\"opt work\" -d %s", at_fg ? at_fg->task_id : "1");
+        snprintf(optline, sizeof(optline), "\"opt work\" -d %s", edc_id_str(at_fg ? at_fg->task_id : 1));
         drive_command(cfg, sm, sched, optline);
     }
     struct edc_task *opt = find_task_by_desc(sess, "opt work");

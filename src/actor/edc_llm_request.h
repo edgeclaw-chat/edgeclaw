@@ -37,7 +37,17 @@ extern void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *t
  * |tool_schemas| / |memory_schemas| are read-only, still owned by the toolbox; all
  * three values live for the process. */
 struct edc_scheduler; /* fwd */
+struct edc_task;
 extern void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_actor_t *llm_actor,
                                            cJSON *tool_schemas, cJSON *memory_schemas);
+
+/* The per-group declaration set. A normal reply declares the GROUP's tools, not the
+ * process's: one conversation must send the same `tools` bytes every turn, or the provider's
+ * cached prefix is lost (docs/pi-toolset-plan.zh.md, I2). The resolver lives in the assembly
+ * root because it needs the registry, which this package must not depend on.
+ * Returns an array owned by the group (NOT by the request); NULL = fall back to the
+ * process-wide set. */
+typedef cJSON *(*EdcGroupToolsFn)(void *ctx, struct edc_task *task);
+extern void edc_llm_request_bind_group_tools(EdcGroupToolsFn fn, void *ctx);
 
 #endif

@@ -82,6 +82,8 @@ typedef enum
     EDC_FAIL_OTHER,          /* anything else the provider said */
 } edc_task_fail;
 
+extern const char *edc_task_dep_type_name(edc_task_dep_type type);
+extern edc_task_dep_type edc_task_classify_dep_type(const char *name);
 extern const char *edc_task_fail_name(edc_task_fail fail);
 extern edc_task_fail edc_task_classify_fail(const char *name);
 

@@ -13,6 +13,9 @@
  * freeze. Writes a short human message into |out| and returns true when the endpoint
  * ANSWERED (any HTTP status, key valid or not -- a 401 still proves the URL + path are
  * right); false on a transport failure or timeout.
+ *
+ * |out| / |cap| are required: the message is the whole point of the call, so a NULL or
+ * zero-sized buffer is rejected with false rather than silently dropping the reason.
  */
 extern bool edc_endpoint_probe(const char *cacert_path, const char *api_url, const char *api_key, int timeout_ms,
                                char *out, size_t cap);

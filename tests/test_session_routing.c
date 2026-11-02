@@ -16,6 +16,7 @@
  * ══════════════════════════════════════════════════════════════ */
 
 #include "edc_actor.h"
+#include "test_ws.h"
 #include "edc_channel_actor.h"
 #include "edc_compat.h"
 #include "edc_config.h"
@@ -82,7 +83,7 @@ static int test_passed = 0;
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp/test_session_routing_workspace");
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -115,7 +116,7 @@ static char *first_task_id(struct edc_session *session)
     {
         struct edc_task *t;
         LL_FOREACH2(g->members, t, group_next)
-        return t->task_id;
+        return edc_id_str(t->task_id);
     }
     return NULL;
 }
@@ -126,7 +127,7 @@ static struct edc_session *g_sess_a = NULL;
 static struct edc_session *g_sess_b = NULL;
 
 /* 投递一条入站消息 (模拟前端): |tag| 就是消息上的 session 标签。 */
-static void deliver_input(struct edc_scheduler *sched, const char *tag, const char *content, long req_id)
+static void deliver_input(struct edc_scheduler *sched, const char *tag, const char *content, intptr_t req_id)
 {
     edc_actor_t *actor = edc_scheduler_get_actor(sched);
     struct edc_channel_message *cm =
@@ -134,7 +135,7 @@ static void deliver_input(struct edc_scheduler *sched, const char *tag, const ch
     if (tag)
         cm->session_id = sdsnew(tag);
     edc_actor_msg_t *msg =
-        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)(intptr_t)req_id, edc_channel_input_new(cm),
+        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_RECV, NULL, (void *)req_id, edc_channel_input_new(cm),
                           (edc_actor_data_free_fn)edc_channel_input_free);
     actor->handler(actor, msg); /* dispatches + frees msg */
 }
@@ -148,13 +149,13 @@ static void test_input_lands_in_the_tagged_session(void)
     TEST("入站: 标签指向 B ⇒ 任务/组落在 B (scheduler 绑的是 A)");
 
     struct edc_config *cfg = make_config();
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
     /* 没有 handle_command → 走 scheduler 自己的兜底建任务路径 (这正是要测的那条)。 */
 
-    deliver_input(sched, "sess-b", "hello from B", 1);
+    deliver_input(sched, edc_id_str(edc_test_session_id("sess-b")), "hello from B", 1);
 
     CHECK(count_groups(g_sess_a) == 0, "A 没有被建组");
     CHECK(count_tasks(g_sess_a) == 0, "A 里没有新任务");
@@ -164,17 +165,17 @@ static void test_input_lands_in_the_tagged_session(void)
     char *tid = first_task_id(g_sess_b);
     CHECK(tid != NULL, "B 的任务存在");
     CHECK(g_sess_b->active_task != NULL, "B 的 active task 被设置");
-    CHECK(g_sess_b->active_task && tid && strcmp(g_sess_b->active_task->task_id, tid) == 0,
+    CHECK(g_sess_b->active_task && tid && strcmp(edc_id_str(g_sess_b->active_task->task_id), tid) == 0,
           "active task 就是刚建的那个");
     CHECK(g_sess_b->foreground_group != NULL, "B 有了前台组");
-    CHECK(g_sess_b->foreground_group && tid && strcmp(g_sess_b->foreground_group->group_id, tid) == 0,
+    CHECK(g_sess_b->foreground_group && tid && strcmp(edc_id_str(g_sess_b->foreground_group->group_id), tid) == 0,
           "前台组以它为首 (group_id == leader id)");
     CHECK(g_sess_a->active_task == NULL, "A 的 active task 没被动过");
     CHECK(g_sess_a->foreground_group == NULL, "A 的前台组没被动过");
 
     /* 任务自己的 session 字段也必须是 B (落盘时按它归位)。 */
     struct edc_task *t = g_sess_b->active_task;
-    CHECK(t && t->session_id && strcmp(t->session_id, "sess-b") == 0, "任务的 session_id 是 sess-b");
+    CHECK(t && t->session_id && t->session_id == edc_test_session_id("sess-b"), "任务的 session_id 是 sess-b");
 
     edc_scheduler_free(sched);
     edc_session_free(g_sess_a);
@@ -192,8 +193,8 @@ static void test_unknown_tag_is_rejected(void)
     TEST("入站: 标签指向不存在的 session ⇒ 拒绝这条输入 (两边都不落)");
 
     struct edc_config *cfg = make_config();
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
 
@@ -220,8 +221,8 @@ static void test_tagless_input_uses_the_default(void)
     TEST("入站: 没有标签 ⇒ 由读口给默认 session (crontab 行为不变)");
 
     struct edc_config *cfg = make_config();
-    g_sess_a = edc_session_new(cfg, "sess-a", "A");
-    g_sess_b = edc_session_new(cfg, "sess-b", "B");
+    g_sess_a = edc_session_new(cfg, edc_test_session_id("sess-a"), "A");
+    g_sess_b = edc_session_new(cfg, edc_test_session_id("sess-b"), "B");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     install_store(sched, g_sess_a, g_sess_b);
 
@@ -241,6 +242,7 @@ static void test_tagless_input_uses_the_default(void)
 
 int main(void)
 {
+    edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== test_session_routing (P3 ①a 防线) ===");
 
     test_input_lands_in_the_tagged_session();
