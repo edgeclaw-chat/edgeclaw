@@ -29,6 +29,7 @@ WHERE EACH TEXT COMES FROM, and why there are three kinds:
 """
 
 import argparse
+import difflib
 import glob
 import os
 import subprocess
@@ -342,6 +343,23 @@ def main():
             print("third-party notices are out of date:", file=sys.stderr)
             for rel in sorted(stale):
                 print(f"  {rel}", file=sys.stderr)
+                # Say HOW it differs. "out of date" alone cannot distinguish "the upstream
+                # licence changed" from "this machine fetched a different revision", and
+                # those need opposite responses: regenerate vs find out why it differs.
+                path = os.path.join(REPO, rel)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        have = f.read()
+                except OSError:
+                    print("    (file is missing)", file=sys.stderr)
+                    continue
+                diff = list(difflib.unified_diff(
+                    have.splitlines(), files[rel].splitlines(),
+                    "committed", "regenerated", lineterm="", n=0))
+                for line in diff[:24]:
+                    print(f"    {line}", file=sys.stderr)
+                if len(diff) > 24:
+                    print(f"    ... {len(diff) - 24} more line(s)", file=sys.stderr)
             print("\nRun tools/gen_notices.py and commit the result.", file=sys.stderr)
             return 1
         print(f"third-party notices are current ({len(files)} files)")
