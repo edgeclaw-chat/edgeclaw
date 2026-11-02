@@ -169,6 +169,78 @@ static void test_ordinary_command_is_untouched(void)
     harness_down(&h);
 }
 
+/* How the command ENDED is the fact nothing else records. Before this, a failing command
+ * produced output indistinguishable from a successful one, and the model reported success on
+ * top of a failure -- which is why the note exists and why it is asserted here rather than
+ * left to a comment. */
+static void test_nonzero_exit_is_reported(void)
+{
+    TEST("a failing command reports [exit N] instead of looking successful");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    CHECK(run_shell(&h, "echo partial-output; exit 3", 10), "the callback fired");
+    CHECK(strstr(result_text(), "[exit 3]") != NULL,
+          "the exit status is in the result: %.80s", result_text());
+    CHECK(strstr(result_text(), "partial-output") != NULL,
+          "and the output it did produce is kept");
+
+    harness_down(&h);
+}
+
+static void test_zero_exit_is_silent(void)
+{
+    TEST("a successful command does NOT get an [exit 0] line");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    CHECK(run_shell(&h, "true", 10), "the callback fired");
+    /* `[exit 0]` on every call is noise a reader learns to skip, and skipping it is how the
+     * non-zero one gets missed. Only the interesting case is announced. */
+    CHECK(strstr(result_text(), "[exit") == NULL,
+          "no exit line when it succeeded: %.60s", result_text());
+
+    harness_down(&h);
+}
+
+static void test_signal_death_is_reported(void)
+{
+    TEST("a command killed by a signal says which one");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    /* `kill -9 $$` kills the shell itself: the process exits by signal, not with a code, so
+     * an exit-status-only implementation would report nothing at all here. */
+    CHECK(run_shell(&h, "kill -9 $$", 10), "the callback fired");
+    CHECK(strstr(result_text(), "[signal 9]") != NULL,
+          "the signal is in the result: %.80s", result_text());
+
+    harness_down(&h);
+}
+
+/* The note has to survive truncation, which is why it sits in the HEAD with the other
+ * notices rather than being appended after the output. A 400000-line `seq` blows past the
+ * capture cap, so anything placed at the tail would be dropped and this case would pass
+ * while a real user saw nothing. */
+static void test_exit_survives_truncation(void)
+{
+    TEST("the exit note is in the head, so truncation cannot drop it");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    CHECK(run_shell(&h, "seq 1 400000; exit 7", 30), "the callback fired");
+    CHECK(strstr(result_text(), "[exit 7]") != NULL,
+          "the exit note is still present after truncation");
+    /* The head is where it must be: the truncation note and the exit note both precede the
+     * body. */
+    const char *exit_at = strstr(result_text(), "[exit 7]");
+    const char *body_at = strstr(result_text(), "1\n2\n");
+    CHECK(exit_at && body_at && exit_at < body_at,
+          "the exit note comes before the output body");
+
+    harness_down(&h);
+}
+
 static void test_volume_is_truncated_but_not_killed(void)
 {
     TEST("a loud but finite command: truncated, and it still runs to the end");
@@ -280,6 +352,10 @@ int main(void)
     log_info("");
 
     test_ordinary_command_is_untouched();
+    test_nonzero_exit_is_reported();
+    test_zero_exit_is_silent();
+    test_signal_death_is_reported();
+    test_exit_survives_truncation();
     test_cjk_output_is_utf8();
     test_volume_is_truncated_but_not_killed();
     test_runaway_is_killed();

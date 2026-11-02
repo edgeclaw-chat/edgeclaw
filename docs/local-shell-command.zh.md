@@ -341,7 +341,7 @@ TUI Submit()
 | `role=tool` 缺配对 `assistant(tool_calls)` → 请求非法 / fold 剪坏 | 创建时就把 assistant 消息写进 turn（§4.3）；`edc_llm_request.c` / `edc_group_fold.c` 的注释都点名了这个约束 |
 | resume 后误发 LLM 请求 | 守卫 2'（§5.3） |
 | `llm_rounds` 不落盘 → 不能用它推断 | 用显式 `tool_only` 布尔 |
-| 非 0 退出 / 超时 | 任务仍 COMPLETED，输出是工具文本（**注意**：`exec_shell` 目前不把 exit code 写进结果，需要的话是 Phase 2 的小改）。「超时」只适用于 **LLM 发的**命令：用户命令不设超时 |
+| 非 0 退出 / 超时 | 任务仍 COMPLETED，输出是工具文本；**2026-11-02 起结果头部带 `[exit N]` / `[signal N]`**（超时另报 `[command timed out]`，不重复报信号）。「超时」只适用于 **LLM 发的**命令：用户命令不设超时 |
 | 交互命令（sudo/vim/ssh） | 工具已是 detached 无 tty → 立即失败（现状，不是本方案引入） |
 | resume 重跑不幂等 | 写进文档；`/task resume` 对 `tool_only` 加提示 |
 | 输出被 markdown 吃掉 | 不再发生：显示走工具的 TOOL_EMIT（PLAIN），RESP 被 `notice=NULL` 抑制 |
@@ -426,7 +426,7 @@ TUI Submit()
   `exec_shell({"command":…})`、`tool` = 输出），全部持久化在 `session.json` 里。
 - 未覆盖：真实 `exec_shell` + uv loop 的**自动化**测试（既有测试都 mock `redispatch_tools`）；
   上面是脚本化 pty 手测，不是 `bazel test` 目标。
-- 顺带确认的现状：`exec_shell` 不把 exit code 写进结果，所以非 0 退出时输出里看不到 `[exit 3]`；
+- 顺带确认的现状：`exec_shell` 把退出状态写进结果头部（`[exit N]` / `[signal N]`，只有非 0 才写），
   任务本身照常 COMPLETED。
 
 ### 上线后观察（用户自测）

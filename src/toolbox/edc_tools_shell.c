@@ -294,6 +294,21 @@ static void shell_ctx_complete(struct edc_tool_shell_ctx *ctx)
     }
     if (ctx->timed_out)
         result = sdscat(result, "[command timed out]\n");
+    /* How the command ended. In the HEAD with the other notices, not appended at the tail:
+     * for a large output the tail is exactly what both readers drop, so a note placed there
+     * is a note nobody gets.
+     *
+     * Only when the command did not simply succeed. `[exit 0]` on every call is noise a
+     * reader learns to skip, and the case that actually matters is the one that is
+     * otherwise invisible: a command that FAILED produced output indistinguishable from one
+     * that worked, so the model reported success on top of a failure.
+     *
+     * A timeout already says why it ended, and the synthetic -1 it leaves behind is not a
+     * signal -- reporting `[signal 1]` there would be a fiction. */
+    else if (ctx->exit_status < 0)
+        result = sdscatprintf(result, "[signal %d]\n", -ctx->exit_status);
+    else if (ctx->exit_status > 0)
+        result = sdscatprintf(result, "[exit %d]\n", ctx->exit_status);
     /* Transcoding is a change we made to the output, so it is announced rather than silent:
      * whoever is chasing an encoding problem needs to know which lines are not the raw bytes,
      * and this line is also how the mechanism stays observable at all. */
@@ -676,7 +691,10 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
      * cancelled -- which matters most for `!cmd`, whose commands have no timeout. */
     edc_tool_set_abort(tool, edc_tool_shell_abort);
     edc_tool_set_snippet(tool, "Run a shell command locally");
-    edc_tool_set_guidelines(tool, "Output is capped; the child sees a minimal environment.");
+    edc_tool_set_guidelines(tool, "Output is capped; the child sees a minimal environment. "
+                                  "A non-zero exit is reported at the top of the result as "
+                                  "[exit N] (or [signal N]) -- check it before concluding the "
+                                  "command succeeded.");
     edc_toolbox_register(tb, tool);
     return tool;
 }
