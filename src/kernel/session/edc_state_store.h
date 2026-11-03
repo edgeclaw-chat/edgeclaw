@@ -247,10 +247,6 @@ struct cJSON *edc_msg_get(int64_t task_id, int turn_ord, int msg_ord);
  * replaces walking every message in C. Returns -1 when the store is closed. */
 int64_t edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from);
 
-/* Drop messages with msg_ord >= |new_len| (revert / rollback). |new_len| 0 drops the
- * whole turn. */
-bool edc_msg_turn_truncate(int64_t task_id, int turn_ord, int new_len);
-
 /* Re-key a turn: move its message rows from (old_task, old_ord) to (new_task, new_ord).
  *
  * Needed because the storage key is POSITIONAL and a turn can be built before its final

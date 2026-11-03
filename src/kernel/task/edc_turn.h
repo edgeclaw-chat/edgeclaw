@@ -90,10 +90,6 @@ extern cJSON *edc_turn_msg_at(const struct edc_turn *turn, int idx);
 extern cJSON *edc_turn_msgs(const struct edc_turn *turn, int from, int to);
 /* Token estimate of [from, msg_count): a SUM over the rows, never a re-estimate walk. */
 extern int64_t edc_turn_tokens_from(const struct edc_turn *turn, int from);
-/* Drop message |new_len| onwards (revert). */
-extern bool edc_turn_truncate(struct edc_turn *turn, int new_len);
-/* Remove every message (turn discarded). */
-extern bool edc_turn_clear(struct edc_turn *turn);
 
 /* Render one message as a prompt line for the fold corpus / extraction material:
  * "<ts>  <role>: <content>", plus one "  -> call <name>(<arguments>)" line per
