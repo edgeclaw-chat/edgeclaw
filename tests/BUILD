@@ -1250,6 +1250,22 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The HTTPS transport when the transport is the problem: connection refused, a handshake
+# against a plain-text server, the total deadline, and an unparseable URL. Uses the same
+# loopback TLS stub as the LLM response test, plus a plain-TCP server for the handshake case
+# (TLS is decided by mbedtls, not by the URL scheme).
+cc_test(
+    name = "test_https_client_failures",
+    srcs = ["test_https_client_failures.c", "tls_stub.h"],
+    deps = [
+        "//src/common:common",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # ── TUI 测试（原 src/tui/test_*.cpp，2026-09-15 归拢到 tests/）──────────
 
 cc_test(
