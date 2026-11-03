@@ -14,18 +14,61 @@ release builds still work) and publishes only for `v*` tags.
 
 ## 1. Before you start
 
-**Pushing to `dev` runs no CI.** `PR Check` triggers on `pull_request → master` and `Release`
-on push to `master` or a `v*` tag, so a commit that only lands on `dev` has never been built
-by anything but the machine that wrote it. Open the `dev → master` PR and let it run — that
-PR is the first time CI sees the work, not a formality after it.
+**Every push to `dev` now runs `Build` and `Tests`** (`build.yml`, `tests.yml`). Before
+2026-11-03 it ran nothing — `PR Check` is pull-request-only and `Release` is master/tag-only,
+so trunk was the one branch CI never touched. If a badge on the README reads "no status",
+this is the first thing to check: the workflow may simply not have run yet.
 
-- [ ] The `dev → master` PR is green: the `build` matrix, `test`, `asan`, the licence check
-      and the archive check. `release` will not start until `build`/`test`/`asan` pass.
+- [ ] The latest `dev` push is green: `Build`, and both `Tests` jobs that gate a release
+      (`Test`, `AddressSanitizer + UBSan`). `release` will not start until `build`/`test`/
+      `asan` pass on the `dev → master` PR.
+- [ ] The `dev → master` PR is green: the ten-platform `build` matrix, `test`, `asan`, the
+      licence check and the archive check.
 - [ ] `bazel build //tests:all` passes. It is a separate check from `bazel test` because
       `manual`-tagged targets compile only under `build`; two of them once sat broken for
       months.
 - [ ] Working tree clean, and `dev` pushed. A release built from a dirty tree cannot be
       reproduced from its tag.
+
+### CI status: badges, and why they may look broken
+
+`README.md` shows four badges. What each one needs, and what it does when that is missing:
+
+| Badge | Source | Requires |
+|---|---|---|
+| `build`, `tests` | shields.io, reading `build.yml` / `tests.yml` on `dev` | **A public repository.** |
+| `coverage` | codecov.io | The repo added on codecov.io **and** a `CODECOV_TOKEN` secret. |
+| `license` | static shields badge | nothing |
+
+**On a private repository the GitHub Actions badges cannot render, and no configuration
+changes that.** Measured 2026-11-03:
+
+- GitHub's own endpoint (`.../actions/workflows/<file>/badge.svg`) returns **404** — with and
+  without a token, and with `?token=<PAT>`.
+- shields.io returns HTTP 200 but the SVG text is **"repo or workflow not found"**; the same
+  URL against a public repository renders "passing", so the URL is right and the visibility
+  is what differs.
+
+So the two workflow badges only start showing a status once the repository is public. That is
+a decision, not a bug to chase.
+
+**Coverage** is different: codecov serves that badge itself and works for a private repo. To
+enable it:
+
+1. Add `edgeclaw-chat/edgeclaw` on codecov.io (sign in with GitHub).
+2. Copy the upload token.
+3. `gh secret set CODECOV_TOKEN`, or Settings → Secrets → Actions.
+
+The workflow already does the rest: `tests.yml`'s `coverage` job uploads
+`bazel-out/_coverage/_coverage_report.dat` when the token exists, and **skips the upload
+when it does not** — a missing optional integration must not turn the test signal red. With
+no token it prints the three percentages into the job log instead (`Coverage summary` step),
+so the numbers stay visible either way.
+
+One trap when editing that step: the report path is written literally
+(`bazel-out/_coverage/_coverage_report.dat`) on purpose. `bazel-out` is a symlink and `find`
+does not follow it, so discovering the file with `find bazel-out` yields an empty string and
+the step dies with `FileNotFoundError: ''`. That happened on the workflow's first run.
 
 ## 2. Decide the version
 
@@ -72,6 +115,10 @@ The one thing that can silently destroy a user's history.
       should move to its "fixed at v2.0.0" section in the same commit.
 - [ ] The sanitizer gate is what this checklist says it is (hard or
       report-only right now?).
+- [ ] The coverage numbers quoted in `docs/limitations.md` match the latest `Coverage
+      summary` in the `Tests` run. They are re-measured, not
+      remembered: the document used to quote a baseline two months and 585 lines out of
+      date, which made it wrong in a way no test would catch.
 
 ## 6. Tag and publish
 
