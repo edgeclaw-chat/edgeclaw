@@ -227,11 +227,29 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
 
         /* Unfolded-history start: skip the system prompt (slot 0). Folded messages
          * are not in history -- they are pruned at fold landing (see
-         * edc_task_group_rebuild_history) -- so no watermark arithmetic is needed here. */
+         * edc_task_group_rebuild_history) -- so no watermark arithmetic is needed here.
+         *
+         * This number is a CONSTANT, which makes the two statements below no-ops today:
+         * the clamp cannot fire (the guard above keeps end >= this), and
+         * edc_llm_history_safe_start() returns immediately because the call below passes
+         * the same value as its lower_bound (1 > 1 is false). That is deliberate, not a
+         * leftover: folded messages are pruned rather than kept behind a watermark, so
+         * there is no boundary that could land in the middle of an
+         * assistant(tool_calls)+tool pair.
+         *
+         * They are kept for the day hist_begin stops being 1 -- a spec change that makes
+         * the window start come from a watermark again would make a slice begin on a
+         * role=tool message, and OpenAI rejects that outright ("Messages with role 'tool'
+         * must be a response to a preceding message with 'tool_calls'"). When that
+         * happens, lower_bound must stay 1: lowering it would let the walk step onto slot
+         * 0 and send the system prompt as part of the history.
+         *
+         * tests/test_llm_request.c pins the OUTCOME (no role=tool message ever arrives
+         * without its assistant in front), not this constant -- so it stays green today
+         * and turns into the guard's first real exercise the moment hist_begin moves. */
         size_t hist_begin = 1;
         if (hist_begin > (size_t)end)
             hist_begin = (size_t)end;
-        /* A watermark boundary can also land on a tool message; move back to a safe start */
         hist_begin = edc_llm_history_safe_start(task->group, hist_begin, 1);
 
         /* Inject the whole unfolded history [hist_begin, end): the fold uses a

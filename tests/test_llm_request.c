@@ -170,6 +170,24 @@ static void history_add_user(struct edc_task_group *g, const char *text)
     edc_task_group_history_add_owned(g, m);
 }
 
+/* |with_tool_calls| != 0 => an assistant message that CALLED a tool (the shape the
+ * provider requires before a role=tool message). */
+static void history_add_role(struct edc_task_group *g, const char *role, const char *text, int with_tool_calls)
+{
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", role);
+    cJSON_AddStringToObject(m, "content", text);
+    if (with_tool_calls)
+    {
+        cJSON *calls = cJSON_AddArrayToObject(m, "tool_calls");
+        cJSON *call = cJSON_CreateObject();
+        cJSON_AddStringToObject(call, "id", "call_1");
+        cJSON_AddStringToObject(call, "type", "function");
+        cJSON_AddItemToArray(calls, call);
+    }
+    edc_task_group_history_add_owned(g, m);
+}
+
 /* 当前 turn: input + 两条后续消息 (模拟工具循环里长起来的 turn)。 */
 static struct edc_turn *attach_turn(struct harness *h, struct edc_task *t, const char *input)
 {
@@ -801,6 +819,80 @@ static void test_wire_message_keys_are_allowlisted(void)
         CHECK(!edc_llm_wire_key_is_standard(dropped[i]), "store-only key dropped");
 }
 
+/* ── 绊线: 历史切片不得以 role=tool 开头 ──────────────────────────────────
+ *
+ * OpenAI 硬性要求: 每条 role=tool 必须跟在一个带 tool_calls 的 assistant 之后,
+ * 否则整条请求 400 ("Messages with role 'tool' must be a response to a preceding
+ * message with 'tool_calls'")。当窗口起点是固定值时这条不变量天然成立 (slot 0 是
+ * system prompt, slot 1 是第一轮的首条消息 = user), 所以本用例**今天会平凡通过**。
+ *
+ * 它的价值在于绊线, 而不是覆盖率: `edc_llm_request.c` 里那个
+ * edc_llm_history_safe_start() 守卫现在恒不触发 (hist_begin == lower_bound == 1),
+ * 靠的就是"起点固定"这个前提。哪天起点改成来自 watermark, 这个前提就没了 ——
+ * 那时本用例会先红, 而它会红在**用户会遇到的症状**上, 不是红在一个内部常量上。
+ *
+ * 断的是结果 (装配出的 messages 序列), 不是实现: 不依赖 hist_begin 怎么算。 */
+static void test_no_tool_message_without_its_assistant(void)
+{
+    TEST("请求里的 role=tool 必须紧跟在带 tool_calls 的 assistant 之后");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-tool-pair"));
+
+    /* slot 0 是 system prompt 的位置 (见 edc_llm_request.c: 它被单独取走, 历史切片从 1 起) */
+    history_add_role(g, "system", "you are EdgeClaw", 0);
+    history_add_role(g, "assistant", "let me look", 1); /* 发起工具调用 */
+    history_add_role(g, "tool", "file contents", 0);    /* 它的结果 */
+
+    attach_turn(&h, leader, "now summarise that");
+    edc_llm_request_send(h.sched, leader, NULL, NULL, h.llm_actor, NULL);
+    pump(&h);
+
+    CHECK(g_req_msgs == 1, "请求真发出去了");
+    if (!g_req || !g_req->history)
+    {
+        CHECK(0, "请求里有 messages");
+        harness_down(&h);
+        return;
+    }
+
+    const int n = cJSON_GetArraySize(g_req->history);
+    CHECK(n >= 3, "system + assistant + tool 都在");
+
+    int tool_seen = 0;
+    int orphan = 0;
+    for (int i = 0; i < n; i++)
+    {
+        cJSON *m = cJSON_GetArrayItem(g_req->history, i);
+        const char *role = cJSON_GetStringValue(cJSON_GetObjectItem(m, "role"));
+        if (!role || strcmp(role, "tool") != 0)
+            continue;
+        tool_seen++;
+        /* 前一条必须是带 tool_calls 的 assistant, 否则这就是孤儿 tool 消息 */
+        if (i == 0)
+        {
+            orphan++;
+            continue;
+        }
+        cJSON *prev = cJSON_GetArrayItem(g_req->history, i - 1);
+        const char *prev_role = cJSON_GetStringValue(cJSON_GetObjectItem(prev, "role"));
+        const cJSON *prev_calls = cJSON_GetObjectItem(prev, "tool_calls");
+        if (!prev_role || strcmp(prev_role, "assistant") != 0 || !prev_calls)
+            orphan++;
+    }
+
+    CHECK(tool_seen == 1, "那条 tool 消息确实进了请求 (否则本用例什么都没测到)");
+    CHECK(orphan == 0, "没有孤儿 tool 消息 —— 有的话 provider 会整条 400");
+    /* 起点仍是 slot 1 (那条 assistant), 不是被跳过、也不是越到 slot 2 的 tool */
+    const char *first_role = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(g_req->history, 1), "role"));
+    CHECK(first_role && strcmp(first_role, "assistant") == 0,
+          "历史切片从那条 assistant 开始, 不从它的 tool 结果开始");
+
+    harness_down(&h);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -814,6 +906,7 @@ int main(void)
     test_summary_request_is_capped();
     test_fold_request_is_self_contained();
     test_tool_only_turn_reaches_the_next_request();
+    test_no_tool_message_without_its_assistant();
 
     printf("\n  %d passed, %d failed\n\n", test_passed, test_failed);
     return test_failed ? 1 : 0;
