@@ -103,7 +103,7 @@ Stated plainly, because "it compiles" is not evidence:
 |---|---|
 | Line coverage | ~77%, function ~89%, **branch ~56%** (see `coverage-handover.zh.md`). The gap is concentrated in failure paths: endpoint failures, LLM 4xx/5xx, disk-full, sandbox denials. |
 | Windows | Builds in CI. The PPPoS transport and the kernel sandbox do not exist there. Not exercised by hand on real hardware for this release. |
-| armv7 / Android device agent | Cross-compiled in CI; not run on a device as part of the release check. |
+| armv7 | Built locally (cross) and **run under `qemu-arm`**: the released shape of the binary starts and reports `platform linux/arm`. Not run on real armv7 hardware, and the Android device agent is compiled only. |
 | Real-model behaviour | The suite drives a fake LLM. Prompt and tool-choice quality is not asserted anywhere. |
 | macOS | Builds in CI (aarch64). Seatbelt sandbox paths are compiled, not exercised. |
 
