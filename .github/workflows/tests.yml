@@ -102,14 +102,26 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
-      # A summary in the log so the numbers are visible without codecov. Kept as a one-liner
-      # python -c rather than a heredoc: a heredoc's terminator has to sit at the block's base
-      # indentation, and getting that wrong inside YAML is a silent "unexpected EOF".
+      # A summary in the log so the numbers are visible without codecov.
+      #
+      # The report path is named literally, not discovered with `find bazel-out`: bazel-out is
+      # a SYMLINK, and `find` does not follow it, so the discovery yields an empty string and
+      # the script dies on a missing filename -- which is exactly what happened on the first
+      # run of this workflow.
+      # `find -L` stays as a fallback for an output layout that moves.
+      #
+      # `|| true` on the whole step: this is a log nicety. If the report ever moves again,
+      # the job should say so and stay green -- the coverage RUN above is the real signal.
       - name: Coverage summary (no codecov configured)
         if: env.CODECOV_TOKEN == ''
         run: |
-          set -euo pipefail
-          report=$(find bazel-out -name '_coverage_report.dat' | head -1)
+          report=bazel-out/_coverage/_coverage_report.dat
+          [ -f "$report" ] || report=$(find -L bazel-out -name '_coverage_report.dat' | head -1)
+          if [ -z "$report" ] || [ ! -f "$report" ]; then
+            echo "no combined coverage report found; the run above still succeeded"
+            exit 0
+          fi
+          echo "report: $report"
           python3 -c 'import sys
           lh=lf=bh=bf=fh=ff=0
           for L in open(sys.argv[1], encoding="utf-8", errors="replace"):
@@ -123,3 +135,5 @@ jobs:
           print("lines %d/%d = %.1f%%" % (lh, lf, 100.0*lh/lf))
           print("functions %d/%d = %.1f%%" % (fh, ff, 100.0*fh/ff))
           print("branches %d/%d = %.1f%%" % (bh, bf, 100.0*bh/bf))' "$report"
+        env:
+          TMPDIR: ${{ runner.temp }}
