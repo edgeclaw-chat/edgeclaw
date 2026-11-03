@@ -1434,6 +1434,21 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_setup_dialog",
+    srcs = ["test_setup_dialog.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
     name = "test_token_style",
     srcs = ["test_token_style.cpp"],
     deps = [
