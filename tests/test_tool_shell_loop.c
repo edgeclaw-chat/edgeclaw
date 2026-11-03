@@ -22,6 +22,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
+#include "edc_tools.h"
 #include "edc_utf8.h"
 #include "log.h"
 
@@ -30,6 +31,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <uv.h>
 
 /* Stub for _run_loop pulled in by edc_commands (transitively linked). */
@@ -84,6 +87,11 @@ static void harness_up(struct harness *h, int capture_max, int kill_max)
     h->cfg = g_new0(struct edc_config, 1);
     h->cfg->workspace = sdsnew(edc_test_workspace());
     h->cfg->enable_sandbox = false;
+    /* The root a real config derives from rw_paths[0] (edc_config.c). Without it,
+     * edc_sandbox_get_root() answers NULL, a relative working_dir has nothing to be
+     * relative to, and the spawn silently inherits the process cwd -- so the harness has to
+     * carry the field production always carries, or `working_dir` cases test nothing. */
+    h->cfg->sandbox_root_real = sdsnew(edc_test_workspace());
     h->cfg->shell_capture_max = capture_max;
     h->cfg->shell_output_kill_max = kill_max;
 
@@ -122,28 +130,47 @@ static void harness_down(struct harness *h)
     edc_config_free(h->cfg);
 }
 
-/* Run one command through the real tool and wait for its callback. */
-static bool run_shell(struct harness *h, const char *cmd, int timeout_sec)
+/* Start one command through the real tool. Returns at once: the callback is what ends it. */
+static void start_shell(struct harness *h, cJSON *args)
 {
     g_done = false;
-
-    cJSON *args = cJSON_CreateObject();
-    cJSON_AddStringToObject(args, "command", cmd);
-    if (timeout_sec > 0)
-        cJSON_AddNumberToObject(args, "timeout", timeout_sec);
-
     h->call = edc_toolbox_call_ctx_new(h->tb, edc_channel_adapter, NULL, NULL, NULL);
     edc_toolbox_exec(h->call, "exec_shell", args, result_cb);
-    cJSON_Delete(args); /* the tool copies what it needs before returning (§4.4) */
+}
 
+/* Pump the loop until the callback fires, or |budget_ms| of wall time goes by. The budget is
+ * wall time on purpose: a case that only passes because it waited long enough is a case that
+ * cannot tell "killed promptly" from "ran to completion". */
+static bool wait_done(struct harness *h, int budget_ms)
+{
     int waited = 0;
-    while (!g_done && waited < 30000)
+    while (!g_done && waited < budget_ms)
     {
         uv_run(&h->runner->loop, UV_RUN_NOWAIT);
         uv_sleep(2);
         waited += 2;
     }
     return g_done;
+}
+
+static bool run_shell_args(struct harness *h, const char *cmd, int timeout_sec, const char *working_dir)
+{
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "command", cmd);
+    if (timeout_sec > 0)
+        cJSON_AddNumberToObject(args, "timeout", timeout_sec);
+    if (working_dir)
+        cJSON_AddStringToObject(args, "working_dir", working_dir);
+
+    start_shell(h, args);
+    cJSON_Delete(args); /* the tool copies what it needs before returning (§4.4) */
+    return wait_done(h, 30000);
+}
+
+/* Run one command through the real tool and wait for its callback. */
+static bool run_shell(struct harness *h, const char *cmd, int timeout_sec)
+{
+    return run_shell_args(h, cmd, timeout_sec, NULL);
 }
 
 static const char *result_text(void)
@@ -345,6 +372,270 @@ static void test_cjk_output_is_utf8(void)
     harness_down(&h);
 }
 
+/* A model that picks a hanging command must not hang the task: the timeout is what ends it.
+ *
+ * Two facts are asserted, and the second is the one that matters. The result says
+ * "[command timed out]" -- but the notice alone would also be produced by an implementation
+ * that WAITED the full five seconds and then claimed a timeout. So the case also measures:
+ * the call has to come back well before the child would have exited by itself. That is the
+ * difference between "killed it" and "lied about killing it". */
+static void test_timeout_kills_the_child(void)
+{
+    TEST("a hanging command is killed by its timeout, promptly, and says so");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    const uint64_t started = uv_hrtime();
+    CHECK(run_shell(&h, "sleep 5", 1), "the call came back (a `sleep 5` that was not killed would not)");
+    const uint64_t elapsed_ms = (uv_hrtime() - started) / 1000000;
+
+    CHECK(elapsed_ms < 4000, "and well before the command would have finished: %llu ms",
+          (unsigned long long)elapsed_ms);
+    CHECK(strstr(result_text(), "[command timed out]") != NULL, "the result says why: %.80s", result_text());
+    /* The synthetic -1 the timeout leaves behind is not a signal, so reporting `[signal 1]`
+     * here would be a fiction -- the two notes are mutually exclusive by construction. */
+    CHECK(strstr(result_text(), "[signal") == NULL, "and does not invent a signal number: %.80s",
+          result_text());
+    CHECK(g_error == NULL, "a timeout is reported in the result text, not as a tool error");
+
+    harness_down(&h);
+}
+
+/* A timeout of 0 means "no timeout at all": a user-typed `!cmd` runs until it exits, because
+ * the person at the keyboard owns the machine and bounds the command themselves. The timer is
+ * never started, and the context still has to close it -- `uv_close` on a never-started handle
+ * is legal, and this case is what keeps that true. */
+static void test_no_timeout_lets_the_command_finish(void)
+{
+    TEST("timeout 0 (a user command) runs the command to its end, however long");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    /* 2 s by itself, with the LLM default (30 s) the alternative; asking for 0 must neither
+     * cut it short nor be treated as "expired immediately". */
+    CHECK(run_shell(&h, "sleep 2; echo finished", 0), "the callback fired");
+    CHECK(strstr(result_text(), "finished") != NULL, "the command reached its last line: %.80s", result_text());
+    CHECK(strstr(result_text(), "timed out") == NULL, "nothing timed out: %.80s", result_text());
+
+    harness_down(&h);
+}
+
+/* Cancellation: a task stopped mid-command hands the call back to the tool that owns it.
+ *
+ * The path is the actor's, and it is one line -- `ctx->tool->abort(ctx)` for every in-flight
+ * call of that request (edc_toolbox_actor.c). Driving that line is what this case does, rather
+ * than inventing a second way to cancel: what is being pinned is that the hook finds the
+ * child, kills the GROUP (not just `sh`), and lets the ordinary completion path release
+ * everything. A `sleep 60` is the command because only killing it can end the call. */
+static void test_abort_hook_kills_the_running_child(void)
+{
+    TEST("cancelling a call kills its child and completes through the normal path");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "command", "sleep 60"); /* no timeout: only the abort can end it */
+    start_shell(&h, args);
+    cJSON_Delete(args);
+
+    /* Let the spawn land, so the child really exists when the abort arrives (aborting before
+     * uv_spawn would pass while proving nothing). */
+    CHECK(!wait_done(&h, 300), "it is still running after 300 ms, as intended");
+    CHECK(h.call && h.call->tool && h.call->tool->abort != NULL, "the tool exposes an abort hook");
+
+    h.call->tool->abort(h.call); /* exactly what the actor's fan-out does */
+
+    CHECK(wait_done(&h, 5000), "the call completed once its child was killed");
+    CHECK(g_error == NULL, "a cancellation is not an error of the tool's making");
+    CHECK(strstr(result_text(), "timed out") == NULL, "and it is not reported as a timeout");
+
+    harness_down(&h);
+}
+
+/* A grandchild must not survive the kill, and the reason is not tidiness: `sh -c 'a && b'`
+ * leaves `b` holding the stdout/stderr pipes, so killing only the shell would leave the read
+ * side open and the call would never complete. This is the case that proves the GROUP is
+ * signalled. */
+static void test_abort_reaches_the_grandchild(void)
+{
+    TEST("the kill takes down the grandchildren, not just the shell");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    char marker[512];
+    snprintf(marker, sizeof(marker), "%s/grandchild-marker", edc_test_workspace());
+
+    /* The grandchild writes its marker after 2 s; the abort happens well before that. If only
+     * `sh` were killed, the grandchild would live on and create the file. */
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "sh -c 'sleep 2; touch %s' && echo never", marker);
+
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "command", cmd);
+    start_shell(&h, args);
+    cJSON_Delete(args);
+
+    CHECK(!wait_done(&h, 300), "still running after 300 ms");
+    h.call->tool->abort(h.call);
+    CHECK(wait_done(&h, 5000), "the call completed");
+
+    /* Wait past the point where the grandchild would have written, then look. */
+    uv_sleep(2500);
+    CHECK(access(marker, F_OK) != 0, "the grandchild was killed too: %s must not exist", marker);
+
+    harness_down(&h);
+}
+
+/* `working_dir` is relative to the session's directory and goes through the sandbox, so a
+ * relative path is what the model actually gets, and the cwd the command sees is absolute. */
+static void test_working_dir_is_honoured(void)
+{
+    TEST("working_dir changes the directory the command runs in");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    const char *ws = edc_test_workspace();
+    char sub[600];
+    snprintf(sub, sizeof(sub), "%s/subdir", ws);
+    if (mkdir(sub, 0755) != 0)
+        fprintf(stderr, "    (note: %s already exists)\n", sub);
+
+    CHECK(run_shell_args(&h, "pwd", 10, "subdir"), "the callback fired");
+    CHECK(g_error == NULL, "a readable directory inside the session is accepted");
+    CHECK(strstr(result_text(), sub) != NULL, "the command ran there: %.120s", result_text());
+
+    harness_down(&h);
+}
+
+/* A directory that does not exist is a spawn failure, and the message has to say so: the
+ * reader is a model that asked for the wrong place, and "uv_spawn failed: no such file or
+ * directory" is the sentence that lets it correct itself. This also covers the branch where
+ * the spawn never started -- the handles are closed and the callback is called with an error,
+ * with no read ever registered. */
+static void test_working_dir_that_does_not_exist_fails(void)
+{
+    TEST("a working_dir that does not exist is a described spawn error");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    CHECK(run_shell_args(&h, "pwd", 10, "no-such-directory-here"), "the callback fired");
+    CHECK(g_error != NULL, "it is an error, not a silent run elsewhere");
+    CHECK(g_result == NULL, "and nothing ran");
+    CHECK(g_error && strstr(g_error->message, "uv_spawn failed") != NULL,
+          "the message names the failure: %s", g_error ? g_error->message : "(none)");
+
+    harness_down(&h);
+}
+
+/* With the sandbox OFF there is no refusal by design ("no enforcement at all", edc_sandbox.c),
+ * so a `..` walk-out is expected to be honoured rather than denied. Asserted because the
+ * opposite assumption is the natural one to make when reading the sandbox code, and a future
+ * change that started refusing paths with the switch off would break the documented contract
+ * (`--no-sandbox` is the escape hatch users are told about). */
+static void test_sandbox_off_does_not_refuse_paths(void)
+{
+    TEST("with the sandbox off, a working_dir is honoured, not refused");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    CHECK(run_shell_args(&h, "pwd", 10, "../"), "the callback fired");
+    CHECK(g_error == NULL, "the sandbox switch is off, so nothing refuses it: %s",
+          g_error ? g_error->message : "(no error)");
+
+    harness_down(&h);
+}
+
+/* A malformed call is an error with the arguments echoed back, because the reader of that
+ * message is a model that has to fix its own call. */
+static void test_missing_command_is_a_described_error(void)
+{
+    TEST("a call with no `command` fails with the arguments in the message");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddNumberToObject(args, "timeout", 10); /* a number where the tool reads a command */
+    start_shell(&h, args);
+    cJSON_Delete(args);
+
+    CHECK(wait_done(&h, 3000), "the callback fired without spawning anything");
+    CHECK(g_error != NULL, "it is an error");
+    CHECK(g_result == NULL, "and there is no output");
+    CHECK(g_error && strstr(g_error->message, "command") != NULL,
+          "the message names the missing argument: %s", g_error ? g_error->message : "(none)");
+
+    harness_down(&h);
+}
+
+/* The fan-out is per REQUEST, so an abort that arrives for a different request must leave
+ * this child alone. Asserted because the loop's match is the only thing separating "cancel
+ * this call" from "cancel every shell in the process" -- and a wrong answer is invisible
+ * until someone cancels one of two parallel commands. */
+static void test_abort_of_another_request_leaves_this_one_running(void)
+{
+    TEST("cancelling a different request does not kill this call's child");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "command", "sleep 60");
+    start_shell(&h, args);
+    cJSON_Delete(args);
+    CHECK(!wait_done(&h, 300), "the command is running");
+
+    /* A second call context -- the shape the actor uses for a DIFFERENT in-flight request. */
+    struct edc_toolbox_call_ctx *other =
+        edc_toolbox_call_ctx_new(h.tb, edc_channel_adapter, (void *)0x1234, NULL, NULL);
+    h.call->tool->abort(other);
+    CHECK(!wait_done(&h, 500), "the unrelated abort did not end this call");
+    edc_toolbox_call_ctx_free(other);
+
+    /* A NULL call is a no-op too: the actor's fan-out can hand one over. */
+    h.call->tool->abort(NULL);
+    CHECK(!wait_done(&h, 300), "and neither did a NULL one");
+
+    /* Now the matching one, which must. */
+    h.call->tool->abort(h.call);
+    CHECK(wait_done(&h, 5000), "the call's own abort did end it");
+
+    harness_down(&h);
+}
+
+/* Quitting while a command runs is an ordinary thing to do (Ctrl-C during `!sleep 100`), and
+ * `edc_tool_shell_abort_all()` is the one path that handles it: edc_toolbox_free() calls it
+ * after the runner has stopped, so nothing else will ever complete those calls.
+ *
+ * That code carries a long comment about calling uv_close() on an already-closing handle
+ * tripping libuv's assert and aborting the process during teardown, which means the ordering
+ * here is delicate. This case is the only thing that would notice if it rotted: it frees the
+ * toolbox with a child in flight and then pumps the loop, so every close callback runs. */
+static void test_teardown_with_a_running_child(void)
+{
+    TEST("tearing down with a child in flight kills it and releases its handles");
+    struct harness h;
+    harness_up(&h, 64 * 1024, 64 * 1024 * 1024);
+
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "command", "sleep 60");
+    start_shell(&h, args);
+    cJSON_Delete(args);
+    CHECK(!wait_done(&h, 300), "a child is running (this is the state to be torn down in)");
+
+    /* Exactly what edc_app_free does, minus the app: the toolbox is freed while the call is
+     * in flight, and it is the tool's abort_all hook that has to clean up. */
+    edc_toolbox_free(h.tb);
+    h.tb = NULL;
+
+    /* Pump so the close callbacks fire; the process not aborting inside uv_close is half the
+     * assertion, and reaching the end of this function is the other half. */
+    for (int i = 0; i < 200; i++)
+        uv_run(&h.runner->loop, UV_RUN_NOWAIT);
+    CHECK(1, "the teardown completed without tripping libuv's close assert");
+    CHECK(!g_done, "no completion was reported: nobody was left to receive it");
+
+    harness_down(&h);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -360,6 +651,16 @@ int main(void)
     test_volume_is_truncated_but_not_killed();
     test_runaway_is_killed();
     test_runaway_on_stderr_is_killed_too();
+    test_timeout_kills_the_child();
+    test_no_timeout_lets_the_command_finish();
+    test_abort_hook_kills_the_running_child();
+    test_abort_reaches_the_grandchild();
+    test_abort_of_another_request_leaves_this_one_running();
+    test_teardown_with_a_running_child();
+    test_working_dir_is_honoured();
+    test_working_dir_that_does_not_exist_fails();
+    test_sandbox_off_does_not_refuse_paths();
+    test_missing_command_is_a_described_error();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);
