@@ -1,0 +1,125 @@
+name: Tests
+
+# Runs on every push to trunk, which nothing did before: `PR Check` is pull-request only and
+# `Release` is master/tag only, so `dev` was never tested by CI. The badge for this workflow
+# is therefore the honest "are the tests green" signal for the branch people work on.
+#
+# Not triggered by pull_request for the same reason as build.yml: `PR Check` already runs the
+# suite (plus ten platforms) for a PR to master.
+on:
+  push:
+    branches:
+      - dev
+      - master
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    # The coverage upload reads these; kept at job level because a step cannot see a secret
+    # it declares itself inside its own `if`.
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-test
+          repository-cache: true
+
+      # `bazel build //tests:all` before `bazel test`, and it is not redundant: the test
+      # command skips every target tagged "manual", which then compile nowhere. Two of them
+      # sat broken for months that way.
+      - name: Build every test target (including manual)
+        run: bazel build //tests:all --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      - name: Test
+        run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+  asan:
+    name: AddressSanitizer + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-asan
+          repository-cache: true
+
+      - name: Test with sanitizers
+        run: bazel test //tests:all --config=asan --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-cov
+          repository-cache: true
+
+      # The same three device tests are excluded from the coverage number: under
+      # instrumentation test_pppos_agent times out (measured 5467s), and the two stress tests
+      # are manual. Excluding them changes the denominator by 566 lines, which is why every
+      # percentage quoted is measured with them excluded.
+      - name: Coverage
+        run: |
+          set -euo pipefail
+          bazel coverage --config=cov --combined_report=lcov --test_output=summary \
+                --action_env=TMPDIR="$RUNNER_TEMP" \
+                //tests/... \
+                -- -//tests:test_pppos_agent -//tests:test_pppos_stress -//tests:test_pppos_agent_stress
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      # Uploaded only when the repository has been added to codecov.io and the token stored as
+      # a secret. Without them this step is skipped rather than failing: a missing optional
+      # integration must not turn the test signal red.
+      - name: Upload coverage to Codecov
+        if: env.CODECOV_TOKEN != ''
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ env.CODECOV_TOKEN }}
+          files: bazel-out/_coverage/_coverage_report.dat
+          flags: unittests
+          fail_ci_if_error: false
+
+      # A summary in the log so the numbers are visible without codecov. Kept as a one-liner
+      # python -c rather than a heredoc: a heredoc's terminator has to sit at the block's base
+      # indentation, and getting that wrong inside YAML is a silent "unexpected EOF".
+      - name: Coverage summary (no codecov configured)
+        if: env.CODECOV_TOKEN == ''
+        run: |
+          set -euo pipefail
+          report=$(find bazel-out -name '_coverage_report.dat' | head -1)
+          python3 -c 'import sys
+          lh=lf=bh=bf=fh=ff=0
+          for L in open(sys.argv[1], encoding="utf-8", errors="replace"):
+              L=L.strip()
+              if L.startswith("LH:"): lh+=int(L[3:])
+              elif L.startswith("LF:"): lf+=int(L[3:])
+              elif L.startswith("FNH:"): fh+=int(L[4:])
+              elif L.startswith("FNF:"): ff+=int(L[4:])
+              elif L.startswith("BRH:"): bh+=int(L[4:])
+              elif L.startswith("BRF:"): bf+=int(L[4:])
+          print("lines %d/%d = %.1f%%" % (lh, lf, 100.0*lh/lf))
+          print("functions %d/%d = %.1f%%" % (fh, ff, 100.0*fh/ff))
+          print("branches %d/%d = %.1f%%" % (bh, bf, 100.0*bh/bf))' "$report"

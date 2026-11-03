@@ -1,0 +1,60 @@
+name: Build
+
+# The trunk signal. Until this file existed, pushing to `dev` started nothing at all:
+# `PR Check` only runs for pull requests targeting `master`, and `Release` only for pushes to
+# `master` or a `v*` tag. So the branch everybody actually works on was the one branch no
+# workflow ever built -- and a status badge pointed at it would have said "no status" forever.
+#
+# Deliberately NOT triggered by pull_request: `PR Check` already builds ten platforms and
+# runs the suite for a PR to master, and duplicating that here would double the minutes.
+# It builds the three shipped targets and checks the release archive's licences, i.e. the
+# things a push to trunk should not break.
+on:
+  push:
+    branches:
+      - dev
+      - master
+
+jobs:
+  linux:
+    name: Build (linux/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-build
+          repository-cache: true
+
+      # TMPDIR twice on purpose: the first makes Bazel put its sandboxes under the runner's
+      # scratch space, the second passes it into the actions. A small sandbox TMPDIR on this
+      # project produced `Disk quota exceeded` disguised as a compile error.
+      - name: Build
+        run: |
+          bazel build //src/tui:edgeclaw //src/cli:edgeclaw_cli //:edgeclaw \
+                --action_env=TMPDIR="$RUNNER_TEMP"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      # The external repositories exist now, so the licence texts can be compared against the
+      # sources they came from.
+      - name: Verify third-party notices are current
+        run: python3 tools/gen_notices.py --check
+
+      # A licence being committed says nothing about it being IN the archive -- that is a
+      # pkg_tar srcs list, and dropping one is a one-line mistake no unit test would catch.
+      - name: Verify the release archive carries its licences
+        run: |
+          set -euo pipefail
+          tarball=$(bazel cquery --output=files //:edgeclaw --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "no release tarball was produced"; exit 1; }
+          entries=$(tar tzf "$tarball")
+          for required in 'LICENSE' 'THIRD_PARTY_NOTICES.md' 'licenses/'; do
+            echo "$entries" | grep -q "$required" || { echo "$tarball is missing $required"; exit 1; }
+          done
+          echo "$tarball carries $(echo "$entries" | grep -c 'LICENSE') licence file(s)"
+        env:
+          TMPDIR: ${{ runner.temp }}
