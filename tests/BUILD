@@ -1448,6 +1448,24 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+# 前端的 C 面（`//src/app:api`）+ 装配根（`//src/app:app`），经真 app 驱动。
+# `struct edc_app` 不透明，所以每个收 app 的函数都必须有一个真 app —— 本文件用临时 HOME +
+# 最小 config 起一个（与 test_tui_dispatch 同一套路），并且只起一次（建/拆都慢）。
+cc_test(
+    name = "test_app_boundary",
+    srcs = ["test_app_boundary.c"],
+    deps = [
+        "//src/app:api",
+        "//src/app:app",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    # 真起 app（scheduler + sqlite + 3 个 actor 线程）+ 一次 endpoint 探测。
+    timeout = "moderate",
+)
 cc_test(
     name = "test_token_style",
     srcs = ["test_token_style.cpp"],
