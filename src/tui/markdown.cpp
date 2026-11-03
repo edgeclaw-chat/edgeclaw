@@ -35,6 +35,12 @@ struct Builder
     virtual void AddBlock(Element /*e*/)
     {
     }
+    // A hard line break in inline content: markdown's two trailing spaces, or a backslash
+    // before the newline. Only a block that lays inline content out as a flow has anything
+    // to do here; a block that draws one line regardless (a table cell) leaves it empty.
+    virtual void BreakInline()
+    {
+    }
     virtual Element Finish() = 0;
 };
 
@@ -56,15 +62,40 @@ struct RootB : Builder
 struct ParaB : Builder
 {
     Elements words;
+    /* Runs already ended by a hard break. Empty for the common single-line paragraph, so
+     * Finish() returns exactly what it always did and nothing about ordinary rendering
+     * changes -- only a paragraph that actually contains a hard break takes the vbox path. */
+    std::vector<Elements> lines;
+
     void AddInline(Element e) override
     {
         words.push_back(std::move(e));
     }
+    void BreakInline() override
+    {
+        lines.push_back(std::move(words));
+        words.clear();
+    }
     Element Finish() override
     {
-        if (words.empty())
+        if (lines.empty())
+        {
+            if (words.empty())
+                return text("");
+            return hflow(std::move(words));
+        }
+        lines.push_back(std::move(words));
+        words.clear();
+        /* A hard break at the very END of a paragraph ends a line, it does not open a new
+         * one: without this the vbox would draw a trailing blank row. */
+        while (!lines.empty() && lines.back().empty())
+            lines.pop_back();
+        if (lines.empty())
             return text("");
-        return hflow(std::move(words));
+        Elements rows;
+        for (auto &line : lines)
+            rows.push_back(hflow(std::move(line)));
+        return vbox(std::move(rows));
     }
 };
 
@@ -73,6 +104,20 @@ struct HeadingB : ParaB
     int level = 1;
     Element Finish() override
     {
+        /* A heading is one banner line. md4c does not emit a break inside an ATX heading, but
+         * if one ever arrived the text before it must not vanish into `lines`, which this
+         * Finish() never looks at: fold the runs back into one line, in order. */
+        if (!lines.empty())
+        {
+            Elements all;
+            for (auto &line : lines)
+                for (auto &w : line)
+                    all.push_back(std::move(w));
+            for (auto &w : words)
+                all.push_back(std::move(w));
+            words = std::move(all);
+            lines.clear();
+        }
         // Heading colors come from the central Monokai palette
         // (edc_style.hpp): every ATX level keeps its markdown prefix
         // ("## ", "### ", ...) and h1 is a reversed banner whose
@@ -179,6 +224,14 @@ struct LiB : Builder
     {
         FlushPara();
         body.push_back(std::move(e));
+    }
+    void BreakInline() override
+    {
+        // The item's inline content lives in a lazily created ParaB, so the break belongs to
+        // that paragraph: it splits the item's own text, it does not end the item.
+        if (!current_para)
+            current_para = std::make_unique<ParaB>();
+        current_para->BreakInline();
     }
     void FlushPara()
     {
@@ -513,8 +566,17 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
         return 0;
     }
 
-    if (type == MD_TEXT_SOFTBR || type == MD_TEXT_BR)
+    if (type == MD_TEXT_BR)
     {
+        /* A hard break is a real line break: two trailing spaces (or a backslash) mean "end
+         * this line", and rendering it as a space collapsed poems, addresses and any
+         * hand-aligned text into one run. */
+        s->top().BreakInline();
+        return 0;
+    }
+    if (type == MD_TEXT_SOFTBR)
+    {
+        /* A soft break is only a newline in the SOURCE; markdown says it is a space. */
         s->top().AddInline(s->GapSpace());
         return 0;
     }

@@ -21,6 +21,14 @@ genrule(
     outs = ["edc_version_gen.h"],
     cmd = "$(execpath //tools:gen_version) --out $@ --repo $(location //:BUILD)",
     tools = ["//tools:gen_version"],
+    # stamp = 1 makes this action ALWAYS re-run, and that is load-bearing rather than
+    # cosmetic. The facts come from git, which Bazel cannot see: with the default inputs the
+    # only thing the action depends on is BUILD's content, so a header generated while the
+    # tree was dirty survived every later build -- `--version` kept reporting "-dirty" on a
+    # clean checkout, and would have kept reporting an older commit after a commit that did
+    # not touch BUILD. Depending on the volatile status file is what makes the action
+    # out-of-date each build, so the string always describes the tree that was built.
+    stamp = 1,
     local = 1,
     tags = ["no-sandbox"],
     visibility = ["//visibility:public"],

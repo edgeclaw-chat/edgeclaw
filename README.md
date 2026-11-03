@@ -3,7 +3,9 @@
   <p><em>A personal AI assistant that fits in one terminal — and runs many tasks at once.</em></p>
   <p>
     <img src="https://img.shields.io/badge/language-C-blue" alt="Language">
-    <img src="https://img.shields.io/badge/build-Bazel-green" alt="Build">
+    <img src="https://img.shields.io/github/actions/workflow/status/edgeclaw-chat/edgeclaw/build.yml?branch=dev&amp;label=build" alt="Build">
+    <img src="https://img.shields.io/github/actions/workflow/status/edgeclaw-chat/edgeclaw/tests.yml?branch=dev&amp;label=tests" alt="Tests">
+    <a href="https://codecov.io/gh/edgeclaw-chat/edgeclaw"><img src="https://codecov.io/gh/edgeclaw-chat/edgeclaw/branch/dev/graph/badge.svg" alt="Coverage"></a>
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
 </div>
@@ -277,7 +279,7 @@ Files live under `~/.edgeclaw/`: `config.json`, `workspace/<session_id>/history.
 ## Development
 
 ```bash
-bazel test //tests:all        # 90+ unit/integration targets
+bazel test //tests:all        # 125 unit/integration targets (130 declared; see below)
 bazel build //tests:all       # compiles the `manual` targets too -- see below
 bazel build //...             # everything, including the release tarball
 ```

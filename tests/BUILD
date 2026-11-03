@@ -1184,7 +1184,7 @@ cc_test(
 
 cc_test(
     name = "test_endpoint_probe",
-    srcs = ["test_endpoint_probe.c", "test_ws.h"],
+    srcs = ["test_endpoint_probe.c", "test_ws.h", "tls_stub.h"],
     deps = [
         "//src/common:common",
         "@libuv",
@@ -1223,6 +1223,44 @@ cc_test(
         "//src/actor:actor",
         "//src/actor:actors",
         "//src/common:common",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# What the actor does with the provider's ANSWER -- the failure paths. The parser is static
+# and reached only when a real HTTPS response lands, so this drives it through a loopback TLS
+# stub (tests/tls_stub.h) with a per-run certificate: real client, real status line, real
+# parser. Before this file edc_llm_actor.c had 33.5% BRANCH coverage; the code that decides
+# "context overflow" vs "bad key" had no test at all.
+cc_test(
+    name = "test_llm_actor_response",
+    srcs = ["test_llm_actor_response.c", "tls_stub.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@libuv",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# The HTTPS transport when the transport is the problem: connection refused, a handshake
+# against a plain-text server, the total deadline, and an unparseable URL. Uses the same
+# loopback TLS stub as the LLM response test, plus a plain-TCP server for the handshake case
+# (TLS is decided by mbedtls, not by the URL scheme).
+cc_test(
+    name = "test_https_client_failures",
+    srcs = ["test_https_client_failures.c", "tls_stub.h"],
+    deps = [
+        "//src/common:common",
+        "@libuv",
+        "@mbedtls//:mbedtls",
         "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
@@ -1367,6 +1405,26 @@ cc_test(
     srcs = ["test_text_wrap.cpp"],
     deps = [
         "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+
+# The markdown renderer, driven through its single public entry (RenderMarkdown). Its block
+# builders are file-local and reached only by md4c callbacks, so the only honest way to test
+# them is to render markdown and read the drawn cells -- which is also the path a bug would
+# take to a user. Before this file existed, markdown.cpp had 39.4% line coverage.
+cc_test(
+    name = "test_markdown",
+    srcs = ["test_markdown.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
     ],
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,
