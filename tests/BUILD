@@ -1070,6 +1070,21 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# 一个 flush 报出的 I/O 成本（`edc_state_store_flush_measured` 的非 NULL out 分支）。
+# 其他测试都用 `edc_state_store_flush`（out = NULL），所以测量那一半此前从未执行。
+cc_test(
+    name = "test_flush_cost",
+    srcs = ["test_flush_cost.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
 cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c", "test_ws.h"],
