@@ -1184,7 +1184,7 @@ cc_test(
 
 cc_test(
     name = "test_endpoint_probe",
-    srcs = ["test_endpoint_probe.c", "test_ws.h"],
+    srcs = ["test_endpoint_probe.c", "test_ws.h", "tls_stub.h"],
     deps = [
         "//src/common:common",
         "@libuv",
@@ -1224,6 +1224,28 @@ cc_test(
         "//src/actor:actors",
         "//src/common:common",
         "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# What the actor does with the provider's ANSWER -- the failure paths. The parser is static
+# and reached only when a real HTTPS response lands, so this drives it through a loopback TLS
+# stub (tests/tls_stub.h) with a per-run certificate: real client, real status line, real
+# parser. Before this file edc_llm_actor.c had 33.5% BRANCH coverage; the code that decides
+# "context overflow" vs "bad key" had no test at all.
+cc_test(
+    name = "test_llm_actor_response",
+    srcs = ["test_llm_actor_response.c", "tls_stub.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@libuv",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@uthash//:uthash",
     ],
     linkopts = LINK_OPTS,
 )
