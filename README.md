@@ -279,7 +279,7 @@ Files live under `~/.edgeclaw/`: `config.json`, `workspace/<session_id>/history.
 ## Development
 
 ```bash
-bazel test //tests:all        # 125 unit/integration targets (130 declared; see below)
+bazel test //tests:all        # 129 test targets (133 cc_test declared; see below)
 bazel build //tests:all       # compiles the `manual` targets too -- see below
 bazel build //...             # everything, including the release tarball
 ```
