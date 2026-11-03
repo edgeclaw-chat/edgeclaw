@@ -101,7 +101,7 @@ Stated plainly, because "it compiles" is not evidence:
 
 | Area | State |
 |---|---|
-| Line coverage | ~80%, function ~91%, **branch ~59%** (measured at `dev@92761dc` + `test_setup_dialog`, 128 tests; see `coverage-handover.zh.md`). The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are now covered (§5.9, §5.10), and so is the first-run wizard (§5.11). |
+| Line coverage | ~81%, function ~92%, **branch ~60%** (measured at `dev@92761dc` + `test_app_boundary`, 129 tests; see `coverage-handover.zh.md`). The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are covered (§5.9, §5.10), so are the first-run wizard (§5.11) and the frontend's C surface (§5.12). |
 | Windows | Builds in CI. The PPPoS transport and the kernel sandbox do not exist there. Not exercised by hand on real hardware for this release. |
 | armv7 | Built locally (cross) and **run under `qemu-arm`**: the released shape of the binary starts and reports `platform linux/arm`. Not run on real armv7 hardware, and the Android device agent is compiled only. |
 | Real-model behaviour | The suite drives a fake LLM. Prompt and tool-choice quality is not asserted anywhere. |
