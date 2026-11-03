@@ -1375,6 +1375,26 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+
+# The markdown renderer, driven through its single public entry (RenderMarkdown). Its block
+# builders are file-local and reached only by md4c callbacks, so the only honest way to test
+# them is to render markdown and read the drawn cells -- which is also the path a bug would
+# take to a user. Before this file existed, markdown.cpp had 39.4% line coverage.
+cc_test(
+    name = "test_markdown",
+    srcs = ["test_markdown.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
 cc_test(
     name = "test_token_style",
     srcs = ["test_token_style.cpp"],
