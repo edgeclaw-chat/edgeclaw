@@ -73,9 +73,21 @@ def main():
                     help="any tracked file; its REAL path locates the checkout")
     args = ap.parse_args()
 
-    # --repo arrives as an execroot path, where the file is a symlink into the source
-    # tree. Resolving it is what puts us inside the checkout that owns .git.
+    # --repo arrives as an execroot path, and the execroot is NOT the checkout: its files are
+    # symlinks to the checkout and it carries a symlink to the checkout's .git. Running git
+    # there makes every file look typechanged (a symlink where the index expects a regular
+    # file), so `git describe --dirty` reports "-dirty" for a perfectly clean tree -- which is
+    # exactly what happened: a binary announced "-dirty" while `git status` in the checkout
+    # said clean. Resolving through the .git symlink lands on the checkout, and does the same
+    # thing when the path already IS the checkout (.git there is a real directory).
     root = os.path.dirname(os.path.realpath(args.repo))
+    # (named gitdir, not `git`: `git` is the helper function below, and shadowing it with a
+    # path string turns every later call into "str object is not callable")
+    gitdir = os.path.join(root, ".git")
+    if os.path.exists(gitdir):
+        candidate = os.path.dirname(os.path.realpath(gitdir))
+        if os.path.isdir(candidate):
+            root = candidate
 
     version = git(root, "describe", "--tags", "--always", "--dirty") or "unknown"
     commit = git(root, "rev-parse", "--short", "HEAD") or "unknown"
