@@ -44,6 +44,20 @@ jobs:
       - name: Verify third-party notices are current
         run: python3 tools/gen_notices.py --check
 
+      # The lexer/parser are generated and the output is committed, so the build no longer
+      # needs flex/bison. What that trades away is the guarantee that the committed output
+      # matches the grammar: edit edc_parse.y, forget tools/regen_grammar.sh, and the build
+      # happily compiles the old parser. This closes that: regenerate, compare, fail on any
+      # difference. Same shape as the notices check above.
+      #
+      # apt rather than trusting the image: the script pins bison 3.8/flex 2.6 and gives a
+      # clear message if the runner's version moves.
+      - name: Verify the grammar output is current
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flex bison
+          tools/regen_grammar.sh --check
+
       # A licence being committed says nothing about it being IN the archive -- that is a
       # pkg_tar srcs list, and dropping one is a one-line mistake no unit test would catch.
       - name: Verify the release archive carries its licences
