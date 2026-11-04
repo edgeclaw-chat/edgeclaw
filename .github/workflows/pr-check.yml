@@ -174,6 +174,20 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
 
+      # The archive has always been built with -static and nothing ever verified it -- the
+      # Windows job asserts on its import table, Linux asserted nothing. Reads DT_NEEDED and
+      # PT_INTERP out of the shipped archive, not "is there a .dynamic section" (every
+      # static-PIE binary has one).
+      - name: Verify the shipped binaries need no shared libraries
+        run: |
+          set -euo pipefail
+          tarball=$(bazel cquery --compilation_mode=opt --output=files //:edgeclaw \
+                      --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "no release tarball was produced"; exit 1; }
+          tools/check_static.sh "$tarball"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
       - name: Test
         run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
         env:

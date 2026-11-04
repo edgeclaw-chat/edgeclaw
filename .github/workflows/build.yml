@@ -44,6 +44,18 @@ jobs:
       - name: Verify third-party notices are current
         run: python3 tools/gen_notices.py --check
 
+      # The Linux and Android archives have always been built with -static and nothing ever
+      # checked what came out -- the Windows job asserts on its import table, the Linux ones
+      # asserted nothing. This reads DT_NEEDED and PT_INTERP out of the archive a user
+      # downloads and fails if anything is needed at run time.
+      - name: Verify the shipped binaries need no shared libraries
+        run: |
+          set -euo pipefail
+          archive=$(bazel cquery --compilation_mode=opt --output=files //:edgeclaw \
+                      --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$archive" ] && [ -f "$archive" ] || { echo "no release tarball was produced"; exit 1; }
+          tools/check_static.sh "$archive"
+
       # The lexer/parser are generated and the output is committed, so the build no longer
       # needs flex/bison. What that trades away is the guarantee that the committed output
       # matches the grammar: edit edc_parse.y, forget tools/regen_grammar.sh, and the build

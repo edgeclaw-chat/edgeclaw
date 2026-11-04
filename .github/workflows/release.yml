@@ -16,12 +16,14 @@ jobs:
           - target: edgeclaw_amd64_linux
             runner: ubuntu-latest
             platform: //:amd64_linux
+            bazel_flags: --platforms=//:amd64_linux
             bazel_target: //src/tui:edgeclaw
             binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_arm_linux
             runner: ubuntu-latest
             platform: //:arm_linux
+            bazel_flags: --platforms=//:arm_linux
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
             bazel_target: //src/tui:edgeclaw
@@ -30,6 +32,7 @@ jobs:
           - target: edgeclaw_aarch64_linux
             runner: ubuntu-latest
             platform: //:aarch64_linux
+            bazel_flags: --platforms=//:aarch64_linux
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
             bazel_target: //src/tui:edgeclaw
@@ -38,12 +41,14 @@ jobs:
           - target: edgeclaw_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
+            bazel_flags: --platforms=//:aarch64_macos
             bazel_target: //src/tui:edgeclaw
             binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_amd64_windows
             runner: windows-latest
             platform: //:amd64_windows
+            bazel_flags: --platforms=//:amd64_windows
             bazel_target: //src/tui:edgeclaw
             binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
@@ -51,12 +56,14 @@ jobs:
           - target: device_agent_amd64_linux
             runner: ubuntu-latest
             platform: //:amd64_linux
+            bazel_flags: --platforms=//:amd64_linux
             bazel_target: //:device_agent
             binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_arm_linux
             runner: ubuntu-latest
             platform: //:arm_linux
+            bazel_flags: --platforms=//:arm_linux
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi
             bazel_target: //:device_agent
@@ -65,6 +72,7 @@ jobs:
           - target: device_agent_aarch64_linux
             runner: ubuntu-latest
             platform: //:aarch64_linux
+            bazel_flags: --platforms=//:aarch64_linux
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu
             bazel_target: //:device_agent
@@ -73,21 +81,84 @@ jobs:
           - target: device_agent_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
+            bazel_flags: --platforms=//:aarch64_macos
             bazel_target: //:device_agent
             binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_aarch64_android
             runner: ubuntu-latest
             platform: //:aarch64_android
+            bazel_flags: --platforms=//:aarch64_android
             bazel_target: //:device_agent
             binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_arm_android
             runner: ubuntu-latest
             platform: //:arm_android
+            bazel_flags: --platforms=//:arm_android
             bazel_target: //:device_agent
             binary_target: //src/device:device_agent
             package_target: //:device_agent
+          # ── musl: the fully static Linux binaries ─────────────────────────────
+          # These select a musl toolchain through --config=musl_<arch>, which sets BOTH
+          # --platforms and --extra_toolchains. Never add --platforms here as well: a
+          # command-line --platforms wins over the one the config sets, and the build would
+          # silently go back to glibc.
+          - target: edgeclaw_aarch64_linux_musl
+            runner: ubuntu-latest
+            musl_arch: aarch64
+            musl_triple: aarch64-linux-musl
+            musl_sha256: c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38
+            bazel_flags: --config=musl_aarch64
+            bazel_target: //src/tui:edgeclaw
+            package_target: //:edgeclaw
+            binary_target: //src/tui:edgeclaw
+          - target: edgeclaw_arm_linux_musl
+            runner: ubuntu-latest
+            musl_arch: arm
+            musl_triple: arm-linux-musleabi
+            musl_sha256: d70c607101fee5330083463feacf5992892a85b826d1626094500e0c37ec7d25
+            bazel_flags: --config=musl_arm
+            bazel_target: //src/tui:edgeclaw
+            package_target: //:edgeclaw
+            binary_target: //src/tui:edgeclaw
+          - target: edgeclaw_amd64_linux_musl
+            runner: ubuntu-latest
+            musl_arch: amd64
+            musl_triple: x86_64-linux-musl
+            musl_sha256: c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+            bazel_flags: --config=musl_amd64
+            bazel_target: //src/tui:edgeclaw
+            package_target: //:edgeclaw
+            binary_target: //src/tui:edgeclaw
+          - target: device_agent_aarch64_linux_musl
+            runner: ubuntu-latest
+            musl_arch: aarch64
+            musl_triple: aarch64-linux-musl
+            musl_sha256: c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38
+            bazel_flags: --config=musl_aarch64
+            bazel_target: //:device_agent
+            package_target: //:device_agent
+            binary_target: //src/device:device_agent
+          - target: device_agent_arm_linux_musl
+            runner: ubuntu-latest
+            musl_arch: arm
+            musl_triple: arm-linux-musleabi
+            musl_sha256: d70c607101fee5330083463feacf5992892a85b826d1626094500e0c37ec7d25
+            bazel_flags: --config=musl_arm
+            bazel_target: //:device_agent
+            package_target: //:device_agent
+            binary_target: //src/device:device_agent
+          - target: device_agent_amd64_linux_musl
+            runner: ubuntu-latest
+            musl_arch: amd64
+            musl_triple: x86_64-linux-musl
+            musl_sha256: c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+            bazel_flags: --config=musl_amd64
+            bazel_target: //:device_agent
+            package_target: //:device_agent
+            binary_target: //src/device:device_agent
+
 
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
@@ -100,8 +171,54 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.apt_package }}
 
+      # musl.cc publishes cross toolchains as tarballs with no version in the path, so the
+      # checksum below is what actually pins the toolchain -- it is the sha256 of the archive
+      # as downloaded on 2026-11-04. If musl.cc rebuilds, this fails with a checksum
+      # mismatch rather than silently building with a different compiler; bump the value in
+      # the matrix after checking the diff is what you expect.
+      #
+      # Cached on the checksum, so the ~100 MB download happens once rather than per job.
+      - name: Cache musl toolchain
+        if: matrix.musl_triple != ''
+        uses: actions/cache@v4
+        with:
+          path: /opt/${{ matrix.musl_triple }}-cross
+          key: musl-${{ matrix.musl_triple }}-${{ matrix.musl_sha256 }}
+
+      - name: Install musl toolchain
+        if: matrix.musl_triple != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRIPLE='${{ matrix.musl_triple }}'
+          SHA='${{ matrix.musl_sha256 }}'
+          PREFIX="/opt/${TRIPLE}-cross"
+
+          if [[ ! -x "$PREFIX/bin/${TRIPLE}-gcc" ]]; then
+            echo "downloading musl.cc/$TRIPLE-cross.tgz"
+            curl -fsSL --retry 3 --retry-delay 5 -o /tmp/musl.tgz \
+                 "https://musl.cc/${TRIPLE}-cross.tgz"
+            echo "${SHA}  /tmp/musl.tgz" | sha256sum -c - || {
+              echo "::error::musl.cc/$TRIPLE-cross.tgz does not match the pinned sha256"
+              echo "::error::upstream was rebuilt; verify the new toolchain, then update"
+              echo "::error::musl_sha256 for $TRIPLE in the release matrix"
+              exit 1
+            }
+            sudo mkdir -p /opt
+            sudo tar xzf /tmp/musl.tgz -C /opt
+            rm -f /tmp/musl.tgz
+          fi
+
+          # Point the repository rule at it explicitly. The rule would also autodetect
+          # /opt/<triple>-cross/bin, but saying it outright is one less thing that can
+          # silently resolve to something else.
+          echo "MUSL_CROSS_COMPILE_$(echo '${{ matrix.musl_arch }}' | tr '[:lower:]' '[:upper:]')=${PREFIX}/bin/${TRIPLE}-" >> "$GITHUB_ENV"
+          # Prove this is a musl toolchain AND that this runner can execute it -- the rule
+          # probes for exactly this, but failing here names the cause directly.
+          "${PREFIX}/bin/${TRIPLE}-gcc" -dumpmachine
+
       - name: Setup Android NDK
-        if: contains(matrix.platform, 'android')
+        if: contains(matrix.bazel_flags, 'android')
         run: |
           NDK_VERSION="r27b"
           wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
@@ -119,7 +236,7 @@ jobs:
         env:
           CROSS_COMPILE: ${{ matrix.cross_compile && format('/usr/bin/{0}-', matrix.cross_compile) || '' }}
         run: |
-          bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
+          bazel build --compilation_mode=opt --verbose_failures ${{ matrix.bazel_flags }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
 
       - name: Resolve the built binary
         # One place that answers "which file did the build produce", because the answer is
@@ -133,7 +250,6 @@ jobs:
         # toolchain or select() reason. cquery needs a full analysis, and on the macOS
         # device_agent entry it returned nothing at all, which surfaced as a useless
         # "cannot locate the built binary".
-        if: runner.os == 'macOS' || runner.os == 'Windows'
         shell: bash
         run: |
           LABEL='${{ matrix.binary_target }}'
@@ -142,7 +258,7 @@ jobs:
           PKG=${PKG%%:*}
           NAME=${LABEL##*:}
 
-          BINDIR=$(bazel info bazel-bin --compilation_mode=opt --platforms=${{ matrix.platform }})
+          BINDIR=$(bazel info bazel-bin --compilation_mode=opt ${{ matrix.bazel_flags }})
           BIN="$BINDIR/$PKG/$NAME"
           # Self-correcting about the suffix instead of branching on the runner OS: the file
           # that exists is the file to inspect.
@@ -158,6 +274,31 @@ jobs:
           fi
           echo "resolved $LABEL -> $BIN"
           echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+      # The Linux and Android archives have always been built with -static, and nothing ever
+      # checked what came out: the Windows job asserts on its import table, and the other
+      # targets asserted nothing at all. This is the Linux counterpart.
+      #
+      # Checks the archive a user downloads rather than the bazel-out intermediate, so a
+      # pkg_tar mistake cannot slip past. tools/check_static.sh reads DT_NEEDED and
+      # PT_INTERP, not "is there a .dynamic section" -- every static-PIE binary has one of
+      # those (20-24 entries, for self-relocation) and would be misreported as dynamic.
+      #
+      # Android runs on a Linux runner and its binaries are ELF too, so it is covered by the
+      # same step; macOS produces Mach-O and Windows PE, which the script skips by design.
+      - name: Verify the shipped binaries need no shared libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=$(bazel cquery --compilation_mode=opt ${{ matrix.bazel_flags }} \
+                      --output=files ${{ matrix.package_target }} | head -1)
+          if [[ -z "$archive" || ! -f "$archive" ]]; then
+            echo "::error::no archive produced for ${{ matrix.package_target }}"
+            exit 1
+          fi
+          echo "checking: $archive"
+          tools/check_static.sh "$archive"
 
       - name: Verify macOS minimum OS
         # .bazelrc pins -mmacosx-version-min=11.0 for macOS, but no dev machine in this
