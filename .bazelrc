@@ -109,3 +109,46 @@ test:asan --test_env=UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
 # check is disabled for that library -- not globally: an unaligned access in OUR code stays
 # visible, which is where the check has something to say.
 build:asan --per_file_copt='.*lwip/src/.*\.c$@-fno-sanitize=alignment'
+
+# ── musl: fully static release binaries ──────────────────────────────────────
+# `bazel build --config=musl_aarch64 --compilation_mode=opt //:edgeclaw` produces a
+# binary linked against musl libc instead of glibc. It is the same program; the
+# difference is what gets linked in:
+#
+#   glibc  9.93 MB, 3 "Using 'getpwuid_r' in statically linked applications"
+#                  -style link warnings
+#   musl   8.26 MB, 0 link warnings
+#
+# This is opt-in by design. The development loop, `bazel test`, `--config=asan` and
+# valgrind all stay on glibc, and nothing here is registered as a global toolchain,
+# so a machine with no musl compiler builds exactly as it did before. Three reasons
+# not to make it the default:
+#
+#   1. A musl toolchain ships no libasan/libubsan, so `--config=asan` -- part of the
+#      release gate, the only job that exercises failure paths -- cannot run under
+#      musl. Do not combine the two; asan must stay glibc.
+#   2. The host glibc is better tested on the dev machines that run the tests.
+#   3. musl has no dlopen at all when statically linked.
+#
+# `--extra_toolchains` rather than `register_toolchains()`: extra toolchains take
+# priority over registered ones AND are only in play when the flag is passed, which
+# is precisely the "release only" semantics wanted here.
+#
+# The toolchain is found automatically under /opt or on PATH, or pointed at
+# explicitly with MUSL_CROSS_COMPILE_<ARCH>=/path/to/bin/<triple>- .
+# If none is found the build fails with an explanation and nothing else changes.
+#
+# NOTE: pass --compilation_mode=opt (or reuse a release config) when you want the
+# shipped artifact; the default fastbuild produces a much larger binary.
+#
+# NOTE: do NOT also pass --platforms=//:<arch>_linux. The flag on the command line
+# wins over the one here, so the build would silently go back to glibc. These
+# configs exist so that `--config=musl_<arch>` alone is the whole story.
+build:musl_aarch64 --platforms=//:aarch64_linux_musl
+build:musl_aarch64 --extra_toolchains=@musl_toolchain_aarch64//:aarch64_linux_musl_toolchain
+
+build:musl_arm --platforms=//:arm_linux_musl
+build:musl_arm --extra_toolchains=@musl_toolchain_arm//:arm_linux_musl_toolchain
+
+build:musl_amd64 --platforms=//:amd64_linux_musl
+build:musl_amd64 --extra_toolchains=@musl_toolchain_amd64//:amd64_linux_musl_toolchain
