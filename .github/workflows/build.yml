@@ -48,10 +48,18 @@ jobs:
       # checked what came out -- the Windows job asserts on its import table, the Linux ones
       # asserted nothing. This reads DT_NEEDED and PT_INTERP out of the archive a user
       # downloads and fails if anything is needed at run time.
+      #
+      # NO --compilation_mode here, deliberately: this job's Build step above runs in the
+      # default fastbuild, so asking cquery for the opt artifact returns a path that was
+      # never built (`bazel-out/k8-opt/bin/...`) and the step fails with "no release tarball
+      # was produced" -- which is exactly how this gate was born broken. The query must match
+      # the build. -static comes from the target's LINK_OPTS, not from the compilation mode,
+      # so a fastbuild archive is still the right thing to inspect for this regression.
+      # The opt archives users actually download are checked by release.yml.
       - name: Verify the shipped binaries need no shared libraries
         run: |
           set -euo pipefail
-          archive=$(bazel cquery --compilation_mode=opt --output=files //:edgeclaw \
+          archive=$(bazel cquery --output=files //:edgeclaw \
                       --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
           [ -n "$archive" ] && [ -f "$archive" ] || { echo "no release tarball was produced"; exit 1; }
           tools/check_static.sh "$archive"

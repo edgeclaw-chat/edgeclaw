@@ -178,10 +178,13 @@ jobs:
       # Windows job asserts on its import table, Linux asserted nothing. Reads DT_NEEDED and
       # PT_INTERP out of the shipped archive, not "is there a .dynamic section" (every
       # static-PIE binary has one).
+      #
+      # No --compilation_mode: the build this job made is fastbuild (see the step above), so
+      # an opt query would name a file that does not exist. release.yml checks the opt ones.
       - name: Verify the shipped binaries need no shared libraries
         run: |
           set -euo pipefail
-          tarball=$(bazel cquery --compilation_mode=opt --output=files //:edgeclaw \
+          tarball=$(bazel cquery --output=files //:edgeclaw \
                       --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
           [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "no release tarball was produced"; exit 1; }
           tools/check_static.sh "$tarball"
