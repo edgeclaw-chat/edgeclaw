@@ -68,43 +68,29 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-# ── 宿主工具检查（flex / bison 不 hermetic；docs/input-pipeline.zh.md §11） ──
-#
-# 生成器调的是构建机上的 flex / bison，缺了或太老时 Bazel 只会把工具自己的报错
-# 原样抛出来，看不出缺什么：macOS 自带的 bison 是 2006 年的 2.3（Xcode 的 shim
-# 指向同一个），它没有 -W 选项，也不认文法里的 %define api.value.type /
-# %define parse.error，只报一句 `invalid option -- W`；Git for Windows 干脆不带
-# flex/bison，报的是 `flex: command not found`。先查一遍，把"装哪个"直接说出来。
-#
-# 只用管道和单引号：genrule 的 cmd 会被 Bazel 先做一遍 make 变量展开，`$(` / `$$(`
-# 写在这里会被提前替掉（Windows 上直接变成 shell 语法错误），所以这段不取变量。
-_HOST_TOOLS_CHECK = (
-    "command -v flex >/dev/null 2>&1 || " +
-    "{ echo 'error: flex not found on PATH; install flex and m4 " +
-    "(macOS: brew install flex; Windows: MSYS2 pacman -S flex m4)' >&2; exit 1; }; " +
-    "command -v bison >/dev/null 2>&1 || " +
-    "{ echo 'error: bison not found on PATH; GNU Bison 3.0+ is required " +
-    "(macOS: brew install bison; Windows: MSYS2 pacman -S bison)' >&2; exit 1; }; " +
-    "bison --version 2>/dev/null | head -n1 | grep -qE 'Bison\\) ([3-9]|[1-9][0-9])\\.' || " +
-    "{ echo 'error: the bison on PATH is too old: GNU Bison 3.0+ is required for " +
-    "-Werror=conflicts-* and %define api.value.type. This is what was found:' >&2; " +
-    "bison --version 2>/dev/null | head -n1 >&2; " +
-    "echo 'error: macOS: brew install bison, then put that keg on PATH first " +
-    "(/opt/homebrew/opt/bison/bin on Apple silicon, /usr/local/opt/bison/bin on Intel); " +
-    "Windows: MSYS2 pacman -S bison' >&2; " +
-    "exit 1; }; "
-)
-
-# ── 新输入流水线的词法器（flex 生成；docs/input-pipeline.zh.md §3） ──────
+# ── 新输入流水线的词法器 ──────────────────────────────────────────────
 #
 # 与老的 edc_shell_token.c 并存：第①步只落地 + 单测，尚未接进生产。
-# 生成物是 bazel 的 outs，不签入仓库（构建机需要 flex；见 §11 的代价说明）。
+#
+# edc_lex.c 是**签入仓库**的生成物，构建时直接编译它，不再调 flex：
+# 生成器曾经是每次构建都跑的 genrule，于是 flex/bison 变成构建机的硬性前置——
+# macOS 自带 2006 年的 bison（不认 %define api.value.type），Git for Windows 干脆
+# 不带这两个工具，每个 CI job 都要装一遍（macOS 还得手动把 keg 塞进 PATH）。
+# 症状是"什么都没改，换台机器就编不过"。
+#
+# 现在的风险转移到"改了 .l/.y 忘记重新生成"，由 tools/regen_grammar.sh --check
+# 在 CI 里兜住：它重新生成并比对，不一致就失败。**改文法后必须跑
+# `tools/regen_grammar.sh` 并提交生成物。**
+#
+# 下面的 genrule 保留但标了 manual，只作为"如何生成"的可执行说明（regen 脚本是
+# 权威入口，它会钉住工具版本）。它不在任何默认构建路径上。
 
 genrule(
     name = "lex_c",
     srcs = ["edc_lex.l"],
-    outs = ["edc_lex.c"],
-    cmd = _HOST_TOOLS_CHECK + "flex -o $@ $(location edc_lex.l)",
+    outs = ["edc_lex.regen.c"],
+    cmd = "flex -o $@ $(location edc_lex.l)",
+    tags = ["manual"],
 )
 
 cc_library(
@@ -120,18 +106,22 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-# ── 新输入流水线的文法层（bison 生成；docs/input-pipeline.zh.md §4） ──────
+# ── 新输入流水线的文法层 ──────────────────────────────────────────────
 #
-# -Werror=conflicts-* 是关键：任何人往文法里加一条有歧义的规则，构建直接失败。
+# edc_parse.tab.c / .h 都是签入仓库的生成物，理由同上面 lex_c：构建不再依赖 bison。
+# -Werror=conflicts-* 仍然强制，只是时点移到了生成（regen / --check）时——见
+# tools/regen_grammar.sh。
 genrule(
     name = "parse_c",
     srcs = ["edc_parse.y"],
     outs = [
-        "edc_parse.tab.c",
-        "edc_parse.tab.h",
+        "edc_parse.regen.tab.c",
+        "edc_parse.regen.tab.h",
     ],
-    cmd = _HOST_TOOLS_CHECK + "bison --defines=$(location edc_parse.tab.h) -o $(location edc_parse.tab.c) " +
+    cmd = "bison --defines=$(location edc_parse.regen.tab.h) " +
+          "-o $(location edc_parse.regen.tab.c) " +
           "-Werror=conflicts-sr -Werror=conflicts-rr $(location edc_parse.y)",
+    tags = ["manual"],
 )
 
 cc_library(
