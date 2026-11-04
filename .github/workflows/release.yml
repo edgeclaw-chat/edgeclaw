@@ -17,6 +17,7 @@ jobs:
             runner: ubuntu-latest
             platform: //:amd64_linux
             bazel_target: //src/tui:edgeclaw
+            binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_arm_linux
             runner: ubuntu-latest
@@ -24,6 +25,7 @@ jobs:
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
             bazel_target: //src/tui:edgeclaw
+            binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_aarch64_linux
             runner: ubuntu-latest
@@ -31,22 +33,26 @@ jobs:
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
             bazel_target: //src/tui:edgeclaw
+            binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
             bazel_target: //src/tui:edgeclaw
+            binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_amd64_windows
             runner: windows-latest
             platform: //:amd64_windows
             bazel_target: //src/tui:edgeclaw
+            binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
 
           - target: device_agent_amd64_linux
             runner: ubuntu-latest
             platform: //:amd64_linux
             bazel_target: //:device_agent
+            binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_arm_linux
             runner: ubuntu-latest
@@ -54,6 +60,7 @@ jobs:
             cross_compile: arm-linux-gnueabi
             apt_package: gcc-arm-linux-gnueabi
             bazel_target: //:device_agent
+            binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_aarch64_linux
             runner: ubuntu-latest
@@ -61,21 +68,25 @@ jobs:
             cross_compile: aarch64-linux-gnu
             apt_package: gcc-aarch64-linux-gnu
             bazel_target: //:device_agent
+            binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_aarch64_macos
             runner: macos-14
             platform: //:aarch64_macos
             bazel_target: //:device_agent
+            binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_aarch64_android
             runner: ubuntu-latest
             platform: //:aarch64_android
             bazel_target: //:device_agent
+            binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_arm_android
             runner: ubuntu-latest
             platform: //:arm_android
             bazel_target: //:device_agent
+            binary_target: //src/device:device_agent
             package_target: //:device_agent
 
     name: Build ${{ matrix.target }}
@@ -148,7 +159,18 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          BIN=bazel-bin/src/tui/edgeclaw
+          # Ask Bazel for the file it produced instead of assuming a path. The matrix
+          # builds two different binaries (//src/tui:edgeclaw and //src/device:device_agent)
+          # and the platform decides the output directory, so a hardcoded
+          # bazel-bin/src/tui/edgeclaw is wrong for half the entries -- which is how this
+          # step failed the first time it ever ran, with "can't open file".
+          BIN=$(bazel cquery --compilation_mode=opt --platforms=${{ matrix.platform }} \
+                  ${{ matrix.binary_target }} --output=files 2>/dev/null | sed -n '1p')
+          if [[ -z "$BIN" || ! -f "$BIN" ]]; then
+            echo "::error::cannot locate the built binary for ${{ matrix.binary_target }}"
+            exit 1
+          fi
+          echo "checking: $BIN"
           # arm64 uses LC_BUILD_VERSION; LC_VERSION_MIN_MACOSX is the legacy spelling
           # (x86_64 and older SDKs) -- accept either so this cannot fail for the wrong
           # reason if a future target is added.
@@ -178,7 +200,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          BIN=bazel-bin/src/tui/edgeclaw
+          # Same resolution as the macOS step: the matrix builds two binaries and Bazel
+          # appends .exe on Windows, so bazel-bin/src/tui/edgeclaw is wrong twice over.
+          BIN=$(bazel cquery --compilation_mode=opt --platforms=${{ matrix.platform }} \
+                  ${{ matrix.binary_target }} --output=files 2>/dev/null | sed -n '1p')
+          if [[ -z "$BIN" || ! -f "$BIN" ]]; then
+            echo "::error::cannot locate the built binary for ${{ matrix.binary_target }}"
+            exit 1
+          fi
+          echo "checking: $BIN"
           # Tools differ per image; both read PE, prefer the one matching the compiler.
           OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || true)
           if [[ -z "$OBJDUMP" ]]; then
