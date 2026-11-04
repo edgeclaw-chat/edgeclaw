@@ -47,9 +47,16 @@ _MUSL_ARCHES = {
         "cpu_constraint": "@platforms//cpu:aarch64",
     },
     "arm": {
-        # musleabihf, not musleabi: the release binaries link hard-float, matching
-        # //:arm_linux (arm-none-linux-gnueabihf).
-        "triple": "arm-linux-musleabihf",
+        # musleabi (soft-float), matching what the glibc release actually links: the matrix
+        # uses CROSS_COMPILE=/usr/bin/arm-linux-gnueabi-, which is the soft-float EABI
+        # toolchain (verified: a binary from it carries EF_ARM_ABI_FLOAT_SOFT, e_flags
+        # 0x5000200). The `arm-none-linux-gnueabihf` string in arm_toolchain_repo.bzl is
+        # only a toolchain_identifier label -- it does not describe the compiler, and
+        # reading it as if it did is what had this pointing at musleabihf.
+        #
+        # Using musleabihf here would ship two arm packages for different ABIs, where only
+        # one can run on a given device.
+        "triple": "arm-linux-musleabi",
         "cpu": "arm",
         "cpu_constraint": "@platforms//cpu:armv7",
     },
