@@ -82,6 +82,60 @@ platform(
     ],
 )
 
+# ── musl: the fully static release binaries ───────────────────────────────────
+# `--config=musl_<arch>` (see .bazelrc) switches to these. The libc constraint is
+# what makes the choice unambiguous: the musl toolchains require `libc:musl`, and
+# no glibc platform carries it, so a normal build never sees them. Keeping musl
+# behind its own constraint instead of replacing the toolchain means the
+# development loop, `--config=asan` and the tests all stay on glibc -- which they
+# must, because a musl toolchain ships no libasan/libubsan.
+constraint_setting(
+    name = "libc",
+    default_constraint_value = ":libc_glibc",
+    visibility = ["//visibility:public"],
+)
+
+constraint_value(
+    name = "libc_glibc",
+    constraint_setting = ":libc",
+    visibility = ["//visibility:public"],
+)
+
+# Public because the musl toolchains live in external repos and must name it in
+# their target_compatible_with.
+constraint_value(
+    name = "libc_musl",
+    constraint_setting = ":libc",
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "aarch64_linux_musl",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+        ":libc_musl",
+    ],
+)
+
+platform(
+    name = "arm_linux_musl",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:armv7",
+        ":libc_musl",
+    ],
+)
+
+platform(
+    name = "amd64_linux_musl",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+        ":libc_musl",
+    ],
+)
+
 platform(
     name = "aarch64_linux",
     constraint_values = [
@@ -142,6 +196,17 @@ config_setting(
     values = {"platforms": "//:aarch64_linux"},
 )
 
+# The musl platforms need their own entries in FILE_NAME / DAGENT_FILE_NAME below.
+# These match on the literal --platforms string, so `//:aarch64_linux_musl` does not
+# fall through to `is_aarch64_linux`; without an entry it used to land on
+# "edgeclaw_unkown", which would have collided with any other unknown-platform build
+# and given the release archive a name that does not say what it is.
+config_setting(
+    name = "is_aarch64_linux_musl",
+    constraint_values = [],
+    values = {"platforms": "//:aarch64_linux_musl"},
+)
+
 config_setting(
     name = "is_amd64_linux",
     constraint_values = [],
@@ -180,7 +245,22 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+config_setting(
+    name = "is_arm_linux_musl",
+    constraint_values = [],
+    values = {"platforms": "//:arm_linux_musl"},
+)
+
+config_setting(
+    name = "is_amd64_linux_musl",
+    constraint_values = [],
+    values = {"platforms": "//:amd64_linux_musl"},
+)
+
 FILE_NAME = select({
+        ":is_aarch64_linux_musl": "edgeclaw_aarch64_linux_musl",
+        ":is_arm_linux_musl": "edgeclaw_arm_linux_musl",
+        ":is_amd64_linux_musl": "edgeclaw_amd64_linux_musl",
         ":is_arm_linux": "edgeclaw_arm_linux",
         ":is_aarch64_linux": "edgeclaw_aarch64_linux",
         ":is_amd64_linux": "edgeclaw_amd64_linux",
@@ -193,6 +273,9 @@ FILE_NAME = select({
 })
 
 DAGENT_FILE_NAME = select({
+        ":is_aarch64_linux_musl": "device_agent_aarch64_linux_musl",
+        ":is_arm_linux_musl": "device_agent_arm_linux_musl",
+        ":is_amd64_linux_musl": "device_agent_amd64_linux_musl",
         ":is_arm_linux": "device_agent_arm_linux",
         ":is_aarch64_linux": "device_agent_aarch64_linux",
         ":is_amd64_linux": "device_agent_amd64_linux",

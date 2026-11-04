@@ -1070,6 +1070,21 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# 一个 flush 报出的 I/O 成本（`edc_state_store_flush_measured` 的非 NULL out 分支）。
+# 其他测试都用 `edc_state_store_flush`（out = NULL），所以测量那一半此前从未执行。
+cc_test(
+    name = "test_flush_cost",
+    srcs = ["test_flush_cost.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@uthash//:uthash",
+    ],
+    linkopts = LINK_OPTS,
+)
 cc_test(
     name = "test_task_resume",
     srcs = ["test_task_resume.c", "test_ws.h"],
@@ -1432,6 +1447,39 @@ cc_test(
         "//:debug": ["EDGECLAW_DEBUG"],
         "//conditions:default": [],
     }),
+)
+cc_test(
+    name = "test_setup_dialog",
+    srcs = ["test_setup_dialog.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+# 前端的 C 面（`//src/app:api`）+ 装配根（`//src/app:app`），经真 app 驱动。
+# `struct edc_app` 不透明，所以每个收 app 的函数都必须有一个真 app —— 本文件用临时 HOME +
+# 最小 config 起一个（与 test_tui_dispatch 同一套路），并且只起一次（建/拆都慢）。
+cc_test(
+    name = "test_app_boundary",
+    srcs = ["test_app_boundary.c"],
+    deps = [
+        "//src/app:api",
+        "//src/app:app",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    # 真起 app（scheduler + sqlite + 3 个 actor 线程）+ 一次 endpoint 探测。
+    timeout = "moderate",
 )
 cc_test(
     name = "test_token_style",

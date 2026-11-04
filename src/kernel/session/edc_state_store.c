@@ -3272,33 +3272,6 @@ int64_t edc_msg_turn_tokens_from(int64_t task_id, int turn_ord, int from)
     return total;
 }
 
-static bool msg_run_delete(const char *sql, int64_t task_id, int turn_ord, int arg3)
-{
-    if (!g_db || task_id <= 0)
-        return false;
-    sqlite3_stmt *st = NULL;
-    bool ok = false;
-    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) == SQLITE_OK)
-    {
-        sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
-        sqlite3_bind_int(st, 2, turn_ord);
-        if (arg3 >= 0)
-            sqlite3_bind_int(st, 3, arg3);
-        ok = sqlite3_step(st) == SQLITE_DONE;
-        sqlite3_finalize(st);
-    }
-    return ok;
-}
-
-bool edc_msg_turn_truncate(int64_t task_id, int turn_ord, int new_len)
-{
-    const bool ok = msg_run_delete("DELETE FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=?",
-                                   task_id, turn_ord, new_len < 0 ? 0 : new_len);
-    if (ok)
-        turn_recount(task_id, turn_ord);
-    return ok;
-}
-
 bool edc_msg_turn_move(int64_t old_task, int old_ord, int64_t new_session,
                        int64_t new_group, int64_t new_task, int new_ord)
 {

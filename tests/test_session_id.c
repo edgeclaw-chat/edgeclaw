@@ -17,6 +17,7 @@
 #include "edc_config.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_state_store.h" /* edc_state_store_has_session: "the dropped row is really gone" */
 #include "log.h"
 #include "sds.h"
 #include <signal.h>
@@ -184,10 +185,66 @@ static void test_no_reuse_across_restart(void)
     wipe_workspace(ws);
 }
 
-/* ── 4. An orphan directory seeds the high-water (upgrade path) ──────────── */
+/* ── 4b. The allocation loop: an id whose directory is taken is given back ─────
+ *
+ * edc_session_manager_create_ex allocates a row, checks that <ws>/<id> is free, and — when
+ * it is not — calls edc_state_store_delete_session() to give the id back before asking for
+ * the next one. That call is the only reason a removed session's leftover directory cannot
+ * hand its transcript to a new session, and until now nothing exercised it.
+ *
+ * The trigger has to be built deliberately. AUTOINCREMENT hands out max+1 and never
+ * reuses, so "an orphan directory exists somewhere" is not enough — the directory has to be
+ * for the id the NEXT insert will receive. The version of this case that pre-created "s7"
+ * could not collide (the first session already owns id 1, so the next insert asks for 2)
+ * and asserted `id != 7`, which was true for the wrong reason.
+ *
+ * Note the directory is NOT removed afterwards — that is the point of the guard: /session
+ * remove deletes the row and leaves <ws>/<id> behind to hold chat.jsonl. */
+static void test_taken_directory_gives_the_id_back(void)
+{
+    TEST("an id whose directory is already taken is dropped, and the next one is used");
+    char ws[256];
+    make_workspace(ws, sizeof(ws));
+
+    struct edc_config *cfg = make_config(ws);
+    struct edc_session_manager *sm = edc_session_manager_new(cfg);
+    CHECK(sm != NULL, "manager created");
+
+    /* The default session owns the first id; the next insert will ask for the one after. */
+    struct edc_session *first = edc_session_manager_get_active(sm);
+    CHECK(first != NULL, "the default session exists");
+    const int64_t taken_id = first ? first->session_id + 1 : 2;
+
+    char taken_dir[600];
+    snprintf(taken_dir, sizeof(taken_dir), "%s/%lld", ws, (long long)taken_id);
+    CHECK(dir_exists(taken_dir) == false, "the directory we are about to squat on is free");
+    CHECK(mkdir(taken_dir, 0755) == 0, "squatted on the directory of the next id");
+
+    struct edc_session *c = edc_session_manager_create_ex(sm, "C", NULL);
+    CHECK(c != NULL, "the session was still created");
+    CHECK(c && c->session_id == taken_id + 1,
+          "it landed on the id AFTER the taken one (the loop asked for the next)");
+    /* The directory itself is created on first save, not here, so what can be asserted is
+     * that history_dir names the id that survived. */
+    char expect_dir[600];
+    snprintf(expect_dir, sizeof(expect_dir), "%s/%lld", ws, (long long)(taken_id + 1));
+    CHECK(c && strcmp(c->history_dir, expect_dir) == 0, "and its history_dir names that id");
+
+    /* The strong half: the squatted id's ROW is gone, not merely skipped. If the loop just
+     * ignored it, an orphan row with no owner would be left in the database. */
+    CHECK(!edc_state_store_has_session(taken_id), "the dropped id has no row left behind");
+    CHECK(edc_state_store_has_session(c ? c->session_id : 0), "the surviving id does have one");
+    CHECK(dir_exists(taken_dir), "the squatted directory is untouched (it holds the old transcript)");
+
+    edc_session_manager_free(sm);
+    edc_config_free(cfg);
+    wipe_workspace(ws);
+}
+
+/* ── 4. A leftover directory elsewhere does not block creation ───────────── */
 static void test_orphan_dir_seeding(void)
 {
-    TEST("ids skip session directories left by removed sessions");
+    TEST("a stale session directory elsewhere does not disturb a new session");
     char ws[256];
     make_workspace(ws, sizeof(ws));
 
@@ -196,31 +253,23 @@ static void test_orphan_dir_seeding(void)
     CHECK(sm != NULL, "manager created");
     edc_session_manager_free(sm);
 
-    /* Simulate an upgraded workspace: no high-water file (pre-change archives),
-     * and a removed session whose directory is still on disk but no longer in
-     * the index. */
-    char seq_path[512];
-    snprintf(seq_path, sizeof(seq_path), "%s/.session_seq", ws);
-    unlink(seq_path);
+    /* Simulate a workspace that has been used before: a removed session whose directory is
+     * still on disk but no longer in the index. The id is deliberately NOT the one the next
+     * insert will receive — the collision case is the point of
+     * test_taken_directory_gives_the_id_back, and this case is the benign one: the leftover
+     * is somewhere else and must cost nothing. */
     char orphan[512];
     snprintf(orphan, sizeof(orphan), "%s/s7", ws);
-    CHECK(mkdir(orphan, 0755) == 0, "orphan session directory created");
+    CHECK(mkdir(orphan, 0755) == 0, "a stale session directory exists");
 
     struct edc_session_manager *sm2 = edc_session_manager_new(cfg);
-    CHECK(sm2 != NULL, "manager created on the upgraded workspace");
+    CHECK(sm2 != NULL, "manager created on the used workspace");
     struct edc_session *c = edc_session_manager_create_ex(sm2, "C", NULL);
     CHECK(c != NULL, "session C created");
-    /* The invariant is "does not land on an existing directory", not "is numerically past
-     * it". The old design scanned the workspace to raise a counter above every s<N> it
-     * found; the database allocates now, so the guard is the allocation loop that skips an
-     * id whose directory already exists (edc_session_manager_create_ex). */
-    CHECK(c && c->session_id != 7, "C does not collide with the orphan directory s7");
-    char new_dir[512];
-    if (c)
-    {
-        snprintf(new_dir, sizeof(new_dir), "%s", c->history_dir);
-        CHECK(!dir_exists(new_dir), "C's directory was not already occupied");
-    }
+    CHECK(c && c->session_id != 7, "C did not land on the stale directory's name");
+    CHECK(c && !dir_exists(c->history_dir),
+          "C's directory was not already occupied (creation does not reuse a name)");
+    CHECK(dir_exists(orphan), "the stale directory was left alone");
 
     edc_session_manager_free(sm2);
     edc_config_free(cfg);
@@ -234,6 +283,7 @@ int main(void)
     test_ids_advance();
     test_no_reuse_after_remove();
     test_no_reuse_across_restart();
+    test_taken_directory_gives_the_id_back();
     test_orphan_dir_seeding();
 
     log_info("passed=%d failed=%d", test_passed, test_failed);

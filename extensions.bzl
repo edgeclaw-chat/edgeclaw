@@ -11,6 +11,7 @@ load('//toolchain:arm_toolchain_repo.bzl', 'arm_toolchain_repo')
 load('//toolchain:aarch64_toolchain_repo.bzl', 'aarch64_toolchain_repo')
 load('//toolchain:android_toolchain_repo.bzl', 'aarch64_android_toolchain_repo', 'arm_android_toolchain_repo')
 load('//toolchain:mingw_toolchain_repo.bzl', 'mingw_toolchain_repo')
+load('//toolchain:musl_toolchain_repo.bzl', 'musl_toolchain_repo')
 
 def _bc_thirdparty_deps_impl(module_ctx):
     logc_repo()
@@ -60,4 +61,16 @@ def _mingw_toolchain_impl(module_ctx):
 
 mingw_toolchain = module_extension(
     implementation = _mingw_toolchain_impl,
+)
+
+# One repo per target arch, deliberately NOT registered via register_toolchains():
+# they are only reachable through `--extra_toolchains` in the musl_* configs, so a
+# machine without a musl toolchain is unaffected. See toolchain/musl_toolchain_repo.bzl.
+def _musl_toolchain_impl(module_ctx):
+    musl_toolchain_repo(name = "musl_toolchain_aarch64", arch = "aarch64")
+    musl_toolchain_repo(name = "musl_toolchain_arm", arch = "arm")
+    musl_toolchain_repo(name = "musl_toolchain_amd64", arch = "amd64")
+
+musl_toolchain = module_extension(
+    implementation = _musl_toolchain_impl,
 )

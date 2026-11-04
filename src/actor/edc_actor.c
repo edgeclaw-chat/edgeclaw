@@ -101,7 +101,34 @@ void edc_actor_runner_free(edc_actor_runner_t *runner)
         edc_actor_runner_stop(runner);
     }
 
-    uv_loop_close(&runner->loop);
+    /* Closing the handles is not enough on its own. uv_close() is asynchronous: the handle
+     * is only unlinked when the loop runs again, and until then uv_loop_close() returns
+     * UV_EBUSY. That matters beyond a leaked handle, because uv_spawn() registers a child
+     * watcher in libuv's PROCESS-GLOBAL signal tree -- free the loop while that watcher is
+     * still linked and the tree keeps a pointer into freed memory, so the next uv_spawn()
+     * anywhere in this process reads it. ASan reports that as a heap-use-after-free in
+     * uv__signal_compare, several frames away from anything this file owns.
+     *
+     * The thread path had this drain inside actor_thread_func(); a runner whose loop is
+     * pumped by the caller (no edc_actor_runner_start(), which is how the shell tool's
+     * tests drive it) never went through it.
+     *
+     * Bounded rather than UV_RUN_DEFAULT: a child that is still running would keep a
+     * default run going indefinitely, and shutdown must not hang. */
+    uv_walk(&runner->loop, close_all_handles_cb, NULL);
+    for (int i = 0; i < 50 && uv_run(&runner->loop, UV_RUN_NOWAIT) != 0; i++)
+    {
+    }
+
+    if (uv_loop_close(&runner->loop) != 0)
+    {
+        /* Something is still registered -- an active request, or a handle whose close the
+         * drain above could not complete. Leaving the loop allocated leaks it, which is
+         * the lesser failure: freeing it is what corrupts libuv's global state, and the
+         * crash would surface in an unrelated caller. */
+        return;
+    }
+
     free(runner->actors);
     free(runner);
 }

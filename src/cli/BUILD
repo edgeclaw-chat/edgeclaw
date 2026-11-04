@@ -32,7 +32,9 @@ cc_library(
 LINK_OPTS = select({
     "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
-    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    # `-static` for the same reason as //src/tui: no dependency on libgcc/libwinpthread
+    # DLLs that the release does not carry. See the longer note in src/tui/BUILD.
+    "//:windows": ["-static", "-lws2_32", "-lbcrypt", "-luserenv"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": [],
     # `--config=asan` sets //:sanitize: ASAN cannot link statically.

@@ -505,12 +505,30 @@ static void edc_shell_spawn(struct edc_toolbox_call_ctx *tb_ctx, struct edc_tool
     if (r != 0)
     {
         EdcError *error = edc_error_new(EDC_ERR_EXEC, "uv_spawn failed: %s", uv_strerror(r));
+
+        /* Four handles here, not three. uv_spawn() initialises the process handle --
+         * linking it into the loop's handle queue -- before it can fail, and the
+         * exec-failure path returns without unlinking it: libuv deliberately skips its own
+         * `goto error` cleanup there (the `#if 0` in src/unix/process.c) so that callers
+         * still see initialised streams. Closing only the two pipes and the timer frees
+         * this context while the loop still lists ctx->process, so the handle queue points
+         * into freed memory and the next uv_walk()/uv_loop_close() on this loop reads it --
+         * a use-after-free reported inside libuv, far from this file.
+         *
+         * uv_spawn() only reaches that init after its tvOS/watchOS guard, and a calloc'd
+         * context starts with process.loop == NULL, so process.loop says whether there is
+         * a handle to close at all. */
         ctx->stdout_pipe.data = ctx;
         ctx->stderr_pipe.data = ctx;
         ctx->pending_handles = 3;
         uv_close((uv_handle_t *)&ctx->stdout_pipe, on_stdout_close);
         uv_close((uv_handle_t *)&ctx->stderr_pipe, on_stderr_close);
         uv_close((uv_handle_t *)&ctx->timeout_timer, on_timer_close);
+        if (ctx->process.loop != NULL)
+        {
+            ctx->pending_handles++;
+            uv_close((uv_handle_t *)&ctx->process, on_process_close);
+        }
         callback(tb_ctx, NULL, error);
         return;
     }

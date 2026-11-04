@@ -24,6 +24,18 @@ mingw_toolchain = use_extension("//:extensions.bzl", "mingw_toolchain")
 use_repo(mingw_toolchain, "mingw_toolchain")
 register_toolchains("@mingw_toolchain//:mingw_windows_toolchain")
 
+# musl toolchains for the fully static Linux release binaries. Intentionally not
+# registered: they are selected by `--config=musl_<arch>`, which passes
+# --extra_toolchains. Registering them would make them compete with the glibc
+# toolchain on every ordinary build for no gain.
+musl_toolchain = use_extension("//:extensions.bzl", "musl_toolchain")
+use_repo(
+    musl_toolchain,
+    "musl_toolchain_aarch64",
+    "musl_toolchain_arm",
+    "musl_toolchain_amd64",
+)
+
 # Hermetic Python toolchain: downloads Python 3.8 for native builds, no system
 # Python required. Has platform constraints so it only matches native builds.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

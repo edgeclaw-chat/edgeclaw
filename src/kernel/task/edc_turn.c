@@ -248,30 +248,6 @@ int64_t edc_turn_tokens_from(const struct edc_turn *turn, int from)
     return edc_msg_turn_tokens_from(turn->task_id, turn->turn_ord, from);
 }
 
-bool edc_turn_truncate(struct edc_turn *turn, int new_len)
-{
-    if (!turn)
-        return false;
-    if (new_len < 0)
-        new_len = 0;
-    if (!edc_msg_turn_truncate(turn->task_id, turn->turn_ord, new_len))
-        return false;
-
-    turn->msg_count = new_len;
-    if (turn->folded_prefix > new_len)
-        turn->folded_prefix = new_len;
-    if (turn->memo_prefix > new_len)
-        turn->memo_prefix = new_len;
-    return true;
-}
-
-bool edc_turn_clear(struct edc_turn *turn)
-{
-    if (!turn)
-        return false;
-    return edc_turn_truncate(turn, 0);
-}
-
 sds edc_turn_render_message(const cJSON *msg)
 {
     if (!msg)
