@@ -46,6 +46,34 @@ build:dbg --strip=never
 build:windows --extra_toolchains=@mingw_toolchain//:mingw_windows_toolchain
 build:windows --repo_env=PATH
 
+# ── macOS: pin the deployment target ─────────────────────────────────────────
+# Without this, the minimum OS is whatever the build machine's SDK says it is, and
+# the macOS release job builds on `macos-14` (see .github/workflows/release.yml) --
+# so the shipped binary demanded macOS 14 and refused to start on anything older.
+# Apple Silicon itself starts at 11.0, so 11.0 is the floor available to us; it buys
+# three major versions of headroom over the status quo.
+#
+# Both halves are needed and they must agree. Linking alone would only stamp the
+# value into LC_BUILD_VERSION; the object files would still be compiled against the
+# SDK default, and ld warns "object file was built for newer macOS version than
+# being linked". Compiling alone would leave the load command unset.
+#
+# Explicit -mmacosx-version-min rather than Bazel's --macos_minimum_os: the latter is
+# only honoured by toolchains that expand %{macos_minimum_os}, and macOS here uses the
+# autodetected Xcode toolchain rather than one of ours (no @*_toolchain is registered
+# for //:aarch64_macos -- see MODULE.bazel). A --copt/--linkopt pair reaches the
+# command line regardless of toolchain, and lands in user_compile_flags /
+# user_link_flags, i.e. after the toolchain's own flags, so it wins on conflict.
+#
+# `build:macos` is activated by --enable_platform_specific_config (line 2) from the
+# HOST os, so it applies on the macOS runner and is inert everywhere else. Tests get
+# it too, which is what we want: a test binary built for 14.0 would not run on 11.0.
+#
+# Verified by the "Verify macOS minimum OS" step in release.yml -- this repo's dev
+# machines are Linux, so the value cannot be checked locally.
+build:macos --copt=-mmacosx-version-min=11.0
+build:macos --linkopt=-mmacosx-version-min=11.0
+
 # Code coverage (GCC + gcov). The toolchains' "coverage" feature is what actually adds
 # -fprofile-arcs/-ftest-coverage/--coverage; see toolchain/compilation_mode_features.bzl
 # for why a hand-rolled cc_toolchain config needs it spelled out.

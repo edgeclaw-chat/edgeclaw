@@ -138,6 +138,35 @@ jobs:
         run: |
           bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
 
+      - name: Verify macOS minimum OS
+        # .bazelrc pins -mmacosx-version-min=11.0 for macOS, but no dev machine in this
+        # repo runs macOS, so nothing locally can confirm the flag actually took. This
+        # step makes CI the place where that is checked: it reads the LC_BUILD_VERSION
+        # load command straight out of the built binary and fails if the floor drifted
+        # back up (a wrong flag placement, or an SDK default winning, would otherwise
+        # silently ship a binary that refuses to start on macOS 11-13).
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          BIN=bazel-bin/src/tui/edgeclaw
+          # arm64 uses LC_BUILD_VERSION; LC_VERSION_MIN_MACOSX is the legacy spelling
+          # (x86_64 and older SDKs) -- accept either so this cannot fail for the wrong
+          # reason if a future target is added.
+          MINOS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+          [[ -z "$MINOS" ]] && MINOS=$(otool -l "$BIN" | awk '/LC_VERSION_MIN_MACOSX/{f=1} f&&/version/{print $2; exit}')
+          echo "minimum OS = ${MINOS:-<absent>}"
+          if [[ -z "$MINOS" ]]; then
+            echo "::error::no LC_BUILD_VERSION/LC_VERSION_MIN_MACOSX in $BIN"
+            exit 1
+          fi
+          # Compare major.minor against 11.0 without relying on GNU sort -V.
+          mm=${MINOS#*.}; mm=${mm%%.*}
+          if (( ${MINOS%%.*} > 11 || ( ${MINOS%%.*} == 11 && mm > 0 ) )); then
+            echo "::error::binary requires macOS ${MINOS}, expected <= 11.0"
+            exit 1
+          fi
+          echo "ok: runs on macOS 11.0 and newer"
+
       - name: Collect artifact
         # bash on every runner: the packaging names below are bash, and Git for
         # Windows provides it. Windows used to be excluded here, which is why
