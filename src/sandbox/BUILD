@@ -71,7 +71,9 @@ cc_binary(
     ],
     linkstatic = True,
     linkopts = select({
-        "//:windows": [],
+        # `-static` here too: sandbox_helper is embedded into edgeclaw as a byte array
+        # and written back out to run, so it is a shipped binary as much as edgeclaw is.
+        "//:windows": ["-static"],
         "//:macos": [],
         # ASAN cannot link statically; --config=asan sets //:sanitize.
         "//:sanitize": [],

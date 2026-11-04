@@ -3,7 +3,10 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 LINK_OPTS = select({
     "//:macos_debug": ["-lresolv"],
     "//:macos": ["-lresolv"],
-    "//:windows": ["-lws2_32", "-lbcrypt", "-luserenv"],
+    # `-static` for the same reason as //src/tui: the shipped Windows artifact must not
+    # depend on libgcc/libwinpthread DLLs that the tarball does not carry. See the
+    # longer note in src/tui/BUILD.
+    "//:windows": ["-static", "-lws2_32", "-lbcrypt", "-luserenv"],
     # `--config=asan` sets //:sanitize: ASAN cannot link statically.
     "//:sanitize": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],

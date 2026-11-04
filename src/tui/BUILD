@@ -3,7 +3,14 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 LINK_OPTS = select({
     "//:macos_debug": ["-lresolv", "-lc++"],
     "//:macos": ["-lresolv", "-lc++"],
-    "//:windows": ["-lstdc++", "-lws2_32", "-lbcrypt", "-luserenv"],
+    # `-static` on MinGW, for the same reason the Linux default branch has it: without
+    # it gcc links libstdc++-6.dll and libgcc_s_seh-1.dll dynamically, and pkg_tar
+    # ships only edgeclaw.exe -- so the archive aborts on a clean machine with "The
+    # code execution cannot proceed because libstdc++-6.dll was not found". The
+    # ws2_32/bcrypt/userenv entries are import libraries for DLLs that are part of
+    # Windows, so they stay dynamic (and -static does not turn them into anything else).
+    # Verified by the "Verify Windows DLL imports" step in release.yml.
+    "//:windows": ["-static", "-lstdc++", "-lws2_32", "-lbcrypt", "-luserenv"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": ["-lstdc++"],
     # `--config=asan`: same reason -- ASAN needs a dynamic runtime.

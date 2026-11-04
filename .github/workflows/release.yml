@@ -167,6 +167,37 @@ jobs:
           fi
           echo "ok: runs on macOS 11.0 and newer"
 
+      - name: Verify Windows DLL imports
+        # The same class of bug the macOS deployment target had: nothing checked what the
+        # shipped .exe actually needs at run time. MinGW links libstdc++-6.dll and
+        # libgcc_s_seh-1.dll dynamically unless -static is passed, and pkg_tar ships only
+        # edgeclaw.exe -- so the archive would abort on a clean machine with "The code
+        # execution cannot proceed because libstdc++-6.dll was not found". This prints the
+        # real import list (so the next reader sees facts, not an inference from BUILD
+        # files) and fails if a C++ runtime DLL is among them.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          BIN=bazel-bin/src/tui/edgeclaw
+          # Tools differ per image; both read PE, prefer the one matching the compiler.
+          OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || true)
+          if [[ -z "$OBJDUMP" ]]; then
+            echo "::error::no objdump available to inspect $BIN"
+            exit 1
+          fi
+          echo "using: $OBJDUMP"
+          IMPORTS=$("$OBJDUMP" -p "$BIN" | awk '/DLL Name/{print $3}')
+          echo "--- DLL imports of $BIN ---"
+          echo "$IMPORTS"
+          echo "---------------------------"
+          BAD=$(echo "$IMPORTS" | grep -iE 'libstdc\+\+|libgcc|libwinpthread' || true)
+          if [[ -n "$BAD" ]]; then
+            echo "::error::exe needs C++ runtime DLLs the tarball does not ship: $BAD"
+            echo "::error::-static is missing from the //:windows LINK_OPTS branch"
+            exit 1
+          fi
+          echo "ok: no C++ runtime DLL imports -- the exe is self-contained"
+
       - name: Collect artifact
         # bash on every runner: the packaging names below are bash, and Git for
         # Windows provides it. Windows used to be excluded here, which is why
