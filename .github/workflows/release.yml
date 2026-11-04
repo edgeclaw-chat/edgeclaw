@@ -149,6 +149,44 @@ jobs:
         run: |
           bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
 
+      - name: Resolve the built binary
+        # One place that answers "which file did the build produce", because the answer is
+        # not a constant: the matrix builds two different binaries (//src/tui:edgeclaw and
+        # //src/device:device_agent), the platform decides the output directory, and Windows
+        # appends .exe. Hardcoding bazel-bin/src/tui/edgeclaw -- which is what the two
+        # verification steps below originally did -- is wrong for half the entries.
+        #
+        # bazel info rather than bazel cquery: `info bazel-bin` reports the output directory
+        # for these flags without configuring or analysing anything, so it cannot fail for a
+        # toolchain or select() reason. cquery needs a full analysis, and on the macOS
+        # device_agent entry it returned nothing at all, which surfaced as a useless
+        # "cannot locate the built binary".
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        shell: bash
+        run: |
+          LABEL='${{ matrix.binary_target }}'
+          # //pkg:name -> pkg=src/tui, name=edgeclaw
+          PKG=${LABEL#//}
+          PKG=${PKG%%:*}
+          NAME=${LABEL##*:}
+
+          BINDIR=$(bazel info bazel-bin --compilation_mode=opt --platforms=${{ matrix.platform }})
+          BIN="$BINDIR/$PKG/$NAME"
+          # Self-correcting about the suffix instead of branching on the runner OS: the file
+          # that exists is the file to inspect.
+          if [[ ! -f "$BIN" && -f "$BIN.exe" ]]; then
+            BIN="$BIN.exe"
+          fi
+
+          if [[ ! -f "$BIN" ]]; then
+            echo "::error::$LABEL produced no binary at $BIN"
+            echo "--- directory contents ---"
+            ls -la "$(dirname "$BIN")" || true
+            exit 1
+          fi
+          echo "resolved $LABEL -> $BIN"
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+
       - name: Verify macOS minimum OS
         # .bazelrc pins -mmacosx-version-min=11.0 for macOS, but no dev machine in this
         # repo runs macOS, so nothing locally can confirm the flag actually took. This
@@ -159,18 +197,6 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          # Ask Bazel for the file it produced instead of assuming a path. The matrix
-          # builds two different binaries (//src/tui:edgeclaw and //src/device:device_agent)
-          # and the platform decides the output directory, so a hardcoded
-          # bazel-bin/src/tui/edgeclaw is wrong for half the entries -- which is how this
-          # step failed the first time it ever ran, with "can't open file".
-          BIN=$(bazel cquery --compilation_mode=opt --platforms=${{ matrix.platform }} \
-                  ${{ matrix.binary_target }} --output=files 2>/dev/null | sed -n '1p')
-          if [[ -z "$BIN" || ! -f "$BIN" ]]; then
-            echo "::error::cannot locate the built binary for ${{ matrix.binary_target }}"
-            exit 1
-          fi
-          echo "checking: $BIN"
           # arm64 uses LC_BUILD_VERSION; LC_VERSION_MIN_MACOSX is the legacy spelling
           # (x86_64 and older SDKs) -- accept either so this cannot fail for the wrong
           # reason if a future target is added.
@@ -200,14 +226,6 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          # Same resolution as the macOS step: the matrix builds two binaries and Bazel
-          # appends .exe on Windows, so bazel-bin/src/tui/edgeclaw is wrong twice over.
-          BIN=$(bazel cquery --compilation_mode=opt --platforms=${{ matrix.platform }} \
-                  ${{ matrix.binary_target }} --output=files 2>/dev/null | sed -n '1p')
-          if [[ -z "$BIN" || ! -f "$BIN" ]]; then
-            echo "::error::cannot locate the built binary for ${{ matrix.binary_target }}"
-            exit 1
-          fi
           echo "checking: $BIN"
           # Tools differ per image; both read PE, prefer the one matching the compiler.
           OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || true)
