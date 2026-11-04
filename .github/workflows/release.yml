@@ -238,51 +238,94 @@ jobs:
         run: |
           bazel build --compilation_mode=opt --verbose_failures ${{ matrix.bazel_flags }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
 
-      - name: Resolve the built binary
-        # One place that answers "which file did the build produce", because the answer is
-        # not a constant: the matrix builds two different binaries (//src/tui:edgeclaw and
-        # //src/device:device_agent), the platform decides the output directory, and Windows
-        # appends .exe. Hardcoding bazel-bin/src/tui/edgeclaw -- which is what the two
-        # verification steps below originally did -- is wrong for half the entries.
+      - name: Unpack the shipped archive
+        # Every verification below inspects the tarball a user downloads, so this is the one
+        # place that answers "where is it and what is inside it".
         #
-        # bazel info rather than bazel cquery: `info bazel-bin` reports the output directory
-        # for these flags without configuring or analysing anything, so it cannot fail for a
-        # toolchain or select() reason. cquery needs a full analysis, and on the macOS
-        # device_agent entry it returned nothing at all, which surfaced as a useless
-        # "cannot locate the built binary".
+        # It replaces a "Resolve the built binary" step that reconstructed the path as
+        # $BINDIR/<pkg>/<name> from `bazel info bazel-bin`. That arithmetic was wrong in both
+        # of the ways the runners can punish, and neither showed up here on Linux:
+        #
+        #   Windows  `[[ -f .../edgeclaw ]]` returned TRUE with no such file, because MSYS
+        #            bash appends .exe when the literal name is missing. So BIN kept the
+        #            extension-less spelling and the next step's objdump -- a native MinGW
+        #            binary, no such magic -- reported "No such file".
+        #   macOS    on device_agent_aarch64_macos the directory existed but held only
+        #            _objs/ and *.cppmap, no binary, for a build that had just linked fine.
+        #
+        # Both surfaced as "produced no binary at <path>": a missing-file message for a
+        # successful build. Nothing below is guessed -- pkg_tar's package_file_name is the
+        # matrix entry's own `target` (also what "Collect artifact" copies), and the binary is
+        # whatever the archive actually contains, i.e. the file that gets published.
         shell: bash
         run: |
-          LABEL='${{ matrix.binary_target }}'
-          # //pkg:name -> pkg=src/tui, name=edgeclaw
-          PKG=${LABEL#//}
-          PKG=${PKG%%:*}
-          NAME=${LABEL##*:}
-
+          set -euo pipefail
           BINDIR=$(bazel info bazel-bin --compilation_mode=opt ${{ matrix.bazel_flags }})
-          BIN="$BINDIR/$PKG/$NAME"
-          # Self-correcting about the suffix instead of branching on the runner OS: the file
-          # that exists is the file to inspect.
-          if [[ ! -f "$BIN" && -f "$BIN.exe" ]]; then
-            BIN="$BIN.exe"
-          fi
-
-          if [[ ! -f "$BIN" ]]; then
-            echo "::error::$LABEL produced no binary at $BIN"
+          ARCHIVE="$BINDIR/${{ matrix.target }}.tar.gz"
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "::error::${{ matrix.target }} produced no archive at $ARCHIVE"
             echo "--- directory contents ---"
-            ls -la "$(dirname "$BIN")" || true
+            ls -la "$BINDIR" || true
             exit 1
           fi
-          echo "resolved $LABEL -> $BIN"
-          echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+          # /usr/bin/tar explicitly rather than whatever PATH finds first: on the Windows
+          # runner C:\Windows\system32 (whose tar.exe is a native bsdtar that would read
+          # /tmp as C:/tmp) precedes Git's usr/bin.
+          TAR=/usr/bin/tar
+          [[ -x "$TAR" ]] || TAR=$(command -v tar)
+
+          # mktemp rather than $RUNNER_TEMP: that variable is a Windows-style path on the
+          # Windows runner, and the tools here expect the shell's own spelling.
+          DEST=$(mktemp -d)
+          "$TAR" xzf "$ARCHIVE" -C "$DEST"
+
+          # A glob, not `find`: same PATH reason as above (system32\find.exe is a text
+          # searcher). Depth 2 is the layout -- <package_dir>/<binary> -- so the
+          # licences/ subdirectory is never reached, and the notice/markdown files that do
+          # sit next to the binary are skipped by name.
+          shopt -s nullglob
+          CANDIDATES=()
+          for f in "$DEST"/*/*; do
+            [[ -f "$f" ]] || continue
+            case "${f##*/}" in
+              *.md|LICENSE*) continue ;;
+            esac
+            CANDIDATES+=("$f")
+          done
+          if [[ ${#CANDIDATES[@]} -ne 1 ]]; then
+            echo "::error::$ARCHIVE should carry exactly one binary, found ${#CANDIDATES[@]}"
+            echo "--- archive contents ---"
+            "$TAR" tzf "$ARCHIVE" || true
+            ls -la "$DEST"/*/ 2>/dev/null || true
+            exit 1
+          fi
+          BIN="${CANDIDATES[0]}"
+
+          # Assert the shipped file name, so a broken package_dir/renames fails this gate
+          # instead of publishing an archive whose executable is called something else --
+          # the user was told to run ./edgeclaw and would find no such file.
+          LABEL='${{ matrix.binary_target }}'
+          NAME=${LABEL##*:}
+          BASE=$(basename "$BIN")
+          if [[ "$BASE" != "$NAME" && "$BASE" != "$NAME.exe" ]]; then
+            echo "::error::$ARCHIVE ships '$BASE', expected '$NAME' or '$NAME.exe'"
+            exit 1
+          fi
+
+          echo "shipped: $ARCHIVE"
+          echo "  contains: $BIN"
+          echo "SHIPPED_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "SHIPPED_BIN=$BIN" >> "$GITHUB_ENV"
 
       # The Linux and Android archives have always been built with -static, and nothing ever
       # checked what came out: the Windows job asserts on its import table, and the other
       # targets asserted nothing at all. This is the Linux counterpart.
       #
-      # Checks the archive a user downloads rather than the bazel-out intermediate, so a
-      # pkg_tar mistake cannot slip past. tools/check_static.sh reads DT_NEEDED and
-      # PT_INTERP, not "is there a .dynamic section" -- every static-PIE binary has one of
-      # those (20-24 entries, for self-relocation) and would be misreported as dynamic.
+      # Runs on the archive "Unpack the shipped archive" produced, i.e. the file a user
+      # downloads. tools/check_static.sh reads DT_NEEDED and PT_INTERP, not "is there a
+      # .dynamic section" -- every static-PIE binary has one of those (20-24 entries, for
+      # self-relocation) and would be misreported as dynamic.
       #
       # Android runs on a Linux runner and its binaries are ELF too, so it is covered by the
       # same step; macOS produces Mach-O and Windows PE, which the script skips by design.
@@ -291,14 +334,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive=$(bazel cquery --compilation_mode=opt ${{ matrix.bazel_flags }} \
-                      --output=files ${{ matrix.package_target }} | head -1)
-          if [[ -z "$archive" || ! -f "$archive" ]]; then
-            echo "::error::no archive produced for ${{ matrix.package_target }}"
-            exit 1
-          fi
-          echo "checking: $archive"
-          tools/check_static.sh "$archive"
+          echo "checking: $SHIPPED_ARCHIVE"
+          tools/check_static.sh "$SHIPPED_ARCHIVE"
 
       - name: Verify macOS minimum OS
         # .bazelrc pins -mmacosx-version-min=11.0 for macOS, but no dev machine in this
@@ -313,6 +350,7 @@ jobs:
           # arm64 uses LC_BUILD_VERSION; LC_VERSION_MIN_MACOSX is the legacy spelling
           # (x86_64 and older SDKs) -- accept either so this cannot fail for the wrong
           # reason if a future target is added.
+          BIN="$SHIPPED_BIN"
           MINOS=$(otool -l "$BIN" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
           [[ -z "$MINOS" ]] && MINOS=$(otool -l "$BIN" | awk '/LC_VERSION_MIN_MACOSX/{f=1} f&&/version/{print $2; exit}')
           echo "minimum OS = ${MINOS:-<absent>}"
@@ -339,6 +377,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          # The archive's own executable: edgeclaw.exe, as extracted by the step above --
+          # not a path guessed from the label.
+          BIN="$SHIPPED_BIN"
           echo "checking: $BIN"
           # Tools differ per image; both read PE, prefer the one matching the compiler.
           OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || true)
