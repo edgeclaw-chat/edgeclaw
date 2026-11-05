@@ -7,9 +7,7 @@
 #include <stdbool.h>
 
 /* The declaration set: WHICH tools the model is told about, derived from the registry plus
- * whatever the transcript says changed. Port of pi's `resolveTranscriptTools` /
- * `hasNonAdditiveToolChanges` (packages/ai/src/utils/transcript.ts:200-237); the reasoning
- * and the batch plan are in docs/pi-toolset-plan.zh.md.
+ * whatever the transcript says changed.
  *
  * The rules, in one place:
  *   - The set is NOT a permission gate. Execution asks a different question (scope check in

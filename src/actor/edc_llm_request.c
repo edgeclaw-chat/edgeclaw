@@ -386,8 +386,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
     else if (!is_memory_sink)
         /* A normal reply declares the GROUP's set, not the process's: the group is the
          * conversation, and one conversation must send the same `tools` bytes every turn or
-         * it loses the provider's cached prefix (docs/pi-toolset-plan.zh.md, I2). The
-         * resolver is installed by the assembly root because it needs the registry. */
+         * it loses the provider's cached prefix. The resolver is installed by the assembly
+         * root because it needs the registry. */
         tools = g_group_tools ? g_group_tools(g_group_tools_ctx, task) : tool_schemas;
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, tools);
     /* The in-flight turn's messages that still go on the wire: after its folded prefix,
@@ -397,8 +397,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         const int from = task->active_turn->folded_prefix > 0 ? task->active_turn->folded_prefix : 0;
         req->turn_tail = edc_turn_msgs(task->active_turn, from, task->active_turn->msg_count);
     }
-    /* Stable per-group key for the provider's automatic prefix cache (docs/pi-toolset-plan.zh.md,
-     * B0): every request of one conversation then shares a cache shard. Only a normal reply --
+    /* Stable per-group key for the provider's automatic prefix cache: every request of one
+     * conversation then shares a cache shard. Only a normal reply --
      * a fold or curator call is one-shot and would just take space in someone else's shard. */
     if (!is_memory_sink && task->group && task->group->group_id)
         req->cache_key = sdscatprintf(sdsempty(), "%" PRId64, task->group->group_id);

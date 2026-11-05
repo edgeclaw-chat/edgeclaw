@@ -570,7 +570,7 @@ int main(void)
         struct edc_task *pdf = find_task_by_desc(sess, "/skill pdf page 3");
         CHECK(pdf != NULL, "a task was created, labelled by the command the user typed");
         const char *in = pdf ? first_user_content(pdf->active_turn) : NULL;
-        CHECK(in && strstr(in, "<skill name=\"pdf\"") != NULL, "the body is wrapped in a <skill> block (pi's shape)");
+        CHECK(in && strstr(in, "<skill name=\"pdf\"") != NULL, "the body is wrapped in a <skill> block");
         CHECK(in && strstr(in, "References are relative to") != NULL, "which names the directory its paths hang off");
         CHECK(in && strstr(in, "Extract text from the PDF.") != NULL, "the SKILL.md body is inside it");
         CHECK(in && strstr(in, "{{LAST}}") != NULL,

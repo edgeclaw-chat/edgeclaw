@@ -1,6 +1,6 @@
-/* P3: the overflow classifier. The table is built from real responses (see
- * docs/pi-alignment.md 2.5.1): a real 400 names the window *only* in its message
- * body -- `type` and `code` are both the generic `invalid_request_error` -- and a
+/* P3: the overflow classifier. The table is built from real responses: a real 400
+ * names the window *only* in its message body -- `type` and `code` are both the generic
+ * `invalid_request_error` -- and a
  * 429 must never be read as an overflow, because "fold your context" is the wrong
  * advice for a throttled request. Pure function: strings in, verdict out. */
 
@@ -59,7 +59,7 @@ int main(void)
     /* message 是主键: 状态码不是门 (这是设计, 不是意外) */
     check_kind("500 但文案点名窗口", 500, "maximum context length is 8192", EDC_LLM_ERR_CONTEXT_OVERFLOW);
 
-    /* ── 限流: pi 的显式反例, 必须先于长度判据被排除 ── */
+    /* ── 限流: 显式反例, 必须先于长度判据被排除 ── */
     check_kind("429 限流", 429, "rate limit exceeded: please slow down", EDC_LLM_ERR_RATE_LIMIT);
     check_kind("429 且文案里带 tokens (最像溢出的那种)", 429,
                "too many requests; your request used 200000 tokens, retry in 20s", EDC_LLM_ERR_RATE_LIMIT);

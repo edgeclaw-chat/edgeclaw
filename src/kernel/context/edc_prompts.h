@@ -16,11 +16,9 @@
  *     Review the staged changes. Focus on $1.
  *
  * Substitution is TEXTUAL, and the placeholders are THIS layer's: `$1` … `$N` and
- * `$ARGUMENTS` -- exactly opencode's two forms (its expander is `/\$(\d+)/` plus a
- * `$ARGUMENTS` replaceAll), so a template
- * brought over from them runs unedited. `{{…}}` is NOT a placeholder here: it belongs to the
- * INPUT (shell) layer as a task reference, and opencode / pi substitute only the `$` forms,
- * so a `{{1}}` in a body is plain text -- one spelling, one meaning.
+ * `$ARGUMENTS` -- two forms, so a template written that way runs unedited. `{{…}}` is NOT a
+ * placeholder here: it belongs to the INPUT (shell) layer as a task reference, so a `{{1}}`
+ * in a body is plain text -- one spelling, one meaning.
  */
 
 #include "sds.h"
@@ -61,8 +59,8 @@ UT_array *edc_prompts_list(const char *dir, const struct edc_config *conf);
 
 /* ── Over the resource roots (edc_resources.h) ───────────────
  *
- * A root may keep its templates in `prompts/` (pi) or `command/` `commands/` (opencode /
- * Claude Code); both layouts are read. Roots are searched IN ORDER and the first one that
+ * A root may keep its templates in `prompts/`, or in `command/` / `commands/`; both layouts
+ * are read. Roots are searched IN ORDER and the first one that
  * has a name wins -- so the workspace shadows a migrated template of the same name, and
  * `p->source` says which root a template actually came from. */
 struct edc_prompt *edc_prompt_load_roots(const UT_array *roots, const char *name, const struct edc_config *conf);

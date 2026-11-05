@@ -238,7 +238,7 @@ static void test_prompt_and_due(void)
     if (prompt)
     {
         CHECK(strstr(prompt, "<group-transcript>") != NULL && strstr(prompt, "</group-transcript>") != NULL,
-              "语料包在 <group-transcript> 里 (pi §3)");
+              "语料包在 <group-transcript> 里");
         CHECK(strstr(prompt, "<previous-summary>") != NULL && strstr(prompt, "</previous-summary>") != NULL,
               "有旧记忆 ⇒ 迭代更新: 旧摘要包在 <previous-summary> 里");
         CHECK(strstr(prompt, "# Old memory") != NULL, "旧记忆内容在内 (迭代的输入)");
@@ -1274,7 +1274,7 @@ static void test_cut_inside_active_turn(void)
               "active turn 的前三条 (含最初那条 input) 进语料");
         CHECK(strstr(prompt, "TAG2:") == NULL, "最新那条留作细节");
         CHECK(strstr(prompt, "old leader") != NULL, "老的完成成员照样在语料里");
-        CHECK(strstr(prompt, "**Turn Context (split turn):**") != NULL, "语料尾部是没写完的 turn ⇒ 带 split-turn 段 (pi §5)");
+        CHECK(strstr(prompt, "**Turn Context (split turn):**") != NULL, "语料尾部是没写完的 turn ⇒ 带 split-turn 段");
         CHECK(strstr(prompt, "- Original Request:") != NULL && strstr(prompt, "- Early Progress:") != NULL &&
                   strstr(prompt, "- Context for Suffix:") != NULL,
               "段里三个聚焦点 (原请求 / 早期进展 / 续跑要的上下文)");
@@ -1654,7 +1654,7 @@ static void test_tracked_files_reader(void)
 
 static void test_cut_never_orphans_tool_results(void)
 {
-    TEST("切点合法性: 第一条留下的消息不能是工具结果 (往回退到它的 assistant, pi §4)");
+    TEST("切点合法性: 第一条留下的消息不能是工具结果 (往回退到它的 assistant)");
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-orphan"), "Orphan");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -1723,7 +1723,7 @@ static void test_cut_never_orphans_tool_results(void)
 
 static void test_prompt_initial_variant_names_the_sections(void)
 {
-    TEST("P2b: 没有旧记忆 = 首次摘要, 指令逐段点名 pi §8 的六段格式");
+    TEST("P2b: 没有旧记忆 = 首次摘要, 指令逐段点名六段格式");
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-initial"), "Initial");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -1771,7 +1771,7 @@ static void test_prompt_initial_variant_names_the_sections(void)
 }
 
 /* P2b-2: 摘要被截断 (finish_reason=length) 不能当 checkpoint —— 半截记忆顶掉完整的
- * 记忆就是静默丢内容。pi §3 把 length 明确判为失败。 */
+ * 记忆就是静默丢内容。length 明确判为失败。 */
 static void test_truncated_summary_discards_fold(void)
 {
     TEST("P2b: 摘要被截断 ⇒ 折叠失败, 记忆与切点原样不动 (半截摘要不许当 checkpoint)");
@@ -1812,11 +1812,11 @@ static void test_truncated_summary_discards_fold(void)
     edc_config_free(cfg);
 }
 
-/* pi §5 的另一半: 切点在 **turn 边界**、语料全是写完的 turn ⇒ 不出现 split-turn 段
+/* split-turn 的另一半: 切点在 **turn 边界**、语料全是写完的 turn ⇒ 不出现 split-turn 段
  * (那条指令只在语料尾部是"没写完的 turn"时才该加)。 */
 static void test_no_split_turn_at_boundary(void)
 {
-    TEST("P2b/pi §5: 切点在 turn 边界 ⇒ 不带 split-turn 段 (指令不乱加)");
+    TEST("P2b/split-turn: 切点在 turn 边界 ⇒ 不带 split-turn 段 (指令不乱加)");
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-boundary"), "Boundary");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -1845,7 +1845,7 @@ static void test_no_split_turn_at_boundary(void)
     edc_config_free(cfg);
 }
 
-/* P2 判据 (docs/pi-alignment.md §2.4): "折叠请求装得下" —— 在触发线上起折时,
+/* P2 判据: "折叠请求装得下" —— 在触发线上起折时,
  * 交给摘要器的语料必须小于 window - reserve, 否则**折叠请求自己**就超窗
  * (那正是 P2 从"按条数"改成"向窗口要空间"要消掉的隐患)。 */
 static void add_big_member(struct edc_session *session, struct edc_task_group *group, int64_t id,

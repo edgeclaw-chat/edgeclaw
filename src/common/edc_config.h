@@ -146,7 +146,7 @@ struct edc_config
      * when it is false. A stored flag, not "is anything configured": clearing the key
      * later must not make the wizard reappear. */
     bool onboarded;
-    /* Turn off "context file" discovery (--no-context-files / -nc in pi): do not read the
+    /* Turn off "context file" discovery (--no-context-files / -nc): do not read the
      * user-global and workdir-tree AGENTS.md / CLAUDE.md, leaving only the workspace's
      * bootstrap files in the prompt. config.json's top-level key `skip_context_files`
      * (default -> false). */

@@ -166,7 +166,7 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
 - **P1（本方案主体）**：`edc_output_buf` + shell 两档阈值 + 文案 + 单测 + 端到端测量。
 - **P2**：`device_shell` / `device_file` 的 `resp_buf` 与下载 body 接同一个累加器（它们已有自己的 timeout，不另加 Tier 2）。
 - **P3**：`read_file` / `edit_file` 加"文件过大就拒绝/截断"的前置检查（读整文件是同类 OOM）。
-- **P4（可选）**：Tier 1 到顶时**溢出到 workspace 文件**（opencode 的做法）——结果里给"路径 + 预览"，被丢弃的大输出还能找回来。要处理文件命名与清理策略，单独一轮。
+- **P4（可选）**：Tier 1 到顶时**溢出到 workspace 文件**——结果里给"路径 + 预览"，被丢弃的大输出还能找回来。要处理文件命名与清理策略，单独一轮。
 
 ## 4. 验证
 

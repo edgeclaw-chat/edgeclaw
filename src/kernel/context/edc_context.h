@@ -63,8 +63,7 @@ extern int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, 
 extern sds edc_context_render_todo_body(cJSON *items, int *out_completed);
 extern sds edc_context_render_todo_reminder(cJSON *items);
 
-/* The group's CURRENT context size: pi's "anchor + tail estimate"
- * (compaction.ts:217).
+/* The group's CURRENT context size: the "anchor + tail estimate".
  *   1) a member with a usable anchor (the last response's provider count, newer
  *      than the group's last fold and with position info) -> max(anchor + the
  *      estimate of what was appended after it);

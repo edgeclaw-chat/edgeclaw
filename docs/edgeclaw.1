@@ -75,8 +75,8 @@ SHELL SYNTAX (on by default)
      operators do nothing inside it and {{...}} references in it are not
      collected (a template is authored content; its meaning must not depend
      on the reader's setting).  @ is outside it too: @file is a file
-     reference, the opencode/Claude convention rather than a Unix shell
-     one, so it works with the switch off.  ! is outside it as well: !cmd
+     reference rather than a Unix shell operator, so it works with the
+     switch off.  ! is outside it as well: !cmd
      never enters the parser (one token dispatches it to a task that issues
      one exec_shell call), so it means the same thing on or off.
 
@@ -164,7 +164,7 @@ SHELL SYNTAX (on by default)
        {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
        {{SELF}}  — task id of the current foreground active task.
        The sigil is {{...}} and NOT $: $ belongs to the prompt template
-       layer ($1 .. $N, $ARGUMENTS -- opencode's two forms).
+       layer ($1 .. $N, $ARGUMENTS).
        Only those three forms count; any other {{...}} (a pasted
        {{ var }}, a stray brace) is copied verbatim, and so is every $.
        Expansion happens after pipe splitting and redirect stripping, so
@@ -263,8 +263,8 @@ SHELL ARCHITECTURE
 FILE REFERENCES (@)
      A token starting with @ attaches a file's content to the task.  It is
      NOT shell syntax: it works with the switch off, inside a message and
-     inside a shell line's text alike, because it is a file reference (the
-     opencode / Claude Code convention), not a shell operator.
+     inside a shell line's text alike, because it is a file reference, not
+     a shell operator.
 
            > explain @src/main.c
            > @src/main.c#40-80 what does this loop do
@@ -372,8 +372,9 @@ COMMAND REFERENCE
      /prompt                       List the templates in workspace/prompts/.
      /prompt [--new-group|--group <id>] <name> [args...]
                                    Run a template: substitute its $1 .. $N /
-                                   $ARGUMENTS placeholders (exactly opencode's;
-                                   {{...}} and ${...} are NOT placeholders) and
+                                   $ARGUMENTS placeholders (those two are the
+                                   whole vocabulary; {{...}} and ${...} are
+                                   NOT placeholders) and
                                    make the body ONE task, as written.  The last
                                    placeholder takes the remaining args; a body
                                    with no placeholder gets the args appended.
@@ -388,8 +389,8 @@ COMMAND REFERENCE
      /skill [--new-group|--group <id>] <name> [args...]
                                    Run a skill directly: its SKILL.md body goes
                                    into this task wrapped in a <skill name=...
-                                   location=...> block (pi's shape, so the model
-                                   knows where the skill's relative paths hang
+                                   location=...> block (so the model knows where
+                                   the skill's relative paths hang
                                    off); the args are substituted, or appended
                                    after the closing tag when the body has
                                    none.  Same rule as a prompt body: the text
@@ -570,8 +571,8 @@ FILES
      ~/.edgeclaw/workspace/<sid>/        Per-session directory.
      ~/.edgeclaw/workspace/<sid>/history.jsonl  Session history.
      ~/.edgeclaw/workspace/skills/       Custom skill SKILL.md files.
-     Prompts and skills are also read from the directories the other tools
-     already use, the first hit winning: the project's (walking up from the
+     Prompts and skills are also read from the directories other agent tools
+     use, the first hit winning: the project's (walking up from the
      session's directory -- .edgeclaw .claude .agents .opencode .pi), then
      ~/.edgeclaw/workspace (ours, the only writable one), then the user's
      (~/.claude, ~/.agents, ~/.config/opencode, ~/.pi/agent).  A name found in

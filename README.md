@@ -16,9 +16,6 @@ long conversation, every message becomes a **task** you can watch, queue, branch
 combine from the same input box. It ships as a single static binary (no runtime, no
 package manager) with a full-screen TUI.
 
-Inspired by [nanobot](https://github.com/HKUDS/nanobot) and
-[OpenClaw](https://github.com/openclaw/openclaw).
-
 ---
 
 ## What you get
@@ -45,9 +42,9 @@ Works with the shell switch on or off.
 
 **Commands and templates.** `/task`, `/session`, `/group`, `/model`, `/sandbox`, `/shell`
 … plus `/prompt` and `/skill`, which run a template (or a `SKILL.md`) as one task, with
-`$1 … $N` / `$ARGUMENTS` substituted. Prompt and skill directories are read from the
-roots other agent tools already use (`.edgeclaw`, `.claude`, `.agents`, `.opencode`,
-`.pi`), so existing material works unchanged.
+`$1 … $N` / `$ARGUMENTS` substituted. Prompt and skill directories are read from
+`.edgeclaw`, `.claude`, `.agents`, `.opencode` and `.pi` roots, so material already laid
+out that way works unchanged.
 
 **Memory that survives.** Each group folds its finished tasks into a summary; each
 session curates durable entries you can search (`/session memo`). Restart and the
@@ -305,10 +302,3 @@ Conventions worth knowing before a patch:
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-## Acknowledgments
-
-[nanobot](https://github.com/HKUDS/nanobot) and
-[OpenClaw](https://github.com/openclaw/openclaw) for the shape of the agent loop, and the
-[opencode](https://github.com/sst/opencode) project for the `@file` convention this
-interface follows.

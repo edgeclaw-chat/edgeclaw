@@ -274,7 +274,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/prompt <name> [args…]",
      "run a template: its placeholders are filled in and the body becomes ONE task, as written",
      "The body is a DOCUMENT, not a command line: the template's `$1` … `$N` / `$ARGUMENTS` placeholders are "
-     "substituted (opencode's spelling -- `{{…}}` is NOT a placeholder), and what comes out is one task's "
+     "substituted (`{{…}}` is NOT a placeholder), and what comes out is one task's "
      "input, verbatim. `| ; & >` in a body do nothing, and a `{{…}}` in it is plain text too. A body is "
      "therefore independent of the `/shell` switch -- its meaning must not depend on the reader's setting.\n\n"
      "`--new-group` runs it in a group of its own (a fresh conversation); `--group <id>` (also "
@@ -391,7 +391,7 @@ static const struct edc_cmd_doc k_cmd_families[] = {
      "`/shell on|off` is the only way to flip it (persisted; no CLI flag).\n\n"
      "It governs what you TYPE. A `/prompt` or `/skill` body is a document, not input to this layer, so the "
      "switch never changes what a template does. And `@` is not part of it either: `@file` is a file "
-     "reference (the opencode / Claude Code convention, not a Unix shell one), so it works with the switch "
+     "reference (a file reference, not a Unix shell operator), so it works with the switch "
      "off too."},
 };
 #define EDC_CMD_FAMILY_COUNT (sizeof(k_cmd_families) / sizeof(k_cmd_families[0]))
@@ -2786,8 +2786,8 @@ static sds cmd_session_workdir(struct edc_session_manager *sm, const struct edc_
 
 static void edc_commands_prompt_list(struct edc_config *cfg, const char *workdir, struct edc_reply_to to)
 {
-    /* Every resource root (ours first), so a template the user brought over from pi /
-     * Claude Code / opencode shows up here too. */
+    /* Every resource root (ours first), so a template kept in another tool's directory
+     * shows up here too. */
     UT_array *roots = edc_resource_dirs(cfg, workdir);
     UT_array *prompts = edc_prompts_list_roots(roots, cfg);
 
@@ -3119,8 +3119,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
  * pick up on its own -- it sees name + description in the system prompt, then reads the
  * file. `/skill` is the EXPLICIT way in: `/skill <name> [args…]` loads the body and runs
  * it as this task's input, the same path `/prompt` takes (so a pipe or a redirect in the
- * body still works). pi / Claude Code spell this `/skill:name`; we keep our single-verb
- * style, `/prompt <name>` / `/skill <name>`.
+ * body still works). One verb, one form: `/prompt <name>` / `/skill <name>`.
  *
  * A skill whose front matter says `disable-model-invocation: true` is NOT in the system
  * prompt (the model must not reach for it), but it is still runnable from here. */
@@ -3158,7 +3157,7 @@ static void edc_commands_skill_list(struct edc_config *cfg, const char *workdir,
             if (sk->source && cfg->workspace && strcmp(sk->source, cfg->workspace) != 0)
                 out = sdscatprintf(out, "  _(from `%s`)_\n", sk->source);
             /* The copies that lost the name to this one: a user editing them would
-             * otherwise never learn the change has no effect (pi's collision diagnostic). */
+             * otherwise never learn the change has no effect. */
             if (sk->shadowed)
             {
                 for (int j = 0; sk->shadowed[j]; j++)
@@ -3249,7 +3248,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
         return true;
     }
 
-    /* pi's shape: the body goes in wrapped in a <skill> block that names the file and the
+    /* The body goes in wrapped in a <skill> block that names the file and the
      * directory its relative paths hang off -- otherwise "run scripts/foo.sh" leaves the
      * model guessing where that is. The user's arguments then land either in the body's
      * placeholders or, when it has none, appended after the closing tag (the rule in
@@ -3281,7 +3280,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     /* Spawned DIRECTLY rather than through edc_shell_execute: a skill body is a DOCUMENT,
      * and the shell layer tokenizes its input -- `<` / `>` are operators there (`<` is
  * rejected outright now, since `@file` replaced it, but `>` still redirects),
-     * so pi's `<skill …>` wrapper would be eaten by the tokenizer (and any `<tag>` in a
+     * so the `<skill …>` wrapper would be eaten by the tokenizer (and any `<tag>` in a
      * body silently mangled). */
     struct edc_session *session = cmd_input_session(sm, message);
     struct edc_task_group *group = NULL;

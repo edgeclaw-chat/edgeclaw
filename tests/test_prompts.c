@@ -2,10 +2,9 @@
  *
  * Unit tests for parsing (src/kernel/context/edc_prompts.c), argument splitting and
  * substitution. Two properties matter most:
- *   ① the placeholders are THIS layer's, spelled the ecosystem's way -- `$1` / `$@` /
- *      `${1:-x}` (pi / Claude Code / opencode, so their files run unedited) -- with the
- *      legacy `{{…}}` alias read by the SAME expander. There is no translation step: a body
- *      keeps exactly what its author wrote;
+ *   ① the placeholders are THIS layer's -- `$1` … `$N` and `$ARGUMENTS`, the two forms a
+ *      template written for another agent tool already uses. There is no translation step:
+ *      a body keeps exactly what its author wrote, and `{{…}}` is NOT one of them;
  *   ② `$` is inert in the *input* layer: task references are `{{LAST}}` / `{{<id>}}` /
  *      `{{SELF}}` (see tests/test_cmd_parse.c::test_expand_task_refs), so the `$` forms
  *      belong to templates and the braces to the layer below. */
@@ -148,16 +147,14 @@ static void test_expand(void)
 {
     /* ── 替换：位置占位符 + 全量形式 ───────────────────────────── */
     /* ── `{{…}}` 不是占位符（它是输入层的任务引用）──────────────────
-     * 这是一次有意的对齐，2026-10-16 核过 opencode 源码：它只认 `$1..$n` 与
-     * `$ARGUMENTS`，从来没有 `{{…}}` 占位符。把 `{{…}}` 也当占位符是我们自己的
-     * 旧别名，它让同一个拼写在两层有两种意思。现在它在这一层是纯文本。 */
+     * 本层的词汇只有 `$1..$n` 与 `$ARGUMENTS`。把 `{{…}}` 也当占位符是旧别名，
+     * 它让同一个拼写在两层有两种意思。现在它在这一层是纯文本。 */
     check_expand("`{{1}}` is NOT a placeholder", "A:{{1}}", "one", "A:{{1}}\n\none");
     check_expand("`{{@}}` neither", "A:{{@}}", "one two", "A:{{@}}\n\none two");
     check_expand("`{{1:-D}}` neither", "A:{{1:-D}}", "", "A:{{1:-D}}");
 
     /* ── 兜底：正文里没有任何引用 → 把用户输入追加在末尾 ────────────
-     * （opencode 的规则，2026-10-16 核过源码；这样 `/prompt x 一些话` 与
-     * `/skill y 一些话` 里的话永远不会被静默丢掉。） */
+     * （这样 `/prompt x 一些话` 与 `/skill y 一些话` 里的话永远不会被静默丢掉。） */
     check_expand("no reference: the arguments are appended", "no placeholders here", "one",
                  "no placeholders here\n\none");
     check_expand("no reference, no arguments: untouched", "no placeholders here", "", "no placeholders here");
@@ -168,19 +165,17 @@ static void test_expand(void)
     check_expand("a lone { is not a reference -> appended", "A:{1}", "one", "A:{1}\n\none");
 
     /* ── `$…` 是**本层**的占位符 ─────────────────────────────────
-     * 生态写法（pi / Claude Code / opencode）就是我们的写法：与 `{{…}}` 同一套文法、同一个
-     * 展开器（`edc_prompt_placeholder_at`），**没有“翻译”这一步**。 */
+     * 与 `{{…}}` 走同一个展开器（`edc_prompt_placeholder_at`），**没有“翻译”这一步**。 */
     check_expand("$1 substitutes like {{1}}", "A:$1", "one", "A:one");
     check_expand("$1 (last) takes the rest too", "A:$1", "one two", "A:one two");
-    check_expand("$10 is the tenth argument (multi-digit, as opencode reads it)",
+    check_expand("$10 is the tenth argument (multi-digit)",
                  "A:$10", "1 2 3 4 5 6 7 8 9 ten", "A:ten");
     check_expand("$10 with one argument is EMPTY -- it is not $1 followed by a 0",
                  "A:$10", "one", "A:");
     check_expand("$ARGUMENTS too", "A:$ARGUMENTS", "one two", "A:one two");
-    /* `$@` and the braced family (`${10}` `$@` `${1:-D}` `${@:2:1}`) are GONE: opencode has
-     * only `$1..$n` and `$ARGUMENTS`, and we align with it exactly. They are not
-     * placeholders any more, so they stay as text (and, with no reference found, the
-     * arguments are appended). */
+    /* `$@` and the braced family (`${10}` `${1:-D}` `${@:2:1}`) are GONE: the vocabulary is
+     * `$1..$n` and `$ARGUMENTS` only. They are not placeholders any more, so they stay as
+     * text (and, with no reference found, the arguments are appended). */
     check_expand("`$@` is not a form of ours", "A:$@", "one two", "A:$@\n\none two");
     check_expand("`${1}` is not a form of ours", "A:${1}", "one", "A:${1}\n\none");
     check_expand("`${1:-D}` is not a form of ours", "A:${1:-D}", "", "A:${1:-D}");

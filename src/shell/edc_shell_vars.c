@@ -5,9 +5,8 @@
 
 /* ── Task references (the expand phase, called once deps are done) ──
  *
- * The sigil is `{{…}}`, NOT `$`: `$` belongs to the PROMPT TEMPLATE layer (`$1`, `$@`,
- * `${1:-x}` -- the pi / Claude Code / opencode convention, so their templates run here
- * unedited). One sigil per layer, and they cannot collide.
+ * The sigil is `{{…}}`, NOT `$`: `$` belongs to the PROMPT TEMPLATE layer (`$1` … `$N` and
+ * `$ARGUMENTS`). One sigil per layer, and they cannot collide.
  *
  * Recognised forms -- and ONLY these; everything else is copied VERBATIM, because a
  * reference must be spelled exactly to count (that is what makes pasted text safe: a

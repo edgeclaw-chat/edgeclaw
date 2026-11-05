@@ -62,8 +62,7 @@ struct edc_tool
     /* One-line selection summary for the system prompt's tool section ("- name: snippet").
      * A snippet is an affordance for CHOOSING a tool, not a second copy of the signature:
      * the request's `tools` field already carries name/description/parameters, so a snippet
-     * must never restate the parameters. NULL = the tool is not listed there.
-     * See docs/pi-toolset-plan.zh.md §5. */
+     * must never restate the parameters. NULL = the tool is not listed there. */
     sds snippet;
     /* Behavioural notes that belong to no JSON schema field (output caps, ".gitignore"
      * semantics, "device_* runs remotely"). One per line; NULL = none. */

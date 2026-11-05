@@ -28,7 +28,7 @@
  * there is no other trigger, so this key is always meaningful and is never 0.
  *
  * 1M is the window of the default model family (`deepseek-flash`, i.e. V4.1-Flash-1017,
- * reports 1048576 via GET /models; measured in docs/pi-alignment.md 2.5.1). A different model needs
+ * reports 1048576 via GET /models; measured against the live endpoint). A different model needs
  * this edited to match, or a window bigger than the real one postpones folding
  * past the provider's own limit -- and a window much smaller than the group's
  * baseline context (system prompt + memory) makes it fold every round.

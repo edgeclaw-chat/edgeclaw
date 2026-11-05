@@ -13,18 +13,17 @@ Last reviewed: 2026-11-02 (v2.0.0 release preparation).
 
 ## Not implemented, and not planned for 1.x
 
-These are decisions, not backlog items. The reasoning lives in
-[`product-alignment.zh.md`](product-alignment.zh.md).
+These are decisions, not backlog items.
 
 | Capability | Why not |
 |---|---|
-| **MCP servers** | A "minimal, extensible harness" rival ships MCP as an extension, not as core; wiring it in would also break the "single binary, no runtime" story, because `npx`/`uvx`/`docker` servers need a runtime the user must supply. Reopening conditions are recorded in `product-alignment.zh.md` §3.1. If a user's reason for not trying EdgeClaw is MCP, that is the signal to reopen it — say so in an issue. |
+| **MCP servers** | Wiring MCP in would break the "single binary, no runtime" story, because `npx`/`uvx`/`docker` servers need a runtime the user must supply. If a user's reason for not trying EdgeClaw is MCP, that is the signal to reopen it — say so in an issue. |
 | **Sub-agents** | Not "missing": EdgeClaw's task graph (fork, dependencies, joins) covers the same ground with a different model. A separate sub-agent concept would be a second answer to a question that already has one. |
 | **Plan mode** | Same: a task tree with explicit states is already the plan, and it is inspectable, unlike a mode. |
 | **Project trust (`/trust`)** | Two-level project resources are **on by default** here. That is a deliberate trade (prompt-injection surface for zero-config convenience), and the "code execution" hole it would gate — packages, MCP server commands — does not exist yet. Revisit if packages land. |
-| **TypeScript / embedded-JS extension runtime** | Incompatible with a self-contained binary. See `product-alignment.zh.md`. |
+| **TypeScript / embedded-JS extension runtime** | Incompatible with a self-contained binary. |
 | **`--mode rpc` / an SDK** | `edgeclaw_cli` covers scripted use by accepting "the same line you would type in the TUI". A long-running RPC surface is a different product with different stability requirements. |
-| **Web search / fetch tools** | EdgeClaw has none, and neither does the project it measures itself against. Use `exec_shell` with `curl`. |
+| **Web search / fetch tools** | EdgeClaw has none. Use `exec_shell` with `curl`. |
 
 ## Implemented partially — know the edges
 

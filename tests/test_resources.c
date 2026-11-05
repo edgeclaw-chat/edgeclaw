@@ -1,12 +1,11 @@
 /* Resource roots + the `$`-dialect prompt translation (edc_resources.h / edc_prompts.h).
  *
  * Two things are pinned here:
- *   ① edc_resource_dirs() finds the user's foreign roots ($HOME/.claude, .agents,
+ *   ① edc_resource_dirs() finds the user's roots ($HOME/.claude, .agents,
  *      .config/opencode, .pi/agent) and the project's, workspace first, and drops the
  *      project ones when `load_project_resources` is false;
- *   ② a template loaded from a `$` root is TRANSLATED on load and remembers its source,
- *      the workspace shadows a same-named foreign template, and a template of ours keeps
- *      its `$` bytes (the invariant tests/test_prompts.c pins). */
+ *   ② a template keeps its `$` bytes on load and remembers its source, and the workspace
+ *      shadows a same-named template found in a later root. */
 #include "edc_config.h"
 #include "edc_prompts.h"
 #include "edc_resources.h"

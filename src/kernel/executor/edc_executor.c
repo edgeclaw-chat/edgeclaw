@@ -259,7 +259,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
     {
         /* A FOLD task has no tools, so a tool call in its response means the provider
          * misbehaved: refuse the summary, keep the group memory, let the next trigger
-         * retry. (pi §3.) A CURATION task (SESSION_MEMORY) is deliberately tool-driven
+         * retry. A CURATION task (SESSION_MEMORY) is deliberately tool-driven
          * and falls through to the normal tool loop
          * below. */
         if (task->sink == EDC_SINK_GROUP_MEMORY)
@@ -348,7 +348,7 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
     }
 
     /* Anything else is ERROR. A truncated summary is the one case worth naming:
-     * pi §3 refuses a checkpoint written by a `length` response, because half a
+     * a checkpoint written by a `length` response is refused, because half a
      * summary would silently replace a whole one. The task fails here, so the
      * fold never reaches deliver_memory and the old memory survives. */
     task->current_request_id = NULL;

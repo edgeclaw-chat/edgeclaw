@@ -15,9 +15,9 @@
  * data is the source of truth and those blocks are its projection for the model.
  *
  * Every list is in FIRST-SEEN order (oldest first) and capped per list. The order is
- * deliberate and is NOT pi's: pi sorts alphabetically because it has no cap, while a
- * cap plus sorting would permanently evict the most recently touched files -- exactly
- * the ones worth keeping. Order is also part of the cached prompt prefix, so `merge`
+ * deliberate: sorting alphabetically (which an uncapped list could afford) plus a cap
+ * would permanently evict the most recently touched files -- exactly the ones worth
+ * keeping. Order is also part of the cached prompt prefix, so `merge`
  * must produce the same bytes for the same inputs. */
 
 #define EDC_FOLD_MAX_TRACKED_FILES 50

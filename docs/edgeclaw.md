@@ -258,8 +258,8 @@ outside it:
   author must not have the meaning of their template depend on the *reader's* setting —
   they could never reproduce a bug report. (It is the same decision that made skill bodies
   spawn directly, and the same shape as a `'''` block: one literal atom.)
-- **`@` is not part of it.** `@file` is a file reference — the opencode / Claude Code
-  convention, not a Unix shell vocabulary — so it is expected to work with the switch off
+- **`@` is not part of it.** `@file` is a file reference — not a Unix shell vocabulary —
+  so it is expected to work with the switch off
   too. The migration hint an old `@desc` gets is the one piece that only makes sense with
   the switch on, since that is the only world where `@desc` ever meant a group.
 - **`!` is not part of it.** `!cmd` never enters the parser: it is a one-token dispatch to
@@ -371,7 +371,7 @@ cancels the task and **kills the command's whole process group** — that is wha
 
 `@path` attaches a file's content to the task. It is **not** shell syntax: it works with
 the switch off, in a message and in a shell line's text alike, because it is a file
-reference (the opencode / Claude Code convention), not a shell operator.
+reference, not a shell operator.
 
 ```
 > explain @src/main.c
@@ -603,9 +603,9 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/model <id>` | Switch model (persisted; the catalog's context window is applied too) |
 | `/model search <q>` | Search chat models across all providers |
 | `/prompt` | List the templates in `workspace/prompts/` |
-| `/prompt <name> [args…]` | Load a template, substitute its `$1` … `$N` / `$ARGUMENTS` placeholders (exactly opencode's; `{{…}}` and `${…}` are NOT ones), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and `{{…}}` in it is plain text too (the last placeholder takes the remaining args; a body with no placeholder gets the args appended). `--new-group` runs it in a group of its own, `--group <id>` (or `--group=<id>`) in that existing group |
+| `/prompt <name> [args…]` | Load a template, substitute its `$1` … `$N` / `$ARGUMENTS` placeholders (those two are the whole vocabulary; `{{…}}` and `${…}` are NOT placeholders), and make the body ONE task — as written. A body is a **document**, not a command line: `\| ; & >` in it do nothing, and `{{…}}` in it is plain text too (the last placeholder takes the remaining args; a body with no placeholder gets the args appended). `--new-group` runs it in a group of its own, `--group <id>` (or `--group=<id>`) in that existing group |
 | `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
-| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (pi's shape, so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
+| `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
@@ -747,7 +747,7 @@ same goes for the operators there — a command's input is not split into a `|` 
 `>` does not redirect.
 
 The sigil is `{{…}}`, **not** `$`: `$` belongs to the prompt template layer (`$1` … `$N`,
-`$ARGUMENTS` — opencode's two forms), so the two layers never collide.
+`$ARGUMENTS`), so the two layers never collide.
 
 ### Phase 1: Collect (at task creation)
 
@@ -907,9 +907,9 @@ inheriting the parent's memory and conversation context up to the fork point.
 
 ### Where prompts and skills come from
 
-`/prompt` and `/skill` read more than `~/.edgeclaw/workspace`: the directories the other
-tools already use are searched as well, so a template or skill you wrote for them works
-here unedited. Precedence — the first hit wins:
+`/prompt` and `/skill` read more than `~/.edgeclaw/workspace`: the directories other agent
+tools use are searched as well, so an existing template or skill works here unedited.
+Precedence — the first hit wins:
 
 | # | Root |
 |---|------|
@@ -917,8 +917,8 @@ here unedited. Precedence — the first hit wins:
 | 2 | `~/.edgeclaw/workspace` (ours, the only writable one) |
 | 3 | the user's: `~/.claude` · `~/.agents` · `~/.config/opencode` · `~/.pi/agent` |
 
-A root may keep templates in `prompts/` (pi) or `command/` `commands/` (opencode / Claude
-Code), and skills in `skills/` or `skill/`. The project level can be switched off with
+A root may keep templates in `prompts/` or `command/` `commands/`, and skills in `skills/`
+or `skill/`. The project level can be switched off with
 `load_project_resources: false` in `config.json`.
 
 **A collision is reported, not swallowed.** When the same name exists in two roots the
@@ -928,5 +928,4 @@ higher one wins and the shadowed copy is named: a warning in the log, and a
 ## See Also
 
 - Architecture: `docs/task-session-architecture.md`
-- Product gaps & requirement list vs pi: `docs/product-alignment.zh.md`
 - Source: <https://github.com/edgeclaw-chat/edgeclaw>

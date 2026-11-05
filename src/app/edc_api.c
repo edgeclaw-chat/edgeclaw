@@ -327,9 +327,9 @@ size_t edc_app_prompts(const struct edc_app *app, const char *workdir, char *buf
     if (!cfg || !cfg->workspace)
         return 0;
 
-    /* Every resource root, ours first -- so a template migrated from pi / Claude Code /
-     * opencode is offered by the completion popup without being moved. The project roots
-     * come from the displayed session's directory. */
+    /* Every resource root, ours first -- so a template kept in another tool's directory is
+     * offered by the completion popup without being moved. The project roots come from the
+     * displayed session's directory. */
     UT_array *roots = edc_resource_dirs(cfg, workdir);
     UT_array *prompts = edc_prompts_list_roots(roots, cfg);
     edc_resource_dirs_free(roots);

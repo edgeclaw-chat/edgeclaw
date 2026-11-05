@@ -273,10 +273,10 @@ static void test_system_prompt_cwd(void)
     rmdir(dir);
 }
 
-/* pi 的纪律 (docs/pi-system-prompt-guide.md §7: "无任何日期/时间戳注入 … 跨天、重启、resume
- * prompt 字节完全不变")。这里钉住它 —— 提示词里不许有时钟, 也不许留未替换的占位符。 */
+/* 确定性纪律："无任何日期/时间戳注入 … 跨天、重启、resume prompt 字节完全不变"。
+ * 这里钉住它 —— 提示词里不许有时钟, 也不许留未替换的占位符。 */
 static void test_system_prompt_has_no_clock(void){
-    TEST("system prompt: 无时钟 / 无未替换占位符 (pi §7 的确定性纪律)");
+    TEST("system prompt: 无时钟 / 无未替换占位符 (确定性纪律)");
 
     struct edc_config *cfg = make_config("/tmp/test_edc_noclock_ws");
     sds a = edc_context_build_system_prompt(cfg, NULL);
@@ -335,7 +335,7 @@ static void test_memory_file_mechanism_is_gone(void)
     rmdir(dir);
 }
 
-/* pi 的"上下文文件"发现 (docs/pi-system-prompt-guide.md §3.6): 用户全局一份 + 从**工作目录**
+/* "上下文文件"的发现: 用户全局一份 + 从**工作目录**
  * 向上遍历到根, 同一目录里只取优先级最高的候选 (override > AGENTS.md > AGENTS.MD > CLAUDE.md >
  * CLAUDE.MD), 每个文件带自己的路径。绑定到某个项目目录的 session 就是靠这个吃到项目的规矩。 */
 /* 2026-10-21: 工作区不再是提示词的来源。BOOTSTRAP_FILES 已取消 —— workspace 只在首次运行
@@ -423,7 +423,7 @@ static void test_project_context_discovery(void)
     CHECK(p && strstr(p, "SUB-PLAIN") == NULL, "同目录被 override 压制的没收");
     CHECK(p && strstr(p, "SUB-CLAUDE") == NULL, "同目录优先级更低的 CLAUDE.md 没收");
     CHECK(p && strstr(p, "<project_instructions path=") != NULL, "带路径标注");
-    CHECK(p && strstr(p, "Project-specific instructions and guidelines:") != NULL, "有 pi 那句引导语");
+    CHECK(p && strstr(p, "Project-specific instructions and guidelines:") != NULL, "有那句引导语");
     if (p)
     {
         const char *gpos = strstr(p, "GLOBAL-RULE");

@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-/* Token estimation, pi-shaped: a provider's real usage is always the anchor; this
+/* Token estimation: a provider's real usage is always the anchor; this
  * heuristic only fills in what was appended after it, because "the last reply's
  * usage" answers "how big was that request", never "how big is the context now".
  *

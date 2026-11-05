@@ -185,9 +185,9 @@ static struct edc_prompt *edc_prompt_parse(const char *name, const char *content
         return NULL;
     }
 
-    /* Stored AS WRITTEN: `$1` … `$N` and `$ARGUMENTS` are our placeholder spelling -- exactly
-     * opencode's two forms, which is what lets their files run unedited. (Neither `{{…}}` nor
-     * the braced `${…}` family is a placeholder any more; see edc_prompt_placeholder_at.) */
+    /* Stored AS WRITTEN: `$1` … `$N` and `$ARGUMENTS` are the whole placeholder spelling, so a
+     * template written that way runs unedited. (Neither `{{…}}` nor the braced `${…}` family
+     * is a placeholder; see edc_prompt_placeholder_at.) */
     prompt->body = trimmed;
 
     if (!prompt->description)
@@ -297,9 +297,9 @@ UT_array *edc_prompts_list(const char *dir, const struct edc_config *conf)
 }
 
 /* ── Over the resource roots (edc_resources.h) ─────────────── */
-/* Where a root may keep its templates: pi uses prompts/, opencode and Claude Code use
- * command/ (+ commands/). A nested file name cannot be addressed by `/prompt <name>` (the
- * name is a bare file name), so only the flat files are read. */
+/* Where a root may keep its templates: prompts/, or command/ (+ commands/). A nested file
+ * name cannot be addressed by `/prompt <name>` (the name is a bare file name), so only the
+ * flat files are read. */
 static const char *const k_prompt_subdirs[] = {"prompts", "command", "commands"};
 
 static struct edc_prompt *edc_prompts_find(UT_array *prompts, const sds name)
@@ -437,8 +437,8 @@ enum edc_prompt_spec_kind
     SPEC_POSITIONAL, /* a digit string -- argument N */
 };
 
-/* Where a placeholder starts: our `$…` (opencode's two forms, so running THEIR files
- * unedited is the point). On success |*out_spec| is the canonical inner form -- a digit
+/* Where a placeholder starts: our `$…` (two forms: a position or `$ARGUMENTS`, so a
+ * template written for another tool runs unedited). On success |*out_spec| is the canonical inner form -- a digit
  * string ("1", "10") or "@" -- and the result is how many bytes were consumed; 0 = not a
  * placeholder (copy the byte verbatim).
  *
@@ -446,19 +446,18 @@ enum edc_prompt_spec_kind
  * know (with no arguments a positional resolves to the empty string, so false really means
  * "unrecognised").
  *
- *   $1 … $n          one positional argument -- MULTI-digit, as opencode's `/\$(\d+)/` reads
- *                    it: `$10` is the tenth argument (not `$1` followed by a literal `0`,
- *                    which is what a shell would say, and what this used to do)
+ *   $1 … $n          one positional argument -- MULTI-digit: `$10` is the tenth argument
+ *                    (not `$1` followed by a literal `0`, which is what a shell would say,
+ *                    and what this used to do)
  *   $ARGUMENTS       every argument
  *   \$               a literal `$` (handled by the callers, which see the backslash)
  *
- * That is the whole vocabulary, and it is opencode's: `$@`, `${1}`, `${1:-D}` and the slice
- * forms were ours, not theirs, so they are gone (they stay as text now).
+ * That is the whole vocabulary: there is no `$@`, no `${1}`, no `${1:-D}`, no slice form
+ * (all of those stay as text now).
  *
  * `{{…}}` is NOT a placeholder here. It used to be a legacy alias of these forms, but that
- * made one spelling mean two things (`{{…}}` is the INPUT layer's task reference) and it was
- * ours alone -- opencode and pi substitute only the `$` forms. So a `{{1}}` in a body is
- * plain text now, exactly as it is for them. */
+ * made one spelling mean two things (`{{…}}` is the INPUT layer's task reference), so a
+ * `{{1}}` in a body is plain text: one spelling, one meaning. */
 static size_t edc_prompt_placeholder_at(const char *p, sds *out_spec)
 {
     const char *spec_start = NULL;
@@ -470,10 +469,9 @@ static size_t edc_prompt_placeholder_at(const char *p, sds *out_spec)
         const char *q = p + 1;
         if (*q >= '0' && *q <= '9')
         {
-            /* MULTI-digit, the way opencode's `/\$(\d+)/` reads it: `$10` is argument ten.
-             * It used to be a single digit (so `$10` was `$1` + a literal `0`, shell-style),
-             * which silently disagreed with opencode -- a template with ten arguments
-             * behaved differently on the two sides. */
+            /* MULTI-digit: `$10` is argument ten. It used to be a single digit (so `$10`
+             * was `$1` + a literal `0`, shell-style), which quietly broke a template that
+             * had ten arguments. */
             const char *d = q;
             while (*d >= '0' && *d <= '9')
                 d++;
@@ -579,7 +577,7 @@ static void edc_prompt_scan_args(const sds body, long *out_last, bool *out_any)
 /* Recognise the inside of a placeholder; false = not a form we know (leave it verbatim).
  * |last_positional| is the highest positional index in the body: that ONE takes every
  * remaining argument, so `/prompt x a b c` with `{{1}}` (or `$1`) hands the body "a b c"
- * instead of dropping "b c" (opencode's rule -- see the header). */
+ * instead of dropping "b c" (see the header). */
 static bool edc_prompt_braced(sds spec, const sds *args, int argc, sds *out, long last_positional)
 {
     const char *p = spec;
@@ -619,10 +617,9 @@ sds edc_prompt_expand(const struct edc_prompt *prompt, sds *args, int argc)
     if (!prompt || !prompt->body)
         return sdsempty();
 
-    /* The argument rules (opencode's, verified 2026-10-16 -- packages/opencode/src/session/
-     * prompt.ts): the highest positional placeholder takes the remaining arguments, and a
-     * body with NO reference at all gets the user's arguments appended instead. Either way
-     * what the user typed reaches the model. */
+    /* The argument rules: the highest positional placeholder takes the remaining arguments,
+     * and a body with NO reference at all gets the user's arguments appended instead. Either
+     * way what the user typed reaches the model. */
     long last_positional = 0;
     bool any_reference = false;
     edc_prompt_scan_args(prompt->body, &last_positional, &any_reference);

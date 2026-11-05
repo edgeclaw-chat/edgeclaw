@@ -5,8 +5,8 @@
  * the generic `invalid_request_error`, with the window spelled out only in the
  * message ("This model's maximum context length is 1048576 tokens. However, you
  * requested 2011367 tokens ... Please reduce the length of the messages"). So the
- * message is the primary key and `http_status` only breaks ties -- the table below
- * comes from the measurements in docs/pi-alignment.md 2.5.1.
+ * message is the primary key and `http_status` only breaks ties -- the table below comes
+ * from measurements on real responses.
  *
  * A pure function: no I/O, no state, no allocation, so the whole table is testable
  * by feeding it strings.

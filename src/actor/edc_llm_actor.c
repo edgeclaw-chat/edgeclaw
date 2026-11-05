@@ -289,7 +289,7 @@ static void llm_add_wire_message(cJSON *messages, cJSON *item)
  * one conversation's requests on the same shard instead of whichever replica the load
  * balancer picks. Only api.openai.com documents the field: an OpenAI-compatible provider
  * that does not know it may reject the whole request as an unknown argument, and its cache
- * is keyed on content alone. pi gates it to that host for the same reason. */
+ * is keyed on content alone, so the field is sent to that host only. */
 static bool llm_url_takes_prompt_cache_key(const char *url)
 {
     return url && strstr(url, "api.openai.com") != NULL;

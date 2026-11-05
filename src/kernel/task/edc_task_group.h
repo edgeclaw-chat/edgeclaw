@@ -58,7 +58,7 @@ struct edc_task_group
     char role_buf[32];
 
     /* The declaration set this group's requests send -- WHICH tools the model is told about
-     * (docs/pi-toolset-plan.zh.md, I2 "组内冻结"). Resolved once on first use from the
+     * (frozen for the group's lifetime). Resolved once on first use from the
      * registry + the transcript's deltas, and recomputed only when a change is non-additive
      * (a removal or a redefinition). Not persisted: both halves are reproducible (the
      * registry from config, the deltas from `history`), and history[0] is not persisted

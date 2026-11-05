@@ -134,12 +134,11 @@ int main(void)
                     "entries are not strictly sorted / contain duplicates");
     }
 
-    /* The bundle is the MANUAL, not docs/: the six chapters below answer "how do I use
+    /* The bundle is the MANUAL, not docs/: the chapters below answer "how do I use
      * EdgeClaw", while the design notes beside them answer only "how is EdgeClaw built".
      * A glob would quietly ship the notes too, so the set is pinned from both sides --
-     * 245 KB, pi-alignment.md 60 KB), so the set is pinned from both sides -- what has to
-     * be in, and what must not be -- and the count keeps a stray glob from slipping back
-     * in without failing here. */
+     * what has to be in, and what must not be -- and the count keeps a stray glob from
+     * slipping back in without failing here. */
     static const char *k_manual[] = {"edgeclaw.1", "edgeclaw.md", "input-syntax.zh.md",
                                      "limitations.md", "local-shell-command.zh.md",
                                      "prompt-library.md", "tool-output-limits.zh.md"};
@@ -153,7 +152,6 @@ int main(void)
     T_CHECK(edc_bundled_docs_count == manual_count,
             "the bundle must be the manual chapters only (see DOCS_FILES in //BUILD)");
     T_CHECK(find("release-checklist.md") == NULL, "a maintenance note is embedded");
-    T_CHECK(find("pi-alignment.md") == NULL, "a design note is embedded: pi-alignment.md");
     T_CHECK(find("design/shell.y") == NULL, "the grammar sources are embedded");
 
     /* (2) edc_init_env releases it to <home>/docs. */

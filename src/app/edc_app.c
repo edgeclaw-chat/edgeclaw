@@ -40,10 +40,9 @@ static sds app_tool_section(void *ctx)
     return edc_toolset_render_prompt((struct edc_toolbox *)ctx, EDC_TOOL_SCOPE_NORMAL, NULL);
 }
 
-/* A group's declaration set, resolved once and then frozen (docs/pi-toolset-plan.zh.md, I2:
- * one conversation must send the same `tools` bytes every turn). Returning NULL would make
- * the request fall back to the process-wide array, so this always answers when there is a
- * toolbox. */
+/* A group's declaration set, resolved once and then frozen: one conversation must send the
+ * same `tools` bytes every turn. Returning NULL would make the request fall back to the
+ * process-wide array, so this always answers when there is a toolbox. */
 static cJSON *app_group_tools(void *ctx, struct edc_task *task)
 {
     struct edc_toolbox *tb = (struct edc_toolbox *)ctx;
@@ -214,9 +213,9 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
                                    app->toolbox ? app->toolbox->memory_schemas : NULL);
 
     /* The registry, in the two places that need it but sit below the toolbox in the
-     * layering: the system prompt's tool section and the per-group declaration set
-     * (docs/pi-toolset-plan.zh.md). Both are rendered from the same registry, so they cannot
-     * disagree with the request's `tools` field. */
+     * layering: the system prompt's tool section and the per-group declaration set. Both are
+     * rendered from the same registry, so they cannot disagree with the request's `tools`
+     * field. */
     edc_context_set_tool_section_provider(app_tool_section, app->toolbox);
     edc_llm_request_bind_group_tools(app_group_tools, app->toolbox);
 

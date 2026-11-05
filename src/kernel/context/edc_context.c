@@ -22,16 +22,17 @@
  *     (it described web_search / web_fetch / message / spawn long after they were gone).
  *   - AGENTS.md is PROJECT input, not bootstrap: ~/.edgeclaw/AGENTS.md plus the upward walk
  *     from the session's workdir, see load_project_context(). A project that has none simply
- *     gets no <project_instructions> section (same as pi).
+ *     gets no <project_instructions> section.
  *   - IDENTITY.md was dropped with the array: a persona override is a different feature
  *     (custom prompt), not a file the release ships next to the model's instructions. */
 
-/* pi's "context file" candidates (docs/pi-system-prompt-guide.md §3.6): IN a directory
- * only the highest-priority one is taken; an override suppresses only its own directory. */
+/* The "context file" candidates: IN a directory only the highest-priority one is taken; an
+ * override suppresses only its own directory. */
 static const char *CONTEXT_FILE_CANDIDATES[] = {"AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md",
                                                 "CLAUDE.MD"};
 
-/* Read a context file; NULL when unreadable (not an error -- absence is normal; on pi's side the section just does not appear). */
+/* Read a context file; NULL when unreadable (not an error -- absence is normal; the section
+ * just does not appear). */
 static sds read_context_file(const char *path)
 {
     EdcError *err = NULL;
@@ -45,7 +46,7 @@ static sds read_context_file(const char *path)
     return content;
 }
 
-/* Append one file (wrapped in pi's <project_instructions path="...">); empty content /
+/* Append one file (wrapped in <project_instructions path="...">); empty content /
  * duplicate path are skipped. `seen` is the set already collected (so AGENTS.md is not
  * collected twice when the workdir is the workspace). */
 static void append_context_file(sds *out, sds *seen, size_t *seen_n, const char *path)
@@ -70,7 +71,7 @@ static void append_context_file(sds *out, sds *seen, size_t *seen_n, const char 
 
 /* The "Project Context" section: one user-global file + an upward walk from the
  * session's workdir to the root (broad first, then specific). No hit => empty string
- * (the section does not appear, matching pi). `skip` = disabled in config. */
+ * (the section does not appear). `skip` = disabled in config. */
 static sds load_project_context(const char *workspace, const char *workdir, bool skip)
 {
     if (skip)
@@ -80,7 +81,7 @@ static sds load_project_context(const char *workspace, const char *workdir, bool
     size_t seen_n = 0;
     sds body = sdsempty();
 
-    /* (1) user-global (pi: ~/.pi/agent/AGENTS.md; us: ~/.edgeclaw/AGENTS.md) */
+    /* (1) user-global (<edc home>/AGENTS.md) */
     sds bc_home = edc_config_resolve_bc_home();
     sds global = edc_path_join(bc_home, "AGENTS.md", NULL);
     append_context_file(&body, seen, &seen_n, global);
@@ -235,13 +236,13 @@ static sds edc_context_get_identity(const char *os_name, const char *edc_home, c
  * (parameters, one-line purpose) stays in the registry.
  *
  * Interpolated: the workspace path. Everything else is a constant, so two builds of the same
- * version produce byte-identical prompts (docs/pi-system-prompt-guide.md §7). */
+ * version produce byte-identical prompts. */
 static sds edc_context_build_contract(const char *workspace)
 {
     return sdscatprintf(sdsempty(),
         "## How this program works\n\n"
         "**Skills.** A skill is a directory with a `SKILL.md`: %s/skills/<name>/SKILL.md, and the other "
-        "resource roots this program shares with pi / Claude Code / opencode. The system prompt lists them; "
+        "resource roots it also reads (`.claude`, `.agents`, `.opencode`, `.pi`). The system prompt lists them; "
         "read a SKILL.md before following it, or let the user run `/skill <name>`.\n\n"
         "**Memory.** Durable knowledge lives in this session's shared memory, visible to every task and "
         "group in the session: `memory_write` to record, `memory_search` / `memory_list` / `memory_get` to "
@@ -264,9 +265,9 @@ static sds edc_context_build_contract(const char *workspace)
 static sds edc_context_load_skills(const struct edc_config *conf, const char *workdir)
 {
     sds result = sdsempty();
-    /* Every resource root, ours first -- so a skill the user brought over from pi /
-     * Claude Code / opencode shows up here without being moved. The project roots come
-     * from the SESSION's directory (see edc_resource_dirs). */
+    /* Every resource root, ours first -- so a skill kept in another tool's directory shows
+     * up here without being moved. The project roots come from the SESSION's directory (see
+     * edc_resource_dirs). */
     UT_array *roots = edc_resource_dirs(conf, workdir);
     UT_array *skills = edc_skills_load_roots(roots, conf);
 
@@ -386,7 +387,7 @@ sds edc_context_build_system_prompt(struct edc_config *conf, const char *workdir
     sds identity = edc_context_get_identity(os_name, conf->edc_home, workspace, workdir);
     sds permissions = edc_context_build_permissions(conf);
     sds contract = edc_context_build_contract(workspace);
-    /* Context files (pi §3.6): user-global + an upward walk from THIS session's workdir
+    /* Context files: user-global + an upward walk from THIS session's workdir
      * -- so a session bound to a project directory really picks up that project's
      * AGENTS.md. */
     sds project_context = load_project_context(workspace, workdir, conf->skip_context_files);
@@ -659,7 +660,7 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
     return appended;
 }
 
-/* ── Group context size: pi's "anchor + tail estimate" ────────
+/* ── Group context size: the anchor + tail estimate ───────────
  *
  * Why an anchor: the estimator is a heuristic and estimating the whole context
  * accumulates error (worse for Chinese). The provider's usage for one request is truth,

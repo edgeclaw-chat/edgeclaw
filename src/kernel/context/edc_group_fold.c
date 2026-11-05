@@ -27,7 +27,7 @@
  * Only turns are folded, never task->output. The prompt building and threshold
  * logic are unchanged from the old memory_actor. */
 
-/* Fold task system prompt (pi §3): the summary is a **separate one-shot call**,
+/* Fold task system prompt: the summary is a **separate one-shot call**,
  * not a continuation of the conversation, so the prompt has to forbid continuing
  * or answering it. The request builder puts it in front of the fold prompt
  * (edc_llm_request); the fold task shares no group context. */
@@ -41,7 +41,7 @@ const char *edc_group_fold_system_prompt(void)
     return kFoldSystemPrompt;
 }
 
-/* ── Summary prompt (P2b, pi §3/§8) ─────────────────────────────────────
+/* ── Summary prompt (P2b) ────────────────────────────────────────────────
  * One independent request, assembled in two parts:
  *   <group-transcript> corpus </group-transcript>
  *   [<previous-summary> old memory </previous-summary>]  <- old memory = iterative update
@@ -82,14 +82,13 @@ static const char *kInitialSummaryInstruction =
     "\n"
     "Keep every section concise. Preserve exact file paths, function names and error messages.";
 
-/* pi §5's split turn: when the corpus ends on an UNFINISHED turn, the memory must
+/* The split turn: when the corpus ends on an UNFINISHED turn, the memory must
  * additionally carry "where that turn got to", or the resuming half sees only a
  * conversation-level summary and does not know what it is taking over.
  *
- * Our difference from pi: pi sends a SECOND call for the turn prefix (a dedicated
- * prompt, budget 0.5 x reserve); we use one call -- summary and turn context share the
- * same max_tokens (EDC_FOLD_SUMMARY_MAX_TOKENS = 0.8 x reserve). The merge format is
- * copied from pi:
+ * One call, not two: summary and turn context share the same max_tokens
+ * (EDC_FOLD_SUMMARY_MAX_TOKENS = 0.8 x reserve), where a dedicated second call would
+ * buy the turn prefix a budget of its own. The merge format is:
  *   {history summary}
  *   ---
  *   **Turn Context (split turn):**
@@ -346,7 +345,7 @@ static void free_pieces(struct fold_piece *ps, size_t cnt)
     free(ps);
 }
 
-/* Whether a piece's role is "tool" (a tool result). pi §4: a cut never lands on a tool
+/* Whether a piece's role is "tool" (a tool result). A cut never lands on a tool
  * result -- with its assistant(tool_calls) folded away it becomes an orphan and the
  * whole request fails. */
 static bool piece_is_tool_result(const struct fold_piece *fp)
@@ -368,7 +367,7 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
             push_pieces(&ps, &cnt, &cap, t, t->turns.data[qi], qi);
 
         /* In-flight member (P2a-4b): the active turn is uncommitted but is the NEWEST
-         * content. Folding its prefix is pi's split turn -- after landing the request
+         * content. Folding its prefix is the split turn -- after landing the request
          * starts after turn->folded_prefix (req->turn_begin lights up). Only ALIVE
          * members count as in-flight: an INTERRUPTED / CANCELLED half-turn is
          * not part of the current conversation and takes the normal path when it
@@ -387,7 +386,7 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
  * not where it happened, so a long task re-reads files it already read and cannot answer
  * "what did you change".
  *
- * The summary therefore ends with two blocks, pi's shape:
+ * The summary therefore ends with two blocks:
  *
  *   <read-files>
  *   src/a.c
@@ -407,7 +406,8 @@ static size_t collect_pieces(struct edc_task *const *members, size_t n, struct f
 
 /* The file a tool call names, classified: reader (read_file) or writer (write_file /
  * edit_file). Everything else is ignored -- `list_dir` names a DIRECTORY (a directory in a
- * file list is noise and pi's `ls` is not tracked either), device_* paths are on the device,
+ * file list is noise and a directory listing is not tracked either), device_* paths are on
+ * the device,
  * crontab/todo have no paths, and guessing would pollute a list that travels in every
  * request from now on. */
 static void collect_tool_call_file(cJSON *call, struct edc_fold_files *files)
@@ -500,7 +500,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     for (size_t i = 0; i < cnt; i++)
         total += ps[i].tokens;
 
-    /* How many messages to keep as detail. pi: keep_recent = a 20k-token tail. When the
+    /* How many messages to keep as detail: a 20k-token tail. When the
      * whole group is under that budget (a small group whose corpus is smaller than its
      * summary, or a manual /group fold on a tiny group) there is no "window" to compare
      * -- compress the oldest half, or a small group would never fold. */
@@ -543,7 +543,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         corpus -= ps[cut_at].tokens;
     }
 
-    /* Cut validity (pi §4): the first kept message must not be a tool result -- its
+    /* Cut validity: the first kept message must not be a tool result -- its
      * assistant(tool_calls) was folded into memory, and an orphan tool message fails the
      * whole request. Move back to that assistant (its tool result then stays too), i.e.
      * "rather fold one fewer". */
@@ -622,7 +622,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         prompt = sdscat(prompt, group->memory);
         prompt = sdscat(prompt, "\n</previous-summary>\n\n");
     }
-    /* The corpus ends on an unfinished turn (pi §5): the cut falls inside a turn (later
+    /* The corpus ends on an unfinished turn: the cut falls inside a turn (later
      * messages stay as detail), or the last corpus piece was already a running active
      * turn (content not finished generating). */
     bool split_turn = false;
@@ -631,7 +631,7 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     if (cut_at > 0 && ps[cut_at - 1].turn_index == EDC_FOLD_CUT_ACTIVE_TURN)
         split_turn = true; /* the corpus tail is an in-flight turn */
     if (split_turn)
-        log_info("L1 fold: group %s split turn at the cut (pi §5 turn context section)", edc_id_str(group->group_id));
+        log_info("L1 fold: group %s split turn at the cut (turn context section)", edc_id_str(group->group_id));
 
     prompt = sdscat(prompt, has_memory ? kUpdateSummaryInstruction : kInitialSummaryInstruction);
     if (split_turn)

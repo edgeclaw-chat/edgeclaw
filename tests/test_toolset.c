@@ -4,7 +4,7 @@
  * field -- i.e. inside the provider's cached prefix. So the two properties worth pinning are
  * (a) the output is deterministic regardless of registration order, and (b) only a removal or
  * a same-name redefinition flips has_non_additive, which is what makes the request recompute
- * the field (and cost one cache miss). Design: docs/pi-toolset-plan.zh.md. */
+ * the field (and cost one cache miss). */
 
 #include "edc_toolset.h"
 #include "test_ws.h"
@@ -366,7 +366,7 @@ static void test_render_prompt_is_terse_and_ruleful(void)
     CHECK(strstr(prose, "- exec_shell: Run a shell command locally") != NULL, "snippet line for exec_shell");
     CHECK(strstr(prose, "- memory_write: Record a durable note") != NULL, "memory tools are declared too");
     CHECK(strstr(prose, "Rules:") != NULL, "has a rules block");
-    /* The rule pi hard-codes for the same reason: with a shell and no grep/find, say so. */
+    /* With a shell but no grep/find, the prose has to say so. */
     CHECK(strstr(prose, "Use exec_shell for searching") != NULL, "the no-grep/find rule is present");
     CHECK(strstr(prose, "exec_shell: Output is capped.") != NULL, "a tool's guideline reaches the prompt");
     /* The schemas are NOT repeated here -- that is the `tools` field's job. */

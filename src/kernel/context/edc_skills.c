@@ -128,9 +128,9 @@ static bool edc_extract_skill_meta_and_content(const char *content, struct edc_s
         sdsfreesplitres(lines, line_count);
     }
 
-    /* pi's `disable-model-invocation: true`: the author says the MODEL must not reach for
-     * this skill on its own -- it stays out of the system prompt's skill list and only an
-     * explicit `/skill <name>` runs it. */
+    /* `disable-model-invocation: true` in the front matter: the author says the MODEL must
+     * not reach for this skill on its own -- it stays out of the system prompt's skill list
+     * and only an explicit `/skill <name>` runs it. */
     struct edc_skill_meta_entry *dm = NULL;
     HASH_FIND_STR(skill->meta, "disable-model-invocation", dm);
     if (dm && dm->value)
@@ -251,7 +251,7 @@ static struct edc_skill *edc_skills_find(UT_array *skills, const sds name)
 
 /* Roots in order, first name wins -- so the workspace shadows a migrated skill of the same
  * name, and `skill->source` names the root it came from. A root may keep its skills in
- * `skills/` (Claude / pi / opencode) or `skill/` (opencode's other spelling). */
+ * `skills/` or `skill/` (both spellings are read). */
 UT_array *edc_skills_load_roots(const UT_array *roots, const struct edc_config *conf)
 {
     UT_array *out;
@@ -284,9 +284,8 @@ UT_array *edc_skills_load_roots(const UT_array *roots, const struct edc_config *
                 if (winner)
                 {
                     /* Same name from a later (less specific) root: the first one wins, but
-                     * SAY SO. Silently dropping it is exactly what pi's `collision`
-                     * diagnostic exists to avoid -- a user editing the shadowed file would
-                     * otherwise never learn their change has no effect. */
+                     * SAY SO -- a user editing the shadowed file would otherwise never
+                     * learn their change has no effect. */
                     log_warn("skill '%s': %s is shadowed by %s", sk->name, sk->location ? sk->location : "?",
                              winner->location ? winner->location : "?");
                     edc_skill_add_shadowed(winner, sk->location);

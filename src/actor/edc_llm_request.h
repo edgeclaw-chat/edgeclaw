@@ -43,8 +43,8 @@ extern void edc_llm_request_bind_scheduler(struct edc_scheduler *sched, edc_acto
 
 /* The per-group declaration set. A normal reply declares the GROUP's tools, not the
  * process's: one conversation must send the same `tools` bytes every turn, or the provider's
- * cached prefix is lost (docs/pi-toolset-plan.zh.md, I2). The resolver lives in the assembly
- * root because it needs the registry, which this package must not depend on.
+ * cached prefix is lost. The resolver lives in the assembly root because it needs the
+ * registry, which this package must not depend on.
  * Returns an array owned by the group (NOT by the request); NULL = fall back to the
  * process-wide set. */
 typedef cJSON *(*EdcGroupToolsFn)(void *ctx, struct edc_task *task);

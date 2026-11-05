@@ -12,7 +12,7 @@ struct edc_config;
 struct edc_task;
 struct edc_task_group;
 
-/* Fold policy (pi alignment, decisions 13/14). A group folds when its estimated
+/* Fold policy. A group folds when its estimated
  * context exceeds `context_window - EDC_FOLD_RESERVE_TOKENS` (the window is always
  * configured, see edc_init_env.h); the fold keeps the newest
  * EDC_FOLD_KEEP_RECENT_TOKENS of detail and everything older becomes the
@@ -88,7 +88,7 @@ struct edc_fold_cut
 
 /** Build the fold prompt and the cut it corresponds to (they are computed together,
  *  from one pass, so the corpus sent and the prefix applied can never disagree).
- *  Selection (pi's keep_recent): walk the group's unfolded messages in content order
+ *  Selection: walk the group's unfolded messages in content order
  *  from the newest backwards, keep the newest EDC_FOLD_KEEP_RECENT_TOKENS as detail,
  *  everything older is the corpus. The cut lands on a message boundary. When the whole
  *  group is under that budget (a group whose summary is bigger than what is left to
@@ -103,12 +103,12 @@ extern sds edc_group_fold_build_prompt(struct edc_task_group *group, const char 
 /** Start a fold: create a system task carrying the target group and watermark,
  *  attach the prompt, dispatch it. NULL when one is already in flight, when the
  *  group is not quiescent (a member is still running), when there is nothing to
- *  fold, or when dispatch failed. The prompt follows pi's two-part layout (see
+ *  fold, or when dispatch failed. The prompt follows a two-part layout (see
  *  kInitialSummaryInstruction): a plain fold passes NULL focus. */
 extern struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
                                              struct edc_task_group *group, const char *focus);
 
-/** The system message every fold call carries (pi §3: the summary is a separate
+/** The system message every fold call carries (the summary is a separate
  *  one-shot call, so it must forbid continuing or answering the transcript).
  *  The fold request is **self-contained**: this message + the fold prompt, and
  *  nothing else. It deliberately does not live in a group's history[0]: that slot

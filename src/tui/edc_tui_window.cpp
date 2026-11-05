@@ -58,7 +58,7 @@ constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
 constexpr auto kHintHold = kQuitWindow;
 constexpr char kInterruptHint[] = "Ctrl+C again to quit";
 
-/* 粘贴折叠的门槛（opencode 用的是同一对数：3 行 / 150 字节）。
+/* 粘贴折叠的门槛（3 行 / 150 字节）。
  *
  * 折叠只在屏幕上有意义：一段两行的东西塞进输入框还不至于失控，一段四十行的会。所以
  * 低于门槛就原样插入 —— 行为与手打完全一致，用户看不出区别。 */

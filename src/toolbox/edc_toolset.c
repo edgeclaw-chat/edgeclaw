@@ -113,9 +113,8 @@ cJSON *edc_toolset_replay(cJSON *initial, cJSON *history, bool *has_non_additive
             continue;
 
         /* Any removal at all counts, even one that names a tool which never entered the
-         * field: pi's hasNonAdditiveToolChanges returns true on the same condition, and it is
-         * the conservative side -- recomputing when nothing changed yields the identical
-         * array, so the cache survives anyway. */
+         * field: this is the conservative side -- recomputing when nothing changed yields
+         * the identical array, so the cache survives anyway. */
         cJSON *removed = cJSON_GetObjectItem(msg, "tools_removed");
         if (cJSON_IsArray(removed))
         {
@@ -283,8 +282,8 @@ bool edc_toolset_note_change(struct edc_toolbox *tb, struct edc_task_group *grou
     /* The system prompt's tool section was frozen into history[0] when the group started and
      * is NEVER rewritten (that would invalidate everything behind it for no reason beyond the
      * one miss the field already costs). Instead the notice carries a fresh copy: the section
-     * is tagged `<tools>`, so a later copy supersedes the earlier one -- pi's shape, and the
-     * reason it can append instead of rewriting. */
+     * is tagged `<tools>`, so a later copy supersedes the earlier one -- which is why it can
+     * append instead of rewriting. */
     sds section = edc_toolset_render_prompt(tb, EDC_TOOL_SCOPE_NORMAL, group->tools_decl);
     if (section && sdslen(section) > 0)
     {
@@ -442,7 +441,7 @@ sds edc_toolset_render_prompt(struct edc_toolbox *tb, uint32_t scope, cJSON *dec
         return sdsempty();
     }
 
-    /* The tag is what makes a LATER copy authoritative: pi wraps every prompt section in a
+    /* The tag is what makes a LATER copy authoritative: every prompt section is wrapped in a
      * tag of its own name, so an update appended mid-conversation supersedes the earlier one
      * instead of contradicting it. `history[0]` therefore never has to be rewritten. */
     sds out = sdsnew("\n<tools>\n## Tools\n\n");

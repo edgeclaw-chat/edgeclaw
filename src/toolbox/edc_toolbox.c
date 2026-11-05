@@ -225,8 +225,8 @@ static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, E
 /* Which tool kinds a task may RUN. This is NOT the declaration set: that one decides what
  * the model is told about (edc_toolset), while this decides what actually executes. They
  * differ on purpose -- a deferred tool is callable without being declared, and a curator
- * must not be dragged into shell work just because the model asked (docs/pi-toolset-plan.zh.md,
- * I4 "声明 ≠ 权限"). */
+ * must not be dragged into shell work just because the model asked (a declared tool is not
+ * a permitted one). */
 static uint32_t edc_tool_scope_for_task(const struct edc_task *task)
 {
     if (!task)

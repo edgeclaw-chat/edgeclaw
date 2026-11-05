@@ -62,8 +62,8 @@
  *  - Paths in the result are relative to the search root, joined with '/', so the output
  *    looks the same to the model on every platform. */
 
-#define EDC_SEARCH_MAX_LINE 500        /* characters kept per matching line (pi's value) */
-#define EDC_SEARCH_DEFAULT_LIMIT 100   /* matches, pi's default */
+#define EDC_SEARCH_MAX_LINE 500        /* characters kept per matching line */
+#define EDC_SEARCH_DEFAULT_LIMIT 100   /* matches, when the caller names no limit */
 #define EDC_SEARCH_MAX_FILE_BYTES (8u * 1024u * 1024u)
 /* Total bytes of result text. `limit` bounds the number of matches, not their size: a model
  * that asks for limit=100000 in /usr produced ~9.8 MB, which would blow up the context it is

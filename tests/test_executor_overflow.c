@@ -196,7 +196,7 @@ static void test_rate_limit_is_not_overflow(void)
     CHECK(r.outcome == EDC_STEP_ERROR, "限流也是失败");
     CHECK(r.notice && strcmp(r.notice, "LLM API error (HTTP 429): rate limit exceeded, retry in 20s") == 0,
           "原话逐字节透传");
-    CHECK(r.notice && strstr(r.notice, "context overflow") == NULL, "不判成溢出 (pi 的显式反例)");
+    CHECK(r.notice && strstr(r.notice, "context overflow") == NULL, "不判成溢出 (显式反例)");
     CHECK(r.notice && strstr(r.notice, "/group fold") == NULL, "更不叫它去折叠上下文");
     fix_down(&f);
 }

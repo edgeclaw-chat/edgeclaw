@@ -128,8 +128,8 @@ static sds shape_resolver(const char *name, void *user_data)
 }
 
 /* Task references are `{{…}}`, not `$…`: `$` belongs to the PROMPT TEMPLATE layer
- * (pi / Claude Code / opencode spell their parameters `$1`, `$@`, `${1:-x}`), so the two
- * layers get one sigil each and can never collide. */
+ * (`$1` … `$N`, `$ARGUMENTS`), so the two layers get one sigil each and can never
+ * collide. */
 static void test_expand_task_refs(void)
 {
     sds err = NULL;

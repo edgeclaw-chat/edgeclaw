@@ -446,7 +446,7 @@ static void test_system_task_is_visible(void)
 /* ══════════════════════════════════════════════════════════════════
  *  Test 7 (P2b 卫生): 摘要响应带 tool_calls = 失败, 不是一次工具往返
  *  折叠请求根本不带工具定义 (edc_llm_request.c), 所以这个响应只可能是
- *  provider 行为异常。pi §3 判失败 ("Summarization attempted to call a tool"):
+ *  provider 行为异常。判为失败 ("Summarization attempted to call a tool"):
  *  不派发工具、不写记忆、任务落 ERROR。普通任务走同一条路**照常**派发。
  * ══════════════════════════════════════════════════════════════════ */
 

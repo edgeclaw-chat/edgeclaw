@@ -314,8 +314,7 @@ static const char *const EDC_SCHEMA_SQL =
      * Why: WITHOUT ROWID puts the row -- including the ~4 KB `json` -- in the PK B-tree's
      * leaf pages, so the leaves are huge and the index itself is the data. A rowid table
      * keeps the PK index small (keys + rowid) and puts the payload in a table clustered by
-     * insertion order, which matches how the loader walks tasks. opencode's schema does
-     * the same thing for message rows.
+     * insertion order, which matches how the loader walks tasks.
      *
      * This also deletes a hazard recorded earlier: on a WITHOUT ROWID table, adding a
      * secondary index on a PK prefix (task_id) made the planner take that index and then

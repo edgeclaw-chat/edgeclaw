@@ -38,9 +38,9 @@ edc_llm_error_kind edc_llm_error_classify(int http_status, const char *message)
     if (http_status == 0)
         return EDC_LLM_ERR_TRANSPORT;
 
-    /* Throttling first, and explicitly: 429 bodies do talk about tokens and lengths,
-     * and pi treats "rate limit" as the counterexample that must not classify as an
-     * overflow. Only after this branch can a length word mean "too much context". */
+    /* Throttling first, and explicitly: 429 bodies do talk about tokens and lengths, so
+     * "rate limit" is the counterexample that must not classify as an overflow. Only
+     * after this branch can a length word mean "too much context". */
     if (http_status == 429 || contains_ci(m, "rate limit") || contains_ci(m, "too many requests"))
         return EDC_LLM_ERR_RATE_LIMIT;
 

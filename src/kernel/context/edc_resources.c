@@ -46,10 +46,8 @@ UT_array *edc_resource_dirs(const struct edc_config *conf, const char *workdir)
     utarray_new(out, &ut_resource_dir_icd);
 
     /* The PROJECT first: the most specific one wins, so a repository may ship its own
-     * skills and govern them. (Position decided 2026-10-16: opencode puts the project
-     * after the global dir and lets the LAST source win, which comes to the same thing;
-     * pi puts the agent dir first instead. We take opencode's outcome, and -- like pi --
-     * report what a collision shadowed rather than dropping it silently.) */
+     * skills and govern them. Order is by precedence, not by root kind, and a collision is
+     * REPORTED (the shadowed copy is named) rather than dropped silently. */
     if (!conf || conf->load_project_resources)
     {
         static const char *const project[] = {

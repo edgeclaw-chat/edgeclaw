@@ -311,12 +311,11 @@ filegroup(
 # prompt points the model at <edc_home>/docs/edgeclaw.md, so "how do I use EdgeClaw" is
 # answerable from the binary alone -- no source tree, no docs/ copy to locate.
 #
-# An explicit list, NOT glob(["docs/**"]): docs/ holds two kinds of text. These six are
-# the product manual -- what a user, or the model acting for one, needs to OPERATE
+# An explicit list, NOT glob(["docs/**"]): docs/ holds two kinds of text. These are the
+# product manual -- what a user, or the model acting for one, needs to OPERATE
 # EdgeClaw. The rest are notes for people working ON it: they answer no user question,
-# is 245 KB, pi-alignment.md 60 KB): they answer no user question, while every binary
-# that carries them pays for them. A chapter added here ships; the pinned set and its
-# complement are asserted in //tests:test_bundled_docs.
+# while every binary that carries them pays for them. A chapter added here ships; the
+# pinned set and its complement are asserted in //tests:test_bundled_docs.
 DOCS_FILES = [
     "docs/edgeclaw.1",                # the man page
     "docs/edgeclaw.md",               # the manual: commands, sessions, tasks, tools
