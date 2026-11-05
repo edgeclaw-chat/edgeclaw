@@ -128,8 +128,13 @@ git tag -a vX.Y.Z -m "vX.Y.Z: <one line on what this release promises>"
 git push origin vX.Y.Z
 ```
 
-- [ ] The `release` job ran and produced `edgeclaw_{amd64,aarch64,arm}_{linux,macos}.tar.gz`
-      plus the device-agent archives.
+- [ ] The `release` job ran and produced one archive per matrix entry — the five
+      `edgeclaw_*` targets (`amd64_linux`, `arm_linux`, `aarch64_linux`,
+      `aarch64_macos`, `amd64_windows`), the three `*_linux_musl` variants, and the
+      `device_agent_*` set — each attached under **two** names: `<target>_vX.Y.Z.tar.gz`
+      and the version-less `<target>.tar.gz` that the README's
+      `releases/latest/download/` link depends on. A tarball with only one of the two
+      means "Collect artifact" lost a line.
 - [ ] Download one archive from the release page — not from `bazel-bin` — and confirm it
       starts and prints the version you tagged.
 - [ ] Release notes say what changed for a *user*; the checklist above is for you, not them.

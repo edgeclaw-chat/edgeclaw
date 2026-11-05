@@ -411,6 +411,14 @@ jobs:
           cp "bazel-bin/${ARTIFACT}" .
           if [[ "$VERSION" == v* ]]; then
             mv "${ARTIFACT}" "${{ matrix.target }}_${VERSION}.tar.gz"
+            # Two names per archive, on purpose. The versioned one is the immutable
+            # artifact: it says what it is a year later, and it is what a pinned
+            # download uses. The version-less copy is what makes
+            # releases/latest/download/<name> work at all -- that URL resolves an
+            # asset name, and a name containing the version cannot be written down
+            # before the tag exists. Without it the README's own quick-start command
+            # is a 404 (it was, from the first release until this line existed).
+            cp "${{ matrix.target }}_${VERSION}.tar.gz" "${ARTIFACT}"
           fi
 
       - name: Upload artifact
