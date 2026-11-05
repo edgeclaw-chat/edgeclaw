@@ -1,0 +1,96 @@
+name: Bug report
+description: Something behaves differently than the manual says it does
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: `docs/limitations.md` lists what EdgeClaw deliberately does not do,
+        and `docs/edgeclaw.md` is the manual (the binary embeds the same text). A behaviour
+        listed there as a limitation is not a bug.
+
+        For a security problem, **do not open an issue** — see [SECURITY.md](../SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `edgeclaw --version`
+      placeholder: edgeclaw v2.0.1 (0843d92)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux x86_64 (glibc)
+        - Linux x86_64 (musl)
+        - Linux aarch64 (glibc)
+        - Linux aarch64 (musl)
+        - Linux armv7
+        - macOS aarch64
+        - Windows x86_64
+        - Android (device agent)
+        - Built from source, other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it
+      options:
+        - Release tarball
+        - Built from source
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observed behaviour, and the line from the manual you expected instead if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact input lines, in order. If it needs a particular workspace, config setting
+        or conversation length, say which — "it happened after a long session" is a useful
+        clue, not a reproducer.
+      placeholder: |
+        1. start with `edgeclaw`
+        2. type: /task ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: |
+        `~/.edgeclaw/log/edgeclaw-<YYYY-MM-DD>.log` — the tail is usually enough.
+
+        **Redact before pasting.** The log records provider URLs, model names and error
+        bodies. Remove your API key if it ever appears, and anything else you would not
+        publish. When in doubt, paste the shape of the line with the value replaced by
+        `<redacted>`.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I checked `docs/limitations.md` and this is not a documented limitation.
+          required: true
+        - label: I removed credentials and anything private from the log excerpt above.
+          required: false

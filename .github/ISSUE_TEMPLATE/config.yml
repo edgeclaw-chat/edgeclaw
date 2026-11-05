@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: The manual
+    url: https://github.com/edgeclaw-chat/edgeclaw/blob/dev/docs/edgeclaw.md
+    about: Commands, sessions, tasks, tools and input syntax. The binary embeds this same text.
+  - name: What EdgeClaw does not do
+    url: https://github.com/edgeclaw-chat/edgeclaw/blob/dev/docs/limitations.md
+    about: Decisions, not backlog items — check here before filing a bug.
+  - name: Security report
+    url: https://github.com/edgeclaw-chat/edgeclaw/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue for one.

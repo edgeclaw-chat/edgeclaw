@@ -299,6 +299,11 @@ too, or those targets rot unnoticed — which is exactly what happened to two of
 `dev` — never committed to directly. A release is a tag on `master`. See
 [`docs/release-checklist.md`](docs/release-checklist.md) for what a release needs to check.
 
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the build commands, the `manual`-target trap that
+makes `bazel test` alone insufficient, and the conventions a patch should follow.
+[`SECURITY.md`](SECURITY.md) says how to report a vulnerability privately, and — just as
+usefully — what is a documented limitation rather than a security bug.
+
 Conventions worth knowing before a patch:
 
 * C11. State is owned by an explicit context (actor, session, task); the input parser's
