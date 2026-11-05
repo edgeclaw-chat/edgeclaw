@@ -747,7 +747,9 @@ static void test_tool_only_turn_reaches_the_next_request(void)
     cJSON_AddStringToObject(args, "command", "pwd");
     edc_turn_add_assistant_tool_call(done, "call_local_2", "exec_shell", args);
     cJSON_Delete(args);
-    edc_turn_add_tool_message(done, "call_local_2", "exec_shell", "/home/conley/workspace\n");
+    /* An opaque command output: this test is about the three messages surviving assembly
+     * in order, not about where they came from. */
+    edc_turn_add_tool_message(done, "call_local_2", "exec_shell", "/work/project\n");
     edc_task_group_history_add_turn(g, done);
 
     /* The next round: a fresh turn on the leader. */
@@ -790,7 +792,7 @@ static void test_tool_only_turn_reaches_the_next_request(void)
                 if (id && strcmp(id, "call_local_2") == 0)
                 {
                     order[n++] = 't';
-                    output_seen = c && strstr(c, "/home/conley/workspace") != NULL;
+                    output_seen = c && strstr(c, "/work/project") != NULL;
                 }
             }
         }

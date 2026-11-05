@@ -248,13 +248,13 @@ static void test_estimate(void)
     struct edc_fold_files *f = edc_fold_files_new();
     CHECK(edc_fold_files_token_estimate(NULL) == 0, "NULL ⇒ 0");
     CHECK(edc_fold_files_token_estimate(f) == 0, "空清单只算 0（不出块）");
-    edc_fold_files_add_modified(f, "/home/conley/workspace/some/rather/long/path/file.c");
+    edc_fold_files_add_modified(f, "/work/project/some/rather/long/path/file.c");
     long long one = edc_fold_files_token_estimate(f);
     CHECK(one > 0, "有清单就非零");
     for (int i = 0; i < 10; i++)
     {
         char p[64];
-        snprintf(p, sizeof(p), "/home/conley/workspace/dir%d/file%d.c", i, i);
+        snprintf(p, sizeof(p), "/work/project/dir%d/file%d.c", i, i);
         edc_fold_files_add_read(f, p);
     }
     long long many = edc_fold_files_token_estimate(f);
