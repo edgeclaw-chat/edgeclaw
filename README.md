@@ -5,7 +5,7 @@
     <img src="https://img.shields.io/badge/language-C-blue" alt="Language">
     <img src="https://img.shields.io/github/actions/workflow/status/edgeclaw-chat/edgeclaw/build.yml?branch=dev&amp;label=build" alt="Build">
     <img src="https://img.shields.io/github/actions/workflow/status/edgeclaw-chat/edgeclaw/tests.yml?branch=dev&amp;label=tests" alt="Tests">
-    <a href="https://codecov.io/gh/edgeclaw-chat/edgeclaw"><img src="https://codecov.io/gh/edgeclaw-chat/edgeclaw/branch/dev/graph/badge.svg" alt="Coverage"></a>
+    <a href="https://codecov.io/gh/edgeclaw-chat/edgeclaw"><img src="https://codecov.io/gh/edgeclaw-chat/edgeclaw/branch/master/graph/badge.svg" alt="Coverage"></a>
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </p>
 </div>
