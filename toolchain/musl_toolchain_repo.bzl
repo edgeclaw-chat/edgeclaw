@@ -43,6 +43,13 @@ load(
 _MUSL_ARCHES = {
     "aarch64": {
         "triple": "aarch64-linux-musl",
+        # musl-cross (github.com/musl-cross/musl-cross) spells its triples the GNU way and
+        # ships them as GitHub release assets -- which matters, because musl.cc is not
+        # routable from a GitHub runner. Same compiler and same layout
+        # (<triple>/bin/<triple>-gcc), only the name differs, so both spellings are searched.
+        # `triple` itself stays canonical: it is what target_system_name reports and what
+        # MUSL_CROSS_COMPILE_AARCH64 is documented against.
+        "alt_triples": ["aarch64-unknown-linux-musl"],
         "cpu": "aarch64",
         "cpu_constraint": "@platforms//cpu:aarch64",
     },
@@ -57,11 +64,13 @@ _MUSL_ARCHES = {
         # Using musleabihf here would ship two arm packages for different ABIs, where only
         # one can run on a given device.
         "triple": "arm-linux-musleabi",
+        "alt_triples": ["arm-unknown-linux-musleabi"],
         "cpu": "arm",
         "cpu_constraint": "@platforms//cpu:armv7",
     },
     "amd64": {
         "triple": "x86_64-linux-musl",
+        "alt_triples": ["x86_64-unknown-linux-musl"],
         "cpu": "x86_64",
         "cpu_constraint": "@platforms//cpu:x86_64",
     },
@@ -218,7 +227,7 @@ def _probe(rctx, prefix):
         return "{} targets {}, not musl".format(cc, dump.stdout.strip())
     return None
 
-def _candidate_prefixes(rctx, arch, triple):
+def _candidate_prefixes(rctx, arch, meta):
     """Prefixes to try, best first. `prefix` is everything up to and including the
     trailing dash, i.e. "gcc" is appended to get the compiler."""
     env_name = "MUSL_CROSS_COMPILE_" + arch.upper()
@@ -233,21 +242,25 @@ def _candidate_prefixes(rctx, arch, triple):
 
     candidates = []
 
-    for dir in [
-        # musl-cross-make installed under /opt: <prefix>/bin/<triple>-gcc.
-        "/opt/{}/bin/".format(triple),
-        # musl-cross-make's "native" variant (same layout, separate tree).
-        "/opt/{}-native/bin/".format(triple),
-        # musl.cc tarball: bin/ sits at the archive root next to <triple>/.
-        "/opt/{}-cross/bin/".format(triple),
-        "/opt/{}-cross/{}/bin/".format(triple, triple),
-    ]:
-        candidates.append(dir + triple + "-")
+    # Canonical spelling first, then the GNU-style alternates a different distribution
+    # may use. Searching both means "unpack the tarball under /opt" keeps working
+    # whichever upstream the tarball came from.
+    for triple in [meta["triple"]] + meta.get("alt_triples", []):
+        for dir in [
+            # musl-cross-make installed under /opt: <prefix>/bin/<triple>-gcc.
+            "/opt/{}/bin/".format(triple),
+            # musl-cross-make's "native" variant (same layout, separate tree).
+            "/opt/{}-native/bin/".format(triple),
+            # The musl.cc tarball: <triple>-cross/bin/.
+            "/opt/{}-cross/bin/".format(triple),
+            "/opt/{}-cross/{}/bin/".format(triple, triple),
+        ]:
+            candidates.append(dir + triple + "-")
 
-    # Anything already on PATH (the usual case for a distro musl package).
-    found = rctx.which(triple + "-gcc")
-    if found:
-        candidates.append(str(found)[:str(found).rfind("/")] + "/" + triple + "-")
+        # Anything already on PATH (the usual case for a distro musl package).
+        found = rctx.which(triple + "-gcc")
+        if found:
+            candidates.append(str(found)[:str(found).rfind("/")] + "/" + triple + "-")
 
     return env_name, candidates
 
@@ -323,8 +336,9 @@ on aarch64 -- `gcc -dumpmachine` is what rejects it).
 
 Point Bazel at yours with:
     export {env_name}=/path/to/bin/<triple>-
-(or unpack https://musl.cc/<triple>-cross.tgz under /opt and it is found
-automatically)
+(or unpack a musl-cross tarball under /opt and it is found automatically: the
+searched layouts are /opt/<triple>/bin/ and /opt/<triple>-cross/bin/, and both
+the `<arch>-linux-musl` and `<arch>-unknown-linux-musl` spellings are tried)
 
 Then rebuild with --config=musl_{arch}.
 This does not affect a normal build: without that flag nothing here is used.
@@ -438,7 +452,7 @@ def _musl_toolchain_repo_impl(rctx):
     meta = _MUSL_ARCHES[arch]
     triple = meta["triple"]
 
-    env_name, candidates = _candidate_prefixes(rctx, arch, triple)
+    env_name, candidates = _candidate_prefixes(rctx, arch, meta)
 
     reasons = []
     chosen = ""

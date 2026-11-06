@@ -7,6 +7,11 @@ on:
     tags:
       - 'v*'
 
+# Which musl-cross release the toolchains are downloaded from. Pinned together with the
+# per-target sha256 in the matrix: the tag says where, the checksum says exactly what.
+env:
+  MUSL_CROSS_TAG: '20261001'
+
 jobs:
   build:
     strategy:
@@ -108,7 +113,8 @@ jobs:
             runner: ubuntu-latest
             musl_arch: aarch64
             musl_triple: aarch64-linux-musl
-            musl_sha256: c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38
+            musl_host_triple: aarch64-unknown-linux-musl
+            musl_sha256: 7bf54ef24ecbca3f418e6b74ddc055e3a23b2cbf31ffc0b9a25775189df344ad
             bazel_flags: --config=musl_aarch64
             bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
@@ -117,7 +123,8 @@ jobs:
             runner: ubuntu-latest
             musl_arch: arm
             musl_triple: arm-linux-musleabi
-            musl_sha256: d70c607101fee5330083463feacf5992892a85b826d1626094500e0c37ec7d25
+            musl_host_triple: arm-unknown-linux-musleabi
+            musl_sha256: c8df15a93d71a8080c9f5b10a6d63603413a10c873eb9ad0c4bd8599a0516d1c
             bazel_flags: --config=musl_arm
             bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
@@ -126,7 +133,8 @@ jobs:
             runner: ubuntu-latest
             musl_arch: amd64
             musl_triple: x86_64-linux-musl
-            musl_sha256: c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+            musl_host_triple: x86_64-unknown-linux-musl
+            musl_sha256: faeaf3c7c377cb4351490988d9a1c8fed7d403a5b8066e5103af5d4dd96450fe
             bazel_flags: --config=musl_amd64
             bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
@@ -135,7 +143,8 @@ jobs:
             runner: ubuntu-latest
             musl_arch: aarch64
             musl_triple: aarch64-linux-musl
-            musl_sha256: c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38
+            musl_host_triple: aarch64-unknown-linux-musl
+            musl_sha256: 7bf54ef24ecbca3f418e6b74ddc055e3a23b2cbf31ffc0b9a25775189df344ad
             bazel_flags: --config=musl_aarch64
             bazel_target: //:device_agent
             package_target: //:device_agent
@@ -144,7 +153,8 @@ jobs:
             runner: ubuntu-latest
             musl_arch: arm
             musl_triple: arm-linux-musleabi
-            musl_sha256: d70c607101fee5330083463feacf5992892a85b826d1626094500e0c37ec7d25
+            musl_host_triple: arm-unknown-linux-musleabi
+            musl_sha256: c8df15a93d71a8080c9f5b10a6d63603413a10c873eb9ad0c4bd8599a0516d1c
             bazel_flags: --config=musl_arm
             bazel_target: //:device_agent
             package_target: //:device_agent
@@ -153,7 +163,8 @@ jobs:
             runner: ubuntu-latest
             musl_arch: amd64
             musl_triple: x86_64-linux-musl
-            musl_sha256: c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+            musl_host_triple: x86_64-unknown-linux-musl
+            musl_sha256: faeaf3c7c377cb4351490988d9a1c8fed7d403a5b8066e5103af5d4dd96450fe
             bazel_flags: --config=musl_amd64
             bazel_target: //:device_agent
             package_target: //:device_agent
@@ -182,8 +193,8 @@ jobs:
         if: matrix.musl_triple != ''
         uses: actions/cache@v4
         with:
-          path: /opt/${{ matrix.musl_triple }}-cross
-          key: musl-${{ matrix.musl_triple }}-${{ matrix.musl_sha256 }}
+          path: /opt/${{ matrix.musl_host_triple }}
+          key: musl-${{ matrix.musl_host_triple }}-${{ matrix.musl_sha256 }}
 
       - name: Install musl toolchain
         if: matrix.musl_triple != ''
@@ -191,31 +202,38 @@ jobs:
         run: |
           set -euo pipefail
           TRIPLE='${{ matrix.musl_triple }}'
+          HOST_TRIPLE='${{ matrix.musl_host_triple }}'
           SHA='${{ matrix.musl_sha256 }}'
-          PREFIX="/opt/${TRIPLE}-cross"
+          PREFIX="/opt/${HOST_TRIPLE}"
 
-          if [[ ! -x "$PREFIX/bin/${TRIPLE}-gcc" ]]; then
-            echo "downloading musl.cc/$TRIPLE-cross.tgz"
-            curl -fsSL --retry 3 --retry-delay 5 -o /tmp/musl.tgz \
-                 "https://musl.cc/${TRIPLE}-cross.tgz"
-            echo "${SHA}  /tmp/musl.tgz" | sha256sum -c - || {
-              echo "::error::musl.cc/$TRIPLE-cross.tgz does not match the pinned sha256"
+          if [[ ! -x "$PREFIX/bin/${HOST_TRIPLE}-gcc" ]]; then
+            # GitHub release assets, not musl.cc: a runner cannot reach musl.cc
+            # ((28) Failed to connect to musl.cc port 443 after 133001 ms, on every
+            # attempt), so the previous source never produced an artifact. These are the
+            # same toolchains -- built by musl-cross, GCC/binutils/musl of comparable
+            # vintage, same <triple>/bin/<triple>-gcc layout -- and they are hosted on
+            # github.com, which a runner obviously can reach.
+            URL="https://github.com/musl-cross/musl-cross/releases/download/${MUSL_CROSS_TAG}/${HOST_TRIPLE}.tar.xz"
+            echo "downloading $URL"
+            curl -fsSL --retry 3 --retry-delay 5 -o /tmp/musl.tar.xz "$URL"
+            echo "${SHA}  /tmp/musl.tar.xz" | sha256sum -c - || {
+              echo "::error::$HOST_TRIPLE.tar.xz does not match the pinned sha256"
               echo "::error::upstream was rebuilt; verify the new toolchain, then update"
               echo "::error::musl_sha256 for $TRIPLE in the release matrix"
               exit 1
             }
             sudo mkdir -p /opt
-            sudo tar xzf /tmp/musl.tgz -C /opt
-            rm -f /tmp/musl.tgz
+            sudo tar xJf /tmp/musl.tar.xz -C /opt
+            rm -f /tmp/musl.tar.xz
           fi
 
           # Point the repository rule at it explicitly. The rule would also autodetect
-          # /opt/<triple>-cross/bin, but saying it outright is one less thing that can
+          # /opt/<triple>/bin, but saying it outright is one less thing that can
           # silently resolve to something else.
-          echo "MUSL_CROSS_COMPILE_$(echo '${{ matrix.musl_arch }}' | tr '[:lower:]' '[:upper:]')=${PREFIX}/bin/${TRIPLE}-" >> "$GITHUB_ENV"
+          echo "MUSL_CROSS_COMPILE_$(echo '${{ matrix.musl_arch }}' | tr '[:lower:]' '[:upper:]')=${PREFIX}/bin/${HOST_TRIPLE}-" >> "$GITHUB_ENV"
           # Prove this is a musl toolchain AND that this runner can execute it -- the rule
           # probes for exactly this, but failing here names the cause directly.
-          "${PREFIX}/bin/${TRIPLE}-gcc" -dumpmachine
+          "${PREFIX}/bin/${HOST_TRIPLE}-gcc" -dumpmachine
 
       - name: Setup Android NDK
         if: contains(matrix.bazel_flags, 'android')
