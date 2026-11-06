@@ -36,17 +36,27 @@ use_repo(
     "musl_toolchain_amd64",
 )
 
-# Hermetic Python toolchain: downloads Python 3.8 for native builds, no system
-# Python required. Has platform constraints so it only matches native builds.
+# Hermetic Python toolchain: rules_python downloads its own Python 3.8, so no system
+# Python is required by any build step that runs a py_binary (//tools:gen_models,
+# embed_models, embed_workspace, gen_version). Verified with `sys.executable` from inside
+# a target: it resolves to .../python_3_8_aarch64-unknown-linux-gnu/bin/python3, 3.8.20.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(python_version = "3.8", is_default = True)
 use_repo(python, "python_3_8")
 
-# Autodetecting toolchain (fallback for cross-compilation): has no platform
-# constraints so it matches any target. Bazel prefers the hermetic toolchain for
-# native builds (it has more specific constraints); this fallback is only used
-# when the hermetic toolchain doesn't match (e.g., cross-compiling to armv7).
-register_toolchains("@bazel_tools//tools/python:autodetecting_toolchain")
+# Do NOT also register @bazel_tools//tools/python:autodetecting_toolchain here. It used
+# to be registered as a "fallback for cross-compilation" with a comment claiming Bazel
+# would prefer the hermetic toolchain for native builds. That was not true: the
+# autodetecting toolchain matches unconditionally, so it WON every resolution, and every
+# py_binary silently ran on whatever system python happened to be on PATH (3.14.4 here,
+# not 3.8). It also defeats the point of pinning -- two machines with different system
+# pythons would run the build tools on different interpreters.
+#
+# Without it, toolchain resolution picks the hermetic one for the host, which is what
+# the cross-compilation builds want too: a py_binary is a build-time tool, so it runs on
+# the EXECUTION platform (the host), never on the target being cross-compiled. Verified
+# against --platforms=//:arm_linux and a full `bazel build //src/tui:edgeclaw
+# //:device_agent`.
 
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")

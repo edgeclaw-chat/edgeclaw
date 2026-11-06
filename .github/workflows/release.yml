@@ -232,6 +232,61 @@ jobs:
           disk-cache: ${{ github.workflow }}-${{ matrix.target }}
           repository-cache: true
 
+      - name: Refresh the model catalog
+        # The catalog is embedded in the binary, so what a user gets in a release has to be
+        # what models.dev publishes on the day of the release -- not whatever a developer
+        # last generated on their machine.
+        #
+        # Why this cannot be left to the build rule alone: `//:models_catalog_json` reads
+        # models_catalog.json when it exists and only fetches when it does not, and a
+        # genrule's output is an ACTION CACHE entry. This workflow persists a disk cache
+        # (`disk-cache:` above, keyed per target), so an unchanged generator script would be
+        # a cache HIT on the next release and the previous release's catalog would ship
+        # again -- silently, with correct-looking output. Writing the file here makes it an
+        # INPUT of the genrule, which changes the action key and forces regeneration.
+        #
+        # models_catalog.json itself stays uncommitted (.gitignore's `*json`), so this is
+        # also the only place that decides what a release contains. The generated_at
+        # assertion below is what turns "we refreshed it" into something the job can fail on.
+        #
+        # Not --probe/--smoke: those make live calls to every provider and need keys. The
+        # catalog's provider list is DEFAULT_PROVIDERS, a curated list, so a dead endpoint
+        # costs a user one failed request, not a broken release.
+        #
+        # `bazel run`, not `python3 tools/gen_models.py`: the script must run on the
+        # interpreter the build uses everywhere else, which is the hermetic Python 3.8 that
+        # rules_python downloads (see MODULE.bazel). Invoking it directly would make the
+        # release depend on whatever python is on the runner's PATH -- and the release is the
+        # one place where "works on my machine" is not acceptable.
+        #
+        # --out is an ABSOLUTE path built from BUILD_WORKSPACE_DIRECTORY because `bazel run`
+        # sets the working directory to the binary's runfiles tree, not to the checkout. A
+        # relative path would write the catalog beside the binary, where neither the genrule
+        # nor this assertion would see it -- and the stale-check below would then pass on the
+        # old file while looking successful.
+        #
+        # The assertions are grep, deliberately: adding a second python invocation to parse
+        # the JSON would reintroduce exactly the dependency this step just removed. The file
+        # is written by json.dumps(indent=2), so `generated_at` sits alone on its line.
+        #
+        # `shell: bash` because this matrix has a windows-latest entry and the default shell
+        # there is pwsh.
+        shell: bash
+        run: |
+          OUT="${BUILD_WORKSPACE_DIRECTORY:-$PWD}/models_catalog.json"
+          bazel run //tools:gen_models -- --no-test --out "$OUT"
+
+          today=$(date -u +%Y-%m-%d)
+          if ! grep -q "\"generated_at\": \"${today}" "$OUT"; then
+            echo "::error::catalog is stale: $(grep -o '"generated_at": "[^"]*"' "$OUT")"
+            exit 1
+          fi
+          if grep -q '"providers": {}' "$OUT"; then
+            echo "::error::catalog has no providers -- the fetch probably failed"
+            exit 1
+          fi
+          echo "catalog refreshed: $(grep -c '"api":' "$OUT") providers carry a base URL"
+
       - name: Build
         env:
           CROSS_COMPILE: ${{ matrix.cross_compile && format('/usr/bin/{0}-', matrix.cross_compile) || '' }}

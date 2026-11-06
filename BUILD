@@ -345,10 +345,23 @@ genrule(
 
 # The AI-model catalog (models.dev, via tools/gen_models.py). It is NOT committed (a
 # generated build input; see .gitignore), so this rule produces it as part of the build:
-# when a local models_catalog.json exists it is used as-is (offline / pinned builds),
-# otherwise the tool fetches it. `--no-test` keeps the fetch fast -- it skips per-provider
-# endpoint probes (run tools/gen_models.py directly for the full validation).
-# --no-sandbox/local: the fetch needs network, which sandboxed Bazel actions do not have.
+# when a local models_catalog.json exists it is used as-is, otherwise the tool fetches it.
+# `--no-test` keeps the fetch fast -- it skips per-provider endpoint probes (run
+# tools/gen_models.py directly for the full validation).
+#
+# The local-file branch is not a convenience, it is what makes a release provably fresh:
+# Release runs `bazel run //tools:gen_models -- --out models_catalog.json` before building,
+# and because that file is one of this rule's srcs, changing it changes the ACTION KEY, so
+# the genrule re-runs even when the persisted disk cache has an entry from a previous
+# release. Without it the cache would happily ship last month's catalog.
+#
+# It also keeps an ordinary `bazel build` hermetic: a developer's tree has the file, so no
+# network is touched, and two builds of the same commit embed the same bytes. That is the
+# one place where determinism matters more than freshness -- a release gets freshness from
+# the step that rewrites the file, which is why that step exists.
+#
+# --no-sandbox/local: the fetch branch needs network, which sandboxed Bazel actions do not
+# have.
 genrule(
     name = "models_catalog_json",
     srcs = glob(["models_catalog.json"], allow_empty = True),
