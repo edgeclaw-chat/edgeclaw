@@ -581,3 +581,9 @@ jobs:
         with:
           files: "*/*.tar.gz"
           generate_release_notes: true
+          # A tag carrying a suffix (v2.0.2-rc.1, -beta.2, ...) is a pre-release, decided
+          # by the tag itself rather than by a separate switch nobody would remember to
+          # flip. It matters beyond the label: GitHub's `releases/latest` resolves to the
+          # newest NON-pre-release, so a pre-release is deliberately not what a visitor's
+          # `/releases/latest/download/...` link resolves to. The README says so.
+          prerelease: ${{ contains(github.ref_name, '-') }}

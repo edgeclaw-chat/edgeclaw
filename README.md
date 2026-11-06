@@ -68,12 +68,19 @@ Tarballs live on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releas
 Each holds one self-contained binary with the default workspace embedded — it is
 released to `~/.edgeclaw/` on first run.
 
-The asset names in the table below carry no version, which is what makes
-`releases/latest/download/<name>` resolve the newest release, so the command does not
-need editing when a version is tagged:
+Two names are published per archive: a version-less one (`edgeclaw_amd64_linux.tar.gz`)
+and a pinned one (`edgeclaw_amd64_linux_v2.0.2-rc.1.tar.gz`). They are byte-identical;
+use the pinned name when you need to know what you have later.
+
+> **No stable release yet.** Everything so far is a pre-release, and GitHub's
+> `releases/latest` deliberately resolves only to the newest *non*-pre-release. So
+> `releases/latest/download/<name>` does not resolve yet — exchange the tag below for the
+> one on the Releases page. Once a stable version is tagged, that link starts working and
+> this note goes away.
 
 ```bash
-curl -LO https://github.com/edgeclaw-chat/edgeclaw/releases/latest/download/edgeclaw_amd64_linux.tar.gz
+TAG=v2.0.2-rc.1   # replace with the tag shown on the Releases page
+curl -LO "https://github.com/edgeclaw-chat/edgeclaw/releases/download/${TAG}/edgeclaw_amd64_linux.tar.gz"
 tar -xzf edgeclaw_amd64_linux.tar.gz && cd edgeclaw_amd64_linux && ./edgeclaw
 ```
 
@@ -87,9 +94,6 @@ tar -xzf edgeclaw_amd64_linux.tar.gz && cd edgeclaw_amd64_linux && ./edgeclaw
 
 The three Linux targets are also published built against musl libc as
 `edgeclaw_<arch>_linux_musl.tar.gz` — the same program, just a different libc linked in.
-
-Every archive is also published under its tagged name — `edgeclaw_amd64_linux_v2.0.1.tar.gz`
-— which is what a pinned download should use. The two names are byte-identical copies.
 
 ### From source
 
