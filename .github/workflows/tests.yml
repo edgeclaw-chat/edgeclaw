@@ -16,10 +16,6 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    # The coverage upload reads these; kept at job level because a step cannot see a secret
-    # it declares itself inside its own `if`.
-    env:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -64,8 +60,11 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    env:
-      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    # `id-token: write` is what lets the upload below authenticate with Codecov through
+    # OIDC instead of a stored token. Without it the action has no credential at all.
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -90,14 +89,17 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
 
-      # Uploaded only when the repository has been added to codecov.io and the token stored as
-      # a secret. Without them this step is skipped rather than failing: a missing optional
-      # integration must not turn the test signal red.
+      # OIDC, not a stored token: Codecov's GitHub App is installed on the organisation, so
+      # the action can exchange the workflow's short-lived OIDC identity for an upload
+      # credential. That means no long-lived secret to leak, rotate, or forget to set --
+      # and a fork's pull request can upload too, which a repository secret cannot do.
+      #
+      # `fail_ci_if_error: false` stays: Codecov is a signal, not a gate. A Codecov outage
+      # must not turn a green test run red.
       - name: Upload coverage to Codecov
-        if: env.CODECOV_TOKEN != ''
         uses: codecov/codecov-action@v4
         with:
-          token: ${{ env.CODECOV_TOKEN }}
+          use_oidc: true
           files: bazel-out/_coverage/_coverage_report.dat
           flags: unittests
           fail_ci_if_error: false
@@ -112,8 +114,8 @@ jobs:
       #
       # `|| true` on the whole step: this is a log nicety. If the report ever moves again,
       # the job should say so and stay green -- the coverage RUN above is the real signal.
-      - name: Coverage summary (no codecov configured)
-        if: env.CODECOV_TOKEN == ''
+      - name: Coverage summary
+        if: always()
         run: |
           report=bazel-out/_coverage/_coverage_report.dat
           [ -f "$report" ] || report=$(find -L bazel-out -name '_coverage_report.dat' | head -1)
