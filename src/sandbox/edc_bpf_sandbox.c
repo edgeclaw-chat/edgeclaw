@@ -468,6 +468,43 @@
 #ifndef SYS_mq_timedsend
 #define SYS_mq_timedsend 0
 #endif
+/* Clocks and timers, 32-bit arm: musl there carries the time64 spellings
+ * (clock_gettime64, timerfd_settime64, ...) and does not define the plain names at
+ * all, because every one of those entry points is a 32-bit-time ABI that the libc
+ * does not implement. The guards above cover the syscalls a 32-bit target simply
+ * lacks; these cover the ones a 32-bit target renamed, which shows up as
+ * "SYS_clock_gettime undeclared" rather than as a missing syscall at run time. */
+#ifndef SYS_clock_gettime
+#define SYS_clock_gettime 0
+#endif
+#ifndef SYS_clock_settime
+#define SYS_clock_settime 0
+#endif
+#ifndef SYS_clock_getres
+#define SYS_clock_getres 0
+#endif
+#ifndef SYS_clock_nanosleep
+#define SYS_clock_nanosleep 0
+#endif
+#ifndef SYS_gettimeofday
+#define SYS_gettimeofday 0
+#endif
+#ifndef SYS_settimeofday
+#define SYS_settimeofday 0
+#endif
+#ifndef SYS_timer_settime
+#define SYS_timer_settime 0
+#endif
+#ifndef SYS_timer_gettime
+#define SYS_timer_gettime 0
+#endif
+#ifndef SYS_timerfd_settime
+#define SYS_timerfd_settime 0
+#endif
+#ifndef SYS_timerfd_gettime
+#define SYS_timerfd_gettime 0
+#endif
+
 #ifndef SYS_mq_timedreceive
 #define SYS_mq_timedreceive 0
 #endif
