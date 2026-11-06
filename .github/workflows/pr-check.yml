@@ -31,7 +31,7 @@ jobs:
             bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_aarch64_macos
-            runner: macos-14
+            runner: macos-15
             platform: //:aarch64_macos
             bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
@@ -61,7 +61,7 @@ jobs:
             bazel_target: //:device_agent
             package_target: //:device_agent
           - target: device_agent_aarch64_macos
-            runner: macos-14
+            runner: macos-15
             platform: //:aarch64_macos
             bazel_target: //:device_agent
             package_target: //:device_agent

@@ -39,7 +39,7 @@ jobs:
             binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
           - target: edgeclaw_aarch64_macos
-            runner: macos-14
+            runner: macos-15
             platform: //:aarch64_macos
             bazel_flags: --platforms=//:aarch64_macos
             bazel_target: //src/tui:edgeclaw
@@ -79,7 +79,7 @@ jobs:
             binary_target: //src/device:device_agent
             package_target: //:device_agent
           - target: device_agent_aarch64_macos
-            runner: macos-14
+            runner: macos-15
             platform: //:aarch64_macos
             bazel_flags: --platforms=//:aarch64_macos
             bazel_target: //:device_agent
@@ -270,8 +270,15 @@ jobs:
         # is written by json.dumps(indent=2), so `generated_at` sits alone on its line.
         #
         # `shell: bash` because this matrix has a windows-latest entry and the default shell
-        # there is pwsh.
+        # there is pwsh. Which brings the MSYS trap: Git Bash's runtime rewrites arguments
+        # that look like paths, and a Bazel label starts with `//`, so `//tools:gen_models`
+        # arrived at bazel as `/tools:gen_models` -- "invalid package name '/tools'". This is
+        # the same rewriting tools/windows/setup-build-env.ps1 disables for local development
+        # (`MSYS2_ARG_CONV_EXCL='//'`); the CI job needs it too, and nowhere else in this
+        # workflow did until now, because every other Bazel invocation runs under pwsh.
         shell: bash
+        env:
+          MSYS2_ARG_CONV_EXCL: '//'
         run: |
           OUT="${BUILD_WORKSPACE_DIRECTORY:-$PWD}/models_catalog.json"
           bazel run //tools:gen_models -- --no-test --out "$OUT"
@@ -330,10 +337,23 @@ jobs:
           TAR=/usr/bin/tar
           [[ -x "$TAR" ]] || TAR=$(command -v tar)
 
+          # GNU tar reads "D:/a/..." as host `D` with path `/a/...`, so on the Windows
+          # runner extracting the archive dies with
+          #   tar (child): Cannot connect to D: resolve failed
+          # which names neither tar nor the real problem. cygpath is the portable way
+          # out: MSYS provides it, and on Linux and macOS the check is false, so nothing
+          # changes there. ARCHIVE itself is left alone -- it goes into SHIPPED_ARCHIVE
+          # for later steps, and those hand it to native tools that want the drive-letter
+          # spelling.
+          EXTRACT_FROM="$ARCHIVE"
+          if command -v cygpath >/dev/null 2>&1; then
+            EXTRACT_FROM=$(cygpath -u "$ARCHIVE")
+          fi
+
           # mktemp rather than $RUNNER_TEMP: that variable is a Windows-style path on the
           # Windows runner, and the tools here expect the shell's own spelling.
           DEST=$(mktemp -d)
-          "$TAR" xzf "$ARCHIVE" -C "$DEST"
+          "$TAR" xzf "$EXTRACT_FROM" -C "$DEST"
 
           # A glob, not `find`: same PATH reason as above (system32\find.exe is a text
           # searcher). Depth 2 is the layout -- <package_dir>/<binary> -- so the
