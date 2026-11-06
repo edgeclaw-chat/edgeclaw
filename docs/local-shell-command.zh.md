@@ -477,11 +477,13 @@ AI 发的 `exec_shell` 保持原有 30s 上限（模型挑了个会挂的命令�
   扫它的私有表（旧版 `edc_tool_shell_kill_request(request_id)` 已删除）。语义**按工具各自定义**：
   能抢占的就中断，不能抢占的（例如已经交给线程池的文件写）只能是"放弃并丢弃结果"。
 
-**覆盖现状**：`exec_shell` 已接。`device_shell` / `device_upload` / `device_download` **未接**
-（worker 线程 + 各自私有 loop/netconn，ctx 上没有取消位、socket 也不在 ctx 上；要做真中断得加取消位 +
-把 `uv_async_t` 挂到 ctx 上用 `uv_async_send` 唤醒 worker 自己的 loop，PPPoS 还要 shutdown 阻塞的
-`netconn_recv`——跨线程生命周期风险 + 需要假设备才能自动化测）。fs 工具（线程池）**结构上无法抢占**，
-`/task stop` 不会阻止一次已经在跑的 `edit_file` 落盘。crontab/todo/memory 无可中断窗口。
+**覆盖现状**：`exec_shell` 已接。device 那组工具（`device_shell` / `device_upload` /
+`device_download`）**当期不注册、不随发布**，见 `limitations.md` 的「Not shipped yet」；等它们
+重新上线时再按原方案接（worker 线程 + 各自私有 loop/netconn，ctx 上没有取消位、socket 也不在
+ctx 上；要做真中断得加取消位 + 把 `uv_async_t` 挂到 ctx 上用 `uv_async_send` 唤醒 worker 自己的
+loop，PPPoS 还要 shutdown 阻塞的 `netconn_recv`——跨线程生命周期风险 + 需要假设备才能自动化测）。
+fs 工具（线程池）**结构上无法抢占**，`/task stop` 不会阻止一次已经在跑的 `edit_file` 落盘。
+crontab/todo/memory 无可中断窗口。
 
 **验证**（pty 驱动真二进制，config 与用户一致＝沙箱关）：
 

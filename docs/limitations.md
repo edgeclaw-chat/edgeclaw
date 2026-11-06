@@ -25,16 +25,24 @@ These are decisions, not backlog items.
 | **`--mode rpc` / an SDK** | `edgeclaw_cli` covers scripted use by accepting "the same line you would type in the TUI". A long-running RPC surface is a different product with different stability requirements. |
 | **Web search / fetch tools** | EdgeClaw has none. Use `exec_shell` with `curl`. |
 
-## Implemented partially — know the edges
+## Not shipped yet
 
 ### Remote devices
 
-`device_shell` / `device_upload` / `device_download` talk to a separate agent over TCP or a
-PPPoS serial link. Two real constraints:
+The `device_shell` / `device_upload` / `device_download` tools are **not registered**, so
+the model never sees them and no release ships a device agent. The remote-agent half of the
+feature is still being built; a tool the model can reach is a promise, and there is nothing
+for it to talk to yet.
 
-- **The device tools do not exist on Windows.** The `device` module is not linked into the
-  Windows binary at all (`src/tui/BUILD` selects it away), so the tools are absent rather
-  than broken, and the model never sees them. PPPoS is POSIX-only on top of that.
+What that means in practice: `device_*` appearing in a `config.json` (`device_transport`,
+`device_ip`, …) sets nothing, because no tool reads it. The code is compiled and kept
+(`src/toolbox/edc_toolbox.c` is two commented lines away from turning it back on), and the
+`device/` module is still linked, so this is a closed door rather than a removal.
+
+Two constraints worth recording for whoever finishes it:
+
+- **Windows gets no device tools by design.** The `device` module is not linked into the
+  Windows binary (`src/tui/BUILD` selects it away), and PPPoS is POSIX-only on top of that.
 - The agent spawns with `execl("/bin/sh", "sh", "-c", cmd)` — it inherits **its whole
   environment**. The `exec_shell` *tool* goes through an allowlist
   (`src/sandbox/edc_shell_env.c`); the device agent does not. Do not run an agent on a host

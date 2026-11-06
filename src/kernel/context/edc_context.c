@@ -256,9 +256,7 @@ static sds edc_context_build_contract(const char *workspace)
         "- Look things up with tools before asking; ask when the tools genuinely cannot answer.\n"
         "- Never fake confidence: say what you know and flag what you do not.\n\n"
         "**Reminders.** Scheduling is the `crontab` tool -- call it (list / add / remove). Writing a "
-        "reminder into a notes file triggers nothing.\n\n"
-        "**Remote device.** The `device_*` tools talk to a separate agent over TCP or a PPPoS serial "
-        "link; they run on that device, not in this sandbox.\n",
+        "reminder into a notes file triggers nothing.\n",
         workspace ? workspace : "(workspace)");
 }
 

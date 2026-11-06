@@ -11,7 +11,7 @@
 </div>
 
 EdgeClaw is a self-contained terminal agent. You talk to a model that can read and write
-files, run shell commands, schedule jobs and drive remote devices — and instead of one
+files, run shell commands and schedule jobs — and instead of one
 long conversation, every message becomes a **task** you can watch, queue, branch and
 combine from the same input box. It ships as a single static binary (no runtime, no
 package manager) with a full-screen TUI.
@@ -54,9 +54,8 @@ conversation continues instead of starting over.
 `/sandbox list` and enforced on every file and shell operation. `--no-sandbox` is there
 for the day it gets in your way.
 
-**Tools.** 14 of them: `read_file`, `write_file`, `edit_file`, `list_dir`, `exec_shell`,
-`crontab`, `todowrite`, `memory_write|list|supersede|delete`, `device_shell`,
-`device_upload`, `device_download`.
+**Tools.** 13 of them: `read_file`, `write_file`, `edit_file`, `list_dir`, `exec_shell`,
+`grep`, `find`, `crontab`, `todowrite`, `memory_write|list|supersede|delete`.
 
 ---
 
@@ -225,7 +224,7 @@ user input → lexer → classify ─┬─ shell line → parser → AST ─┬
   showing your text, and a file's body is never rewritten by variable expansion.
 * **Actors** carry the concurrency: scheduler, LLM, toolbox, memory and channel each have
   a mailbox on one shared `libuv` loop, so a background task's HTTPS call never blocks the
-  input box. Threads only appear where they must (HTTPS, device I/O).
+  input box. Threads only appear where they must (HTTPS).
 * **Task states drive everything else** — dependencies (`JOIN` injects output, `SEQUENCE`
   only waits, failures cascade), group folds, and snapshot rendering in the TUI.
 
@@ -235,11 +234,10 @@ src/
   app/        the C API the frontend talks to (edc_app_*)
   shell/      lexer → classifier → parser → passes → interpreter
   kernel/     scheduler, tasks, turns, sessions, groups, context (prompts/skills/memory)
-  toolbox/    the 14 tools
+  toolbox/    the 13 tools
   actor/      mailboxes, LLM request/response, tool dispatch
   common/     config, containers, file/path utils, HTTPS client
   sandbox/    path validation + optional kernel-enforced isolation
-  device/     remote device agent (TCP socket or PPPoS serial)
 tests/        bazel test //tests:all
 docs/         manual, input pipeline, design notes
 ```
@@ -271,13 +269,6 @@ docs/         manual, input pipeline, design notes
 
 `max_iter: -1` means "keep going until the model answers"; a positive number caps the
 model/tool rounds. `sandbox.deny_paths` wins over `ro_paths` / `rw_paths`.
-
-Optional remote-device settings for the `device_*` tools (`device_transport` picks the row):
-
-| Transport | Keys |
-|---|---|
-| `socket` (TCP) | `device_ip`, `device_port` |
-| `pppos` (serial) | `device_pty`, `device_baud` |
 
 Environment: `EDGECLAW_MASTER_KEY` (skip the passphrase prompt), `EDGECLAW_MODELS_CATALOG`,
 `EDGECLAW_THEME`, `EDGECLAW_HTTPS_TIMEOUT_MS`, `EDGECLAW_SNAPSHOT_TRACE`.

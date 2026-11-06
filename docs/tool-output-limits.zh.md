@@ -36,7 +36,6 @@ if (sdslen(result) > conf->tool_max_output_size) {
 
 **同一类无上限的地方还有**（都属于"把外部数据无限攒进内存"）：
 
-- `device_shell` / `device_file` 的 `resp_buf`（收包累加）、`device_file` 下载把整个 body 攒在内存里；
 - `read_file` / `edit_file` 把整个文件读进内存（读一个 10 GB 的文件同样 OOM）。
 
 ## 1b. 现在的行为（2026-10-22）
@@ -99,8 +98,7 @@ if (sdslen(result) > conf->tool_max_output_size) {
 **已验证（端到端）**：100 MB 文件 —— `read_file` 与 `edit_file` 都在**分配之前**被拒，
 进程内存只涨 6 MB（纯启动开销），两条报错都带真实字节数与下一步。
 
-**仍然没有上限的地方**（同一类问题，见 §1 末尾）：`device_*` 的 `resp_buf`、device 下载
-把整个 body 攒在内存里。
+**仍然没有上限的地方**（同一类问题，见 §1 末尾）：`read_file` / `edit_file` 读整文件。
 
 ---
 
@@ -109,7 +107,7 @@ if (sdslen(result) > conf->tool_max_output_size) {
 1. **内存不随输出量增长**（在源头限住，而不是事后裁）。
 2. **不误杀合法输出**：verbose 的 `!make -j8` 只被截断，不被杀；真正跑飞的能自己收敛。
 3. **截断如实说明**：保留了多少 / 一共多少 / 输出是丢了还是留着。
-4. **一处实现，所有累加型工具共用**（shell / device / fs 不再各写各的）。
+4. **一处实现，所有累加型工具共用**（shell / fs 不再各写各的）。
 5. **不改"给模型那一份"的语义**（`tool_max_output_size` 保留，只修文案）。
 
 ## 3. 方案
@@ -164,7 +162,9 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
 ### 3.4 分阶段（避免一次改太多）
 
 - **P1（本方案主体）**：`edc_output_buf` + shell 两档阈值 + 文案 + 单测 + 端到端测量。
-- **P2**：`device_shell` / `device_file` 的 `resp_buf` 与下载 body 接同一个累加器（它们已有自己的 timeout，不另加 Tier 2）。
+- **P2**：~~`device_shell` / `device_file` 的 `resp_buf` 与下载 body 接同一个累加器~~ —— device
+  工具目前**不注册、也不随发布**（见 `limitations.md` 的「Not shipped yet」），这一步暂不适用；
+  等 device 重新上线时再做。
 - **P3**：`read_file` / `edit_file` 加"文件过大就拒绝/截断"的前置检查（读整文件是同类 OOM）。
 - **P4（可选）**：Tier 1 到顶时**溢出到 workspace 文件**——结果里给"路径 + 预览"，被丢弃的大输出还能找回来。要处理文件命名与清理策略，单独一轮。
 
@@ -184,6 +184,7 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
    `shell_output_kill_max`，0 = 用默认）。刻意**不**写进 config.json：它们的用途是"让测试能钉一个小额度"
    （否则测 256 MiB 的跑飞就得真吐 256 MiB）。要变成用户可配只是两行的事。
 3. P1 要不要带 P2（device）一起做？倾向分开：先把用户命令这条高风险面闭环。
+   （**已定**：device 工具当期不对外，P2 随它一起推迟。）
 
 ---
 
@@ -223,8 +224,9 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
 
 ### 仍未做（P2/P3/P4）
 
-`device_shell` / `device_file` 的 `resp_buf` 与下载 body、`read_file` / `edit_file` 读整文件，
-以及"到顶溢出到文件"——本次范围之外（用户已明确"不带 device"）。
+`read_file` / `edit_file` 读整文件，以及"到顶溢出到文件"——本次范围之外。
+（`device_*` 的 `resp_buf` 与下载 body 同理，但那条依赖 device 工具本身，而它当期不注册、
+不随发布，见 `limitations.md`。）
 
 
 ---

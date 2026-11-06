@@ -180,8 +180,20 @@ void edc_toolbox_register_defaults(struct edc_toolbox *tb)
     edc_tools_crontab_register(tb);
     edc_tools_todo_register(tb);
     edc_tools_memory_register(tb);
-    edc_tools_device_shell_register(tb);
-    edc_tools_device_file_register(tb);
+
+    /* The device tools (device_shell / device_upload / device_download) are NOT registered.
+     *
+     * Not because they are broken -- they work -- but because the remote-agent half of the
+     * feature is still being built, and a tool the model can see is a promise to the user.
+     * Nothing ships the agent in a release, so a registered tool would only let the model
+     * reach for something that has nothing to talk to.
+     *
+     * The code stays compiled and tested (`edc_tools_device_shell_register` /
+     * `edc_tools_device_file_register` below are one line each), so turning it back on is
+     * uncommenting these two calls once the agent ships again. See docs/limitations.md.
+     */
+    /* edc_tools_device_shell_register(tb); */
+    /* edc_tools_device_file_register(tb); */
 }
 
 static bool edc_tool_validate_params(const struct edc_tool *tool, cJSON *args, EdcError **error)

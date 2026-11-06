@@ -56,7 +56,6 @@ Top-level keys, and the ones that matter most:
 | `skip_context_files` | bool | false | do not read `AGENTS.md` / `CLAUDE.md` |
 | `onboarded` | bool | false | the first-run wizard flag; clearing it re-opens the wizard |
 | `workspace` | string | `<home>/workspace` | |
-| `device_*` | — | — | `device_transport`, `device_ip`, `device_port`, `device_pty`, `device_baud` for the remote agent |
 | `services_enabled` | bool | **true** | background services (crontab scans, memory curation) |
 | `max_iter` | number | `-1` | tool-call round cap per task; `-1` = unlimited |
 

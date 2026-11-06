@@ -352,7 +352,6 @@ static void append_rules(sds *out, struct edc_toolbox *tb, cJSON *decl)
     const bool exec = decl_has(decl, "exec_shell");
     const bool grep = decl_has(decl, "grep");
     const bool find = decl_has(decl, "find");
-    const bool device = decl_has(decl, "device_shell");
 
     sds rules = sdsempty();
     if (exec && !grep && !find)
@@ -360,9 +359,6 @@ static void append_rules(sds *out, struct edc_toolbox *tb, cJSON *decl)
                        "- Use exec_shell for searching and listing: this session has no grep/find tool.\n");
     if (grep && find)
         rules = sdscat(rules, "- Prefer grep/find over exec_shell when searching file contents.\n");
-    if (exec && device)
-        rules = sdscat(rules,
-                       "- The device_* tools run on the remote device; exec_shell runs on this machine.\n");
     if (decl_has(decl, "read_file") && decl_has(decl, "edit_file"))
         rules = sdscat(rules,
                        "- Read a file before editing it: edit_file's old_text must match the file byte for byte.\n");

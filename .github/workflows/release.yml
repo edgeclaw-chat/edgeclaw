@@ -58,52 +58,6 @@ jobs:
             binary_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
 
-          - target: device_agent_amd64_linux
-            runner: ubuntu-latest
-            platform: //:amd64_linux
-            bazel_flags: --platforms=//:amd64_linux
-            bazel_target: //:device_agent
-            binary_target: //src/device:device_agent
-            package_target: //:device_agent
-          - target: device_agent_arm_linux
-            runner: ubuntu-latest
-            platform: //:arm_linux
-            bazel_flags: --platforms=//:arm_linux
-            cross_compile: arm-linux-gnueabi
-            apt_package: gcc-arm-linux-gnueabi
-            bazel_target: //:device_agent
-            binary_target: //src/device:device_agent
-            package_target: //:device_agent
-          - target: device_agent_aarch64_linux
-            runner: ubuntu-latest
-            platform: //:aarch64_linux
-            bazel_flags: --platforms=//:aarch64_linux
-            cross_compile: aarch64-linux-gnu
-            apt_package: gcc-aarch64-linux-gnu
-            bazel_target: //:device_agent
-            binary_target: //src/device:device_agent
-            package_target: //:device_agent
-          - target: device_agent_aarch64_macos
-            runner: macos-15
-            platform: //:aarch64_macos
-            bazel_flags: --platforms=//:aarch64_macos
-            bazel_target: //:device_agent
-            binary_target: //src/device:device_agent
-            package_target: //:device_agent
-          - target: device_agent_aarch64_android
-            runner: ubuntu-latest
-            platform: //:aarch64_android
-            bazel_flags: --platforms=//:aarch64_android
-            bazel_target: //:device_agent
-            binary_target: //src/device:device_agent
-            package_target: //:device_agent
-          - target: device_agent_arm_android
-            runner: ubuntu-latest
-            platform: //:arm_android
-            bazel_flags: --platforms=//:arm_android
-            bazel_target: //:device_agent
-            binary_target: //src/device:device_agent
-            package_target: //:device_agent
           # ── musl: the fully static Linux binaries ─────────────────────────────
           # These select a musl toolchain through --config=musl_<arch>, which sets BOTH
           # --platforms and --extra_toolchains. Never add --platforms here as well: a
@@ -139,38 +93,6 @@ jobs:
             bazel_target: //src/tui:edgeclaw
             package_target: //:edgeclaw
             binary_target: //src/tui:edgeclaw
-          - target: device_agent_aarch64_linux_musl
-            runner: ubuntu-latest
-            musl_arch: aarch64
-            musl_triple: aarch64-linux-musl
-            musl_host_triple: aarch64-unknown-linux-musl
-            musl_sha256: 7bf54ef24ecbca3f418e6b74ddc055e3a23b2cbf31ffc0b9a25775189df344ad
-            bazel_flags: --config=musl_aarch64
-            bazel_target: //:device_agent
-            package_target: //:device_agent
-            binary_target: //src/device:device_agent
-          - target: device_agent_arm_linux_musl
-            runner: ubuntu-latest
-            musl_arch: arm
-            musl_triple: arm-linux-musleabi
-            musl_host_triple: arm-unknown-linux-musleabi
-            musl_sha256: c8df15a93d71a8080c9f5b10a6d63603413a10c873eb9ad0c4bd8599a0516d1c
-            bazel_flags: --config=musl_arm
-            bazel_target: //:device_agent
-            package_target: //:device_agent
-            binary_target: //src/device:device_agent
-          - target: device_agent_amd64_linux_musl
-            runner: ubuntu-latest
-            musl_arch: amd64
-            musl_triple: x86_64-linux-musl
-            musl_host_triple: x86_64-unknown-linux-musl
-            musl_sha256: faeaf3c7c377cb4351490988d9a1c8fed7d403a5b8066e5103af5d4dd96450fe
-            bazel_flags: --config=musl_amd64
-            bazel_target: //:device_agent
-            package_target: //:device_agent
-            binary_target: //src/device:device_agent
-
-
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
 
