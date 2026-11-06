@@ -66,7 +66,7 @@
 /task list                                看所有任务
 /task stop                                停掉场上那条
 /prompt review src/                       跑 prompts/review.md 这个模板，参数 src/
-/skill git-commit 提交改动                直接跑 git-commit 这个技能
+/skill configure-edgeclaw 改一下超时设置    直接跑 configure-edgeclaw 这个技能
 ```
 
 引号在命令里的第一个作用是**把选项变成文本**。这跟 shell 的道理一样 —— 引号只决定
