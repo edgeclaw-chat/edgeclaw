@@ -13,7 +13,21 @@ DESCRIPTION
      job control for orchestrating multiple parallel agent tasks.
 
 OPTIONS
-     The interactive TUI takes no command-line arguments.  On first run,
+     --version
+             Print the version, the database schema version, the build time and
+             the platform, then exit.  Answered before the configuration, the
+             database or the terminal is touched, so it works even when the
+             binary cannot start for the reason being reported.
+
+     --help, -h
+             Print usage and exit.  Likewise answered before anything else.
+
+     --no-sandbox
+             Disable the filesystem sandbox for this run, without touching
+             config.json.  On platforms with no kernel sandbox backend this has
+             no effect; see the sandbox section.
+
+     With no arguments it starts the interactive interface.  On first run,
      when config.json does not exist, it is created with defaults.
 
 GETTING STARTED

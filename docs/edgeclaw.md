@@ -26,6 +26,11 @@ setup wizard once (until it is completed). Reopen it any time with `/connect`: i
 walks through three steps — provider, API key, model — and applies the choice
 immediately (it writes the base URL, key, model and the model's context window).
 
+Three command-line options, all answered before the configuration or the database is
+touched — so they work even when the binary cannot start: `--version` (version, schema,
+build time and platform), `--help` / `-h` (usage), and `--no-sandbox` (disable the
+filesystem sandbox for this run only). With no arguments it starts the interface.
+
 While the input starts with `/`, a completion list hangs just below it: `↑`/`↓` move
 the selection, `Tab` completes it, `Esc` dismisses it. `Enter` sends what you typed —
 except once you have walked the list with `↑`/`↓`: then `Enter` picks the highlighted row

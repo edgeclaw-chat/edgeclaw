@@ -401,12 +401,18 @@ int edc_cli_main(int argc, char **argv)
 #endif
 
     /* Answered before configuration, a database or a network call is touched: a user who
-     * cannot start the program still needs to say which build they are running. */
+     * cannot start the program still needs to say which build they are running, and still
+     * needs to know what the flags are. */
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--version") == 0)
         {
             edc_version_print(EDC_DB_VERSION, stdout);
+            return 0;
+        }
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+        {
+            edc_usage_print_cli(argc > 0 ? argv[0] : "edgeclaw_cli", stdout);
             return 0;
         }
     }

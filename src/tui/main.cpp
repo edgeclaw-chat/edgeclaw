@@ -86,12 +86,22 @@ int main(int argc, char **argv)
     /* Before anything else -- no terminal setup, no config, no passphrase. A version
      * question must be answerable by a binary that cannot start (wrong master key, no
      * tty, broken database): it is the first thing a bug report needs, and it must not
-     * fail for the same reason the user is reporting. */
+     * fail for the same reason the user is reporting.
+     *
+     * `--help` is answered here for the same reason, and one more: without it the first
+     * thing a new user typed (`edgeclaw --help`) fell through to the TUI, which asked for
+     * a passphrase. A program that answers "--help" with "Enter new passphrase" has not
+     * told anyone anything. */
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--version") == 0)
         {
             edc_version_print(EDC_DB_VERSION, stdout);
+            return 0;
+        }
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+        {
+            edc_usage_print(argc > 0 ? argv[0] : "edgeclaw", stdout);
             return 0;
         }
     }
@@ -143,10 +153,25 @@ int main(int argc, char **argv)
 
         if (!window->Ready())
         {
-            // Bad config / wrong master key / no terminal for the passphrase:
-            // edc_app_new() already logged it. With no app nothing can be done, so
-            // exit non-zero without entering the TUI loop.
-            fprintf(stderr, "edgeclaw: failed to start, see the log for details\n");
+            /* Bad config / wrong master key / no terminal for the passphrase:
+             * edc_app_new() already logged it. With no app nothing can be done, so
+             * exit non-zero without entering the TUI loop.
+             *
+             * The message names the cause it can know, gives both ways forward, and names
+             * the log file rather than saying "the log" -- the previous wording
+             * ("failed to start, see the log for details") left a user who could not start
+             * the program to work out where its logs even go. `edgeclaw_cli` already said
+             * the useful thing; this is that same sentence, not a second opinion. */
+            const char *log = edc_log_path();
+            fprintf(stderr,
+                    "edgeclaw: failed to start.\n"
+                    "A fresh install has to be configured once interactively (run "
+                    "`edgeclaw` in a terminal); without one, the master key must come "
+                    "from EDGECLAW_MASTER_KEY.\n");
+            if (log && log[0])
+                fprintf(stderr, "The reason is in %s\n", log);
+            else
+                fprintf(stderr, "The reason was logged, but the log file could not be opened.\n");
             exit_code = 1;
         }
         else

@@ -50,6 +50,20 @@ const char *edc_platform(void);
  * it -- common is below kernel, and a back-edge would be a cycle. */
 void edc_version_print(int schema_version, FILE *out);
 
+/* The `--help` block, for the frontend named by `program`. Lives here, next to the
+ * version banner, because the two answer the same question from the same place: "what is
+ * this binary and what may I do with it" must be answerable by a binary that cannot
+ * start -- no config, no passphrase, no terminal. `program` is argv[0]'s basename; NULL
+ * or empty falls back to "edgeclaw".
+ *
+ * Kept short on purpose: this is the first output a new user sees, and a screenful of
+ * flags is worse than a pointer to where the rest lives. */
+void edc_usage_print(const char *program, FILE *out);
+
+/* The same for the non-interactive frontend, whose flags and whose "one line in" contract
+ * differ from the interface's; sharing one body would have meant lying in one of them. */
+void edc_usage_print_cli(const char *program, FILE *out);
+
 #ifdef __cplusplus
 }
 #endif

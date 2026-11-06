@@ -13,6 +13,7 @@
 
 static FILE *g_log_file = NULL;
 static char g_current_date[32] = {0};
+static char g_log_path[1024] = {0};
 static uv_mutex_t g_log_mutex;
 
 static void edc_log_file_callback(log_Event *ev)
@@ -57,6 +58,10 @@ static void edc_log_rotate(void)
     if (new_file)
     {
         setvbuf(new_file, NULL, _IOLBF, 0);
+        /* Remember the path we actually opened, for the "see the log" message a failed
+         * startup prints. Recorded only on success, so a reader is never pointed at a
+         * file that does not exist. */
+        snprintf(g_log_path, sizeof(g_log_path), "%s", filename);
         FILE *old = g_log_file;
         g_log_file = new_file;
         if (old)
@@ -87,6 +92,13 @@ void edc_log_init(void)
      * The file callback therefore has to be registered at |level|, not
      * LOG_TRACE, or log_debug/log_trace would still land in the file. */
     log_add_callback(edc_log_file_callback, NULL, level);
+}
+
+const char *edc_log_path(void)
+{
+    /* Empty until the first rotate() succeeds. Callers must handle that: a startup that
+     * failed before the log opened has nothing useful to point at. */
+    return g_log_path;
 }
 
 /* Close the log file handle. Must be called after all actor threads have stopped (else

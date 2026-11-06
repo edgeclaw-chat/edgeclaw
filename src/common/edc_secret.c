@@ -291,7 +291,19 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
 
     if (confirm_password)
     {
-        /* First-time setup: prompt twice and confirm match */
+        /* First-time setup: prompt twice and confirm match.
+         *
+         * The two lines before the prompt are the only explanation a new user gets for a
+         * password they are about to invent for a program they have not used yet. The
+         * prompt alone said nothing about what the passphrase is for, that losing it has
+         * a cost, or that this can be skipped -- and it is the FIRST thing a first run
+         * prints. */
+        fprintf(stderr,
+                "EdgeClaw encrypts the API key in config.json with this passphrase.\n"
+                "It is not stored anywhere, so it cannot be recovered: forget it and you\n"
+                "re-enter the key (settings and history are unaffected). Set %s to skip\n"
+                "this prompt.\n",
+                BC_MASTER_KEY_ENV);
         if (!read_passphrase_tty("Enter new passphrase: ", buf, sizeof(buf)))
             return false;
 
