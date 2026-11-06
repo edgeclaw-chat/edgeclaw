@@ -37,11 +37,13 @@ this is the first thing to check: the workflow may simply not have run yet.
 | Badge | Source | Requires |
 |---|---|---|
 | `build`, `tests` | shields.io, reading `build.yml` / `tests.yml` on `dev` | **A public repository.** |
-| `coverage` | codecov.io | The repo added on codecov.io **and** a `CODECOV_TOKEN` secret. |
+| `coverage` | codecov.io, reading `master` | The repo added on codecov.io; no secret (OIDC). |
 | `license` | static shields badge | nothing |
 
 **On a private repository the GitHub Actions badges cannot render, and no configuration
-changes that.** Measured 2026-11-03:
+changes that.** This repository is public now, so the two workflow badges work; the note is
+kept because it is the first thing to suspect if they ever go blank again. Measured
+2026-11-03, while the repository was private:
 
 - GitHub's own endpoint (`.../actions/workflows/<file>/badge.svg`) returns **404** — with and
   without a token, and with `?token=<PAT>`.
@@ -52,18 +54,22 @@ changes that.** Measured 2026-11-03:
 So the two workflow badges only start showing a status once the repository is public. That is
 a decision, not a bug to chase.
 
-**Coverage** is different: codecov serves that badge itself and works for a private repo. To
-enable it:
+**Coverage** is different: codecov serves that badge itself, so it works either way. Its
+GitHub App is installed on the organisation, which is all the integration needs -- there is
+no upload token to create or rotate. `tests.yml`'s `coverage` job authenticates through
+OIDC (`use_oidc: true`, which requires the job's `id-token: write` permission) and uploads
+`bazel-out/_coverage/_coverage_report.dat` on every run.
 
-1. Add `edgeclaw-chat/edgeclaw` on codecov.io (sign in with GitHub).
-2. Copy the upload token.
-3. `gh secret set CODECOV_TOKEN`, or Settings → Secrets → Actions.
+`fail_ci_if_error: false` is deliberate: Codecov is a signal, not a gate, and an outage
+there must not turn a green test run red. The consequence is that a broken upload is
+**quiet** — the job stays green -- so when changing anything about it, open the run's
+`Coverage` job log and look for `Sending upload (...) to storage` followed by
+`Upload queued for processing complete`. A run that merely stays green proves nothing.
 
-The workflow already does the rest: `tests.yml`'s `coverage` job uploads
-`bazel-out/_coverage/_coverage_report.dat` when the token exists, and **skips the upload
-when it does not** — a missing optional integration must not turn the test signal red. With
-no token it prints the three percentages into the job log instead (`Coverage summary` step),
-so the numbers stay visible either way.
+The `Coverage summary` step after it prints lcov's three totals into the job log on every
+run (`if: always()`), which is the record of what was measured independent of whether the
+upload landed. Note that it will not agree with the badge: lcov's `LH/LF` counts a line
+whose branches were not all taken as hit, while Codecov does not.
 
 One trap when editing that step: the report path is written literally
 (`bazel-out/_coverage/_coverage_report.dat`) on purpose. `bazel-out` is a symlink and `find`
@@ -115,10 +121,11 @@ The one thing that can silently destroy a user's history.
       should move to its "fixed at v2.0.0" section in the same commit.
 - [ ] The sanitizer gate is what this checklist says it is (hard or
       report-only right now?).
-- [ ] The coverage numbers quoted in `docs/limitations.md` match the latest `Coverage
-      summary` in the `Tests` run. They are re-measured, not
-      remembered: the document used to quote a baseline two months and 585 lines out of
-      date, which made it wrong in a way no test would catch.
+- [ ] The coverage number quoted in `docs/limitations.md` matches what Codecov shows for
+      `master`. It is re-measured, not remembered: the document once quoted a baseline two
+      months and 585 lines out of date, which made it wrong in a way no test would catch.
+      Do not compare it against the log's `Coverage summary` -- that prints lcov's `LH/LF`,
+      which counts partially-covered lines as hit and reads ~18 points higher.
 
 ## 6. Tag and publish
 
