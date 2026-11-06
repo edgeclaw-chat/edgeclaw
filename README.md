@@ -69,7 +69,7 @@ Each holds one self-contained binary with the default workspace embedded — it 
 released to `~/.edgeclaw/` on first run.
 
 Two names are published per archive: a version-less one (`edgeclaw_amd64_linux.tar.gz`)
-and a pinned one (`edgeclaw_amd64_linux_v2.0.2-rc.1.tar.gz`). They are byte-identical;
+and a pinned one (`edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz`). They are byte-identical;
 use the pinned name when you need to know what you have later.
 
 > **No stable release yet.** Everything so far is a pre-release, and GitHub's
@@ -79,7 +79,7 @@ use the pinned name when you need to know what you have later.
 > this note goes away.
 
 ```bash
-TAG=v2.0.2-rc.1   # replace with the tag shown on the Releases page
+TAG=v1.0.0-rc.1   # replace with the tag shown on the Releases page
 curl -LO "https://github.com/edgeclaw-chat/edgeclaw/releases/download/${TAG}/edgeclaw_amd64_linux.tar.gz"
 tar -xzf edgeclaw_amd64_linux.tar.gz && cd edgeclaw_amd64_linux && ./edgeclaw
 ```

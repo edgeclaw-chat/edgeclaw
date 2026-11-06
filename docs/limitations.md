@@ -7,7 +7,7 @@ a limitation nobody wrote down becomes a bug report, and a limitation written do
 If something here is wrong — a feature listed as missing that now exists — that is a bug in
 this file. Fix the file in the same commit that adds the feature.
 
-Last reviewed: 2026-11-02 (v2.0.0 release preparation).
+Last reviewed: 2026-11-06 (v1.0.0 release preparation).
 
 ---
 
@@ -121,7 +121,7 @@ Not "unverified" — verified, and wrong in a narrow case:
   workspace-status variables in `genrule` commands, so the proper fix — a volatile input — is
   not available yet. This is why it is written down instead of fixed.
 
-## Fixed at v2.0.0 that used to be limitations
+## Fixed before v1.0.0, and no longer limitations
 
 Listed because older docs and issues still describe these as open:
 
@@ -133,12 +133,13 @@ Listed because older docs and issues still describe these as open:
 - **The release archive carries its licences** (`THIRD_PARTY_NOTICES.md` + `licenses/`).
 - **A failing shell command says so** (`[exit N]`).
 
-### Also fixed in v2.0.1
+### Also fixed before this release, later in the run-up
 
 - **`--version` no longer names a commit that was not built**, for released archives. The
   rule ran inside Bazel's execroot — symlinks everywhere, including `.git` — so `git status`
   saw every file as typechanged and `git describe --dirty` called a clean tree dirty.
 - **A markdown hard break is a line break.** Two trailing spaces used to render as a space,
   collapsing poems, addresses and hand-aligned text into one run.
-- **The trunk is built by CI.** A push to `dev` started nothing before v2.0.1.
+- **The trunk is built by CI.** A push to `dev` used to start no workflow at all; only
+  pull requests and release tags did.
 

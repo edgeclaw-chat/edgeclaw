@@ -78,11 +78,17 @@ the step dies with `FileNotFoundError: ''`. That happened on the workflow's firs
 
 ## 2. Decide the version
 
-**This release is `v2.0.0`.** Decided 2026-11-02: `v1.0.0`–`v1.6.2` are development
-snapshots (the first is literally `init(project)`), so a "1.0" promise made now would be
-indistinguishable from them. A major bump is the one number that cannot be confused with
-what came before, and this release does change things users depend on — the database is
-migrated in place instead of refused, and the shell tool now reports exit status.
+**This repository's numbering starts at `v1.0.0`.** It was published from a private
+development tree whose commits went back to 2026-06-20, but none of those versions were ever
+released here, so none of them count as history a user could have installed. `1.0` is the
+first number that means anything to someone arriving now, and `MODULE.bazel` already
+declares `version = "1.0.0"`.
+
+The first release is a **pre-release** (`v1.0.0-rc.1`): a suffix in the tag is what makes it
+one, and `release.yml` derives the label from exactly that (`contains(github.ref_name, '-')`).
+The suffix is not decoration — GitHub's `releases/latest` resolves only to the newest
+*non*-pre-release, so while every release carries a suffix, `releases/latest/download/...`
+does not resolve at all and the README pins an explicit tag instead.
 
 - [ ] Confirm the number is still right (has anything shipped since this was written?).
 - [ ] Say why in the annotated tag message, not just the number.
@@ -118,7 +124,7 @@ The one thing that can silently destroy a user's history.
   Expect `LICENSE`, `THIRD_PARTY_NOTICES.md`, and one `licenses/<component>/LICENSE` per
   redistributed component.
 - [ ] `docs/limitations.md` is current. Anything fixed in this release that appears there
-      should move to its "fixed at v2.0.0" section in the same commit.
+      should move to its "fixed before v1.0.0" section in the same commit.
 - [ ] The sanitizer gate is what this checklist says it is (hard or
       report-only right now?).
 - [ ] The coverage number quoted in `docs/limitations.md` matches what Codecov shows for
@@ -135,7 +141,7 @@ git tag -a vX.Y.Z -m "vX.Y.Z: <one line on what this release promises>"
 git push origin vX.Y.Z
 ```
 
-**A suffix in the tag makes it a pre-release** (`v2.0.2-rc.1`, `-beta.2`): the workflow
+**A suffix in the tag makes it a pre-release** (`v1.0.0-rc.1`, `-beta.2`): the workflow
 sets `prerelease` from `contains(github.ref_name, '-')`, so there is nothing to toggle.
 This is not just a label — GitHub's `releases/latest` resolves only to the newest
 *non*-pre-release, which means the README's `releases/latest/download/` link keeps 404ing
