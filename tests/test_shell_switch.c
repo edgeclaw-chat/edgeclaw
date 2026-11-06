@@ -135,7 +135,7 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
 /* `/shell <arg>` through the builtin entry (it is a `/` command, so the switch does not
  * gate it -- which is the whole point: it is how you turn the switch back on).
  *
- * The entry takes the CMD AST node, not the raw message (aef7347): the lexer and parser
+ * The entry takes the CMD AST node, not the raw message (36481a0): the lexer and parser
  * have already split the tail, and no layer below splits raw text again. So build the same
  * node `/shell <arg>` would have produced. argv is sds* because the parser sdsdup()s every
  * word, and the node is released the way edc_ast_free() does it. */

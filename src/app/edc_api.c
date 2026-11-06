@@ -7,7 +7,7 @@
  *   - string readers: same reason (sds -> caller buffer);
  *   - a few things the frontend does: send input / request a snapshot / register
  *     an adapter / write its own files.
- * They used to live in tui's `edc_c_bridge` (moved into app by 92b2c99), now their
+ * They used to live in tui's `edc_c_bridge` (moved into app by 4f26487), now their
  * own `//src/app:api` -- one rule: no business logic here, only projection.
  *
  * The only parameter is an opaque `struct edc_app *`: this file does not touch its

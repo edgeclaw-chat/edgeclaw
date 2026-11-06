@@ -132,7 +132,7 @@ jobs:
       # `bazel build` BEFORE `bazel test`, and it is not redundant: `bazel test //tests:all`
       # skips every target tagged "manual", so those compile only here. Without this step
       # they rot silently -- two of them had been calling edc_llm_actor_req_new with an
-      # argument that was removed in fe9e7e9, and nothing noticed for months.
+      # argument that was removed in 959e194, and nothing noticed for months.
       - name: Build every test target (including manual)
         run: bazel build //tests:all --action_env=TMPDIR="$RUNNER_TEMP"
         env:

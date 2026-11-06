@@ -5,7 +5,7 @@
  * 现在数据是唯一真相，块是它给模型看的投影。
  *
  * 最重要的用例是第一个：`edc_fold_files_render(body, f)` 必须与旧实现
- * `fold_memory_with_files(NULL, summary, reads, writes)`（b5a8737..20d563a 里那份，
+ * `fold_memory_with_files(NULL, summary, reads, writes)`（bc9c431..79d2c76 里那份，
  * 已随本提交删除）**逐字节相同**。这段文本是每轮请求都发的 system message，
  * 多一个换行就是缓存前缀从 token 0 起全废。所以先钉字节，再谈别的。 */
 #include "edc_fold_files.h"
@@ -40,7 +40,7 @@ static int passed = 0, failed = 0;
 
 /* ── 旧实现的期望输出（fixture，不是被测代码） ──────────────────
  *
- * 这些字节用真 sds 跑过 b5a8737..20d563a 的 `fold_memory_with_files` 得到（探针链
+ * 这些字节用真 sds 跑过 bc9c431..79d2c76 的 `fold_memory_with_files` 得到（探针链
  * bazel external 下的 sds.c）。写成字面量而不是"再实现一遍"：如果两者都由同一份
  * 代码生成，这个测试就只是在验证自己。 */
 struct snapshot

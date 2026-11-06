@@ -251,7 +251,7 @@ extern sds edc_session_memory_get_detail(const struct edc_session_memory *m, con
  * must also appear in the detail.
  *
  * HARD = commit ids and snake_case identifiers. Both are unrewritable: if the summary says
- * `4dd2b14` or `edc_sub_fn`, no paraphrase carries it and no reader can re-derive it.
+ * `a1b2c3d` or `edc_sub_fn`, no paraphrase carries it and no reader can re-derive it.
  * Measured on the real 129-entry table: 237 hard facts, 3 uncovered (1.3%) -- all three
  * genuine defects (a lost commit id and two symbol names).
  *

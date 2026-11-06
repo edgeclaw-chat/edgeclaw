@@ -385,15 +385,15 @@ int main(void)
     TEST("summary ⊆ detail: memory_write 拒绝 summary 里有、detail 里没有的 commit");
     size_t w_events = session->memo->event_count;
     struct capture w_bad = run_tool(tb, task, "memory_write",
-                                    "{\"title\":\"坏条目\",\"summary\":\"见 4dd2b14\",\"detail\":\"没有那个号\"}");
+                                    "{\"title\":\"坏条目\",\"summary\":\"见 a1b2c3d\",\"detail\":\"没有那个号\"}");
     CHECK(w_bad.error != NULL, "缺覆盖 ⇒ 报错");
-    CHECK(w_bad.result && strstr(w_bad.result, "4dd2b14") != NULL, "错误里点名缺失的事实");
+    CHECK(w_bad.result && strstr(w_bad.result, "a1b2c3d") != NULL, "错误里点名缺失的事实");
     CHECK(session->memo->event_count == w_events, "没落地 (也没写事件)");
     free_capture(&w_bad);
 
     TEST("summary ⊆ detail: detail 覆盖该 commit ⇒ 放行");
     struct capture w_ok = run_tool(
-        tb, task, "memory_write", "{\"title\":\"好条目\",\"summary\":\"见 4dd2b14\",\"detail\":\"commit 4dd2b14 修好了\"}");
+        tb, task, "memory_write", "{\"title\":\"好条目\",\"summary\":\"见 a1b2c3d\",\"detail\":\"commit a1b2c3d 修好了\"}");
     CHECK(w_ok.error == NULL, "有覆盖 ⇒ 成功");
     free_capture(&w_ok);
 
@@ -421,7 +421,7 @@ int main(void)
 
     TEST("summary ⊆ detail: 让缺口变大的写入仍然拒绝");
     snprintf(leg_upd, sizeof(leg_upd),
-             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"summary\":\"见 9f8e7d6 和 4dd2b14\"}]}",
+             "{\"entries\":[{\"id\":\"%s\",\"expected_rev\":%" PRIu64 ",\"summary\":\"见 9f8e7d6 和 a1b2c3d\"}]}",
              leg->id, leg->updated_seq);
     struct capture leg2 = run_tool(tb, task, "memory_update", leg_upd);
     CHECK(leg2.error != NULL, "缺口 1 → 2 ⇒ 拒绝");

@@ -16,7 +16,7 @@ body:
     attributes:
       label: Version
       description: Output of `edgeclaw --version`
-      placeholder: edgeclaw v2.0.1 (0843d92)
+      placeholder: edgeclaw v2.0.1 (3284e90)
     validations:
       required: true
 

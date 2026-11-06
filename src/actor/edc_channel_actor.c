@@ -275,7 +275,7 @@ void edc_channel_notify_active_session(struct edc_actor *channel_actor, const ch
  * edc_channel_actor_bind_scheduler once at assembly time and never appears on this path
  * again. Port signatures are unchanged; kernel call sites and test fakes are unaffected.
  *
- * The channel actor is THE ONLY ONE in the process (no multi-channel since 1072c70), so
+ * The channel actor is THE ONLY ONE in the process (no multi-channel since 33027bc), so
  * a provider just registers itself at bind -- no need to hang a "channel handle" on the
  * kernel's scheduler (which would make core know boundary things again). `.actor` is
  * still the scheduler actor: task output is sent in the scheduler's name, verbatim as

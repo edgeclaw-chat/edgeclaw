@@ -231,7 +231,7 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
 
 ## 7. 输出编码：工具结果必须是合法 UTF-8（Windows 需要动手，POSIX 不动）
 
-> 落地：`0faf597`（spawn 侧 prologue）、`365c0d6`（输出边界归一化）、`affed94`（BOM 元数据化）。
+> 落地：`10ce393`（spawn 侧 prologue）、`965438e`（输出边界归一化）、`fc55164`（BOM 元数据化）。
 > 触发：Windows 上 `exec_shell` 返回的中文是乱码；`Get-Content` / `Set-Content` 会静默读错、写错。
 
 ### 7.1 一条不变式

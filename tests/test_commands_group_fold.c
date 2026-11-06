@@ -129,7 +129,7 @@ static struct edc_task_group *make_group(struct edc_session *sess, const char *i
 static void finish_fold(struct edc_scheduler *sched, struct edc_task *fold)
 {
     /* 折叠没起来时这里必须只是 no-op —— 否则变异体 (比如"手动也判 due") 会空指针崩,
-     * 而不是干净地红在断言上 (bc021ce 的教训)。 */
+     * 而不是干净地红在断言上 (cbff614 的教训)。 */
     if (!fold)
         return;
     void *rid = fold->current_request_id;

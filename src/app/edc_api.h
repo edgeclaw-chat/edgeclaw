@@ -15,7 +15,7 @@ extern "C" {
  * and lifetime (create / shutdown / free / hand out handles), while "project the
  * app's state into something C++ can read" is a separate concern whose only
  * reason to exist is the C++ <-> C boundary (it used to live in tui's
- * `edc_c_bridge`; moved into app by 92b2c99; now its own module). The rule: no
+ * `edc_c_bridge`; moved into app by 4f26487; now its own module). The rule: no
  * function here contains any business logic -- send an input / request a tree /
  * register an adapter / read a string.
  *

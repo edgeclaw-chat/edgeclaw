@@ -406,16 +406,16 @@ static void test_summary_coverage(void)
     sds rep = NULL;
 
     /* 没有 detail = 无需校验：summary 是唯一载体，不存在"不一致的第二个家" */
-    CHECK(edc_session_memory_uncovered_facts("见 4dd2b14", NULL, &rep) == 0, "detail 为空 = 0");
+    CHECK(edc_session_memory_uncovered_facts("见 a1b2c3d", NULL, &rep) == 0, "detail 为空 = 0");
     CHECK(rep == NULL, "detail 为空不给报告");
     CHECK(edc_session_memory_uncovered_facts(NULL, "detail", &rep) == 0, "summary 为空 = 0");
     CHECK(edc_session_memory_uncovered_facts("", "detail", &rep) == 0, "summary 空串 = 0");
 
     /* commit 缺失 / 已覆盖 */
-    CHECK(edc_session_memory_uncovered_facts("见 4dd2b14", "没有那个号", &rep) == 1, "commit 缺失 = 1");
-    CHECK(rep && strstr(rep, "4dd2b14") != NULL, "报告里点名缺的事实");
+    CHECK(edc_session_memory_uncovered_facts("见 a1b2c3d", "没有那个号", &rep) == 1, "commit 缺失 = 1");
+    CHECK(rep && strstr(rep, "a1b2c3d") != NULL, "报告里点名缺的事实");
     sdsfree(rep);
-    CHECK(edc_session_memory_uncovered_facts("见 4dd2b14", "commit 4dd2b14 修好了", &rep) == 0, "commit 已覆盖 = 0");
+    CHECK(edc_session_memory_uncovered_facts("见 a1b2c3d", "commit a1b2c3d 修好了", &rep) == 0, "commit 已覆盖 = 0");
     sdsfree(rep);
 
     /* 纯数字不是 commit：否则日期/字节数会把校验变成噪声源 */
@@ -425,7 +425,7 @@ static void test_summary_coverage(void)
     CHECK(edc_session_memory_uncovered_facts("abc123 太短", "x", &rep) == 0, "6 位不算 commit");
     sdsfree(rep);
     /* 词内不算：前面是 word char */
-    CHECK(edc_session_memory_uncovered_facts("g4dd2b14 嵌在词里", "x", &rep) == 0, "词内不算");
+    CHECK(edc_session_memory_uncovered_facts("ga1b2c3d 嵌在词里", "x", &rep) == 0, "词内不算");
 
     /* snake_case 标识符 */
     CHECK(edc_session_memory_uncovered_facts("调用 edc_sub_fn", "x", &rep) == 1, "标识符缺失 = 1");
@@ -445,8 +445,8 @@ static void test_summary_coverage(void)
 
     /* 多个缺失一起报 */
     sds r2 = NULL;
-    CHECK(edc_session_memory_uncovered_facts("4dd2b14 与 edc_sub_fn", "x", &r2) == 2, "多个缺失计数正确");
-    CHECK(r2 && strstr(r2, "4dd2b14") && strstr(r2, "edc_sub_fn"), "多个缺失都点名");
+    CHECK(edc_session_memory_uncovered_facts("a1b2c3d 与 edc_sub_fn", "x", &r2) == 2, "多个缺失计数正确");
+    CHECK(r2 && strstr(r2, "a1b2c3d") && strstr(r2, "edc_sub_fn"), "多个缺失都点名");
     sdsfree(r2);
 
     edc_session_memory_free(NULL); /* 防御性调用不该崩 */

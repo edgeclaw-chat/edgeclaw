@@ -70,7 +70,7 @@ int main(void)
     cJSON_AddStringToObject(msg, "content", "ping");
     cJSON_AddItemToArray(msgs, msg);
 
-    /* Two arguments: the trailing EdcQueue *turn was removed by fe9e7e9 (a turn is database
+    /* Two arguments: the trailing EdcQueue *turn was removed by 959e194 (a turn is database
      * rows now). The call passed NULL for it, so dropping it is equivalent. */
     struct edc_llm_actor_req *req = edc_llm_actor_req_new(msgs, NULL);
     edc_actor_send(llm_actor, edc_actor_msg_new(BC_ACTOR_MSG_LLM_REQUEST, observer, NULL, req,

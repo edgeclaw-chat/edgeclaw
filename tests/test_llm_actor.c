@@ -62,7 +62,7 @@ int main(void)
     cJSON_AddStringToObject(msg, "content", "什么是敏捷开发?");
     cJSON_AddItemToArray(msg_lst, msg);
 
-    /* Two arguments, not three: fe9e7e9 ("make the database the session's only copy")
+    /* Two arguments, not three: 959e194 ("make the database the session's only copy")
      * removed the trailing EdcQueue *turn -- a turn is rows in the database now, not an
      * in-memory queue handed to the request. The call used to pass NULL for both `tools`
      * and `turn`, so dropping the last one is exactly equivalent. */

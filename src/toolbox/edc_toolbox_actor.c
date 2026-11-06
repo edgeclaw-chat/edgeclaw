@@ -280,7 +280,7 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
  * the only tools that answer synchronously are the in-memory ones (memory_*, todo), whose
  * work is a few string operations.
  *
- * (A "TODO: async exec" used to sit here, from the initial commit. It was done in fff7b15
+ * (A "TODO: async exec" used to sit here, from the initial commit. It was done in c859885
  * "fix(fs): move the tool file I/O off the runner thread" and the note outlived it.) */
 static void edc_toolbox_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
