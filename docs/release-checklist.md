@@ -87,8 +87,9 @@ declares `version = "1.0.0"`.
 The first release is a **pre-release** (`v1.0.0-rc.1`): a suffix in the tag is what makes it
 one, and `release.yml` derives the label from exactly that (`contains(github.ref_name, '-')`).
 The suffix is not decoration — GitHub's `releases/latest` resolves only to the newest
-*non*-pre-release, so while every release carries a suffix, `releases/latest/download/...`
-does not resolve at all and the README pins an explicit tag instead.
+*non*-pre-release. Combined with the archives carrying the tag in their names, that
+means `releases/latest/download/...` never resolves, stable tag or not: the README
+pins an explicit tag and builds the filename from it.
 
 - [ ] Confirm the number is still right (has anything shipped since this was written?).
 - [ ] Say why in the annotated tag message, not just the number.
@@ -143,17 +144,17 @@ git push origin vX.Y.Z
 
 **A suffix in the tag makes it a pre-release** (`v1.0.0-rc.1`, `-beta.2`): the workflow
 sets `prerelease` from `contains(github.ref_name, '-')`, so there is nothing to toggle.
-This is not just a label — GitHub's `releases/latest` resolves only to the newest
-*non*-pre-release, which means the README's `releases/latest/download/` link keeps 404ing
-until a stable tag exists. That is why the README's quick start pins an explicit tag and
-carries a note saying so; remove both when the first stable release ships.
+This is not just a label: GitHub's `releases/latest` resolves only to the newest
+*non*-pre-release, and the archives carry the tag in their names, so
+`releases/latest/download/<name>` cannot work — not now, and not once a stable tag exists.
+That is why the README's quick start pins an explicit tag and builds the filename from it.
 
 - [ ] The `release` job ran and produced one archive per matrix entry — the five
       `edgeclaw_*` targets (`amd64_linux`, `arm_linux`, `aarch64_linux`,
-      `aarch64_macos`, `amd64_windows`), the three `*_linux_musl` variants, and the
-      `device_agent_*` set — each attached under **two** names: `<target>_vX.Y.Z.tar.gz`
-      and the version-less `<target>.tar.gz`. A tarball with only one of the two means
-      "Collect artifact" lost a line.
+      `aarch64_macos`, `amd64_windows`) and the three `*_linux_musl` variants — each
+      attached under exactly one name, `<target>_vX.Y.Z.tar.gz`. There is no version-less
+      alias any more; a second name per target means "Collect artifact" still carries the
+      line that was removed.
 - [ ] Download one archive from the release page — not from `bazel-bin` — and confirm it
       starts and prints the version you tagged.
 - [ ] Release notes say what changed for a *user*; the checklist above is for you, not them.

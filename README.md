@@ -67,32 +67,30 @@ Tarballs live on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releas
 Each holds one self-contained binary with the default workspace embedded — it is
 released to `~/.edgeclaw/` on first run.
 
-Two names are published per archive: a version-less one (`edgeclaw_amd64_linux.tar.gz`)
-and a pinned one (`edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz`). They are byte-identical;
-use the pinned name when you need to know what you have later.
-
-> **No stable release yet.** Everything so far is a pre-release, and GitHub's
-> `releases/latest` deliberately resolves only to the newest *non*-pre-release. So
-> `releases/latest/download/<name>` does not resolve yet — exchange the tag below for the
-> one on the Releases page. Once a stable version is tagged, that link starts working and
-> this note goes away.
+Every archive carries the tag in its name — `edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz` —
+so a file kept for months still says what it is without being run. There is deliberately
+no version-less name: `releases/latest/download/<name>` resolves an asset *by name* in the
+newest release, and a name containing the version cannot be written down before the tag
+exists. So the commands below take the tag explicitly — replace it with the one on the
+Releases page.
 
 ```bash
 TAG=v1.0.0-rc.1   # replace with the tag shown on the Releases page
-curl -LO "https://github.com/edgeclaw-chat/edgeclaw/releases/download/${TAG}/edgeclaw_amd64_linux.tar.gz"
-tar -xzf edgeclaw_amd64_linux.tar.gz && cd edgeclaw_amd64_linux && ./edgeclaw
+curl -LO "https://github.com/edgeclaw-chat/edgeclaw/releases/download/${TAG}/edgeclaw_amd64_linux_${TAG}.tar.gz"
+tar -xzf "edgeclaw_amd64_linux_${TAG}.tar.gz" && cd edgeclaw_amd64_linux && ./edgeclaw
 ```
 
-| Platform | Tarball | Binary inside |
-|----------|---------|---------------|
-| Linux x86_64 | `edgeclaw_amd64_linux.tar.gz` | `edgeclaw` |
-| Linux aarch64 | `edgeclaw_aarch64_linux.tar.gz` | `edgeclaw` |
-| Linux armv7 | `edgeclaw_arm_linux.tar.gz` | `edgeclaw` |
-| macOS aarch64 | `edgeclaw_aarch64_macos.tar.gz` | `edgeclaw` |
-| Windows x86_64 | `edgeclaw_amd64_windows.tar.gz` | `edgeclaw.exe` |
+| Platform | Tarball (`<tag>` is the release tag) | Binary inside |
+|----------|---------------------------------------|---------------|
+| Linux x86_64 | `edgeclaw_amd64_linux_<tag>.tar.gz` | `edgeclaw` |
+| Linux aarch64 | `edgeclaw_aarch64_linux_<tag>.tar.gz` | `edgeclaw` |
+| Linux armv7 | `edgeclaw_arm_linux_<tag>.tar.gz` | `edgeclaw` |
+| macOS aarch64 | `edgeclaw_aarch64_macos_<tag>.tar.gz` | `edgeclaw` |
+| Windows x86_64 | `edgeclaw_amd64_windows_<tag>.tar.gz` | `edgeclaw.exe` |
 
 The three Linux targets are also published built against musl libc as
-`edgeclaw_<arch>_linux_musl.tar.gz` — the same program, just a different libc linked in.
+`edgeclaw_<arch>_linux_musl_<tag>.tar.gz` — the same program, just a different libc
+linked in.
 
 ### From source
 
