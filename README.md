@@ -67,12 +67,23 @@ Tarballs live on the [Releases](https://github.com/edgeclaw-chat/edgeclaw/releas
 Each holds one self-contained binary with the default workspace embedded — it is
 released to `~/.edgeclaw/` on first run.
 
+The installer picks the right build for this machine, resolves the newest release, and
+puts the binary in `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.sh | sh
+```
+
+It takes `--pre` when you want the newest pre-release (every release so far is one, so
+without it the script stops and says so), `--tag <tag>` to pin an exact release,
+`--musl` for the musl build on Linux, and `--dir <path>` to install somewhere else.
+Read it first if you prefer: `tools/install.sh` — it is POSIX `sh` with no dependencies
+beyond `curl` or `wget`.
+
 Every archive carries the tag in its name — `edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz` —
 so a file kept for months still says what it is without being run. There is deliberately
-no version-less name: `releases/latest/download/<name>` resolves an asset *by name* in the
-newest release, and a name containing the version cannot be written down before the tag
-exists. So the commands below take the tag explicitly — replace it with the one on the
-Releases page.
+no version-less name, which is why `releases/latest/download/<name>` does not work and a
+fixed download URL cannot be written down here: build it from the tag instead.
 
 ```bash
 TAG=v1.0.0-rc.1   # replace with the tag shown on the Releases page

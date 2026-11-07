@@ -1,5 +1,14 @@
 load("@rules_python//python:defs.bzl", "py_binary")
 
+# The installer users pipe into a shell. An sh_binary rather than a bare source file so
+# `//tests:test_install_sh` finds it in its runfiles, and so
+# `bazel run //tools:install -- --dry-run` works.
+sh_binary(
+    name = "install",
+    srcs = ["install.sh"],
+    visibility = ["//visibility:public"],
+)
+
 # Build-time tool: turns the workspace/ tree into a C source file so it can be
 # linked into the binary (see //src/common:workspace_embedded_c).
 py_binary(

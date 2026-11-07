@@ -327,6 +327,16 @@ sh_test(
     data = ["//src/cli:edgeclaw_cli"],
 )
 
+# tools/install.sh: which tag is current, which asset this machine needs, and what a failed
+# download is allowed to leave behind. Offline -- `curl` and `uname` are shimmed -- because
+# the interesting cases are the refusals, and a test that needs GitHub to answer is a test
+# that fails for reasons that have nothing to do with this script.
+sh_test(
+    name = "test_install_sh",
+    srcs = ["test_install_sh.sh"],
+    data = ["//tools:install"],
+)
+
 cc_test(
     name = "test_tools_search_loop",
     srcs = ["test_tools_search_loop.c", "test_ws.h"],
