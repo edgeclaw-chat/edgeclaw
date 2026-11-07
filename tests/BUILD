@@ -43,6 +43,18 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The wall-clock helpers: the millisecond clock that feeds message ids, and the
+# format/parse pair every timestamp in a log line goes through. Asserted as
+# round trips, so the test does not encode the build machine's timezone.
+cc_test(
+    name = "test_datetime",
+    srcs = ["test_datetime.c"],
+    deps = [
+        "//src/common:edc_datetime_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # 活体手测（打真 API + 要 EDGECLAW_MASTER_KEY），不当自动化跑；手动：
 # EDGECLAW_MASTER_KEY=... bazel test //tests:test_llm_actor --test_output=all
 cc_test(
@@ -313,6 +325,16 @@ sh_test(
     name = "test_cli_sh",
     srcs = ["test_cli.sh"],
     data = ["//src/cli:edgeclaw_cli"],
+)
+
+# tools/install.sh: which tag is current, which asset this machine needs, and what a failed
+# download is allowed to leave behind. Offline -- `curl` and `uname` are shimmed -- because
+# the interesting cases are the refusals, and a test that needs GitHub to answer is a test
+# that fails for reasons that have nothing to do with this script.
+sh_test(
+    name = "test_install_sh",
+    srcs = ["test_install_sh.sh"],
+    data = ["//tools:install"],
 )
 
 cc_test(
