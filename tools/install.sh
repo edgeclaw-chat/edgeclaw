@@ -85,8 +85,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$INSTALL_DIR" ]; then
-    INSTALL_DIR="${HOME:?HOME is not set -- pass --dir <path>}/.local/bin"
+if [ -z "$INSTALL_DIR" ] && [ -n "${HOME:-}" ]; then
+    INSTALL_DIR="${HOME}/.local/bin"
 fi
 
 # --------------------------------------------------------------------------- fetching
@@ -207,8 +207,18 @@ if [ "$DRY_RUN" = 1 ]; then
     printf 'target    %s\n' "$target"
     printf 'asset     %s\n' "$asset"
     printf 'url       %s\n' "$url"
-    printf 'installdir %s\n' "$INSTALL_DIR"
+    if [ -n "$INSTALL_DIR" ]; then
+        printf 'installdir %s\n' "$INSTALL_DIR"
+    else
+        printf 'installdir (none: HOME is unset, pass --dir <path>)\n'
+    fi
     exit 0
+fi
+
+# Refuse now rather than after the download: with nowhere to put the binary, fetching it is
+# only wasted time, and the failure would otherwise be reported against the download.
+if [ -z "$INSTALL_DIR" ]; then
+    die "HOME is not set, so there is no default install directory -- pass --dir <path>"
 fi
 
 # A temp directory outside the install dir, so a failed download leaves nothing behind that

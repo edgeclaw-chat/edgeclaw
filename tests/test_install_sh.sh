@@ -164,6 +164,43 @@ EOF
 out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run)
 check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v2.5.0" "a draft release is skipped"
 
+# ----------------------------------------------------- environments without a HOME
+#
+# This is the shape of a build sandbox: Bazel runs actions with a minimal environment, and
+# HOME is not in it. Resolution and --dry-run have to work there -- only an actual install
+# needs a directory -- and this section exists because getting it wrong turned CI red in a
+# way that a Windows dev machine cannot show, since HOME is always set there.
+
+if env -u HOME FAKE_OS=Linux FAKE_ARCH=x86_64 PATH="${SHIM}:${PATH}" FAKE_WWW="$WWW" \
+        sh "$INSTALL_SH" --dry-run --tag v9.9.9 >/dev/null 2>&1; then
+    check "works" "works" "--dry-run works with HOME unset"
+else
+    check "failed" "works" "--dry-run works with HOME unset"
+fi
+
+out=$(env -u HOME FAKE_OS=Linux FAKE_ARCH=x86_64 PATH="${SHIM}:${PATH}" FAKE_WWW="$WWW" \
+      sh "$INSTALL_SH" --dry-run --tag v9.9.9 2>&1)
+check "$(printf '%s\n' "$out" | awk '/^target /{print $2}')" "edgeclaw_amd64_linux" \
+      "the platform is still resolved with HOME unset"
+case "$out" in
+    *"(none: HOME is unset"*) check "says so" "says so" "--dry-run says the directory is unresolved" ;;
+    *) check "silent" "says so" "--dry-run says the directory is unresolved" ;;
+esac
+
+# Installing without HOME and without --dir must refuse with advice, not with an empty path.
+out=$(env -u HOME FAKE_OS=Linux FAKE_ARCH=x86_64 PATH="${SHIM}:${PATH}" FAKE_WWW="$WWW" \
+      sh "$INSTALL_SH" --tag v9.9.9 2>&1)
+check "$?" "1" "installing with HOME unset and no --dir is refused"
+case "$out" in
+    *"--dir"*) check "advises --dir" "advises --dir" "the refusal mentions --dir" ;;
+    *) check "$out" "advises --dir" "the refusal mentions --dir" ;;
+esac
+
+# ...and the same environment installs fine once --dir is given.
+out=$(env -u HOME FAKE_OS=Linux FAKE_ARCH=armv7l PATH="${SHIM}:${PATH}" FAKE_WWW="$WWW" \
+      sh "$INSTALL_SH" --tag v9.9.9 --dir "${WORK}/armbin" 2>&1)
+check "$?" "1" "an absent arm asset is still reported when HOME is unset"
+
 # ------------------------------------------------------------ install, end to end
 
 # A published archive, shaped like pkg_tar's output: <target>/<binary> plus licences.
