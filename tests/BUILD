@@ -486,6 +486,22 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The shell input syntax as a SPEC: every row is a sentence from
+# docs/input-syntax.zh.md, driven through the real edc_lex -> edc_classify ->
+# edc_parse pipeline and asserted on the AST. It exists because one class of bug
+# has no natural home in a feature test -- a lexer rule that disagrees with the
+# documented quoting (a """...""" body holding a bare quote was split into three
+# words, which the grammar then refused mid-line). A matrix over
+# (quote form x payload that collides with the delimiter) fails on any cell.
+cc_test(
+    name = "test_shell_spec",
+    srcs = ["test_shell_spec.c", "test_ws.h"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 cc_test(
     name = "test_commands_session_memo",
     srcs = ["test_commands_session_memo.c", "test_ws.h"],
