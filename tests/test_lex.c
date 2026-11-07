@@ -350,6 +350,51 @@ int main(void)
         CHECK(argv == NULL && err != NULL, "same for a double quote");
         sdsfree(err);
     }
+
+    /* The triple bodies follow PYTHON's rule: a run of ONE or TWO delimiters inside the
+     * body is literal text and only a run of three closes the block. The lexer used to
+     * spell the body `[^"]*` / `[^']*`, which excluded exactly that -- so the block failed
+     * to match as a whole, fell through to the ORDINARY quote rule (longest match takes
+     * `"…"` for the first two quotes), and ONE `"""…"""` reached the parser as
+     * STRING/TEXT/STRING. On a shell line that is `syntax error, unexpected T_TEXT,
+     * expecting end of file`; on `/task new` the description silently became three argv
+     * words. These three cases pin the lexer half; //tests:test_cmd_parse pins the
+     * unquoting half (edc_cmd_unquote already agreed with Python). */
+    TEST("`\"\"\"` body holds a bare quote -- ONE STRING token, not STRING/TEXT/STRING");
+    {
+        CHECK(edc_lex("\"\"\"he said \"hi\" here\"\"\"", EDC_LEX_SHELL_ON, &o), "lex ok");
+        CHECK(o.count == 2, "ONE word + EOF");
+        CHECK(o.toks[0].kind == TK_STRING, "and that word is a STRING");
+        CHECK(o.toks[0].value && strcmp(o.toks[0].value, "he said \"hi\" here") == 0, "the inner quotes survive in the value");
+        edc_lex_out_free(&o);
+    }
+
+    TEST("`'''` body holds a bare apostrophe -- ONE STRING token");
+    {
+        CHECK(edc_lex("'''it's fine'''", EDC_LEX_SHELL_ON, &o), "lex ok");
+        CHECK(o.count == 2 && o.toks[0].kind == TK_STRING, "ONE STRING + EOF");
+        CHECK(o.toks[0].value && strcmp(o.toks[0].value, "it's fine") == 0, "the apostrophe survives");
+        edc_lex_out_free(&o);
+    }
+
+    TEST("the same block on a command line (SHELL_OFF) is still ONE word");
+    {
+        CHECK(edc_lex("/task new \"\"\"he said \"hi\" here\"\"\"", EDC_LEX_SHELL_OFF, &o), "lex ok");
+        CHECK(o.count == 4, "SLASH + `new` + ONE STRING + EOF");
+        CHECK(o.toks[2].kind == TK_STRING && o.toks[2].value &&
+              strcmp(o.toks[2].value, "he said \"hi\" here") == 0,
+              "the description is one word, not three");
+        edc_lex_out_free(&o);
+    }
+
+    TEST("an unterminated `\"\"\"` block with a bare quote is ONE bad token");
+    {
+        CHECK(edc_lex("\"\"\"a \"b\" c", EDC_LEX_SHELL_ON, &o), "lex ok");
+        CHECK(o.count == 2 && o.toks[0].kind == TK_BAD_QUOTED,
+              "one BADQ token (the unterminated rule got the same body), not three words");
+        edc_lex_out_free(&o);
+    }
+
     printf("\n  %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }

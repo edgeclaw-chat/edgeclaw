@@ -69,14 +69,31 @@ static void push_unquoted(const char *raw, size_t len)
 %%
     /* bash quoting (see edc_cmd_parse.c): '…' is RAW, "…" carries only \" and \\, and the
      * escape-carrying form is ANSI-C -- spelled $'…' the way bash spells it, or '''…'''
-     * (the in-tree alias). """…""" is "…" with a body that may hold a bare ". */
+     * (the in-tree alias). """…""" is "…" with a body that may hold a bare ".
+     *
+     * The triple bodies follow PYTHON's rule, not "no quote of this kind may appear":
+     * the delimiter is a RUN of three, so a run of one or two inside the body is
+     * literal text (`"""(he said "hi")"""`). Spelled as `(""{0,2}[^"])*` rather than
+     * `[^"]*` for exactly that reason -- `[^"]*` was the bug: the block then failed to
+     * match as a whole, fell through to the ORDINARY quote rule (longest match picks
+     * `"…"` for the first two quotes), and ONE `"""…"""` reached the
+     * parser as STRING/TEXT/STRING. On a shell line that is `syntax error, unexpected
+     * T_TEXT, expecting end of file`; on `/task new` it silently became three argv
+     * entries instead of one description.
+     *
+     * The rule has to agree with edc_cmd_unquote, the layer that strips the delimiters:
+     * scan_region() with opener=3 closes only on three consecutive quotes, so the lexer
+     * must hand it a body that may hold one or two. A trailing run of four or more still
+     * behaves as it does in Python: the first three close the block and the leftovers
+     * start the next token. */
 "$'"[^']*"'"                 { push_quoted(yytext, false); }
-"'''"[^']*"'''"              { push_quoted(yytext, false); }
-"\"\"\""[^"]*"\"\"\""        { push_quoted(yytext, true); }
+"'''"('{0,2}[^'])*"'''"       { push_quoted(yytext, false); }
+\"\"\"(\"{0,2}[^\"])*\"\"\"   { push_quoted(yytext, true); }
 \"([^"\\]|\\.)*\"            { push_quoted(yytext, true); }
 '[^']*'                      { push_quoted(yytext, false); }
 "$'"[^']*$                   { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
-"'''"[^']*$                  { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+"'''"('{0,2}[^'])*$          { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
+\"\"\"(\"{0,2}[^\"])*$       { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 \"([^\"\\]|\\.)*$            { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 '[^']*$                      { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 "2>>"                       { chunk_t *c = push(C_REDIR); c->fd = 2; c->append = true; }
