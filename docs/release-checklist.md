@@ -118,7 +118,7 @@ The one thing that can silently destroy a user's history.
 
 ## 5. Before tagging
 
-- [ ] `bazel build //:edgeclaw //:device_agent` and inspect one archive:
+- [ ] `bazel build //:edgeclaw` and inspect one archive:
 
       tar tzf bazel-bin/*/edgeclaw_*.tar.gz | grep -E 'LICENSE|NOTICE|licenses/'
 
