@@ -625,7 +625,7 @@ struct yy_trans_info
 	};
 static const flex_int16_t yy_accept[83] =
     {   0,
-        0,    0,   32,   29,   28,   28,   30,   29,   30,   30,
+        0,    0,   32,   29,   28,   28,   30,   30,   30,   30,
        29,   29,   18,   15,   14,   17,   29,   29,   28,    0,
         9,    4,    0,    0,    0,   20,   19,    0,   10,    5,
        29,   29,   29,   12,   13,   16,   27,    4,    0,    0,
@@ -670,27 +670,27 @@ static const YY_CHAR yy_ec[256] =
 
 static const YY_CHAR yy_meta[30] =
     {   0,
-        1,    2,    2,    2,    1,    2,    2,    1,    1,    1,
+        1,    2,    2,    2,    2,    2,    2,    1,    1,    1,
         2,    2,    2,    1,    1,    1,    1,    1,    1,    1,
         1,    1,    1,    1,    1,    1,    1,    1,    2
     } ;
 
 static const flex_int16_t yy_base[90] =
     {   0,
-        0,  135,  143,    0,   28,   30,   31,  135,   34,   35,
-       31,  128,  145,  145,  127,  110,   50,    0,   41,   49,
-       53,  134,  134,   38,   59,  145,  145,   51,   60,  129,
-       50,   68,   71,  122,  145,  145,   78,  145,   72,   74,
-       77,  145,  145,   79,  115,  108,  114,  110,  145,  145,
-      145,   86,   88,  126,   91,   92,  122,   94,  105,   99,
-      100,  121,  117,  145,   96,  114,  101,  145,  145,   96,
-      100,   98,  100,   93,  145,  145,   94,   89,   61,  102,
-      145,  145,   48,  105,  107,   46,  109,  111,  113
+        0,  133,  141,    0,   28,   30,   31,  133,   34,   35,
+       31,  126,  143,  143,  125,  108,   42,    0,   42,   50,
+       52,  132,  132,   55,   57,  143,  143,   61,   63,  127,
+       53,   71,   74,  120,  143,  143,   70,  143,   79,   81,
+       83,  143,  143,   84,  113,  106,  112,  108,  143,  143,
+      143,   89,   91,  124,   93,   94,  120,   96,  103,   97,
+       98,  119,  115,  143,   94,  112,   99,  143,  143,   94,
+       70,  100,  102,   53,  143,  143,   40,   34,   25,  104,
+      143,  143,   46,  107,  109,   40,  111,  113,  115
     } ;
 
 static const flex_int16_t yy_def[90] =
     {   0,
-       82,    1,   82,   83,   82,   82,   84,   83,   82,   85,
+       82,    1,   82,   83,   82,   82,   84,   82,   82,   85,
        83,   83,   82,   82,   82,   82,   86,   83,   82,   84,
        84,   82,   84,   87,   82,   82,   82,   85,   85,   82,
        83,   83,   83,   82,   82,   82,   86,   82,   88,   87,
@@ -701,50 +701,50 @@ static const flex_int16_t yy_def[90] =
        82,    0,   82,   82,   82,   82,   82,   82,   82
     } ;
 
-static const flex_int16_t yy_nxt[175] =
+static const flex_int16_t yy_nxt[173] =
     {   0,
         4,    5,    6,    7,    8,    9,   10,   11,    4,   12,
        13,   14,   15,    4,    4,    4,    4,    4,    4,    4,
         4,    4,    4,    4,    4,    4,    4,    4,   16,   19,
        19,   19,   19,   21,   22,   25,   26,   29,   31,   27,
-       41,   30,   19,   19,   42,   23,   37,   32,   18,   33,
-       18,   21,   38,   29,   18,   21,   38,   43,   18,   18,
-       25,   26,   29,   23,   18,   45,   43,   23,   46,   49,
-       49,   47,   50,   50,   53,   54,   41,   48,   18,   41,
-       42,   56,   18,   42,   80,   57,   18,   18,   53,   54,
-       53,   54,   18,   56,   56,   64,   64,   57,   57,   75,
+       37,   30,   18,   19,   19,   23,   18,   32,   80,   33,
+       18,   18,   21,   38,   21,   38,   18,   41,   25,   26,
+       79,   42,   78,   29,   23,   29,   23,   43,   45,   43,
+       18,   46,   49,   49,   47,   50,   50,   77,   18,   18,
+       48,   53,   54,   41,   18,   41,   56,   42,   74,   42,
+       57,   53,   54,   53,   54,   56,   56,   64,   64,   57,
 
-       75,   76,   76,   81,   81,   20,   20,   28,   28,   40,
-       40,   52,   52,   55,   55,   79,   78,   77,   74,   73,
-       72,   71,   70,   69,   68,   67,   66,   65,   63,   62,
-       61,   60,   59,   58,   51,   44,   82,   39,   36,   35,
-       34,   24,   82,   17,    3,   82,   82,   82,   82,   82,
+       57,   75,   75,   76,   76,   81,   81,   20,   20,   28,
+       28,   40,   40,   52,   52,   55,   55,   73,   72,   71,
+       70,   69,   68,   67,   66,   65,   63,   62,   61,   60,
+       59,   58,   51,   44,   82,   39,   36,   35,   34,   24,
+       82,   17,    3,   82,   82,   82,   82,   82,   82,   82,
        82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
        82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
-       82,   82,   82,   82
+       82,   82
     } ;
 
-static const flex_int16_t yy_chk[175] =
+static const flex_int16_t yy_chk[173] =
     {   0,
         1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
         1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
         1,    1,    1,    1,    1,    1,    1,    1,    1,    5,
         5,    6,    6,    7,    7,    9,    9,   10,   11,    9,
-       24,   10,   19,   19,   24,    7,   86,   11,   83,   11,
-       17,   20,   20,   28,   17,   21,   21,   28,   17,   17,
-       25,   25,   29,   20,   17,   31,   29,   21,   31,   32,
-       32,   31,   33,   33,   39,   39,   40,   31,   37,   41,
-       40,   44,   37,   41,   79,   44,   37,   37,   52,   52,
-       53,   53,   37,   55,   56,   58,   58,   55,   56,   72,
+       86,   10,   17,   19,   19,    7,   83,   11,   79,   11,
+       17,   17,   20,   20,   21,   21,   17,   24,   25,   25,
+       78,   24,   77,   28,   20,   29,   21,   28,   31,   29,
+       37,   31,   32,   32,   31,   33,   33,   74,   37,   37,
+       31,   39,   39,   40,   37,   41,   44,   40,   71,   41,
+       44,   52,   52,   53,   53,   55,   56,   58,   58,   55,
 
-       72,   73,   73,   80,   80,   84,   84,   85,   85,   87,
-       87,   88,   88,   89,   89,   78,   77,   74,   71,   70,
-       67,   66,   65,   63,   62,   61,   60,   59,   57,   54,
-       48,   47,   46,   45,   34,   30,   23,   22,   16,   15,
-       12,    8,    3,    2,   82,   82,   82,   82,   82,   82,
+       56,   72,   72,   73,   73,   80,   80,   84,   84,   85,
+       85,   87,   87,   88,   88,   89,   89,   70,   67,   66,
+       65,   63,   62,   61,   60,   59,   57,   54,   48,   47,
+       46,   45,   34,   30,   23,   22,   16,   15,   12,    8,
+        3,    2,   82,   82,   82,   82,   82,   82,   82,   82,
        82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
        82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
-       82,   82,   82,   82
+       82,   82
     } ;
 
 static yy_state_type yy_last_accepting_state;
@@ -1105,7 +1105,7 @@ yy_match:
 			yy_current_state = yy_nxt[yy_base[yy_current_state] + yy_c];
 			++yy_cp;
 			}
-		while ( yy_base[yy_current_state] != 145 );
+		while ( yy_base[yy_current_state] != 143 );
 
 yy_find_action:
 		yy_act = yy_accept[yy_current_state];
@@ -1345,22 +1345,29 @@ YY_RULE_SETUP
 #line 129 "edc_lex.l"
 { push(C_WS); }
 	YY_BREAK
+/* `$` is EXCLUDED from the bare-text run so `$'...` can start its own chunk.
+     * Without this, `+$'a b'` split as UNQUOTED`+$` + QUOTED`a b`: the sigil stayed
+     * glued to a `$`, became a plain word, and the whole line fell back to a message --
+     * one of the four quoting forms silently did not work behind `+`. It cannot change
+     * any word's VALUE: a lone `$` becomes its own C_UNQUOTED chunk and the word
+     * builder joins adjacent chunks of the same kind (`a$b` -> `a` / `$` / `b` ->
+     * `a$b`). It only lets the ANSI-C rule match where the form actually starts. */
 case 29:
 YY_RULE_SETUP
-#line 130 "edc_lex.l"
+#line 137 "edc_lex.l"
 { push_unquoted(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
-#line 131 "edc_lex.l"
+#line 138 "edc_lex.l"
 { push_unquoted(yytext, 1); }
 	YY_BREAK
 case 31:
 YY_RULE_SETUP
-#line 132 "edc_lex.l"
+#line 139 "edc_lex.l"
 YY_FATAL_ERROR( "flex scanner jammed" );
 	YY_BREAK
-#line 1364 "edc_lex.c"
+#line 1371 "edc_lex.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 
@@ -2368,7 +2375,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 132 "edc_lex.l"
+#line 139 "edc_lex.l"
 
 static void emit(edc_lex_out *out, edc_tok_kind k, sds text, bool refs, int fd, bool append, size_t b, size_t e)
 {
@@ -2403,19 +2410,15 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         size_t e = strlen(src);
         while (e > (size_t)(p - src) && (src[e - 1] == ' ' || src[e - 1] == '\t'))
             e--;
-        if (mode == EDC_LEX_SHELL_OFF)
-        {
-            /* 开关关闭：`!` 不是 sigil —— 整行就是一段文本，并记一笔给 note */
-            out->saw_disabled = true;
-            out->disabled_at = 0;
-            emit(out, TK_TEXT, sdsnew(src), false, 0, false, 0, strlen(src));
-        }
-        else
-        {
-            emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
-            if (e > (size_t)(p - src))
-                emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
-        }
+        /* `!` is a DISPATCH PREFIX, not shell syntax: the switch never gates it.
+         * docs/input-syntax.zh.md says so in words ("`/` and `!` are not shell
+         * syntax, the switch has no effect on them"), and `/` next door already
+         * behaves that way. Under SHELL_OFF this used to fall through to one TK_TEXT,
+         * so turning the shell syntax off silently took `!cmd` (and `!!`) away too --
+         * a different promise than the one the manual and the UI badge make. */
+        emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
+        if (e > (size_t)(p - src))
+            emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
         emit(out, TK_EOF, NULL, false, 0, false, strlen(src), strlen(src));
         return true;
     }

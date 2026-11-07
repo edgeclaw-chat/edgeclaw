@@ -126,7 +126,14 @@ static void push_unquoted(const char *raw, size_t len)
 "-g"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
 ^"/"[A-Za-z_-]+             { chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
 [ \t\n]+                    { push(C_WS); }
-[^ \t\n|;&<>"' ]+           { push_unquoted(yytext, (size_t)yyleng); }
+    /* `$` is EXCLUDED from the bare-text run so `$'...` can start its own chunk.
+     * Without this, `+$'a b'` split as UNQUOTED`+$` + QUOTED`a b`: the sigil stayed
+     * glued to a `$`, became a plain word, and the whole line fell back to a message --
+     * one of the four quoting forms silently did not work behind `+`. It cannot change
+     * any word's VALUE: a lone `$` becomes its own C_UNQUOTED chunk and the word
+     * builder joins adjacent chunks of the same kind (`a$b` -> `a` / `$` / `b` ->
+     * `a$b`). It only lets the ANSI-C rule match where the form actually starts. */
+[^ \t\n|;&<>"'$]+           { push_unquoted(yytext, (size_t)yyleng); }
 .                           { push_unquoted(yytext, 1); }
 %%
 static void emit(edc_lex_out *out, edc_tok_kind k, sds text, bool refs, int fd, bool append, size_t b, size_t e)
@@ -162,19 +169,15 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         size_t e = strlen(src);
         while (e > (size_t)(p - src) && (src[e - 1] == ' ' || src[e - 1] == '\t'))
             e--;
-        if (mode == EDC_LEX_SHELL_OFF)
-        {
-            /* 开关关闭：`!` 不是 sigil —— 整行就是一段文本，并记一笔给 note */
-            out->saw_disabled = true;
-            out->disabled_at = 0;
-            emit(out, TK_TEXT, sdsnew(src), false, 0, false, 0, strlen(src));
-        }
-        else
-        {
-            emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
-            if (e > (size_t)(p - src))
-                emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
-        }
+        /* `!` is a DISPATCH PREFIX, not shell syntax: the switch never gates it.
+         * docs/input-syntax.zh.md says so in words ("`/` and `!` are not shell
+         * syntax, the switch has no effect on them"), and `/` next door already
+         * behaves that way. Under SHELL_OFF this used to fall through to one TK_TEXT,
+         * so turning the shell syntax off silently took `!cmd` (and `!!`) away too --
+         * a different promise than the one the manual and the UI badge make. */
+        emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
+        if (e > (size_t)(p - src))
+            emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
         emit(out, TK_EOF, NULL, false, 0, false, strlen(src), strlen(src));
         return true;
     }

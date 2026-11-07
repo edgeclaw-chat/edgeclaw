@@ -100,6 +100,18 @@ static void set_err(const char *msg)
     if (!g_err && msg)
         g_err = sdsnew(msg);
 }
+
+/* A bare word may not follow the closing quote of a description: that is where the
+ * OPTION area starts (`-d <id>`, `-g <group>`, `> file`). The token is quoted back so
+ * the message points at the word the user has to move inside the quotes or delete.
+ * EDC_AFTER_DESC_HINT carries the wording; edc_parse.h owns it, because the doc and
+ * the message must not drift apart. */
+static void after_desc_err(const edc_tok *t)
+{
+    if (!t || g_err)
+        return;
+    g_err = sdscatprintf(sdsempty(), EDC_AFTER_DESC_HINT, t->value ? t->value : "");
+}
 static struct edc_ast_stage *cur_stage(void) { return g_stage; }
 
 /* ── 建树 ─────────────────────────────────────────────────── */
@@ -222,7 +234,7 @@ static void cmd_add(const edc_tok *tok)
 }
 
 
-#line 226 "edc_parse.tab.c"
+#line 238 "edc_parse.tab.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -606,16 +618,16 @@ union yyalloc
 /* YYFINAL -- State number of the termination state.  */
 #define YYFINAL  10
 /* YYLAST -- Last index in YYTABLE.  */
-#define YYLAST   29
+#define YYLAST   37
 
 /* YYNTOKENS -- Number of terminals.  */
 #define YYNTOKENS  16
 /* YYNNTS -- Number of nonterminals.  */
 #define YYNNTS  13
 /* YYNRULES -- Number of rules.  */
-#define YYNRULES  26
+#define YYNRULES  28
 /* YYNSTATES -- Number of states.  */
-#define YYNSTATES  41
+#define YYNSTATES  43
 
 /* YYMAXUTOK -- Last valid token kind.  */
 #define YYMAXUTOK   270
@@ -666,9 +678,9 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_uint8 yyrline[] =
 {
-       0,   167,   167,   168,   172,   173,   174,   180,   183,   184,
-     190,   190,   191,   194,   195,   196,   197,   198,   199,   204,
-     207,   210,   213,   214,   215,   216,   219
+       0,   179,   179,   180,   184,   185,   186,   192,   195,   196,
+     202,   202,   203,   206,   207,   208,   209,   210,   211,   218,
+     219,   224,   227,   230,   233,   234,   235,   236,   239
 };
 #endif
 
@@ -698,7 +710,7 @@ yysymbol_name (yysymbol_kind_t yysymbol)
 }
 #endif
 
-#define YYPACT_NINF (-15)
+#define YYPACT_NINF (-24)
 
 #define yypact_value_is_default(Yyn) \
   ((Yyn) == YYPACT_NINF)
@@ -712,11 +724,11 @@ yysymbol_name (yysymbol_kind_t yysymbol)
    STATE-NUM.  */
 static const yytype_int8 yypact[] =
 {
-      -2,   -15,   -15,     7,   -15,    28,   -15,    -1,   -15,    -1,
-     -15,    15,     7,   -15,   -15,   -15,   -15,   -15,     4,   -15,
-     -15,   -15,   -15,    -1,     7,     7,     7,   -15,   -15,   -15,
-     -15,    -1,    -1,    -1,    15,    15,   -15,   -15,   -15,   -15,
-     -15
+      -2,   -24,   -24,     5,   -24,    17,   -24,    27,   -24,    27,
+     -24,     7,   -24,   -24,     5,   -24,   -24,   -24,   -24,   -24,
+      -6,   -24,   -24,   -24,   -24,    27,     5,     5,     5,   -24,
+     -24,   -24,   -24,    27,    27,    27,     7,     7,   -24,   -24,
+     -24,   -24,   -24
 };
 
 /* YYDEFACT[STATE-NUM] -- Default reduction number in state STATE-NUM.
@@ -724,25 +736,25 @@ static const yytype_int8 yypact[] =
    means the default is an error.  */
 static const yytype_int8 yydefact[] =
 {
-       0,    12,    10,     0,     7,     0,     8,    13,    22,    13,
-       1,     6,     0,    19,    20,    21,    14,     4,    11,     5,
-       2,     3,     9,    13,     0,     0,     0,    26,    23,    26,
-      15,    13,    13,    13,     0,     0,    16,    17,    18,    25,
-      24
+       0,    12,    10,     0,     7,     0,     8,    13,    24,    13,
+       1,     6,    19,    20,     0,    21,    22,    23,    14,     4,
+      11,     5,     2,     3,     9,    13,     0,     0,     0,    28,
+      25,    28,    15,    13,    13,    13,     0,     0,    16,    17,
+      18,    27,    26
 };
 
 /* YYPGOTO[NTERM-NUM].  */
 static const yytype_int8 yypgoto[] =
 {
-     -15,   -14,   -15,   -15,   -15,     1,   -15,    -9,   -15,   -15,
-     -15,   -15,     0
+     -24,   -23,   -24,   -24,   -24,     1,   -24,    -9,   -24,   -24,
+     -24,   -24,   -13
 };
 
 /* YYDEFGOTO[NTERM-NUM].  */
 static const yytype_int8 yydefgoto[] =
 {
-       0,    22,     5,     6,    11,     7,     8,    17,    24,    25,
-      26,    18,    34
+       0,    24,     5,     6,    11,     7,     8,    19,    26,    27,
+      28,    20,    36
 };
 
 /* YYTABLE[YYPACT[STATE-NUM]] -- What to do in state STATE-NUM.  If
@@ -750,16 +762,18 @@ static const yytype_int8 yydefgoto[] =
    number is the opposite.  If YYTABLE_NINF, syntax error.  */
 static const yytype_int8 yytable[] =
 {
-      19,     1,     2,     3,     9,    12,    13,    14,    15,    16,
-       1,     2,     4,    23,    30,    27,    28,    29,    20,    21,
-      39,    40,    36,    37,    38,    31,    32,    33,    10,    35
+      21,     1,     2,     3,     9,    29,    30,    31,     1,     2,
+      22,    23,     4,    41,    42,    25,    32,    10,    37,     0,
+       0,     0,     0,     0,    38,    39,    40,    33,    34,    35,
+      12,    13,     0,    14,    15,    16,    17,    18
 };
 
 static const yytype_int8 yycheck[] =
 {
-       9,     3,     4,     5,     3,     6,     7,     8,     9,    10,
-       3,     4,    14,    12,    23,    11,    12,    13,     3,     4,
-      34,    35,    31,    32,    33,    24,    25,    26,     0,    29
+       9,     3,     4,     5,     3,    11,    12,    13,     3,     4,
+       3,     4,    14,    36,    37,    14,    25,     0,    31,    -1,
+      -1,    -1,    -1,    -1,    33,    34,    35,    26,    27,    28,
+       3,     4,    -1,     6,     7,     8,     9,    10
 };
 
 /* YYSTOS[STATE-NUM] -- The symbol kind of the accessing symbol of
@@ -767,26 +781,26 @@ static const yytype_int8 yycheck[] =
 static const yytype_int8 yystos[] =
 {
        0,     3,     4,     5,    14,    18,    19,    21,    22,    21,
-       0,    20,     6,     7,     8,     9,    10,    23,    27,    23,
-       3,     4,    17,    21,    24,    25,    26,    11,    12,    13,
-      23,    21,    21,    21,    28,    28,    23,    23,    23,    17,
-      17
+       0,    20,     3,     4,     6,     7,     8,     9,    10,    23,
+      27,    23,     3,     4,    17,    21,    24,    25,    26,    11,
+      12,    13,    23,    21,    21,    21,    28,    28,    23,    23,
+      23,    17,    17
 };
 
 /* YYR1[RULE-NUM] -- Symbol kind of the left-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr1[] =
 {
        0,    16,    17,    17,    18,    18,    18,    19,    20,    20,
-      22,    21,    21,    23,    23,    23,    23,    23,    23,    24,
-      25,    26,    27,    27,    27,    27,    28
+      22,    21,    21,    23,    23,    23,    23,    23,    23,    23,
+      23,    24,    25,    26,    27,    27,    27,    27,    28
 };
 
 /* YYR2[RULE-NUM] -- Number of symbols on the right-hand side of rule RULE-NUM.  */
 static const yytype_int8 yyr2[] =
 {
        0,     2,     1,     1,     2,     3,     2,     1,     0,     2,
-       0,     3,     1,     0,     1,     3,     4,     4,     4,     0,
-       0,     0,     0,     2,     4,     4,     0
+       0,     3,     1,     0,     1,     3,     4,     4,     4,     1,
+       1,     0,     0,     0,     0,     2,     4,     4,     0
 };
 
 
@@ -1520,85 +1534,97 @@ yyreduce:
   switch (yyn)
     {
   case 5: /* input: T_NEWGROUP stage_head rest  */
-#line 173 "edc_parse.y"
+#line 185 "edc_parse.y"
                                         { g_ast->new_group = true; }
-#line 1526 "edc_parse.tab.c"
+#line 1540 "edc_parse.tab.c"
     break;
 
   case 7: /* cmd_head: T_SLASH_CMD  */
-#line 180 "edc_parse.y"
+#line 192 "edc_parse.y"
                                         { cmd_begin(g_cur); }
-#line 1532 "edc_parse.tab.c"
+#line 1546 "edc_parse.tab.c"
     break;
 
   case 9: /* cmd_args: cmd_args word  */
-#line 184 "edc_parse.y"
+#line 196 "edc_parse.y"
                                         { cmd_add(g_cur); }
-#line 1538 "edc_parse.tab.c"
+#line 1552 "edc_parse.tab.c"
     break;
 
   case 10: /* $@1: %empty  */
-#line 190 "edc_parse.y"
+#line 202 "edc_parse.y"
                                         { stage_begin(); stage_set_word(g_cur); }
-#line 1544 "edc_parse.tab.c"
+#line 1558 "edc_parse.tab.c"
     break;
 
   case 12: /* stage_head: T_TEXT  */
-#line 191 "edc_parse.y"
+#line 203 "edc_parse.y"
                                         { set_err(EDC_QUOTED_DESC_HINT); YYERROR; }
-#line 1550 "edc_parse.tab.c"
+#line 1564 "edc_parse.tab.c"
     break;
 
   case 14: /* rest: T_BG  */
-#line 195 "edc_parse.y"
-                                        { g_ast->background = true; }
-#line 1556 "edc_parse.tab.c"
-    break;
-
-  case 19: /* seq_pipe: %empty  */
-#line 204 "edc_parse.y"
-                                        { pipe_new(); }
-#line 1562 "edc_parse.tab.c"
-    break;
-
-  case 20: /* strict_pipe: %empty  */
 #line 207 "edc_parse.y"
-                                        { pipe_new(); g_pipe->chain = EDC_CHAIN_AND; }
-#line 1568 "edc_parse.tab.c"
+                                        { g_ast->background = true; }
+#line 1570 "edc_parse.tab.c"
     break;
 
-  case 21: /* unless_pipe: %empty  */
-#line 210 "edc_parse.y"
-                                        { pipe_new(); g_pipe->chain = EDC_CHAIN_OR; }
-#line 1574 "edc_parse.tab.c"
+  case 19: /* rest: T_TEXT  */
+#line 218 "edc_parse.y"
+                                        { after_desc_err(g_cur); YYERROR; }
+#line 1576 "edc_parse.tab.c"
     break;
 
-  case 23: /* opts: opts T_OPT  */
-#line 214 "edc_parse.y"
-                                        { opt_noarg(g_cur); }
-#line 1580 "edc_parse.tab.c"
-    break;
-
-  case 24: /* opts: opts T_OPTARG remember word  */
-#line 215 "edc_parse.y"
-                                         { opt_witharg(g_remember, g_cur); }
-#line 1586 "edc_parse.tab.c"
-    break;
-
-  case 25: /* opts: opts T_REDIR remember word  */
-#line 216 "edc_parse.y"
-                                         { redir_add(g_cur, g_remember); }
-#line 1592 "edc_parse.tab.c"
-    break;
-
-  case 26: /* remember: %empty  */
+  case 20: /* rest: T_STRING  */
 #line 219 "edc_parse.y"
+                                        { after_desc_err(g_cur); YYERROR; }
+#line 1582 "edc_parse.tab.c"
+    break;
+
+  case 21: /* seq_pipe: %empty  */
+#line 224 "edc_parse.y"
+                                        { pipe_new(); }
+#line 1588 "edc_parse.tab.c"
+    break;
+
+  case 22: /* strict_pipe: %empty  */
+#line 227 "edc_parse.y"
+                                        { pipe_new(); g_pipe->chain = EDC_CHAIN_AND; }
+#line 1594 "edc_parse.tab.c"
+    break;
+
+  case 23: /* unless_pipe: %empty  */
+#line 230 "edc_parse.y"
+                                        { pipe_new(); g_pipe->chain = EDC_CHAIN_OR; }
+#line 1600 "edc_parse.tab.c"
+    break;
+
+  case 25: /* opts: opts T_OPT  */
+#line 234 "edc_parse.y"
+                                        { opt_noarg(g_cur); }
+#line 1606 "edc_parse.tab.c"
+    break;
+
+  case 26: /* opts: opts T_OPTARG remember word  */
+#line 235 "edc_parse.y"
+                                         { opt_witharg(g_remember, g_cur); }
+#line 1612 "edc_parse.tab.c"
+    break;
+
+  case 27: /* opts: opts T_REDIR remember word  */
+#line 236 "edc_parse.y"
+                                         { redir_add(g_cur, g_remember); }
+#line 1618 "edc_parse.tab.c"
+    break;
+
+  case 28: /* remember: %empty  */
+#line 239 "edc_parse.y"
                                         { g_remember = g_cur; }
-#line 1598 "edc_parse.tab.c"
+#line 1624 "edc_parse.tab.c"
     break;
 
 
-#line 1602 "edc_parse.tab.c"
+#line 1628 "edc_parse.tab.c"
 
       default: break;
     }
@@ -1822,7 +1848,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 221 "edc_parse.y"
+#line 241 "edc_parse.y"
 
 bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err)
 {
