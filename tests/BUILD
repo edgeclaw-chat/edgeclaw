@@ -43,6 +43,18 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The wall-clock helpers: the millisecond clock that feeds message ids, and the
+# format/parse pair every timestamp in a log line goes through. Asserted as
+# round trips, so the test does not encode the build machine's timezone.
+cc_test(
+    name = "test_datetime",
+    srcs = ["test_datetime.c"],
+    deps = [
+        "//src/common:edc_datetime_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # 活体手测（打真 API + 要 EDGECLAW_MASTER_KEY），不当自动化跑；手动：
 # EDGECLAW_MASTER_KEY=... bazel test //tests:test_llm_actor --test_output=all
 cc_test(
