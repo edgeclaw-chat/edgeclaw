@@ -32,14 +32,7 @@ static uint64_t g_msg_seq;
 
 static sds edc_message_new_id(void)
 {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
-    {
-        ts.tv_sec = time(NULL);
-        ts.tv_nsec = 0;
-    }
-    const uint64_t ms = (uint64_t)ts.tv_sec * 1000ULL +
-                                  (uint64_t)(ts.tv_nsec / 1000000L);
+    const uint64_t ms = (uint64_t)edc_datetime_now_ms();
     return sdscatprintf(sdsempty(), "m%" PRIu64 "_%" PRIu64, ms, g_msg_seq++);
 }
 

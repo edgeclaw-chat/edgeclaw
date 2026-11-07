@@ -23,6 +23,28 @@ time_t edc_datetime_now(void)
     return time(NULL);
 }
 
+int64_t edc_datetime_now_ms(void)
+{
+#ifdef _WIN32
+    /* MinGW implements clock_gettime() in its pthread runtime, which the
+     * UCRT/MCF toolchain does not link -- calling it fails at link time with
+     * "undefined reference to clock_gettime64". The Win32 clock is always
+     * present and precise enough for an id. */
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER t;
+    t.LowPart = ft.dwLowDateTime;
+    t.HighPart = ft.dwHighDateTime;
+    const uint64_t kUnixEpoch100ns = 116444736000000000ULL;
+    return (int64_t)((t.QuadPart - kUnixEpoch100ns) / 10000ULL);
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+        return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000L;
+    return (int64_t)time(NULL) * 1000;
+#endif
+}
+
 sds edc_datetime_format(time_t t)
 {
     return format_tm(t, "%Y-%m-%d %H:%M:%S");

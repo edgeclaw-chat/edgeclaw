@@ -3,6 +3,7 @@
 
 #include "sds.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 
 /* The one wall-clock convention in the codebase: local time, "%Y-%m-%d %H:%M:%S".
@@ -17,6 +18,11 @@ sds edc_datetime_timestamp(void);
 
 /** Seconds since the epoch, or 0 if the clock is unavailable. */
 time_t edc_datetime_now(void);
+
+/** Milliseconds since the epoch, for identities that must be unique within a
+ *  process. Unlike clock_gettime() this has no extra runtime dependency on
+ *  Windows (see the implementation note). */
+int64_t edc_datetime_now_ms(void);
 
 /** Format |t| as "%Y-%m-%d %H:%M:%S"; |t| == 0 -> "unknown". Caller sdsfree. */
 sds edc_datetime_format(time_t t);
