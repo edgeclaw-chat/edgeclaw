@@ -892,6 +892,22 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+# What the platform shims must DO, not merely that they compile. Each case pins a difference
+# that was found on Windows and was invisible on POSIX: unsetenv() not reaching getenv(),
+# realpath() resolving paths that do not exist, mkdir() without the POSIX two-argument form,
+# and lstat()/S_ISLNK() being unable to see a link at all (which disarmed the state store's
+# refuse_symlink()). Keep the assertions phrased as the caller's contract so a shim that
+# drifts on either platform fails here.
+cc_test(
+    name = "test_compat_shims",
+    srcs = ["test_compat_shims.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:edc_compat",
+        "//src/common:edc_file_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 cc_test(
     name = "test_path_contract",
     srcs = ["test_path_contract.c", "test_ws.h"],

@@ -15,6 +15,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
+#include "edc_tools_search.h"
 #include "log.h"
 
 #include <cJSON.h>
@@ -269,6 +270,83 @@ static void test_grep_bad_input_does_not_crash(void)
     rmdir(root);
 }
 
+/* ── THE ROOT'S SPELLING MUST NOT LEAK INTO THE RESULT ────────────────────────────────────
+ *
+ * edc_search_run_blocking()/run_search() strip the search root as a PREFIX from the paths the
+ * walk produces, and the walk builds those with edc_path_join(), which normalises the
+ * separator. The root used to be stored in the CALLER's spelling, so wherever the two
+ * disagreed the strip failed and every hit kept its ABSOLUTE path -- the "paths are relative
+ * to the search root" contract broke, and the model was handed the search root for free.
+ *
+ * On POSIX there is one separator and the two spellings cannot disagree, so no test here could
+ * ever see it. On Windows they can: the test therefore feeds the SAME directory back with the
+ * separator deliberately swapped, which is exactly the shape that used to fail. The earlier
+ * cases pass through TEST_TMPDIR and are already native-spelled -- they caught this bug by
+ * accident, when their root happened to be "/tmp/...", and stopped covering it once that
+ * changed. This case states it on purpose. */
+static void test_non_native_root_spelling_keeps_paths_relative(void)
+{
+    TEST("a root spelled with the other separator still yields root-relative paths");
+
+    char root[1024];
+    test_tmp_template(root, sizeof(root), "edc_search_spelling");
+    if (!mkdtemp(root))
+    {
+        CHECK(false, "mkdtemp failed");
+        return;
+    }
+    {
+        char p[1200];
+        snprintf(p, sizeof(p), "%s/a.c", root);
+        FILE *f = fopen(p, "w");
+        if (f)
+        {
+            fputs("int a;\nTODO: alpha\n", f);
+            fclose(f);
+        }
+    }
+
+    /* The same directory, spelled the other way. On POSIX this is a no-op (a backslash is an
+     * ordinary filename character there, and the platform has one separator), so the case
+     * still asserts the contract without pretending the platform has a second spelling. */
+    char swapped[1200];
+    snprintf(swapped, sizeof(swapped), "%s", root);
+#ifdef _WIN32
+    for (char *q = swapped; *q; q++)
+        if (*q == '\\')
+            *q = '/';
+#endif
+
+    /* 1. the synchronous entry point the tools share */
+    sds r = edc_search_run_blocking(swapped, true, "TODO", NULL, false, false, 100);
+    CHECK(r != NULL, "the search returned a result");
+    if (r)
+    {
+        CHECK(strstr(r, "a.c:2:TODO: alpha") != NULL, "the hit is reported: %.160s", r);
+        CHECK(strstr(r, root) == NULL,
+              "THE PIN: no hit may carry the absolute root, got %.200s", r);
+        sdsfree(r);
+    }
+
+    /* 2. and through the tool, which is the path that reaches the model */
+    struct harness h;
+    harness_up(&h, root);
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "pattern", "TODO");
+    cJSON_AddStringToObject(args, "path", swapped);
+    CHECK(run_tool(&h, "grep", args), "the tool call came back");
+    cJSON_Delete(args);
+    {
+        const char *text = g_result ? g_result : "";
+        CHECK(strstr(text, "a.c:2:TODO: alpha") != NULL, "the tool reports the hit: %.160s", text);
+        CHECK(strstr(text, root) == NULL,
+              "THE PIN: the tool's result must not carry the absolute root, got %.200s", text);
+    }
+    harness_down(&h);
+
+    test_rm_rf(root);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -276,6 +354,7 @@ int main(void)
     test_grep_through_the_real_tool();
     test_find_through_the_real_tool();
     test_grep_bad_input_does_not_crash();
+    test_non_native_root_spelling_keeps_paths_relative();
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

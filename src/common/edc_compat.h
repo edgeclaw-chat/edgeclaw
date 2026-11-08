@@ -164,9 +164,15 @@ static inline char *win32_realpath(const char *path, char *resolved)
  * test_models_catalog kept loading its fixture after unsetenv("EDGECLAW_MODELS_CATALOG").
  * _putenv_s(name, "") is the call that removes it from the CRT's environment. */
 #define unsetenv(name) _putenv_s((name), "")
+/* POSIX setenv(): with overwrite == 0 an EXISTING variable must keep its value. This used to
+ * discard the argument -- (void)overwrite; then set it unconditionally -- so every
+ * `setenv(name, value, 0)` in the tree silently clobbered what was there. Both halves have to
+ * move together: SetEnvironmentVariable() is what a child process sees, _putenv_s() is what
+ * getenv() reads, and they must agree. */
 static inline int win32_setenv(const char *name, const char *value, int overwrite)
 {
-    (void)overwrite;
+    if (!overwrite && getenv(name) != NULL)
+        return 0;
     SetEnvironmentVariable(name, value);
     return _putenv_s(name, value) == 0 ? 0 : -1;
 }
