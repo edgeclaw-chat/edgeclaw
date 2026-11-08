@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 /* Stub for _run_loop pulled in by edc_commands (transitively linked). */
 volatile int _run_loop = 1;
@@ -459,7 +460,7 @@ int main(void)
      * has to be writable for the switch to take effect at all. */
     snprintf(cmd, sizeof(cmd), "rm -rf %s %s && mkdir -p %s %s && printf '{}' > %s/config.json", ws, home, ws, home,
              home);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));

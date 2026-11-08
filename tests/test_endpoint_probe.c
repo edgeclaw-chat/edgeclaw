@@ -43,6 +43,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_failed = 0;
 static int g_passed = 0;
@@ -209,7 +210,7 @@ int main(void)
 
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "    (warning: could not create %s)\n", g_dir);
 
     printf("workspace: %s\n", g_dir);
@@ -233,7 +234,7 @@ int main(void)
     test_connection_failed();
 
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

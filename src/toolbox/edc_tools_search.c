@@ -20,10 +20,12 @@
  * make `<regex.h>` exist. */
 #ifdef _WIN32
 #include <pcre2posix.h>
-#include "edc_list.h"
 #else
 #include <regex.h>
 #endif
+
+/* Outside the conditional above: EDC_LL_APPEND is used on every platform. */
+#include "edc_list.h"
 
 /* ── grep / find, in C ──────────────────────────────────────────────────────
  *

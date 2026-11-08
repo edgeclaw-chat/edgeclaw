@@ -37,6 +37,7 @@
 
 #include "edc_api.h"
 #include "edc_app.h"
+#include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_models.h"
 #include "sds.h"
@@ -46,6 +47,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_passed = 0;
 static int g_failed = 0;
@@ -112,11 +114,11 @@ static void setup(void)
 
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_home);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         die("could not clear the temp home");
 
     snprintf(cmd, sizeof(cmd), "mkdir -p '%s' '%s/prompts' '%s/skills/demo'", g_workspace, g_workspace, g_workspace);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         die("could not create the workspace");
 
     /* api_key is PLAINTEXT on purpose: no `EDGECLAW_ENC:` prefix means no decryption, so the
@@ -153,6 +155,9 @@ static void setup(void)
     write_file_or_die(catalog, kCatalog);
 
     setenv("HOME", g_home, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", g_home, 1);
     setenv("EDGECLAW_MASTER_KEY", "app-boundary-master-key", 1);
     setenv("EDGECLAW_MODELS_CATALOG", catalog, 1);
     edc_models_reset(); /* the loader is a process-wide cache; start from our file */
@@ -170,7 +175,7 @@ static void teardown(void)
     }
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_home);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "teardown: could not remove %s\n", g_home);
 }
 

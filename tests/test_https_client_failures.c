@@ -34,6 +34,7 @@
 #include <sys/socket.h>
 #include <signal.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_passed = 0;
 static int g_failed = 0;
@@ -427,7 +428,7 @@ int main(void)
 
     char cmd[700];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== 测试结果: %d passed, %d failed ===\n", g_passed, g_failed);

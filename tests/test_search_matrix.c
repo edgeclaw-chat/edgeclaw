@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int test_failed = 0;
 static int test_passed = 0;
@@ -215,7 +216,7 @@ static void build_tree(void)
 static void tear_down(void)
 {
     sds cmd = sdscatprintf(sdsempty(), "rm -rf '%s'", g_root);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         log_error("    cleanup of %s failed", g_root);
     sdsfree(cmd);
 }
@@ -634,7 +635,7 @@ static void test_concurrent_walks(void)
     {
         total += workers[i].failures;
         sds cmd = sdscatprintf(sdsempty(), "rm -rf '%s'", workers[i].root);
-        if (system(cmd) != 0)
+        if (test_sh(cmd) != 0)
             log_error("    cleanup failed");
         sdsfree(cmd);
     }

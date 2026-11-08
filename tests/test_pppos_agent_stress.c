@@ -176,6 +176,9 @@ int main(void)
     /* Before fork(): the agent runs in the child and builds its child environment from its
      * own environ, so this has to be in place before the split. See TEST_HOME. */
     setenv("HOME", TEST_HOME, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", TEST_HOME, 1);
 
     openpty(&m, &s, NULL, NULL, NULL);
     tcgetattr(s, &t); cfmakeraw(&t); tcsetattr(s, TCSANOW, &t);

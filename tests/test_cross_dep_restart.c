@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -308,7 +309,7 @@ static void wipe(const char *ws)
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
              "rm -rf '%s'; mkdir -p '%s'", ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "warning: could not reset %s\n", ws);
 }
 

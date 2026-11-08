@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
@@ -36,7 +37,7 @@ int main(void)
     const char *dir = "/tmp/test_sandbox_paths_dir";
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", dir, dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     struct edc_config conf;
@@ -75,7 +76,7 @@ int main(void)
     CHECK(edc_sandbox_report_unresolved_paths(&conf) == 0, "NULL list");
 
     snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         printf("  (cleanup failed)\n");
 
     printf("\n%d passed, %d failed\n", passed, failed);

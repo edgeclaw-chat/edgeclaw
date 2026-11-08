@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 /* Stub: referenced transitively by the shell/command layer. */
 volatile sig_atomic_t _run_loop = 1;
@@ -73,7 +74,7 @@ static void wipe_workspace(const char *ws)
 {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
-    system(cmd);
+    test_sh(cmd);
 }
 
 /* Numeric suffix of an "s<N>" / "sess-<N>" id; -1 when it is not that shape. */

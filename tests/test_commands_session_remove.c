@@ -38,6 +38,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 volatile int _run_loop = 1;
 
@@ -279,7 +280,7 @@ int main(void)
     reset_capture();
     char cmd[PATH_MAX + 32];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", ws);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

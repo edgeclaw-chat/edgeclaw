@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h> /* symlink/unlink */
+#include "test_fs_util.h"
 
 /* Split a tail the way a shell does -- a TEST helper only.
  *
@@ -191,7 +192,7 @@ static void test_parse(void)
     const char *dir = "/tmp/edc_prompt_unit";
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", dir, dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return;
 
     write_file_at(dir, "full.md",

@@ -40,6 +40,7 @@
 #include <util.h>
 #elif defined(__linux__)
 #include <pty.h>
+#include "test_fs_util.h"
 #endif
 
 static int g_failed = 0;
@@ -151,7 +152,7 @@ static void reset_dir(void)
 {
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "    (warning: could not reset %s)\n", g_dir);
 }
 
@@ -534,7 +535,7 @@ int main(void)
     edc_secret_cleanup();
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

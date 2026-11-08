@@ -616,10 +616,10 @@ static void test_edit_selection_by_line_hint(void)
     CHECK(file_is(tie, "foo a\nline2\nline3\nline4\nfoo b\n"), "and nothing was written");
 
     /* The other side of the same rule: a hint of 1 is nearest the first match. */
-    const char *near = ws_path("e/near.txt");
-    CHECK(write_lit(near, "foo a\nline2\nline3\nline4\nfoo b\n"), "the near fixture was written");
-    CHECK(run_tool(&h, "edit_file", edit_args(near, "foo", "BAR", NULL, NULL, "1", NULL)), "the callback fired");
-    CHECK(file_is(near, "BAR a\nline2\nline3\nline4\nfoo b\n"), "the FIRST match changed this time");
+    const char *near_path = ws_path("e/near.txt");
+    CHECK(write_lit(near_path, "foo a\nline2\nline3\nline4\nfoo b\n"), "the near fixture was written");
+    CHECK(run_tool(&h, "edit_file", edit_args(near_path, "foo", "BAR", NULL, NULL, "1", NULL)), "the callback fired");
+    CHECK(file_is(near_path, "BAR a\nline2\nline3\nline4\nfoo b\n"), "the FIRST match changed this time");
 
     harness_down(&h);
 }

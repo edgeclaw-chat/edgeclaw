@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -181,7 +182,7 @@ int main(void)
     char cmd[512];
     /* no rm: the store is open on this workspace */
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", TEST_WS);
-    system(cmd);
+    test_sh(cmd);
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(TEST_WS);

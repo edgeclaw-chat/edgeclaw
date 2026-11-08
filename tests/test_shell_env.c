@@ -1,4 +1,5 @@
 #include "edc_shell_env.h"
+#include "edc_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,9 @@ int main(void)
      *    drops the secrets that used to leak through uv_spawn(env=NULL). */
     setenv("PATH", "/usr/bin:/bin", 1);
     setenv("HOME", "/home/testuser", 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", "/home/testuser", 1);
     setenv("LANG", "C.UTF-8", 1);
     setenv("LLM_API_TOKEN", "sk-deadbeefdeadbeef", 1);
     setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 2", 1);

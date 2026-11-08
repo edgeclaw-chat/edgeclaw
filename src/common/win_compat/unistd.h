@@ -52,6 +52,16 @@
 #if !defined(SSIZE_MAX)
 typedef __int64 ssize_t;
 #define SSIZE_MAX INT64_MAX
+/* Mark the CRT's own bookkeeping the way libuv's <uv/win.h> expects it: it does
+ *   #if !defined(_SSIZE_T_) && !defined(_SSIZE_T_DEFINED)
+ *   typedef intptr_t ssize_t;
+ *   # define SSIZE_MAX INTPTR_MAX
+ *   #endif
+ * so without these two markers a translation unit that includes both headers gets
+ * "warning C4005: 'SSIZE_MAX': macro redefinition". Naming the same guards it tests makes the
+ * two agree in either include order (both are 64-bit here). */
+#define _SSIZE_T_DEFINED
+#define _SSIZE_T_ 1
 #endif
 #endif
 
@@ -59,6 +69,14 @@ typedef __int64 ssize_t;
 #if !defined(EDC_MODE_T_DEFINED)
 #define EDC_MODE_T_DEFINED
 typedef unsigned short mode_t;
+#endif
+
+/* POSIX spells mkdir with a mode argument; MSVC's (from <direct.h>) takes the path only. The
+ * same macro exists in src/common/edc_compat.h -- guarded the same way, so whichever header a
+ * file includes first wins and they cannot disagree. It is a macro rather than a function
+ * because a function cannot be called `mkdir` while <direct.h> declares one. */
+#if !defined(mkdir)
+#define mkdir(path, mode) _mkdir(path)
 #endif
 
 #ifndef STDIN_FILENO
@@ -153,8 +171,7 @@ static __inline int unsetenv(const char *name)
 #endif
 
 /* realpath() is absent. edc_compat.h supplies a macro when it is included; this is the
- * fallback for translation units that do not include it. Caller frees a NULL `resolved`. */
-#if !defined(realpath)
+ * fallback for translation units that do not include it. Caller frees a NULL `resolved`. */#if !defined(realpath)
 static __inline char *realpath(const char *path, char *resolved)
 {
     char *buf = resolved;
@@ -172,6 +189,17 @@ static __inline char *realpath(const char *path, char *resolved)
     }
     return buf;
 }
+#endif
+
+/* link() and symlink(): implemented in win_compat.c, because they need the Win32 API and this
+ * header must not include <windows.h>. Hard links work unprivileged on NTFS; symbolic links
+ * need SeCreateSymbolicLinkPrivilege (administrator or Developer Mode), so a non-zero return
+ * with errno = EPERM is a legitimate outcome that callers are expected to handle. */
+#if !defined(link)
+int link(const char *oldpath, const char *newpath);
+#endif
+#if !defined(symlink)
+int symlink(const char *target, const char *linkpath);
 #endif
 
 /* mkdtemp(): create a directory from a template ending in "XXXXXX", replacing the X's with a

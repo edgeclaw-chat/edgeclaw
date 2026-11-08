@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_failed = 0;
 static int g_passed = 0;
@@ -69,7 +70,7 @@ static void drop_dir(void)
         return;
     char cmd[700];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "    (warning: could not remove %s)\n", g_dir);
     g_dir[0] = '\0';
 }

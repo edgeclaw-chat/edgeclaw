@@ -62,6 +62,12 @@ cc_library(
 # does) can say `#include <unistd.h>` unchanged.
 cc_library(
     name = "win_compat",
+    srcs = select({
+        # link()/symlink() need the Win32 API, which no shim header may include; they live in
+        # this one .c file so <windows.h> stays out of the headers.
+        "@platforms//os:windows": ["win_compat/win_compat.c"],
+        "//conditions:default": [],
+    }),
     hdrs = select({
         "@platforms//os:windows": [
             "win_compat/dirent.h",

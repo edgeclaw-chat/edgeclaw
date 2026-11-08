@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -685,7 +686,7 @@ int main(void)
              (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
     char cmd[600];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not reset %s)\n", g_dir);
 
     printf("workspace: %s\n", g_dir);
@@ -699,7 +700,7 @@ int main(void)
 
     edc_state_store_close();
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

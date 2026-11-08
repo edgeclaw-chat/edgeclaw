@@ -414,6 +414,9 @@ static void test_project_context_discovery(void)
     char old_home_copy[1024];
     snprintf(old_home_copy, sizeof(old_home_copy), "%s", old_home ? old_home : "");
     setenv("HOME", home, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", home, 1);
 
     struct edc_config *cfg = make_config(ws);
     sds p = edc_context_build_system_prompt(cfg, sub);
@@ -459,6 +462,9 @@ static void test_project_context_discovery(void)
     edc_config_free(cfg);
 
     setenv("HOME", old_home_copy, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", old_home_copy, 1);
 
     /* 收尾 */
     snprintf(path, sizeof(path), "%s/.edgeclaw/AGENTS.md", home);

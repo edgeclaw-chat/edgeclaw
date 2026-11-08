@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 /* Stub for _run_loop pulled in by edc_commands (transitively linked). */
 volatile int _run_loop = 1;
@@ -168,7 +169,7 @@ int main(void)
     const char *ws = "/tmp/test_shell_job_control_ws";
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));

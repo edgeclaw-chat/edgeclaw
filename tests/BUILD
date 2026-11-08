@@ -43,6 +43,25 @@ PTY_LINK_OPTS = LINK_OPTS + select({
     "//conditions:default": [],
 })
 
+# Tests whose SUBJECT does not exist on Windows, expressed as "compatible everywhere except
+# Windows" so `bazel test //tests:all` is honest there instead of red:
+#
+#   - pseudo-terminals, termios and the openpty()-driven pppd transport
+#   - fork()/waitpid() process supervision and the POSIX shell
+#   - pthreads (Windows has threads, but not this API)
+#   - <arpa/inet.h>-level socket programming in the TLS stub
+#
+# Shimming these would produce tests that compile and assert nothing, which is worse than
+# saying plainly that the platform lacks the feature. The product already reports
+# kernel_sandbox = false on Windows for the same kind of reason.
+#
+# @platforms//os:none is a constraint no platform satisfies, so the target is simply not
+# built; on Linux and macOS the select yields [] and nothing changes.
+POSIX_ONLY = select({
+    "//:windows": ["@platforms//os:none"],
+    "//conditions:default": [],
+})
+
 cc_test(
     name = "test_containers",
     srcs = ["test_containers.c", "test_ws.h"],
@@ -97,6 +116,7 @@ cc_test(
         "@lwip//:lwip",
     ],
     linkopts = PTY_LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 # pppos 压力测试：宿主机上会不定期跑满 300s 超时（flaky），不纳入默认测试集。
@@ -121,6 +141,7 @@ cc_test(
         "@lwip//:lwip",
     ],
     linkopts = PTY_LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 # 宿主机上固定失败（`echo $HOME` 断言与环境白名单不符），排除出默认测试集。
@@ -149,6 +170,8 @@ cc_binary(
         "@lwip//:lwip",
     ],
     linkopts = LINK_OPTS,
+    # termios + the pty-driven pppd transport: does not exist on Windows.
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
@@ -366,13 +389,14 @@ cc_test(
 # 起 actor loop；工具层那半截在 test_tools_search_loop 里）。
 cc_test(
     name = "test_search_matrix",
-    srcs = ["test_search_matrix.c", "test_ws.h"],
+    srcs = ["test_search_matrix.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/toolbox:toolbox",
         "@log.c//:log.c",
         "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
@@ -441,7 +465,7 @@ cc_test(
 
 cc_test(
     name = "test_sandbox_paths",
-    srcs = ["test_sandbox_paths.c"],
+    srcs = ["test_sandbox_paths.c", "test_fs_util.h"],
     deps = [
         "//src/kernel:kernel",
         "//src/sandbox:sandbox",
@@ -451,7 +475,7 @@ cc_test(
 
 cc_test(
     name = "test_file_index",
-    srcs = ["test_file_index.c", "test_ws.h"],
+    srcs = ["test_file_index.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:edc_file_utils",
     ],
@@ -460,7 +484,7 @@ cc_test(
 
 cc_test(
     name = "test_mention_pass",
-    srcs = ["test_mention_pass.c", "test_ws.h"],
+    srcs = ["test_mention_pass.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -479,7 +503,7 @@ cc_test(
 
 cc_test(
     name = "test_shell_job_control",
-    srcs = ["test_shell_job_control.c", "test_ws.h"],
+    srcs = ["test_shell_job_control.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -488,7 +512,7 @@ cc_test(
 
 cc_test(
     name = "test_shell_switch",
-    srcs = ["test_shell_switch.c", "test_ws.h"],
+    srcs = ["test_shell_switch.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -541,7 +565,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_session_remove",
-    srcs = ["test_commands_session_remove.c", "test_ws.h"],
+    srcs = ["test_commands_session_remove.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -555,12 +579,13 @@ cc_test(
 
 cc_test(
     name = "test_state_probe",
-    srcs = ["test_state_probe.c"],
+    srcs = ["test_state_probe.c", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
@@ -592,7 +617,7 @@ cc_test(
 #     bazel run //tests:bench_shell -- <workspace> 40000 3
 cc_binary(
     name = "bench_shell",
-    srcs = ["bench_shell.c", "test_ws.h"],
+    srcs = ["bench_shell.c", "test_ws.h", "test_fs_util.h"],
     tags = ["manual"],
     deps = [
         "//src/actor:actors",
@@ -611,7 +636,7 @@ cc_binary(
 #     bazel run //tests:bench_store -- <workspace> 40000 3
 cc_binary(
     name = "bench_store",
-    srcs = ["bench_store.c", "test_ws.h"],
+    srcs = ["bench_store.c", "test_ws.h", "test_fs_util.h"],
     tags = ["manual"],
     deps = [
         "//src/actor:actors",
@@ -628,7 +653,7 @@ cc_binary(
 # STAGE 1 GATE: the SQLite round trip must preserve every field the serializer writes.
 cc_test(
     name = "test_state_store_differential",
-    srcs = ["test_state_store_differential.c", "test_ws.h"],
+    srcs = ["test_state_store_differential.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -661,7 +686,7 @@ cc_test(
 # symlink refusal, exclusive workspace lock, checkpoint on close.
 cc_test(
     name = "test_state_store_open",
-    srcs = ["test_state_store_open.c", "test_ws.h"],
+    srcs = ["test_state_store_open.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -679,7 +704,7 @@ cc_test(
 # before any write, newer schema refused) are the ones whose absence loses a user's history.
 cc_test(
     name = "test_state_migrate",
-    srcs = ["test_state_migrate.c"],
+    srcs = ["test_state_migrate.c", "test_fs_util.h"],
     deps = [
         "//src/kernel:kernel",
         "@sds//:sds",
@@ -1033,7 +1058,7 @@ cc_test(
 
 cc_test(
     name = "test_session_reactivate",
-    srcs = ["test_session_reactivate.c", "test_ws.h"],
+    srcs = ["test_session_reactivate.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/kernel:kernel",
         "//src/shell:shell",
@@ -1043,7 +1068,7 @@ cc_test(
 
 cc_test(
     name = "test_session_cross_dep",
-    srcs = ["test_session_cross_dep.c", "test_ws.h"],
+    srcs = ["test_session_cross_dep.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/kernel:kernel",
         "//src/shell:shell",
@@ -1053,7 +1078,7 @@ cc_test(
 
 cc_test(
     name = "test_cross_dep_restart",
-    srcs = ["test_cross_dep_restart.c", "test_ws.h"],
+    srcs = ["test_cross_dep_restart.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/kernel:kernel",
         "//src/shell:shell",
@@ -1092,7 +1117,7 @@ cc_test(
 
 cc_test(
     name = "test_state_guardrail",
-    srcs = ["test_state_guardrail.c", "test_ws.h"],
+    srcs = ["test_state_guardrail.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -1107,7 +1132,7 @@ cc_test(
 
 cc_test(
     name = "test_session_id",
-    srcs = ["test_session_id.c"],
+    srcs = ["test_session_id.c", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -1214,6 +1239,7 @@ cc_test(
         "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
@@ -1236,23 +1262,25 @@ cc_test(
 
 cc_test(
     name = "test_secret",
-    srcs = ["test_secret.c"],
+    srcs = ["test_secret.c", "test_fs_util.h"],
     deps = [
         "//src/common:common",
     ],
     # openpty() drives the passphrase prompt through a real terminal.
     linkopts = PTY_LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
     name = "test_endpoint_probe",
-    srcs = ["test_endpoint_probe.c", "test_ws.h", "tls_stub.h"],
+    srcs = ["test_endpoint_probe.c", "test_ws.h", "tls_stub.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "@libuv",
         "@mbedtls//:mbedtls",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
@@ -1297,7 +1325,7 @@ cc_test(
 # "context overflow" vs "bad key" had no test at all.
 cc_test(
     name = "test_llm_actor_response",
-    srcs = ["test_llm_actor_response.c", "tls_stub.h"],
+    srcs = ["test_llm_actor_response.c", "tls_stub.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actor",
         "//src/actor:actors",
@@ -1310,6 +1338,7 @@ cc_test(
         "@uthash//:uthash",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 # The HTTPS transport when the transport is the problem: connection refused, a handshake
@@ -1318,7 +1347,7 @@ cc_test(
 # (TLS is decided by mbedtls, not by the URL scheme).
 cc_test(
     name = "test_https_client_failures",
-    srcs = ["test_https_client_failures.c", "tls_stub.h"],
+    srcs = ["test_https_client_failures.c", "tls_stub.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "@libuv",
@@ -1326,6 +1355,7 @@ cc_test(
         "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 # ── TUI 测试（原 src/tui/test_*.cpp，2026-09-15 归拢到 tests/）──────────
@@ -1515,7 +1545,7 @@ cc_test(
 # 最小 config 起一个（与 test_tui_dispatch 同一套路），并且只起一次（建/拆都慢）。
 cc_test(
     name = "test_app_boundary",
-    srcs = ["test_app_boundary.c"],
+    srcs = ["test_app_boundary.c", "test_fs_util.h"],
     deps = [
         "//src/app:api",
         "//src/app:app",
@@ -1715,7 +1745,7 @@ cc_test(
 
 cc_test(
     name = "test_prompts",
-    srcs = ["test_prompts.c"],
+    srcs = ["test_prompts.c", "test_fs_util.h"],
     deps = [
         "//src/shell:lex",
         "//src/kernel:kernel",
@@ -1723,10 +1753,11 @@ cc_test(
         "@uthash//:uthash",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 cc_test(
     name = "test_commands_reload",
-    srcs = ["test_commands_reload.c", "test_ws.h"],
+    srcs = ["test_commands_reload.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/kernel:kernel",
         "//src/shell:shell",
@@ -1735,7 +1766,7 @@ cc_test(
 )
 cc_test(
     name = "test_resources",
-    srcs = ["test_resources.c"],
+    srcs = ["test_resources.c", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -1756,7 +1787,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_prompt",
-    srcs = ["test_commands_prompt.c", "test_ws.h"],
+    srcs = ["test_commands_prompt.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/shell:shell",
     ],
@@ -1801,7 +1832,7 @@ cc_test(
 
 cc_test(
     name = "test_crontab_tool",
-    srcs = ["test_crontab_tool.c", "test_ws.h"],
+    srcs = ["test_crontab_tool.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",

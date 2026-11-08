@@ -18,6 +18,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int passed = 0, failed = 0;
 
@@ -54,7 +55,7 @@ static void mkdirs(const char *path)
 {
     char cmd[PATH_BUF + 16];
     snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", path);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         printf("  (mkdir failed: %s)\n", path);
 }
 
@@ -117,6 +118,9 @@ int main(void)
     write_file_at(proj_own, "own-only.md", "own {{1}}\n");
 
     setenv("HOME", home, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", home, 1);
     if (chdir(proj) != 0)
     {
         printf("  FAIL: chdir\n");

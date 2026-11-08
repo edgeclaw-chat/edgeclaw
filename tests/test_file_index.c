@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "test_fs_util.h"
 
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
@@ -56,7 +57,7 @@ int main(void)
     const char *ws = "/tmp/test_file_index_ws";
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/sub/deep %s/.git %s/node_modules %s/build", ws, ws, ws, ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     char p[512];
@@ -159,7 +160,7 @@ int main(void)
     }
 
     snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         printf("  (cleanup failed)\n");
 
     printf("\n  %d passed, %d failed\n", passed, failed);
