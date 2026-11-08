@@ -184,22 +184,61 @@ toolchain(
 )
 """)
 
+def _msys_path_to_windows(path):
+    """"/c/Users/me/mingw64/bin" -> "C:/Users/me/mingw64/bin"; anything else is returned as-is.
+
+    POSIX shells write Windows paths in their own dialect, and a repository rule runs as a
+    native process that cannot stat "/c/...".
+    """
+    p = path.replace("\\", "/")
+    if len(p) > 2 and p[0] == "/" and p[2] == "/" and p[1].isalpha():
+        return p[1].upper() + ":" + p[2:]
+    return p
+
+def _prefix_spellings(raw):
+    """Every spelling of a MINGW_PREFIX value worth probing, each normalized to ".../bin/"."""
+    out = []
+    for candidate in [raw, _msys_path_to_windows(raw)]:
+        candidate = candidate.replace("\\", "/")
+        if not candidate.endswith("/"):
+            candidate += "/"
+        if candidate not in out:
+            out.append(candidate)
+    return out
+
+def _probe_bin_dir(rctx, bin_dir):
+    """(bin_dir, tool_prefix) if bin_dir holds a gcc.exe, else None."""
+    for tool_prefix in ["", "x86_64-w64-mingw32-"]:
+        if rctx.path(bin_dir + tool_prefix + "gcc.exe").exists:
+            return (bin_dir, tool_prefix)
+    return None
+
 def _find_mingw_gcc(rctx):
+    """(bin_dir, tool_prefix) of a usable MinGW-w64 gcc, or ("", "") if there is none.
+
+    Order: $MINGW_PREFIX, then gcc on PATH, then the cross-compilers on PATH, then the
+    conventional MSYS2 install locations.
+    """
+    # 1. $MINGW_PREFIX, but only if it actually contains gcc.exe. When it does not, the
+    #    search MUST continue instead of giving up: MSYS2 and Git Bash both export
+    #    MINGW_PREFIX=/mingw64 (or /ucrt64, /clang64) on their own, without the user
+    #    setting anything. That value is a path inside the MSYS2 installation, not a
+    #    Windows path, so the probe below never matches it -- and treating that as
+    #    "no MinGW here" was silently degrading every Git Bash build to MSVC, because
+    #    this rule then emits the stub toolchain (target_compatible_with
+    #    "@platforms//os:none") and Bazel falls back to the autodetected cl.exe. The
+    #    result was a screenful of C2061/C2081/C1083 errors about __attribute__,
+    #    ssize_t and unistd.h -- with nothing pointing at the real cause.
     env_prefix = rctx.os.environ.get("MINGW_PREFIX", "")
     if env_prefix:
-        env_prefix = env_prefix.replace("\\", "/")
-        if not env_prefix.endswith("/"):
-            env_prefix += "/"
-        if env_prefix.endswith("-"):
-            return (env_prefix, "")
-        gcc_exe = env_prefix + "gcc.exe"
-        if rctx.path(gcc_exe).exists:
-            return (env_prefix, "")
-        gcc_exe2 = env_prefix + "x86_64-w64-mingw32-gcc.exe"
-        if rctx.path(gcc_exe2).exists:
-            return (env_prefix, "x86_64-w64-mingw32-")
-        return ("", "")
+        for spelling in _prefix_spellings(env_prefix):
+            found = _probe_bin_dir(rctx, spelling)
+            if found:
+                return found
+        print("WARNING: MINGW_PREFIX=%r contains no gcc.exe; ignoring it and searching PATH instead. A POSIX shell (Git Bash, MSYS2) sets this variable to a path like /mingw64 on its own -- set it to the WINDOWS path of the bin directory holding gcc.exe, or unset it." % env_prefix)  # buildifier: disable=print
 
+    # 2. gcc on PATH -- the case of a plain cmd.exe/PowerShell session, where MINGW_PREFIX
+    #    is normally unset. Unchanged from before.
     gcc_bin = rctx.which("gcc")
     if gcc_bin:
         gcc_str = str(gcc_bin).replace("\\", "/")
@@ -231,7 +270,7 @@ def _mingw_toolchain_repo_impl(rctx):
     bin_dir, tool_prefix = _find_mingw_gcc(rctx)
 
     if not bin_dir:
-        print("WARNING: MinGW-w64 GCC not found. Searched PATH and common MSYS2/MinGW-w64 installation directories (C:/msys64/mingw64, etc.). Install MSYS2 (https://www.msys2.org/) or add MinGW gcc to PATH. Or set MINGW_PREFIX to the bin directory containing gcc.")  # buildifier: disable=print
+        print("WARNING: MinGW-w64 GCC not found. Searched $MINGW_PREFIX, PATH and the common MSYS2/MinGW-w64 install directories (C:/msys64/mingw64, ...). Bazel therefore falls back to the default Windows compiler (MSVC), which this codebase does NOT build with -- expect errors about __attribute__, ssize_t and unistd.h. Install MSYS2 (https://www.msys2.org/), add MinGW gcc to PATH, or set MINGW_PREFIX to the WINDOWS path of the bin directory containing gcc.exe.")  # buildifier: disable=print
         _generate_stub(rctx)
         return
 
@@ -242,6 +281,7 @@ def _mingw_toolchain_repo_impl(rctx):
         environment = {"LC_ALL": "C"},
     )
     if result.return_code != 0:
+        print("WARNING: %s could not preprocess a test file (exit %d), so the MinGW toolchain cannot be described and Bazel will fall back to the default Windows compiler (MSVC), which this codebase does not build with. Output: %s" % (bin_dir + gcc_name, result.return_code, result.stderr[:400]))  # buildifier: disable=print
         _generate_stub(rctx)
         return
 
