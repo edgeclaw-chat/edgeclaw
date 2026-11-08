@@ -766,14 +766,20 @@ the active task. Other tasks complete silently; use
 Task references (`{{…}}`) undergo a **two-phase expansion** — and they belong to the
 **shell** syntax: only a line the shell parses recognizes one.
 
+**A reference names its task: `{{<id>}}` and nothing else.** There is no `{{LAST}}`
+(which completed task?) and no `{{SELF}}` (which task is "me"?). Both used to exist and
+both were removed: `{{LAST}}` tied a task's input to completion order, and `{{SELF}}`
+could only ever name the task created *before* it, because collection runs before the
+spawn. Writing the id is unambiguous, and it is the whole vocabulary.
+
 And because every string in a shell line is quoted, **the reference has to be written
-inside the quotes**. `"based on {{LAST}}, plan the fix"` is a reference; `based on
-{{LAST}}, plan the fix` is a plain message — the shell layer never sees it, nothing is
+inside the quotes**. `"based on {{3}}, plan the fix"` is a reference; `based on
+{{3}}, plan the fix` is a plain message — the shell layer never sees it, nothing is
 collected, nothing is substituted, and the braces reach the model as typed. A line that
 starts with `"`, `'` or `+` is the only place a reference can live.
 
 A task created by a **command** takes its input as text, never as a shell line. So a
-`{{LAST}}` written in a `/task new` description, or in a `/prompt` or `/skill` body, is
+`{{3}}` written in a `/task new` description, or in a `/prompt` or `/skill` body, is
 plain text: no reference is recognized, no dependency is made, nothing is substituted. The
 same goes for the operators there — a command's input is not split into a `|` chain, and
 `>` does not redirect.
@@ -783,7 +789,7 @@ The sigil is `{{…}}`, **not** `$`: `$` belongs to the prompt template layer (`
 
 ### Phase 1: Collect (at task creation)
 
-When a task is created with `{{<id>}}`, `{{LAST}}`, or `{{SELF}}`:
+When a task is created with `{{<id>}}`:
 1. The reference is **validated** — the target task must exist
 2. An **implicit dependency** is added from this task to the referenced task
 3. The `{{…}}` text is **preserved** as-is in the task input
@@ -799,13 +805,13 @@ its dependency, then substitutes the output before LLM processing begins.
 
 | Reference | Meaning |
 |----------|---------|
-| `{{LAST}}` | Output of the most recently completed task (by completion order) |
-| `{{<id>}}` | Output of task with id N (e.g. `{{1}}`, `{{2}}`) |
-| `{{SELF}}` | Task ID of the current foreground active task |
+| `{{<id>}}` | Output of the task with that id (e.g. `{{1}}`, `{{12}}`) |
 
-**Only these forms count.** Any other `{{…}}` — a pasted `{{ var }}`, a stray brace — is
-copied verbatim, and so is every `$`: nothing becomes a reference unless it is spelled
-exactly, which is what makes pasted text (Jinja, shell snippets, `$HOME`, `$5.00`) safe.
+**Only that form counts.** Any other `{{…}}` — `{{LAST}}`, `{{SELF}}`, a pasted
+`{{ var }}`, a stray brace — is copied verbatim, and so is every `$`: nothing becomes a
+reference unless it is spelled exactly, which is what makes pasted text (Jinja, shell
+snippets, `$HOME`, `$5.00`) safe. A removed spelling is not an error, it is text: that is
+the same rule, applied to the names this version no longer knows.
 
 Expansion happens **after** pipe splitting and redirect stripping, so any `|`
 or `>` in expanded output is treated as literal text.
@@ -905,8 +911,8 @@ cap, and visible in the text the model reads.
 ```
 > find performance bottlenecks in src/                  # a message, not shell syntax
 ... task 1 completes with output ...
-> "based on {{LAST}}, create an optimization plan"     # shell: quoted, so it expands
-... task 2 waits for task 1, then sees its output ...
+> "based on {{1}}, create an optimization plan"        # shell: quoted, so it expands
+... task 3 waits for task 1, then sees its output ...
 ```
 
 ### Local Shell

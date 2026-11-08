@@ -9,20 +9,23 @@
  * `$ARGUMENTS`). One sigil per layer, and they cannot collide. `$` is inert here -- it is
  * copied like any other byte, which is what keeps `$HOME`, `$1` and `$5.00` safe.
  *
- * Recognised forms -- and ONLY these; everything else is copied VERBATIM, because a
+ * One recognised form -- and ONLY this; everything else is copied VERBATIM, because a
  * reference must be spelled exactly to count (that is what makes pasted text safe: a
  * Jinja `{{ var }}`, a stray brace, a `$HOME` all pass through untouched):
  *
- *     {{LAST}}      the last completed task's output
  *     {{<digits>}}  the output of the task with that id ({{12}} is the twelfth)
- *     {{SELF}}      the id of the task in front (was `$$`)
+ *
+ * `{{LAST}}` and `{{SELF}}` used to exist and are deliberately gone: naming the id is
+ * unambiguous. `{{LAST}}` silently tied a task's input to completion order, and
+ * `{{SELF}}` could only ever name the task created BEFORE it (collection runs before the
+ * spawn), so both invited wrong answers to a question the user can simply spell out.
  *
  * NO QUOTE TRACKING HERE, deliberately. |input| is the value edc_cmd_unquote produced --
  * the shell's delimiters are already gone -- so a quote character in it is content the
  * user typed, never the start of a quoted region. Both this function and
  * edc_shell_collect_var_refs used to re-derive that state from the text; any apostrophe
  * re-opened "single quotes" and silenced every reference after it, so an input like
- * "it's {{LAST}}" expanded nothing. Whether a reference is LIVE is decided one layer up,
+ * "it's {{12}}" expanded nothing. Whether a reference is LIVE is decided one layer up,
  * by the lexer's `interp` flag (edc_lex.l) -> has_var_refs -> has_deferred_vars, and the
  * callers only come here when that is set (the raw forms -- 'x', '''x''' and $'x' -- never
  * set it), so a literal region cannot reach this code. The corollary a user can notice: a
@@ -73,13 +76,9 @@ sds edc_shell_expand_vars(const char *input, edc_shell_var_resolver_fn resolver,
         const char *after = close + 2;
         sds body = sdsnewlen(p + 2, (size_t)(close - (p + 2)));
 
-        const char *key = NULL;
-        if (strcmp(body, "LAST") == 0)
-            key = "LAST";
-        else if (strcmp(body, "SELF") == 0)
-            key = "SELF";
-        else if (all_digits(body, sdslen(body)))
-            key = body;
+        /* The one form: an explicit task id. `{{LAST}}` / `{{SELF}}` are NOT references
+         * (they were removed); like any unrecognised spelling they are copied verbatim. */
+        const char *key = all_digits(body, sdslen(body)) ? body : NULL;
 
         if (!key)
         {

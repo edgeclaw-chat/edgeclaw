@@ -92,39 +92,13 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (!sched)
         return NULL;
 
-    /* {{SELF}} -> the task in front (the foreground group's last unfinished member), not
-     * the screen focus: that one may sit on a task that already finished. */
-    if (strcmp(name, "SELF") == 0)
-    {
-        struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sched->sessions));
-        return front ? sdscatprintf(sdsempty(), "%" PRId64, front->task_id) : NULL;
-    }
-
-    /* {{LAST}} -> the last completed task's output */
-    if (strcmp(name, "LAST") == 0)
-    {
-        struct edc_task *last = NULL;
-        uint32_t highest_seq = 0;
-        struct edc_task_group *g;
-        struct edc_session *active = edc_session_manager_get_active(sched->sessions);
-        DL_FOREACH(active ? active->groups : NULL, g)
-        {
-            struct edc_task *t;
-            LL_FOREACH2(g->members, t, group_next)
-            {
-                if (edc_task_is_completed(t) && t->completion_seq > highest_seq)
-                {
-                    highest_seq = t->completion_seq;
-                    last = t;
-                }
-            }
-        }
-        return (last && last->output) ? sdsdup(last->output) : NULL;
-    }
-
-    /* {{<digits>}} -> look up by task id (global; lazily activates the owning session if needed) */
-    /* `name` comes from the message text, so it is parsed here -- the one place a task id
-     * still arrives as a string. */
+    /* {{<digits>}} -> look up by task id (global; lazily activates the owning session if
+     * needed).
+     *
+     * THE ONLY FORM. `{{LAST}}` and `{{SELF}}` were removed, so every name that arrives
+     * here is a digit string: the scanner copies anything else verbatim and never calls
+     * back. `name` still arrives as text because it is cut out of the user's message --
+     * this is the one place a task id is parsed. */
     struct edc_task *t = edc_session_store_resolve_task(sched->sessions, sched,
                                                         (int64_t)strtoll(name, NULL, 10), NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;

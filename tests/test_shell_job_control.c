@@ -619,6 +619,27 @@ int main(void)
         CHECK(task_count(sess) == b4v + 1, "exactly one task");
     }
 
+    TEST("{{LAST}} / {{SELF}} are not references any more: plain text, no dependency");
+    {
+        /* 只认显式 id。删掉的两个拼写走"不认识"那条路：原样保留、不建依赖、不报错。
+         * 这是粘贴安全的同一规则（`{{ var }}` 也一样），不是特例。 */
+        const int b4r = task_count(sess);
+        drive_command(cfg, sm, sched, "\"see {{LAST}} and {{SELF}}\"");
+        struct edc_task *t = find_task_by_desc(sess, "see {{LAST}} and {{SELF}}");
+        CHECK(t != NULL, "the task was created");
+        CHECK(t && task_join_deps(t) == 0, "and it took NO dependency (neither spelling is a reference)");
+        CHECK(t && !t->has_deferred_vars, "nor registered a deferred expansion");
+        CHECK(task_count(sess) == b4r + 1, "exactly one task");
+
+        /* 对照：一个真实的 id 仍然建依赖（否则上一条可能只是因为什么都不工作）。 */
+        const int b4i = task_count(sess);
+        drive_command(cfg, sm, sched, "\"see {{1}}\"");
+        struct edc_task *u = find_task_by_desc(sess, "see {{1}}");
+        CHECK(u != NULL, "the id form still creates a task");
+        CHECK(u && task_join_deps(u) >= 1, "and it DOES take a JOIN dependency");
+        CHECK(task_count(sess) == b4i + 1, "exactly one task");
+    }
+
     TEST("BUG 4: a literal apostrophe in the stage does not swallow its `{{…}}`");
     {
         /* The apostrophe is CONTENT -- the user typed the outer double quotes -- so the

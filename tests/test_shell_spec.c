@@ -332,10 +332,10 @@ static void test_quote_double(void)
         {"URLs with # and ? and & are text", D "https://x/y#frag?a=1&b=2" D, "https://x/y#frag?a=1&b=2", false},
         {"CJK and emoji survive", D "中文 ☂ 混合 text" D, "中文 ☂ 混合 text", false},
         {"empty body is allowed", D D, "", false},
-        {"`{{LAST}}` interpolates here", D "see {{LAST}}" D, "see {{LAST}}", true},
+        {"`{{12}}` marks the word for interpolation", D "see {{12}}" D, "see {{12}}", true},
         /* 用户字面打进去的撇号只是内容：它不该切词，也不该让引用失去标记。
          * （下游的展开器今天仍被它骗到——见 test_cmd_parse 里 BUG 4 那一组。） */
-        {"a literal apostrophe does not unmark the ref", D "it" S "s {{LAST}}" D, "it" S "s {{LAST}}", true},
+        {"a literal apostrophe does not unmark the ref", D "it" S "s {{12}}" D, "it" S "s {{12}}", true},
         {"a literal pair of apostrophes neither", D "it" S "s " S "x" S " and {{1}}" D,
          "it" S "s " S "x" S " and {{1}}", true},
     };
@@ -350,7 +350,7 @@ static void test_quote_single(void)
         {"operators inside stay text", S "a | b; c & d > e" S, "a | b; c & d > e", false},
         {"`\\n` stays two characters", S "a" BS "nb" S, "a" BS "nb", false},
         {"a Windows path needs no escaping", S "C:" BS "Program Files" BS "x" S, "C:" BS "Program Files" BS "x", false},
-        {"`{{LAST}}` does NOT interpolate", S "see {{LAST}}" S, "see {{LAST}}", false},
+        {"`{{12}}` does NOT interpolate", S "see {{12}}" S, "see {{12}}", false},
         {"a double quote inside is just a character", S "he said " D "hi" D S, "he said " D "hi" D, false},
         {"empty body is allowed", S S, "", false},
     };
@@ -372,7 +372,7 @@ static void test_quote_triple_double(void)
          false},
         {"`\\\"` is still an escaped quote (same as \"…\")", D3 "a " BS D " b" D3, "a " D " b", false},
         {"empty body is allowed", D3 D3, "", false},
-        {"`{{LAST}}` interpolates here", D3 "see {{LAST}}" D3, "see {{LAST}}", true},
+        {"`{{12}}` marks the word for interpolation", D3 "see {{12}}" D3, "see {{12}}", true},
     };
     run_quote_rows("[2c] `\"\"\"…\"\"\"` : the body may hold bare quotes (one block = one stage)", rows,
                    sizeof rows / sizeof rows[0]);
@@ -387,7 +387,7 @@ static void test_quote_ansi(void)
         {"`\\x41B` is AB", "$" S BS "x41B" S, "AB", false},
         {"`\\u00e9` becomes UTF-8", "$" S BS "u00e9" S, "\xc3\xa9", false},
         {"an unknown escape keeps its backslash", "$" S "a" BS "qb" S, "a" BS "qb", false},
-        {"`{{LAST}}` does NOT interpolate (literal form)", "$" S "see {{LAST}}" S, "see {{LAST}}", false},
+        {"`{{12}}` does NOT interpolate (literal form)", "$" S "see {{12}}" S, "see {{12}}", false},
         {"empty body is allowed", "$" S S, "", false},
 
         {"alias: `'''…'''` `\\n` is a newline", S3 "a" BS "nb" S3, "a\nb", false},
@@ -681,10 +681,6 @@ struct badq_row
 static sds adj_resolver(const char *name, void *user)
 {
     (void)user;
-    if (strcmp(name, "LAST") == 0)
-        return sdsnew("OUTLAST");
-    if (strcmp(name, "SELF") == 0)
-        return sdsnew("7");
     if (name[0] >= '0' && name[0] <= '9')
         return sdscatprintf(sdsempty(), "OUT%s", name);
     return NULL;
@@ -707,7 +703,7 @@ static sds adj_expand(const char *text_in)
 /* 断言：一行 → 一个词；文本 / has_var_refs / 最终展开结果。
  *
  * 展开那一步**按闸门**取：has_var_refs 为假时展开器根本不会被调用（edc_interp 只在
- * has_var_refs 为真时收集、且只有 {{LAST}} 会留下 deferred 标记），所以这里也只是
+ * has_var_refs 为真时收集、且只有 `{{<id>}}` 会建依赖并留下 deferred 标记），所以这里也只是
  * 把文本原样当作结果 —— 否则会断言一个生产里不存在的路径。 */
 static void expect_one_word(const char *label, const char *src, const char *want_text, bool want_refs,
                             const char *want_out)

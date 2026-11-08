@@ -496,8 +496,8 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
 
 /* Same recognition as the expand phase (edc_shell_vars.c): only our exact forms count,
  * and -- like it -- this scanner does NOT track quotes: the text is already unquoted, so
- * a quote in it is content the user typed. `{{SELF}}` resolves here, `{{LAST}}` is left
- * as a marker for the expand phase, and a numeric id becomes a dependency. */
+ * a quote in it is content the user typed. A numeric id becomes a dependency; nothing is
+ * resolved here (there is no form left whose value is known this early). */
 static bool edc_shell_all_digits(const char *s, size_t n)
 {
     if (n == 0)
@@ -538,21 +538,16 @@ sds edc_shell_collect_var_refs(struct edc_session_manager *sm, struct edc_schedu
         const char *after = close + 2;
         sds body = sdsnewlen(p + 2, (size_t)(close - (p + 2)));
 
-        if (strcmp(body, "SELF") == 0)
-        {
-            /* `{{SELF}}` is the task in front (not the screen focus: that one may
-             * sit on a task that already finished). Resolved NOW, as `$$` was. */
-            struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sm));
-            if (front)
-                result = sdscat(result, edc_id_str(front->task_id));
-        }
-        else if (strcmp(body, "LAST") == 0)
-        {
-            /* No dependency, and no value yet: the marker stays for the expand
-             * phase (edc_shell_vars.c), which runs once this task's deps are done. */
-            result = sdscat(result, "{{LAST}}");
-        }
-        else if (edc_shell_all_digits(body, sdslen(body)))
+        /* THE ONLY FORM: an explicit task id. Nothing is inferred -- no `{{LAST}}` (which
+         * completed task?), no `{{SELF}}` (which task is "me"?). Both were removed on
+         * purpose: `{{SELF}}` could only name the task created BEFORE this one, because
+         * collection runs before the spawn, and `{{LAST}}` made a task's input depend on
+         * completion order. Naming the id is unambiguous and is the whole vocabulary.
+         *
+         * Anything else -- `{{LAST}}`, `{{SELF}}`, `{{ var }}`, a stray brace -- falls
+         * through to the verbatim branch below: no dependency, no error, the bytes are
+         * preserved. That is the paste-safety rule (see edc_shell_vars.c). */
+        if (edc_shell_all_digits(body, sdslen(body)))
         {
             struct edc_task *t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(body, NULL, 10), NULL);
             if (!t)

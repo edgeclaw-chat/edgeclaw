@@ -256,7 +256,12 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "quotes are delimiters, not part of the path -- which is also what makes a filename with a space in "
      "it expressible (`> \"my file.txt\"`). `if x > 5` is therefore prose, not a redirect, and is refused "
      "rather than silently writing a file called `5`."},
-    {"Input", "`{{LAST}}` `{{1}}` `{{SELF}}`", "task references (last output / a task's output / current task id)", NULL},
+    {"Input", "`{{1}}` `{{12}}`", "a task reference: that task's output, by id -- the only form",
+     "`{{<id>}}` is substituted with the output of the task that has that id, and makes this task "
+     "wait for it. It must be written INSIDE the quotes of a shell line: `\"based on {{3}}, plan\"`. "
+     "There is no `{{LAST}}` and no `{{SELF}}` -- a reference names its task explicitly, so it never "
+     "depends on completion order or on which task happens to be in front. Any other `{{...}}` "
+     "(a pasted `{{ var }}`, a stray brace) is copied verbatim, which is what makes pasted text safe."},
 
     {"General", "/help [<command>]", "show this list, or the detail of one command",
      "`/help` alone lists every command; `/help <command>` (a prefix, or a subcommand name "

@@ -139,11 +139,12 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
 
             /* `{{…}}` 任务引用：**按 stage 顺序**收集（前一个 stage 的任务已存在）。
              * 词法器只在双引号区里标记，所以这里用 has_var_refs 就够了。收集器会同时
-             * 校验引用、把 {{SELF}} 就地解析掉。 */
+             * 校验引用、把任务 id 变成依赖边。 */
             sds *vdeps = NULL;
             int vn = 0;
             sds stage_text = s->msg.text;
             sds processed = NULL;
+            bool collected = false; /* 真的收集到了引用（≠ 文本里有 `{{`） */
             if (s->has_var_refs)
             {
                 sds verr = NULL;
@@ -156,6 +157,7 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
                     continue; /* 这一条 stage 不建任务，其余照旧 */
                 }
                 stage_text = processed;
+                collected = vn > 0;
             }
 
             struct edc_cmd_task_opts opts;
@@ -204,7 +206,11 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
                     edc_task_set_user_origin(task, message->mid, message->payload);
                 if (r_err_app)
                     task->redirect_stderr_append = true;
-                if (s->has_var_refs)
+                /* `{{<id>}}` 是**唯一**形式，所以「有待展开的引用」就等于
+                 * 「收集到了引用」。只按文本里有 `{{` 就置位会让 `{{LAST}}` /
+                 * `{{ var }}` 这类纯文本永远触发一次空展开（它们不再被识别），
+                 * 也等于对下游谎报"有替换待做"。 */
+                if (collected)
                     task->has_deferred_vars = 1;
                 edc_commands_announce_task(to, task);
                 if (out_group)

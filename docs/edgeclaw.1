@@ -175,26 +175,27 @@ SHELL SYNTAX (on by default)
        After the task completes, its output is written to the specified file.
        >> appends.  2> writes stderr.  Quoted > is not interpreted.
 
-     Task references ({{...}})
-           > "based on {{LAST}}, plan the fix"
+     Task references ({{N}})
+           > "based on {{3}}, plan the fix"
            > "{{1}} summarize that"
-           > "my task id is {{SELF}}"
+       A reference NAMES ITS TASK: {{<id>}} is the only form.  There is no
+       {{LAST}} (which completed task?) and no {{SELF}} (which task is
+       "me"?); both were removed, because {{LAST}} tied the input to
+       completion order and {{SELF}} could only name the task created
+       before it -- collection runs before the spawn.
        These belong to the SHELL syntax: only a line the shell parses
        recognizes one -- so the reference must be written INSIDE the
-       quotes.  A bare line is a message: "based on {{LAST}}" typed
-       without the quotes is text, and the braces reach the model as
-       typed.  A task created by a COMMAND takes its input as text -- a
-       {{LAST}} in a /task new description or in a /prompt or /skill body
-       is plain text, and neither is such an input split into a | chain
-       nor redirected by >.
-       {{LAST}}  — output of the most recently completed task (by
-                   completion order, not creation order).
-       {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
-       {{SELF}}  — task id of the current foreground active task.
+       quotes.  A bare line is a message: "based on {{3}}" typed without
+       the quotes is text, and the braces reach the model as typed.  A
+       task created by a COMMAND takes its input as text -- a {{3}} in a
+       /task new description or in a /prompt or /skill body is plain
+       text, and neither is such an input split into a | chain nor
+       redirected by >.
        The sigil is {{...}} and NOT $: $ belongs to the prompt template
        layer ($1 .. $N, $ARGUMENTS).
-       Only those three forms count; any other {{...}} (a pasted
-       {{ var }}, a stray brace) is copied verbatim, and so is every $.
+       Only {{<id>}} counts; any other {{...}} ({{LAST}}, {{SELF}}, a
+       pasted {{ var }}, a stray brace) is copied verbatim -- not an
+       error, just text -- and so is every $.
        Expansion happens after pipe splitting and redirect stripping, so
        any | or > in the expanded output is treated as literal text.
 
@@ -387,7 +388,7 @@ SHELL-LIKE JOB CONTROL
      bg %n            /task bg [id]
      kill %n          /task stop <id>
      !cmd             !git status  (local shell: a task of its own)
-     {{LAST}} {{1}} {{SELF}}   task references
+     {{1}} {{12}}              task references (output of that task id)
 
 COMMAND REFERENCE
      General
@@ -408,7 +409,7 @@ COMMAND REFERENCE
                                    placeholder takes the remaining args; a body
                                    with no placeholder gets the args appended.
                                    A body is a DOCUMENT, not a command line:
-                                   | ; & > in it do nothing, and a {{LAST}}
+                                   | ; & > in it do nothing, and a {{3}}
                                    reference in it stays text.  So a template
                                    means the same thing whatever the reader's
                                    /shell setting is.
@@ -597,10 +598,10 @@ WORKFLOW EXAMPLES
      Variable expansion (two-phase)
            > find performance bottlenecks in src/
            ... task 1 completes ...
-           > "based on {{LAST}}, create an optimization plan"
-           ... task 2 waits for task 1, then sees its output ...
+           > "based on {{1}}, create an optimization plan"
+           ... task 3 waits for task 1, then sees its output ...
        (The second line is quoted BECAUSE it carries a reference: a bare
-       line is a message, so its {{LAST}} would stay literal text.)
+       line is a message, so its {{1}} would stay literal text.)
 
      Fork (child leads its own group)
            > /task fork task-0 "audit the database schema"

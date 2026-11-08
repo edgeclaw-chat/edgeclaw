@@ -345,7 +345,7 @@ extern struct edc_task *edc_scheduler_find_task_by_id(struct edc_scheduler *sche
  *  member, or NULL when there is no foreground group or all of its members have
  *  finished. Deliberately NOT `session->active_task` -- that one is the screen focus
  *  and may sit on a task that already finished, which makes it a poor default for
- *  "/task stop", "/task status" and `{{SELF}}`. */
+ *  "/task stop" and "/task status". */
 extern struct edc_task *edc_scheduler_current_task(struct edc_session *session);
 
 /** The foreground group is a property of the session, not the scheduler. */

@@ -575,11 +575,14 @@ static void test_join_injection_shape(void)
  *
  * 这条用例曾经是一个缺陷的现场记录: 请求组装先 prepend_to_task_input() 把依赖输出
  * 拼进目标的第一条 user 消息, 之后才跑 {{…}} 展开 —— 材料落在扫描作用域里, 于是
- * 源输出中字面的 {{LAST}} 被替换掉并写回数据库, 谁都没被告知。
+ * 源输出中字面的引用被替换掉并写回数据库, 谁都没被告知。
  *
  * 修法: 展开移到拼接之前 (两者互不依赖)。展开只该看见用户敲的字。
  * 这条用例现在断言**期望值**: 目标自己的引用展开, 材料里的原样保留。
- * 谁再把顺序调回去, 这里立刻红。(本会话已做变异验证。)
+ * 谁再把顺序调回去, 这里立刻红。(已做变异验证。)
+ *
+ * 引用形式是**显式 id** (`{{<id>}}` 是唯一形式, `{{LAST}}`/`{{SELF}}` 已删除),
+ * 所以两个 id 都在运行时取自真实任务, 不写死。
  */
 static void test_join_material_is_data_not_syntax(void)
 {
@@ -591,34 +594,38 @@ static void test_join_material_is_data_not_syntax(void)
     struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-data"));
     (void)leader;
 
-    /* 源任务: output 里带**字面的** {{LAST}} —— 模型生成的内容, 不是我们的语法。 */
-    struct edc_task *src =
-        edc_task_new(edc_test_id("src-data"), edc_test_session_id("sess-data"), edc_test_id("src-data"),
-                     "quote the template", edc_channel_adapter);
-    src->output = sdsnew("SOURCE-OUTPUT: the template says {{LAST}} literally");
-    edc_task_await_exec(src);
-    edc_task_mark_completed(src);
-    src->completion_seq = 2;
-    edc_task_group_add_task(g, src);
-
-    /* 干净的已完成任务, 让 {{LAST}} 解析到不含大括号的值 —— 这样"替换了几次"
-     * 可以直接数出来。{{LAST}} 走**组的成员表** (edc_llm_var_resolver 遍历
-     * group->members), 所以它必须真的进组。 */
+    /* 被引用的任务: 它的 output 里不带大括号, 所以"替换了几次"可以直接数出来。 */
     struct edc_task *marker =
         edc_task_new(edc_test_id("mk"), edc_test_session_id("sess-data"), edc_test_id("mk"), "marker",
                      edc_channel_adapter);
     marker->output = sdsnew("MARKER-OUTPUT");
     edc_task_await_exec(marker);
     edc_task_mark_completed(marker);
-    marker->completion_seq = 3; /* 最后完成 ⇒ 它就是 {{LAST}} */
+    marker->completion_seq = 2;
     edc_task_group_add_task(g, marker);
+
+    const long long mid = (long long)marker->task_id;
+    char src_out[256];
+    char dst_in[256];
+    snprintf(src_out, sizeof(src_out), "SOURCE-OUTPUT: the template says {{%lld}} literally", mid);
+    snprintf(dst_in, sizeof(dst_in), "DEST-OWN {{%lld}} end", mid);
+
+    /* 源任务: output 里带**字面的**引用 —— 模型生成的内容, 不是我们的语法。 */
+    struct edc_task *src =
+        edc_task_new(edc_test_id("src-data"), edc_test_session_id("sess-data"), edc_test_id("src-data"),
+                     "quote the template", edc_channel_adapter);
+    src->output = sdsnew(src_out);
+    edc_task_await_exec(src);
+    edc_task_mark_completed(src);
+    src->completion_seq = 3;
+    edc_task_group_add_task(g, src);
 
     /* 目标: 自己的输入**确实**带引用 (has_deferred_vars 为真), 同时 JOIN 源。 */
     struct edc_task *dst =
         edc_task_new(edc_test_id("dst-data"), edc_test_session_id("sess-data"), edc_test_id("dst-data"),
                      "summarize", edc_channel_adapter);
     edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
-    attach_turn(&h, dst, "DEST-OWN {{LAST}} end");
+    attach_turn(&h, dst, dst_in);
     dst->has_deferred_vars = 1; /* 解释器给带引用的输入置这一位 */
 
     g_req_msgs = 0;
@@ -634,11 +641,10 @@ static void test_join_material_is_data_not_syntax(void)
     }
 
     CHECK(input && strstr(input, "[subtask quote the template result]:") != NULL, "材料带标记进了输入");
-    CHECK(input && strstr(input, "DEST-OWN MARKER-OUTPUT end") != NULL, "目标自己的 {{LAST}} 照常展开");
+    CHECK(input && strstr(input, "DEST-OWN MARKER-OUTPUT end") != NULL, "目标自己的引用照常展开");
 
     /* 材料里那个: **原样保留**。它是源输出的一部分, 不是用户写的引用。 */
-    CHECK(input && strstr(input, "the template says {{LAST}} literally") != NULL,
-          "材料里的 {{LAST}} 原样保留 (依赖输出是数据)");
+    CHECK(input && strstr(input, src_out) != NULL, "材料里的引用原样保留 (依赖输出是数据)");
 
     int replaced = 0;
     if (input)
@@ -660,29 +666,29 @@ static void test_join_material_is_data_not_syntax(void)
  *   (a) 整条消息一个字都不展开 —— 同一句里那些**本来能解析**的引用也一起失效;
  *   (b) 没有任何日志, 用户和操作者都无从知道引用没生效。
  *
- * 2f 钉住 (a)+(b) 的现状, 2g 单独证明"一处坏引用会拖垮整条", 因为 2f 只有
- * 一个引用, 分不出"是这个失败"还是"别的失败"。
+ * 2f 钉住 (a)+(b), 2g 单独证明"一处坏引用会拖垮整条", 因为 2f 只有一个引用,
+ * 分不出"是这个失败"还是"别的失败"。
  *
- * 为什么只有 {{LAST}} 能走到这里: `{{<id>}}` 在 collect 阶段就校验过(查不到时
- * 拒绝建任务), 所以只有"组里没有任何带 output 的已完成任务"能让它解析失败。
+ * 怎么造出一个"认识但查不到"的引用: 写一个不存在的 task id。collect 阶段会拒绝
+ * 建任务, 但请求组装这一层直接扫文本, 所以它到这里仍然是一个合法拼写、非法目标。
  */
 
 /* 2f: 唯一一个引用解析不了 → 原文送出, 坏引用留着(没被吞成空), 且**记日志**。 */
 static void test_unresolvable_reference_is_literal_and_logged(void)
 {
-    TEST("解析不了的 {{LAST}}: 原文送出 + 留日志 (不再静默)");
+    TEST("解析不了的 {{<id>}}: 原文送出 + 留日志 (不再静默)");
 
     struct harness h;
     harness_up(&h);
     struct edc_task *leader = NULL;
     make_group(&h, &leader, edc_test_session_id("sess-bad"));
-    /* 完成但没有 output ⇒ resolver 返回 NULL (它要求 last->output 非空)。 */
-    leader->output = NULL;
+    (void)leader;
 
     struct edc_task *dst =
         edc_task_new(edc_test_id("dst-bad"), edc_test_session_id("sess-bad"), edc_test_id("dst-bad"),
                      "summarize", edc_channel_adapter);
-    attach_turn(&h, dst, "A {{LAST}} C");
+    /* 999999 这个 id 不存在 ⇒ resolver 返回 NULL ⇒ 整条调用失败。 */
+    attach_turn(&h, dst, "A {{999999}} C");
     dst->has_deferred_vars = 1;
 
     g_log[0] = '\0';
@@ -698,11 +704,11 @@ static void test_unresolvable_reference_is_literal_and_logged(void)
         input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
 
-    CHECK(input && strcmp(input, "A {{LAST}} C") == 0, "原文送出 (信息不丢)");
-    CHECK(input && strstr(input, "{{LAST}}") != NULL, "坏引用没有被吞成空串");
+    CHECK(input && strcmp(input, "A {{999999}} C") == 0, "原文送出 (信息不丢)");
+    CHECK(input && strstr(input, "{{999999}}") != NULL, "坏引用没有被吞成空串");
 
     /* 不再静默: 有一条日志点名了它。 */
-    CHECK(strstr(g_log, "{{LAST}}") != NULL, "日志里点名了失败的引用");
+    CHECK(strstr(g_log, "{{999999}}") != NULL, "日志里点名了失败的引用");
 
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
@@ -712,7 +718,7 @@ static void test_unresolvable_reference_is_literal_and_logged(void)
 /* 2g: 同一句里一个能解析、一个不能 → 能解析的那个**也不展开**(整条放弃)。 */
 static void test_one_bad_reference_disables_the_good_ones(void)
 {
-    TEST("一处坏引用拖垮整条: 能解析的 {{LAST}} 也没展开 (现状)");
+    TEST("一处坏引用拖垮整条: 能解析的那个也没展开 (现状)");
 
     struct harness h;
     harness_up(&h);
@@ -720,15 +726,18 @@ static void test_one_bad_reference_disables_the_good_ones(void)
     struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-mixed"));
     (void)g;
 
-    /* 现在 {{LAST}} **能**解析 (leader 有 output, completion_seq=1)。 */
+    /* 这个 id **能**解析 (leader 有 output), 用来和下面那个不存在的 id 对照。 */
     leader->output = sdsnew("LEADER-OUTPUT");
     leader->completion_seq = 1;
+    const long long lid = (long long)leader->task_id;
+    char mixed[256];
+    snprintf(mixed, sizeof(mixed), "A {{%lld}} B {{999999}} C", lid);
 
     struct edc_task *dst =
         edc_task_new(edc_test_id("dst-mixed"), edc_test_session_id("sess-mixed"), edc_test_id("dst-mixed"),
                      "summarize", edc_channel_adapter);
-    /* {{7}}: 任务 7 不存在 ⇒ 解析不了。它和 {{LAST}} 在同一句里。 */
-    attach_turn(&h, dst, "A {{LAST}} B {{7}} C");
+    /* {{999999}}: 该 id 不存在 ⇒ 解析不了。它和能解析的那个在同一句里。 */
+    attach_turn(&h, dst, mixed);
     dst->has_deferred_vars = 1;
 
     g_log[0] = '\0';
@@ -744,9 +753,9 @@ static void test_one_bad_reference_disables_the_good_ones(void)
         input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
     }
 
-    /* 现状: 整条放弃 ⇒ {{LAST}} 也没换。这条断言就是"全有或全无"的证据。 */
-    CHECK(input && strcmp(input, "A {{LAST}} B {{7}} C") == 0, "整条原样 (可解析的那个也没换)");
-    CHECK(input && strstr(input, "LEADER-OUTPUT") == NULL, "{{LAST}} 没有生效 —— 被 {{7}} 拖累");
+    /* 现状: 整条放弃 ⇒ 能解析的那个也没换。这条断言就是"全有或全无"的证据。 */
+    CHECK(input && strcmp(input, mixed) == 0, "整条原样 (可解析的那个也没换)");
+    CHECK(input && strstr(input, "LEADER-OUTPUT") == NULL, "可解析的引用没有生效 —— 被坏引用拖累");
 
     edc_llm_actor_req_free(g_req);
     g_req = NULL;
