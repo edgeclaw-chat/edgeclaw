@@ -55,63 +55,6 @@ matters, by the input line itself). The empty input box's placeholder points at 
 
 Type a message in the input box and press Enter. Conversations are saved per session under `workspace/<session_id>/`.
 
-### Without a terminal (`edgeclaw_cli`)
-
-`edgeclaw_cli` is the same input box without the screen. **The argument is the line you
-would have typed** — there is no second command line to learn:
-
-```bash
-edgeclaw_cli 'summarize this repository'
-edgeclaw_cli '/task new "write the docs"'
-edgeclaw_cli '+"explore the parser"'
-edgeclaw_cli '"a" | "b"'
-edgeclaw_cli '!make -j8'
-```
-
-Each of those goes through exactly the path a keystroke does: the same passes, the same
-classification (command / local shell / shell line / plain message), the same command table,
-the same shell grammar, the same sessions and groups. If a line works in the TUI it works
-here; if it does not, it fails with the same message. Unquoted arguments are joined with
-single spaces, so `edgeclaw_cli /task new "abc"` is the same line as the quoted form; `--`
-ends the flags, for a line that starts with a dash.
-
-What a caller chooses is only **what to do with the output** — the messages exist before the
-process decides to print them:
-
-| mode | behaviour |
-|---|---|
-| (default) | the answer alone on stdout |
-| `--json` | every message this run produced, one JSON object per line, ending with `done` |
-| `--silent` | nothing — the run is still recorded, so `/task output <id>` has it later |
-
-"Where the answer is" depends on what the line was, and the CLI looks in that order: a
-**reply** (a task), a **system message** (a command), a **tool output** (`!cmd` has no reply
-at all). That is why it collects messages first instead of assuming one shape.
-
-Exit codes: `0` the line ran to the end, `1` a task it created failed, `2` usage or
-configuration (no input, the app could not start), `3` timed out (`--timeout`, default 300s).
-stdout carries the answer and nothing else, in every mode, so `> answer.md` is clean;
-progress, tool output and failures go to stderr.
-
-```
-$ edgeclaw_cli --silent 'Reply with exactly: SILENT-OK'   # nothing printed
-$ edgeclaw_cli '/task output 24'
-SILENT-OK
-```
-
-Two things to know unattended. The **master key** is needed to read the stored API key:
-interactively it is asked for on a terminal, so in cron/CI set `EDGECLAW_MASTER_KEY` (running
-`edgeclaw` once interactively is also how a fresh install gets configured). And each task
-joins its session's foreground group exactly as typed input would — a group's queue is
-serial, so a run started from inside a busy session queues like anything else (`+` opens a
-group of its own, as it does in the TUI).
-
-`edgeclaw_cli` is a separate binary on purpose: it links the app, **not ftxui**, so a
-container or a cron host ships a frontend that cannot take over a terminal by accident (and
-about half the size). The interactive `edgeclaw` binary contains no headless code.
-
----
-
 ## Shell Architecture
 
 EdgeClaw's input parser is modeled after Unix shells, with a full pipeline:

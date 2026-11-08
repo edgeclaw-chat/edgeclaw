@@ -354,13 +354,6 @@ cc_test(
     target_compatible_with = POSIX_ONLY,
 )
 
-sh_test(
-    name = "test_cli_sh",
-    srcs = ["test_cli.sh"],
-    data = ["//src/cli:edgeclaw_cli"],
-    target_compatible_with = POSIX_ONLY,
-)
-
 # tools/install.sh: which tag is current, which asset this machine needs, and what a failed
 # download is allowed to leave behind. Offline -- `curl` and `uname` are shimmed -- because
 # the interesting cases are the refusals, and a test that needs GitHub to answer is a test

@@ -34,7 +34,7 @@ jobs:
       # project produced `Disk quota exceeded` disguised as a compile error.
       - name: Build
         run: |
-          bazel build //src/tui:edgeclaw //src/cli:edgeclaw_cli //:edgeclaw \
+          bazel build //src/tui:edgeclaw //:edgeclaw \
                 --action_env=TMPDIR="$RUNNER_TEMP"
         env:
           TMPDIR: ${{ runner.temp }}
@@ -122,19 +122,21 @@ jobs:
         shell: bash
         run: |
           bazel build --compilation_mode=opt --platforms=//:amd64_windows \
-                //src/tui:edgeclaw //src/cli:edgeclaw_cli //:edgeclaw \
+                //src/tui:edgeclaw //:edgeclaw \
                 --action_env=TMPDIR="$RUNNER_TEMP"
 
       # A binary that links but cannot start is a failure the build alone cannot see. This is
       # cheap and it exercises the CRT, the generated version header and the platform table.
+      # It smoke-tests the SHIPPED binary -- the one the archive carries -- so what is
+      # verified here is what a user runs.
       - name: Smoke test the binary
         shell: bash
         run: |
           set -euo pipefail
-          exe=$(bazel cquery --output=files //src/cli:edgeclaw_cli \
+          exe=$(bazel cquery --output=files //src/tui:edgeclaw \
                   --compilation_mode=opt --platforms=//:amd64_windows \
                   --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
-          [ -n "$exe" ] && [ -f "$exe" ] || { echo "::error::no CLI binary was produced"; exit 1; }
+          [ -n "$exe" ] && [ -f "$exe" ] || { echo "::error::no binary was produced"; exit 1; }
           echo "running: $exe"
           "$exe" --version | tee version.txt
           grep -q 'platform windows/amd64' version.txt \
@@ -143,17 +145,15 @@ jobs:
       # The archive ships edgeclaw.exe and nothing else, so a runtime DLL import means the
       # program aborts on a clean machine instead of running. Same check release.yml applies
       # to the artifact users download; here it runs on what the trunk produced.
-      - name: Verify the Windows binaries are self-contained
+      - name: Verify the Windows binary is self-contained
         shell: bash
         run: |
           set -euo pipefail
-          for target in //src/tui:edgeclaw //src/cli:edgeclaw_cli; do
-            exe=$(bazel cquery --output=files "$target" \
-                    --compilation_mode=opt --platforms=//:amd64_windows \
-                    --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
-            [ -n "$exe" ] && [ -f "$exe" ] || { echo "::error::$target produced no binary"; exit 1; }
-            python tools/check_windows_imports.py "$exe"
-          done
+          exe=$(bazel cquery --output=files //src/tui:edgeclaw \
+                  --compilation_mode=opt --platforms=//:amd64_windows \
+                  --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$exe" ] && [ -f "$exe" ] || { echo "::error:://src/tui:edgeclaw produced no binary"; exit 1; }
+          python tools/check_windows_imports.py "$exe"
 
       # A compiler switch is easy to make and hard to notice: if some other Windows
       # cc_toolchain ever becomes selectable again, everything here would silently build with

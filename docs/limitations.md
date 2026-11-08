@@ -22,7 +22,7 @@ These are decisions, not backlog items.
 | **Plan mode** | Same: a task tree with explicit states is already the plan, and it is inspectable, unlike a mode. |
 | **Project trust (`/trust`)** | Two-level project resources are **on by default** here. That is a deliberate trade (prompt-injection surface for zero-config convenience), and the "code execution" hole it would gate — packages, MCP server commands — does not exist yet. Revisit if packages land. |
 | **TypeScript / embedded-JS extension runtime** | Incompatible with a self-contained binary. |
-| **`--mode rpc` / an SDK** | `edgeclaw_cli` covers scripted use by accepting "the same line you would type in the TUI". A long-running RPC surface is a different product with different stability requirements. |
+| **`--mode rpc` / an SDK** | There is no scripted frontend: `edgeclaw` is the only binary, and it is interactive. A long-running RPC surface is a different product with different stability requirements, so it would be designed rather than bolted on. |
 | **Web search / fetch tools** | EdgeClaw has none. Use `exec_shell` with `curl`. |
 
 ## Not shipped yet
