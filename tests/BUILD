@@ -351,12 +351,14 @@ cc_test(
         "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 sh_test(
     name = "test_cli_sh",
     srcs = ["test_cli.sh"],
     data = ["//src/cli:edgeclaw_cli"],
+    target_compatible_with = POSIX_ONLY,
 )
 
 # tools/install.sh: which tag is current, which asset this machine needs, and what a failed
@@ -367,6 +369,7 @@ sh_test(
     name = "test_install_sh",
     srcs = ["test_install_sh.sh"],
     data = ["//tools:install"],
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(
@@ -517,6 +520,7 @@ cc_test(
         "//src/shell:shell",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 # The shell input syntax as a SPEC: every row is a sentence from
@@ -1249,6 +1253,7 @@ cc_test(
         "//src/common:common",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
 )
 
 cc_test(

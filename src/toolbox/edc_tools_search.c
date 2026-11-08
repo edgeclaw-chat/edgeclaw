@@ -1,6 +1,7 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_path.h" /* edc_path_norm: the search root has to match the walker's spelling */
 #include "edc_sandbox.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
@@ -478,6 +479,24 @@ static sds search_finish(struct search_job *job)
 
 static void run_search(struct search_job *job)
 {
+    /* The root is held in its NORMAL form, and this is the one place that guarantees it.
+     *
+     * relative_path() strips this string as a PREFIX from the paths the walk produces, and the
+     * walk builds those with edc_path_join(), which normalises to the platform separator. If
+     * the two spellings differ the prefix never matches, so every hit keeps its ABSOLUTE path
+     * instead of the root-relative one -- the result then leaks the search root to the model
+     * and the "paths are relative" contract quietly stops holding. Both entry points reach
+     * here (the tool path via the sandbox's realpath, the synchronous one straight from its
+     * caller), so normalising here covers both rather than leaving each to remember.
+     *
+     * Only reachable on Windows, where a path has two valid separator spellings; on POSIX
+     * edc_path_norm is a no-op for an absolute path. */
+    {
+        sds normalised_root = edc_path_norm(job->root);
+        sdsfree(job->root);
+        job->root = normalised_root;
+    }
+
     regex_t re;
     regex_t *rep = NULL;
     if (job->is_grep && !job->literal)
@@ -509,6 +528,8 @@ sds edc_search_run_blocking(const char *root, bool is_grep, const char *pattern,
     struct search_job job;
     memset(&job, 0, sizeof(job));
     job.is_grep = is_grep;
+    /* run_search() normalises job.root, which is what makes relative_path() able to strip it
+     * as a prefix from the walk's (normalised) paths -- see the note there. */
     job.root = sdsnew(root);
     job.pattern = sdsnew(pattern ? pattern : "");
     job.glob = (glob && *glob) ? sdsnew(glob) : NULL;

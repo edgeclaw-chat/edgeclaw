@@ -59,6 +59,22 @@ static void mkdirs(const char *path)
         printf("  (mkdir failed: %s)\n", path);
 }
 
+/* The paths this file builds are written with snprintf and '/', while edc_resource_dirs()
+ * returns them in NORMAL form (edc_path_norm: the platform's separator). On Windows that is
+ * the same path and a different string, and every assertion below compares strings -- so the
+ * expectations are normalised once, right after they are built. No-op on POSIX, where '/' is
+ * the only separator and this whole class of difference does not exist. */
+static void native_sep(char *s)
+{
+#if defined(_WIN32)
+    for (; *s; s++)
+        if (*s == '/')
+            *s = '\\';
+#else
+    (void)s;
+#endif
+}
+
 static void write_file_at(const char *dir, const char *name, const char *content)
 {
     char path[PATH_BUF];
@@ -104,6 +120,16 @@ int main(void)
     snprintf(home_pi, sizeof(home_pi), "%s/.pi/agent/prompts", home);
     snprintf(proj_claude, sizeof(proj_claude), "%s/.claude/prompts", proj);
     snprintf(proj_own, sizeof(proj_own), "%s/.edgeclaw/prompts", proj);
+    /* Normalise every path this file builds, in both spellings it uses (the "prompts" leaf
+     * above and the "root" forms below), so the string comparisons match what the product
+     * returns. See native_sep(). */
+    native_sep(home);
+    native_sep(proj);
+    native_sep(ws);
+    native_sep(home_claude);
+    native_sep(home_pi);
+    native_sep(proj_claude);
+    native_sep(proj_own);
     /* A root only counts when the directory EXISTS, so the workspace must be there
      * before the first edc_resource_dirs() call. */
     mkdirs(ws);
@@ -137,6 +163,10 @@ int main(void)
     snprintf(home_pi_root, sizeof(home_pi_root), "%s/.pi/agent", home);
     snprintf(proj_claude_root, sizeof(proj_claude_root), "%s/.claude", proj);
     snprintf(proj_own_root, sizeof(proj_own_root), "%s/.edgeclaw", proj);
+    native_sep(home_claude_root);
+    native_sep(home_pi_root);
+    native_sep(proj_claude_root);
+    native_sep(proj_own_root);
 
     UT_array *roots = edc_resource_dirs(&cfg, proj);
 
@@ -262,7 +292,9 @@ int main(void)
     CHECK(sk && sk->source && strcmp(sk->source, ws) == 0, "the workspace's copy won");
     CHECK(sk && sk->content && strstr(sk->content, "OUR BODY") != NULL, "and so did its body");
     CHECK(sk && sk->shadowed && sk->shadowed[0] != NULL, "the shadowed copy is RECORDED, not dropped silently");
-    CHECK(sk && sk->shadowed && sk->shadowed[0] && strstr(sk->shadowed[0], "skills/pdf") != NULL,
+    CHECK(sk && sk->shadowed && sk->shadowed[0] &&
+              (strstr(sk->shadowed[0], "skills/pdf") != NULL ||
+               strstr(sk->shadowed[0], "skills\\pdf") != NULL),
           "and it names the file that lost");
 
     TEST("the PROJECT's copy outranks the workspace's");
@@ -318,9 +350,17 @@ int main(void)
 
     sdsfree(cfg.workspace);
 
+    /* Leave the tree before deleting it: Windows refuses to remove a directory that is the
+     * process's current directory (POSIX allows it). The test chdir'd into |proj| above. */
+    {
+        char up[PATH_BUF];
+        snprintf(up, sizeof(up), "%s/..", tmp);
+        if (chdir(up) != 0)
+            (void)chdir("/");
+    }
     char cleanup[PATH_BUF + 32];
     snprintf(cleanup, sizeof(cleanup), "rm -rf '%s'", tmp);
-    if (system(cleanup) != 0)
+    if (test_sh(cleanup) != 0)
         printf("  (cleanup failed)\n");
 
     printf("\n  %d passed, %d failed\n", passed, failed);

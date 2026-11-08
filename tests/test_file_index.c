@@ -5,6 +5,7 @@
  * the list instead of walking again.
  */
 #include "edc_file_index.h"
+#include "edc_path.h" /* edc_path_is_absolute: "absolute" is a platform question */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,7 +130,7 @@ int main(void)
 
     TEST(".. walks out of the root, and the rows become absolute");
     {
-        CHECK(edc_file_index_query(ws, "../", buf, sizeof(buf)) == 0 || buf[0] == '/',
+        CHECK(edc_file_index_query(ws, "../", buf, sizeof(buf)) == 0 || edc_path_is_absolute(buf),
               "either nothing, or absolute paths (never a bare name that means nothing)");
     }
 
@@ -137,7 +138,9 @@ int main(void)
     {
         const size_t rows = edc_file_index_query(ws, "~/", buf, sizeof(buf));
         CHECK(rows > 0, "the home directory has entries");
-        CHECK(buf[0] == '/', "`~` is expanded, so the rows are absolute paths");
+        /* "absolute" is a platform question: "/x" on POSIX, "C:\\x" or "\\\\server\\share" on
+         * Windows. Asserting the leading '/' tested the separator, not the property. */
+        CHECK(edc_path_is_absolute(buf), "`~` is expanded, so the rows are absolute paths");
         CHECK(edc_file_index_query(ws, "~nosuchuser/", buf, sizeof(buf)) == 0, "'~user' is not supported");
     }
 

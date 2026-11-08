@@ -139,12 +139,31 @@ static inline char *win32_realpath(const char *path, char *resolved)
             free(resolved);
         return NULL;
     }
+    /* _fullpath only NORMALISES the string: it happily returns an absolute path for something
+     * that does not exist. POSIX realpath() fails with ENOENT instead, and callers rely on
+     * that -- "does this directory exist?" is answered by realpath() returning NULL all over
+     * this codebase (edc_file_index_query, edc_path_guard_resolve, the sandbox checks).
+     * Without this test a missing directory looks present on Windows and the caller goes on
+     * to read it. _access(path, 0) is the existence check; use the ORIGINAL path, because the
+     * normalised one can differ in case on a case-insensitive filesystem. */
+    if (_access(path, 0) != 0)
+    {
+        if (need_free)
+            free(resolved);
+        errno = ENOENT;
+        return NULL;
+    }
     return resolved;
 }
 #define realpath(p, r) win32_realpath(p, r)
 
 /* ---- environment ---- */
-#define unsetenv(name) SetEnvironmentVariable(name, NULL)
+/* unsetenv must reach the CRT, not just Win32: getenv() reads the CRT's copy of the
+ * environment, and SetEnvironmentVariable(name, NULL) only updates the Win32 block. With that
+ * version a variable looked unset to the OS and still set to the program -- which is how
+ * test_models_catalog kept loading its fixture after unsetenv("EDGECLAW_MODELS_CATALOG").
+ * _putenv_s(name, "") is the call that removes it from the CRT's environment. */
+#define unsetenv(name) _putenv_s((name), "")
 static inline int win32_setenv(const char *name, const char *value, int overwrite)
 {
     (void)overwrite;

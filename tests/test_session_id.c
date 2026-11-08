@@ -226,10 +226,17 @@ static void test_taken_directory_gives_the_id_back(void)
     CHECK(c && c->session_id == taken_id + 1,
           "it landed on the id AFTER the taken one (the loop asked for the next)");
     /* The directory itself is created on first save, not here, so what can be asserted is
-     * that history_dir names the id that survived. */
+     * that history_dir names the id that survived. history_dir is a NORMALISED path
+     * (edc_path_norm: the platform's separator), so the expectation is spelled the same way
+     * rather than with a hand-built "ws/id" string that only matches on POSIX. */
     char expect_dir[600];
     snprintf(expect_dir, sizeof(expect_dir), "%s/%lld", ws, (long long)(taken_id + 1));
-    CHECK(c && strcmp(c->history_dir, expect_dir) == 0, "and its history_dir names that id");
+#if defined(_WIN32)
+    for (char *q = expect_dir; *q; q++)
+        if (*q == '/')
+            *q = '\\';
+#endif
+    CHECK(c && c->history_dir && strcmp(c->history_dir, expect_dir) == 0, "and its history_dir names that id");
 
     /* The strong half: the squatted id's ROW is gone, not merely skipped. If the loop just
      * ignored it, an orphan row with no owner would be left in the database. */

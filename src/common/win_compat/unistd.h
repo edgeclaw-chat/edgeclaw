@@ -171,7 +171,13 @@ static __inline int unsetenv(const char *name)
 #endif
 
 /* realpath() is absent. edc_compat.h supplies a macro when it is included; this is the
- * fallback for translation units that do not include it. Caller frees a NULL `resolved`. */#if !defined(realpath)
+ * fallback for translation units that do not include it. Caller frees a NULL `resolved`.
+ *
+ * _fullpath only NORMALISES: it returns an absolute path for something that does not exist.
+ * POSIX realpath() fails with ENOENT instead, and this codebase answers "does it exist?" with
+ * that NULL in several places (edc_file_index_query, edc_path_guard_resolve, the sandbox
+ * checks), so the existence of the ORIGINAL path is verified here to keep the two alike. */
+#if !defined(realpath)
 static __inline char *realpath(const char *path, char *resolved)
 {
     char *buf = resolved;
@@ -185,6 +191,13 @@ static __inline char *realpath(const char *path, char *resolved)
     {
         if (resolved == NULL)
             free(buf);
+        return NULL;
+    }
+    if (_access(path, 0) != 0)
+    {
+        if (resolved == NULL)
+            free(buf);
+        errno = ENOENT;
         return NULL;
     }
     return buf;
