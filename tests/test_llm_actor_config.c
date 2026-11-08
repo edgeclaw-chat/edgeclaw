@@ -34,7 +34,20 @@ static int failures = 0;
 int main(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew("/tmp");
+    /* TEST_TMPDIR, not "/tmp": this is a workspace the code may touch, and "/tmp" does not
+     * exist on Windows. */
+    {
+        const char *td = getenv("TEST_TMPDIR");
+        if (!td || !*td)
+            td = getenv("TMPDIR");
+#ifdef _WIN32
+        if (!td || !*td)
+            td = getenv("TEMP");
+#endif
+        if (!td || !*td)
+            td = ".";
+        cfg->workspace = sdsnew(td);
+    }
     cfg->llm_api_conf.api_url = sdsnew("https://old.example/v1");
     cfg->llm_api_conf.model = sdsnew("old-model");
     cfg->llm_api_conf.api_key = sdsnew("old-key");

@@ -508,7 +508,9 @@ static void test_summary(const char *csv_path)
 
 int main(void)
 {
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_state_probe_%ld", (tmp && *tmp) ? tmp : "/tmp",
              (long)getpid());
     char cmd[1400];

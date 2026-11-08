@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -142,7 +143,10 @@ int main(void)
      * there is no terminal; the same variable the other tests set. */
     setenv("EDGECLAW_MASTER_KEY", "0123456789abcdef0123456789abcdef", 1);
 
-    char tmpl[] = "/tmp/edc_cfgwin_XXXXXX";
+    char tmpl[1024];
+
+
+    test_tmp_template(tmpl, sizeof(tmpl), "edc_cfgwin");
     char *home = mkdtemp(tmpl);
     if (!home)
     {

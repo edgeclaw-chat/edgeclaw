@@ -189,7 +189,13 @@ static void test_expand(void)
 
 static void test_parse(void)
 {
-    const char *dir = "/tmp/edc_prompt_unit";
+    /* Under TEST_TMPDIR: "/tmp" is POSIX-only, and a FIXED name would also make two runs
+     * of this binary share one tree. */
+    char dir_buf[1024];
+    test_tmp_template(dir_buf, sizeof(dir_buf), "edc_prompt_unit");
+    if (!mkdtemp(dir_buf))
+        return;
+    const char *dir = dir_buf;
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", dir, dir);
     if (test_sh(cmd) != 0)

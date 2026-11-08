@@ -13,6 +13,12 @@
 #include <sys/stat.h>
 #include "test_fs_util.h"
 
+/* Per-run scratch directory, created under Bazel's per-test TEST_TMPDIR. These cases used a
+ * FIXED "/tmp/test_..." path: that both assumes /tmp exists (POSIX-only -- on Windows it means
+ * "\tmp" on the current drive) and makes two runs of the binary share one tree, which leaves
+ * state behind when a run is killed. */
+static char g_scratch[1024];
+
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
     do                                                                                                                 \
@@ -55,13 +61,19 @@ static int count_rows(const char *buf)
 
 int main(void)
 {
-    const char *ws = "/tmp/test_file_index_ws";
-    char cmd[512];
+    test_tmp_template(g_scratch, sizeof(g_scratch), "scratch");
+    if (!mkdtemp(g_scratch))
+    {
+        perror("mkdtemp");
+        return 1;
+    }
+    const char *ws = g_scratch;
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/sub/deep %s/.git %s/node_modules %s/build", ws, ws, ws, ws, ws);
     if (test_sh(cmd) != 0)
         return 1;
 
-    char p[512];
+    char p[4096];
     snprintf(p, sizeof(p), "%s/a.txt", ws);
     touch(p);
     snprintf(p, sizeof(p), "%s/sub/b.txt", ws);
@@ -99,7 +111,7 @@ int main(void)
         /* Its own directory, created here: a name with a space would otherwise add a row to
          * the exact-list assertions above. `@"my file.txt"` has to be completable, and the
          * space must not be a separator here -- in a reference it is the quote's job. */
-        char d[512];
+        char d[4096];
         snprintf(d, sizeof(d), "%s/spaced", ws);
         mkdir(d, 0777);
         snprintf(p, sizeof(p), "%s/my file.txt", d);
@@ -146,7 +158,7 @@ int main(void)
 
     TEST("an absolute query browses the filesystem");
     {
-        char abs_query[512];
+        char abs_query[4096];
         snprintf(abs_query, sizeof(abs_query), "%s/sub/", ws);
         CHECK(edc_file_index_query("/nonexistent-root", abs_query, buf, sizeof(buf)) == 2, "one level of children");
         CHECK(strstr(buf, "/sub/b.txt") != NULL, "rows carry absolute paths");

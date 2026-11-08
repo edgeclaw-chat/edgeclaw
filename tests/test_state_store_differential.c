@@ -681,10 +681,12 @@ static void test_forget_and_lookup(void)
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_differential_%" PRId64,
              (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
-    char cmd[600];
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
     if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not reset %s)\n", g_dir);

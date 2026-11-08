@@ -39,13 +39,42 @@
 
 static char g_edc_test_ws[512];
 
+/* A mkdtemp() template under the platform's scratch directory.
+ *
+ * TEST_TMPDIR is Bazel's per-test directory: it exists on every platform, and Bazel cleans it
+ * up. "/tmp" is a POSIX convention that on Windows means "\tmp" on the current drive -- a
+ * fresh machine has no such directory, and mkdir() does not create parents, so the workspace
+ * would never appear and every test would fail before asserting anything. Local copy rather
+ * than a shared helper because this header is deliberately self-contained (a single static
+ * translation unit per test binary). */
+static void edc_test_tmp_template(char *buf, size_t cap, const char *name)
+{
+    const char *base = getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = getenv("TMPDIR");
+#ifdef _WIN32
+    if (!base || !*base)
+        base = getenv("TEMP");
+    if (!base || !*base)
+        base = ".";
+#else
+    if (!base || !*base)
+        base = "/tmp";
+#endif
+    snprintf(buf, cap, "%s/%s_XXXXXX", base, name);
+}
+
 /* Create the workspace and open the store on it, once. Every subsequent call returns the
  * same path, so configs built from it reuse the open connection. */
 static const char *edc_test_workspace(void)
 {
     if (!g_edc_test_ws[0])
     {
-        snprintf(g_edc_test_ws, sizeof(g_edc_test_ws), "/tmp/edgeclaw-test-XXXXXX");
+        /* TEST_TMPDIR, not "/tmp": Bazel owns that directory and cleans it up, and on Windows
+         * "/tmp" means "\tmp" on the current drive, which a fresh machine does not have --
+         * mkdir() here does not create parents, so the workspace would fail to appear before
+         * any test asserted anything. See test_fs_util.h. */
+        edc_test_tmp_template(g_edc_test_ws, sizeof(g_edc_test_ws), "edgeclaw-test");
         if (!mkdtemp(g_edc_test_ws))
         {
             perror("mkdtemp");
@@ -84,7 +113,7 @@ static void edc_test_store_reset(void)
     if (!g_edc_test_ws[0])
         return;
     edc_state_store_close();
-    char cmd[700];
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -f '%s'/edgeclaw.db '%s'/edgeclaw.db-wal '%s'/edgeclaw.db-shm",
              g_edc_test_ws, g_edc_test_ws, g_edc_test_ws);
     if (system(cmd) != 0)
@@ -105,7 +134,7 @@ static void edc_test_store_down(struct edc_config *cfg)
     edc_state_store_close();
     if (g_edc_test_ws[0])
     {
-        char cmd[600];
+        char cmd[4096];
         snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_edc_test_ws);
         if (system(cmd) != 0)
             fprintf(stderr, "warning: could not remove %s\n", g_edc_test_ws);

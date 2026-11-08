@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 static int test_failed = 0;
 static int test_passed = 0;
@@ -717,7 +718,10 @@ static void test_search_walks_a_real_tree(void)
 {
     TEST("grep/find: a real tree -- relative paths, globs, binary and CRLF handling");
 
-    char root[] = "/tmp/edc_search_XXXXXX";
+    char root[1024];
+
+
+    test_tmp_template(root, sizeof(root), "edc_search");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");
@@ -913,7 +917,10 @@ static void test_read_capped(void)
 {
     TEST("edc_file_read_capped: the ceiling is checked before anything is allocated");
 
-    char root[] = "/tmp/edc_capped_XXXXXX";
+    char root[1024];
+
+
+    test_tmp_template(root, sizeof(root), "edc_capped");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");

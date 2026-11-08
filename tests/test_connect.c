@@ -11,6 +11,7 @@
  * the portable answer. */
 #include <unistd.h>
 #include <uv.h>
+#include "test_fs_util.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -32,7 +33,10 @@ int main(void)
     setenv("EDGECLAW_MASTER_KEY", "test-master-key", 1);
     edc_file_utils_init(uv_default_loop());
 
-    char tmpl[] = "/tmp/edc_connect_XXXXXX";
+    char tmpl[1024];
+
+
+    test_tmp_template(tmpl, sizeof(tmpl), "edc_connect");
     char *home = mkdtemp(tmpl);
     if (!home)
     {

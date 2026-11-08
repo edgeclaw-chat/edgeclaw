@@ -225,7 +225,9 @@ static void test_join_and_dirname(void)
 /* A scratch directory under the platform's temp root (no mkdtemp: POSIX only). */
 static bool scratch(char *buf, size_t cap, const char *leaf)
 {
-    const char *base = getenv("TMPDIR");
+    const char *base = getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = getenv("TMPDIR");
     if (!base || !base[0])
         base = getenv("TEMP");
     if (!base || !base[0])

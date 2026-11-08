@@ -13,6 +13,7 @@
 /* mkdtemp lives in <unistd.h> on macOS and in <stdlib.h> on glibc; including both is
  * the portable answer. */
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -40,7 +41,10 @@ int main(void)
     setenv("EDGECLAW_MASTER_KEY", "0123456789abcdef0123456789abcdef", 1);
 #endif
 
-    char home[] = "/tmp/edc_shell_syntax_XXXXXX";
+    char home[1024];
+
+
+    test_tmp_template(home, sizeof(home), "edc_shell_syntax");
     if (!mkdtemp(home))
     {
         fprintf(stderr, "mkdtemp failed\n");

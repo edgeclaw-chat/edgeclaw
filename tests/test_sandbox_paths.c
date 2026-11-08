@@ -11,6 +11,12 @@
 #include <string.h>
 #include "test_fs_util.h"
 
+/* Per-run scratch directory, created under Bazel's per-test TEST_TMPDIR. These cases used a
+ * FIXED "/tmp/test_..." path: that both assumes /tmp exists (POSIX-only -- on Windows it means
+ * "\tmp" on the current drive) and makes two runs of the binary share one tree, which leaves
+ * state behind when a run is killed. */
+static char g_scratch[1024];
+
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
     do                                                                                                                 \
@@ -34,8 +40,14 @@ static int passed = 0, failed = 0;
 
 int main(void)
 {
-    const char *dir = "/tmp/test_sandbox_paths_dir";
-    char cmd[256];
+    test_tmp_template(g_scratch, sizeof(g_scratch), "scratch");
+    if (!mkdtemp(g_scratch))
+    {
+        perror("mkdtemp");
+        return 1;
+    }
+    const char *dir = g_scratch;
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", dir, dir);
     if (test_sh(cmd) != 0)
         return 1;

@@ -43,7 +43,7 @@ static char g_dir[512];
 
 static void reset_dir(void)
 {
-    char cmd[640];
+    char cmd[4096];
     edc_state_store_close();
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
     if (test_sh(cmd) != 0)
@@ -515,7 +515,9 @@ int main(void)
     edc_test_workspace(); /* disposable store for anything that writes state */
     /* Every message this file asserts on is a log_error from the store. */
     log_add_callback(capture_log, NULL, LOG_TRACE);
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_state_store_%" PRId64,
              (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
 
@@ -532,7 +534,7 @@ int main(void)
     test_close_checkpoints();
 
     edc_state_store_close();
-    char cmd[640];
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
     if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);

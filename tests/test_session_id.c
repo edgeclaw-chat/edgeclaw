@@ -62,7 +62,7 @@ static struct edc_config *make_config(const char *workspace)
 
 static void make_workspace(char *buf, size_t cap)
 {
-    snprintf(buf, cap, "/tmp/edc_sid_test_XXXXXX");
+        test_tmp_template(buf, cap, "edc_sid_test");
     if (!mkdtemp(buf))
     {
         perror("mkdtemp");

@@ -47,6 +47,31 @@ static int test_mkdir(const char *path)
 }
 #endif
 
+/* A mkdtemp() template under the platform's scratch directory.
+ *
+ * Use this instead of writing "/tmp/name_XXXXXX" literally. Bazel sets TEST_TMPDIR to a
+ * per-test directory it owns and cleans up, on every platform; "/tmp" is a POSIX-only
+ * convention that on Windows resolves to "\tmp" on the current drive, which a fresh machine
+ * does not have -- and _mkdir() does not create parents, so mkdtemp() there fails outright
+ * before the test asserts anything. The fallbacks below keep a hand-run binary working. */
+static char *test_tmp_template(char *buf, size_t cap, const char *name)
+{
+    const char *base = getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = getenv("TMPDIR");
+#ifdef _WIN32
+    if (!base || !*base)
+        base = getenv("TEMP");
+    if (!base || !*base)
+        base = ".";
+#else
+    if (!base || !*base)
+        base = "/tmp";
+#endif
+    snprintf(buf, cap, "%s/%s_XXXXXX", base, name);
+    return buf;
+}
+
 /* Create `path` and every missing parent. Already existing is success, like `mkdir -p`. */
 static void test_mkdir_p(const char *path)
 {

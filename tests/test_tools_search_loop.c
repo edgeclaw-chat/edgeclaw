@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <uv.h>
+#include "test_fs_util.h"
 
 /* Stub for _run_loop pulled in by edc_commands (transitively linked). */
 volatile sig_atomic_t _run_loop = 1;
@@ -144,7 +145,10 @@ static void test_grep_through_the_real_tool(void)
 {
     TEST("grep on a real loop: the pool does the walk, the runner gets the result");
 
-    char root[] = "/tmp/edc_search_loop_XXXXXX";
+    char root[1024];
+
+
+    test_tmp_template(root, sizeof(root), "edc_search_loop");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");
@@ -182,7 +186,10 @@ static void test_find_through_the_real_tool(void)
 {
     TEST("find on a real loop: lists files, runs on the pool");
 
-    char root[] = "/tmp/edc_find_loop_XXXXXX";
+    char root[1024];
+
+
+    test_tmp_template(root, sizeof(root), "edc_find_loop");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");
@@ -219,7 +226,10 @@ static void test_grep_bad_input_does_not_crash(void)
 {
     TEST("grep edge cases: invalid regex, missing directory, missing pattern");
 
-    char root[] = "/tmp/edc_search_bad_XXXXXX";
+    char root[1024];
+
+
+    test_tmp_template(root, sizeof(root), "edc_search_bad");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");

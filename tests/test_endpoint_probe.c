@@ -202,7 +202,9 @@ static void test_connection_failed(void)
 
 int main(void)
 {
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_endpoint_probe_%" PRId64,
              (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
     snprintf(g_cert, sizeof(g_cert), "%s/cert.pem", g_dir);

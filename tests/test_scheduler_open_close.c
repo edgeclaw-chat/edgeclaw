@@ -26,6 +26,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -123,7 +124,7 @@ static void free_config(struct edc_config *c)
 
 static void make_tmpdir(char *buf, size_t cap)
 {
-    snprintf(buf, cap, "/tmp/edc_openclose_test_XXXXXX");
+        test_tmp_template(buf, cap, "edc_openclose_test");
     if (!mkdtemp(buf))
     {
         perror("mkdtemp");

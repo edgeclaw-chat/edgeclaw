@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -155,7 +156,9 @@ int main(void)
     T_CHECK(find("design/shell.y") == NULL, "the grammar sources are embedded");
 
     /* (2) edc_init_env releases it to <home>/docs. */
-    char home[] = "/tmp/edc_docs_XXXXXX";
+    char home[1024];
+
+    test_tmp_template(home, sizeof(home), "edc_docs");
     if (!mkdtemp(home))
     {
         fprintf(stderr, "mkdtemp failed\n");

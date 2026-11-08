@@ -170,7 +170,10 @@ int main(void)
     edc_actor_runner_start(runner);
     edc_channel_adapter_init(g_chan, NULL, on_channel_send);
 
-    char ws[] = "/tmp/edc_cmd_session_remove_XXXXXX";
+    char ws[1024];
+
+
+    test_tmp_template(ws, sizeof(ws), "edc_cmd_session_remove");
     if (!mkdtemp(ws))
     {
         perror("mkdtemp");
@@ -215,7 +218,7 @@ int main(void)
         printf("    (only session: %s, count=%zu)\n", only_name ? only_name : "(none)",
                (size_t)sm->session_count);
 
-        char cmd[256];
+        char cmd[1024];
         snprintf(cmd, sizeof(cmd), "/session remove %s", only_name ? only_name : "");
         sds r = say(cfg, sm, sched, cmd);
         printf("    reply: %.120s\n", r ? r : "(none)");

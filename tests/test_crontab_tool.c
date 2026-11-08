@@ -675,7 +675,9 @@ static void test_add_to_file_without_jobs_key(void)
 int main(void)
 {
     edc_test_workspace(); /* disposable store for anything that writes state */
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_crontab_tool_%ld",
              (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
 

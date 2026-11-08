@@ -233,11 +233,55 @@ typedef unsigned short mode_t;
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
 #endif
-#ifndef S_ISLNK
-#define S_ISLNK(m) (0)
+
+/* lstat() and S_ISLNK(): MSVC provides neither, and for a while this header stubbed them as
+ * `stat` and `(0)` -- which did not merely lose information, it silently disarmed a security
+ * check. edc_path_guard_resolve() refuses a path whose LAST component is a symlink
+ * (rules->refuse_symlink) by asking lstat() + S_ISLNK(); with the stub that test could never
+ * be true on Windows, so a symlinked state database -- the exact hole the check exists for in
+ * a model-writable workspace -- was accepted. Implemented instead of stubbed.
+ *
+ * A reparse point is the Win32 spelling of a link, so GetFileAttributesW decides. The
+ * attributes are read on the UTF-8 -> UTF-16 conversion below, because the ANSI variants would
+ * mangle a non-ASCII path and silently answer "not a link". */
+#ifndef S_IFLNK
+#define S_IFLNK 0xA000
 #endif
+#ifndef S_ISLNK
+#define S_ISLNK(m) (((m) & _S_IFMT) == S_IFLNK)
+#endif
+static inline int win32_lstat(const char *path, struct stat *buf)
+{
+    wchar_t *wide;
+    DWORD attrs;
+
+    /* Ask Win32 first: it reports a reparse point -- the Win32 spelling of a link -- and it
+     * also succeeds for a DANGLING link, where stat() fails because there is no target to
+     * report. Only then fall back to stat() for the type/size of a real target. */
+    wide = edc_utf8_to_wide(path);
+    if (wide == NULL)
+        return -1;
+    attrs = GetFileAttributesW(wide);
+    free(wide);
+
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    {
+        /* A link: its own mode, not the target's. st_size is the link's, which is what POSIX
+         * lstat() reports; callers here only test S_ISLNK. */
+        if (stat(path, buf) != 0)
+            memset(buf, 0, sizeof(*buf));
+        buf->st_mode = (buf->st_mode & ~_S_IFMT) | S_IFLNK;
+        return 0;
+    }
+
+    if (stat(path, buf) == 0)
+        return 0;
+    /* stat() failed and it is not a reparse point: nothing usable to report. */
+    memset(buf, 0, sizeof(*buf));
+    return -1;
+}
 #ifndef lstat
-#define lstat(path, buf) stat(path, buf)
+#define lstat(path, buf) win32_lstat(path, buf)
 #endif
 
 #ifndef F_OK

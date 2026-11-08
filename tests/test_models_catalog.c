@@ -51,7 +51,23 @@ static const char *kFixture = "{\n"
 static void test_api_with_fixture(void)
 {
     TEST("API against a fixture: providers / models / model info / matches");
-    const char *path = "/tmp/test_models_catalog_fixture.json";
+    /* Bazel's per-test TEST_TMPDIR, not "/tmp": that is POSIX-only -- on Windows it means
+     * "\tmp" on the current drive, where fopen() fails on a machine with no such directory,
+     * and then every assertion below fails for want of a fixture. */
+    char path_buf[1024];
+    {
+        const char *td = getenv("TEST_TMPDIR");
+        if (!td || !*td)
+            td = getenv("TMPDIR");
+#ifdef _WIN32
+        if (!td || !*td)
+            td = getenv("TEMP");
+#endif
+        if (!td || !*td)
+            td = ".";
+        snprintf(path_buf, sizeof(path_buf), "%s/test_models_catalog_fixture.json", td);
+    }
+    const char *path = path_buf;
     FILE *f = fopen(path, "w");
     if (f)
     {

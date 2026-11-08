@@ -39,7 +39,7 @@ static int test_passed = 0;
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
-static char g_root[64];
+static char g_root[1024];
 
 static void join_path(char *out, size_t cap, const char *rel)
 {
@@ -48,7 +48,7 @@ static void join_path(char *out, size_t cap, const char *rel)
 
 static void mkdir_p(const char *rel)
 {
-    char path[512];
+    char path[1024];
     join_path(path, sizeof(path), rel);
     char *p = path + strlen(g_root);
     for (; *p; p++)
@@ -66,7 +66,7 @@ static void mkdir_p(const char *rel)
 /* Body may contain NULs and CRs, so length is explicit. */
 static void put(const char *rel, const void *body, size_t len)
 {
-    char path[512];
+    char path[1024];
     join_path(path, sizeof(path), rel);
     FILE *f = fopen(path, "wb");
     if (!f)
@@ -198,7 +198,7 @@ static void build_tree(void)
     /* Past the 8 MiB read guard: skipped before it is allocated (and not counted). */
     mkdir_p("bigdir");
     {
-        char path[512];
+        char path[1024];
         join_path(path, sizeof(path), "bigdir/big.txt");
         FILE *f = fopen(path, "wb");
         if (f)
@@ -227,7 +227,10 @@ static void test_golden_output(void)
 {
     TEST("grep: byte-exact result on a one-file tree (path:line:text, relative)");
 
-    char root[] = "/tmp/edc_mat_golden_XXXXXX";
+    char root[1024];
+
+
+    test_tmp_template(root, sizeof(root), "edc_mat_golden");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");
@@ -502,7 +505,12 @@ static void test_errors_and_odd_input(void)
           no_pattern_literal);
     sdsfree(no_pattern_literal);
 
-    sds file_root = edc_search_run_blocking("/tmp", true, "TODO", NULL, false, false, 3);
+    /* TEST_TMPDIR rather than "/tmp": the point is only "a real directory with a cap", and
+     * "/tmp" does not exist on Windows (it means "\tmp" on the current drive). */
+    const char *td = getenv("TEST_TMPDIR");
+    if (!td || !*td)
+        td = ".";
+    sds file_root = edc_search_run_blocking(td, true, "TODO", NULL, false, false, 3);
     CHECK(file_root != NULL, "a root that is not a directory is not a crash");
     sdsfree(file_root);
 
@@ -560,7 +568,7 @@ static void test_glob_table(void)
 struct worker
 {
     int id;
-    char root[64];
+    char root[1024];
     int iterations;
     int failures;
 };
@@ -593,7 +601,11 @@ static void test_concurrent_walks(void)
     for (int i = 0; i < kWorkers; i++)
     {
         memset(&workers[i], 0, sizeof(workers[i]));
-        snprintf(workers[i].root, sizeof(workers[i].root), "/tmp/edc_mat_thr_%d_XXXXXX", i);
+        {
+            char name[64];
+            snprintf(name, sizeof(name), "edc_mat_thr_%d", i);
+            test_tmp_template(workers[i].root, sizeof(workers[i].root), name);
+        }
         if (!mkdtemp(workers[i].root))
         {
             CHECK(false, "mkdtemp %d failed", i);
@@ -602,7 +614,7 @@ static void test_concurrent_walks(void)
         workers[i].id = i;
         workers[i].iterations = 200;
 
-        char path[256];
+        char path[1024];
         snprintf(path, sizeof(path), "%s/mine.txt", workers[i].root);
         FILE *f = fopen(path, "wb");
         if (f)
@@ -612,7 +624,7 @@ static void test_concurrent_walks(void)
         }
         for (int d = 0; d < 5; d++)
         {
-            char sub[256];
+            char sub[1024];
             snprintf(sub, sizeof(sub), "%s/d%d", workers[i].root, d);
             mkdir(sub, 0755);
             snprintf(path, sizeof(path), "%s/d%d/deep.txt", workers[i].root, d);
@@ -662,7 +674,9 @@ static void test_total_output_is_capped(void)
 
     /* Its own tree on purpose: a file loud enough to fill the budget would hide every other
      * fixture's matches from tests that search the whole shared tree. */
-    char root[] = "/tmp/edc_cap_XXXXXX";
+    char root[1024];
+
+    test_tmp_template(root, sizeof(root), "edc_cap");
     if (!mkdtemp(root))
     {
         CHECK(false, "mkdtemp failed");
@@ -721,7 +735,7 @@ static void test_limit_wording_is_honest(void)
 int main(void)
 {
     log_info("test_search_matrix: grep / find semantics");
-    snprintf(g_root, sizeof(g_root), "/tmp/edc_mat_XXXXXX");
+        test_tmp_template(g_root, sizeof(g_root), "edc_mat");
     if (!mkdtemp(g_root))
     {
         log_error("mkdtemp failed");

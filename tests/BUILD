@@ -290,7 +290,7 @@ cc_test(
 
 cc_test(
     name = "test_toolset",
-    srcs = ["test_toolset.c", "test_ws.h"],
+    srcs = ["test_toolset.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/toolbox:toolbox",
         "@cjson//:cjson",
@@ -374,7 +374,7 @@ sh_test(
 
 cc_test(
     name = "test_tools_search_loop",
-    srcs = ["test_tools_search_loop.c", "test_ws.h"],
+    srcs = ["test_tools_search_loop.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -555,7 +555,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_report",
-    srcs = ["test_commands_report.c", "test_ws.h"],
+    srcs = ["test_commands_report.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -594,7 +594,7 @@ cc_test(
 
 cc_test(
     name = "test_commands_session_new",
-    srcs = ["test_commands_session_new.c", "test_ws.h"],
+    srcs = ["test_commands_session_new.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -850,7 +850,7 @@ cc_test(
 
 cc_test(
     name = "test_scheduler_open_close",
-    srcs = ["test_scheduler_open_close.c", "test_ws.h"],
+    srcs = ["test_scheduler_open_close.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -931,7 +931,7 @@ cc_test(
 )
 cc_test(
     name = "test_session_workdir",
-    srcs = ["test_session_workdir.c", "test_ws.h"],
+    srcs = ["test_session_workdir.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/actor:actors",
         "//src/common:common",
@@ -1188,7 +1188,7 @@ cc_test(
 # the system prompt names.
 cc_test(
     name = "test_bundled_docs",
-    srcs = ["test_bundled_docs.c"],
+    srcs = ["test_bundled_docs.c", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -1201,7 +1201,7 @@ cc_test(
 # —— edc_init_env 建/补 config.json + edc_config_load 读回。
 cc_test(
     name = "test_config_window",
-    srcs = ["test_config_window.c"],
+    srcs = ["test_config_window.c", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
@@ -1212,7 +1212,7 @@ cc_test(
 
 cc_test(
     name = "test_config_onboarded",
-    srcs = ["test_config_onboarded.c", "test_ws.h"],
+    srcs = ["test_config_onboarded.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
     ],
@@ -1221,7 +1221,7 @@ cc_test(
 
 cc_test(
     name = "test_config_shell_syntax",
-    srcs = ["test_config_shell_syntax.c", "test_ws.h"],
+    srcs = ["test_config_shell_syntax.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
     ],
@@ -1230,7 +1230,7 @@ cc_test(
 
 cc_test(
     name = "test_sandbox_helper",
-    srcs = ["test_sandbox_helper.c", "test_ws.h"],
+    srcs = ["test_sandbox_helper.c", "test_ws.h", "test_fs_util.h"],
     # Must run OUTSIDE bazel's own sandbox: on macOS the test asserts that the
     # helper applies a Seatbelt profile, and sandbox_init() refuses to nest --
     # under darwin-sandbox it fails with "Operation not permitted" and the helper
@@ -1248,7 +1248,7 @@ cc_test(
 
 cc_test(
     name = "test_config_sandbox_defaults",
-    srcs = ["test_config_sandbox_defaults.c", "test_ws.h"],
+    srcs = ["test_config_sandbox_defaults.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
     ],
@@ -1290,7 +1290,7 @@ cc_test(
 
 cc_test(
     name = "test_connect",
-    srcs = ["test_connect.c", "test_ws.h"],
+    srcs = ["test_connect.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "@libuv",
@@ -1851,7 +1851,7 @@ cc_test(
 
 cc_test(
     name = "test_crontab_service",
-    srcs = ["test_crontab_service.c", "test_ws.h"],
+    srcs = ["test_crontab_service.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",

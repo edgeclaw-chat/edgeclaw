@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <uv.h>
+#include "test_fs_util.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -85,8 +86,13 @@ int main(void)
 {
     edc_file_utils_init(uv_default_loop());
 
-    char home_tmpl[] = "/tmp/edc_helper_home_XXXXXX";
-    char rw_tmpl[] = "/tmp/edc_helper_rw_XXXXXX";
+    char home_tmpl[1024];
+
+
+    test_tmp_template(home_tmpl, sizeof(home_tmpl), "edc_helper_home");
+    char rw_tmpl[1024];
+
+    test_tmp_template(rw_tmpl, sizeof(rw_tmpl), "edc_helper_rw");
     char *home = mkdtemp(home_tmpl);
     char *rw = mkdtemp(rw_tmpl);
     if (!home || !rw)
@@ -230,7 +236,9 @@ int main(void)
          * profile covers allow-lists, deny masks and the metadata mutators
          * together, so "seatbelt=on" is the signal. */
         bool kernel_enforced = false;
-        char dbg_tmpl[] = "/tmp/edc_helper_dbg_XXXXXX";
+        char dbg_tmpl[1024];
+
+        test_tmp_template(dbg_tmpl, sizeof(dbg_tmpl), "edc_helper_dbg");
         int dbg_fd = mkstemp(dbg_tmpl);
         if (dbg_fd >= 0)
             close(dbg_fd);
