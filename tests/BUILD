@@ -10,9 +10,14 @@ MACOS_LINK_OPTS = [
 ]
 
 WINDOWS_LINK_OPTS = [
-    "-lws2_32",
-    "-lbcrypt",
-    "-luserenv",
+    # MSVC spellings; the GNU `-lfoo` forms arrive at link.exe as `/lfoo`, which it reports as
+    # `warning LNK4044: unrecognized option` and then links nothing, so the symbols these
+    # libraries provide fail at the end as LNK2019 instead. advapi32 comes from libuv's use of
+    # the token API (OpenProcessToken in uv__getpwuid_r on Windows).
+    "ws2_32.lib",
+    "bcrypt.lib",
+    "userenv.lib",
+    "advapi32.lib",
 ]
 
 LINK_OPTS = select({
@@ -24,7 +29,11 @@ LINK_OPTS = select({
 
 # C++ 测试（TUI 那 11 个）：这些 target 由 gcc 驱动链接，不会自动带上 C++ 运行库（原
 # 在 src/tui/BUILD 里靠它自己的 LINK_OPTS 补 -lstdc++；搬过来后按同一手法补）。
-TUI_TEST_LINK_OPTS = LINK_OPTS + ["-lstdc++"]
+TUI_TEST_LINK_OPTS = LINK_OPTS + select({
+    # MSVC links its own STL; there is no -lstdc++ to add.
+    "//:windows": [],
+    "//conditions:default": ["-lstdc++"],
+})
 
 # 用 openpty() 的测试。macOS 把它放在 libSystem 里（不需要额外的库，声明在 <util.h>），
 # Linux 放在单独的 libutil 里（声明在 <pty.h>），所以库这一半要按平台给；头文件那一半在

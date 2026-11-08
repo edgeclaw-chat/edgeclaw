@@ -1,13 +1,25 @@
+diff --git a/src/log.h b/src/log.h
+index b1fae24..9d22bee 100644
 --- a/src/log.h
 +++ b/src/log.h
-@@ -44,6 +44,9 @@
+@@ -44,6 +44,20 @@ void log_set_quiet(bool enable);
  int log_add_callback(log_LogFn fn, void *udata, int level);
  int log_add_fp(FILE *fp, int level);
  
--void log_log(int level, const char *file, int line, const char *fmt, ...);
 +/* The printf attribute is what makes every log_*() call site's format string
-+ * compile-checked: without it a %s handed an int64_t is accepted silently. */
++ * compile-checked: without it a %s handed an int64_t is accepted silently.
++ *
++ * Guarded because it is a GCC/Clang extension. Written unconditionally it is a syntax
++ * error under MSVC -- `error C2061: syntax error: identifier '__attribute__'` on this very
++ * line -- and since log.h is included by almost every source file here, that one line used
++ * to fail every file that logs, with an error pointing at log.h rather than at anything the
++ * author of that file had done. MSVC has no equivalent check, so on Windows the format
++ * strings go unchecked: a real loss, but smaller than not building at all. */
++#if defined(__GNUC__) || defined(__clang__)
 +void log_log(int level, const char *file, int line, const char *fmt, ...)
 +    __attribute__((format(printf, 4, 5)));
++#else
+ void log_log(int level, const char *file, int line, const char *fmt, ...);
++#endif
  
  #endif

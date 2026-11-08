@@ -2,6 +2,7 @@
 #include "edc_compat.h"
 #include "edc_toolbox.h"
 #include "sds.h"
+#include "edc_list.h"
 
 struct edc_tool_param *edc_tool_param_new(char *name, struct edc_param_type *type, bool required)
 {
@@ -117,7 +118,7 @@ struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_t
     struct edc_tool_param *l = NULL;
     for (int i = 0; params[i]; ++i)
     {
-        LL_APPEND(l, params[i]);
+        EDC_LL_APPEND(struct edc_tool_param, l, params[i]);
     }
     tool->params = l;
     tool->exec = exec;

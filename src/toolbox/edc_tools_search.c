@@ -20,6 +20,7 @@
  * make `<regex.h>` exist. */
 #ifdef _WIN32
 #include <pcre2posix.h>
+#include "edc_list.h"
 #else
 #include <regex.h>
 #endif
@@ -670,13 +671,13 @@ void edc_tools_search_register(struct edc_toolbox *tb)
 {
     {
         struct edc_tool_param *params = NULL;
-        LL_APPEND(params, edc_tool_param_new("pattern", edc_param_str_type("Search pattern (POSIX ERE, or a literal string when `literal` is set)", NULL), true));
-        LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("Directory to search (default: the session's directory)", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("glob", edc_param_str_type("Only search files matching this glob, e.g. \"*.c\"", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("ignore_case", edc_param_bool_type("Case-insensitive match"), false));
-        LL_APPEND(params, edc_tool_param_new("literal", edc_param_bool_type("Treat the pattern as a literal string, not a regex"), false));
-        LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("Maximum matches to return (default 100)", 1, 100000), false));
-        LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("pattern", edc_param_str_type("Search pattern (POSIX ERE, or a literal string when `literal` is set)", NULL), true));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("Directory to search (default: the session's directory)", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("glob", edc_param_str_type("Only search files matching this glob, e.g. \"*.c\"", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("ignore_case", edc_param_bool_type("Case-insensitive match"), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("literal", edc_param_bool_type("Treat the pattern as a literal string, not a regex"), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("limit", edc_param_int_type("Maximum matches to return (default 100)", 1, 100000), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
 
         struct edc_tool *tool = edc_tool_new("grep",
                                              "Search file contents for a pattern. Returns matching lines as "
@@ -691,10 +692,10 @@ void edc_tools_search_register(struct edc_toolbox *tb)
     }
     {
         struct edc_tool_param *params = NULL;
-        LL_APPEND(params, edc_tool_param_new("glob", edc_param_str_type("File name glob, e.g. \"*.c\" (default: every file)", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("Directory to walk (default: the session's directory)", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("Maximum paths to return (default 100)", 1, 100000), false));
-        LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("glob", edc_param_str_type("File name glob, e.g. \"*.c\" (default: every file)", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("Directory to walk (default: the session's directory)", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("limit", edc_param_int_type("Maximum paths to return (default 100)", 1, 100000), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
 
         struct edc_tool *tool = edc_tool_new("find",
                                              "List files under a directory, optionally filtered by a name glob. "

@@ -11,6 +11,7 @@
 #include "yuarel.h"
 #include <stdlib.h>
 #include <string.h>
+#include "edc_list.h"
 
 #define EDC_CONTAINER_OF(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
 
@@ -357,7 +358,7 @@ int edc_https_client_connect(struct edc_https_client *client, const char *url, e
     work->next = NULL;
 
     uv_mutex_lock(&client->work_mutex);
-    LL_APPEND(client->work_queue, work);
+    EDC_LL_APPEND(struct edc_work, client->work_queue, work);
     uv_mutex_unlock(&client->work_mutex);
 
     uv_async_send(&client->work_async);
@@ -498,12 +499,11 @@ static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t le
     char *data = malloc(len);
     memcpy(data, buf, len);
     uv_buf_t wbuf = uv_buf_init(data, (unsigned int)len);
-    /* utlist's LL_APPEND evaluates its `add` argument twice; passing the
-     * edc_https_buf_list_node() call directly allocates two nodes and leaks
-     * the first one on every send. Hoist the call so the node is created
-     * exactly once. */
-    struct edc_https_buf_list *node = edc_https_buf_list_node(&wbuf, 0);
-    LL_APPEND(req->mbedtls_send_bufs, node);
+    /* EDC_LL_APPEND evaluates `add` exactly once, so the node constructor can be passed
+     * directly -- passing it to utlist's LL_APPEND instead allocated two nodes per call and
+     * leaked one (MSVC's NO_DECLTYPE path evaluates it several times). */
+    EDC_LL_APPEND(struct edc_https_buf_list, req->mbedtls_send_bufs,
+                  edc_https_buf_list_node(&wbuf, 0));
 
     if (!req->writing)
     {
@@ -679,9 +679,8 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
     else
     {
         uv_buf_t actual = uv_buf_init(buf->base, (unsigned int)nread);
-        /* See edc_https_ssl_bio_send(): LL_APPEND double-evaluates `add`. */
-        struct edc_https_buf_list *node = edc_https_buf_list_node(&actual, 0);
-        LL_APPEND(req->mbedtls_recv_bufs, node);
+        EDC_LL_APPEND(struct edc_https_buf_list, req->mbedtls_recv_bufs,
+                      edc_https_buf_list_node(&actual, 0));
         edc_https_client_drive_mbedtls(req);
     }
 }

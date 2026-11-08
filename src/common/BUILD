@@ -45,6 +45,47 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Compile-time attribute shims (EDC_PRINTF). Header-only and dependency-free on purpose:
+# edc_error.h and edc_string_utils.h both use it, and neither should pull in edc_compat.h
+# (which includes <windows.h>) merely to declare a function.
+cc_library(
+    name = "edc_attr",
+    hdrs = ["edc_attr.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+# <unistd.h> / <dirent.h> / <strings.h> for MSVC, on the include path for Windows builds
+# only. Empty everywhere else, so Linux and macOS keep using the system headers and not one
+# source file needs an #ifdef. `includes` is what puts win_compat/ on the compiler's search
+# path; because it propagates, every target that depends on this one (or on something that
+# does) can say `#include <unistd.h>` unchanged.
+cc_library(
+    name = "win_compat",
+    hdrs = select({
+        "@platforms//os:windows": [
+            "win_compat/dirent.h",
+            "win_compat/strings.h",
+            "win_compat/unistd.h",
+        ],
+        "//conditions:default": [],
+    }),
+    includes = select({
+        "@platforms//os:windows": ["win_compat"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# EDC_LL_APPEND / EDC_LL_APPEND2: intrusive list append that takes the node type from the
+# caller, so it needs neither __typeof nor decltype. Header-only, no dependencies.
+cc_library(
+    name = "edc_list",
+    hdrs = ["edc_list.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
 # Header-only platform/GLib compatibility shim. Exposed on its own so very
 # small binaries (e.g. //src/sandbox:sandbox_helper) can use it without pulling
 # the whole //src/common:common library.
@@ -75,6 +116,7 @@ cc_library(
     hdrs = ["edc_error.h"],
     includes = ["."],
     deps = [
+        "//src/common:edc_attr",
         "@sds//:sds",
     ],
     linkstatic = True,
@@ -101,6 +143,7 @@ cc_library(
     deps = [
         "//src/common:edc_compat",
         "//src/common:edc_error",
+        "//src/common:win_compat",
         "@libuv",
         "@sds//:sds",
     ],
@@ -114,6 +157,7 @@ cc_library(
     hdrs = ["edc_string_utils.h"],
     includes = ["."],
     deps = [
+        "//src/common:edc_attr",
         "//src/common:mbedtls_config",
         "//thirdparty/utf8proc",
         "@mbedtls//:mbedtls",
@@ -157,6 +201,7 @@ cc_library(
         "//src/common:edc_file_utils",
         "//src/common:edc_platform",
         "//src/common:mbedtls_config",
+        "//src/common:win_compat",
         "@log.c//:log.c",
         "@mbedtls//:mbedtls",
         "@sds//:sds",
@@ -220,7 +265,9 @@ cc_library(
         "//src/common:edc_datetime_utils",
         "//src/common:edc_error",
         "//src/common:edc_file_utils",
+        "//src/common:edc_list",
         "//src/common:edc_platform",
+        "//src/common:win_compat",
         "//src/common:edc_secret_lib",
         "//src/common:edc_string_utils",
         "//src/common:mbedtls_config",

@@ -22,13 +22,26 @@ typedef uintptr_t   mem_ptr_t;
 
 #define LWIP_ERR_T  int
 
-#define PACK_STRUCT_STRUCT  __attribute__((packed))
+#if defined(_WIN32) && !defined(__GNUC__)
+/* MSVC: lwIP's PACK_STRUCT_* triple is used as
+ *     PACK_STRUCT_BEGIN struct foo {...} PACK_STRUCT_STRUCT; PACK_STRUCT_END
+ * so the packing has to come from the pragma pair, not from the trailing attribute. */
+#define PACK_STRUCT_BEGIN __pragma(pack(push, 1))
+#define PACK_STRUCT_STRUCT
+#define PACK_STRUCT_END __pragma(pack(pop))
+#else
 #define PACK_STRUCT_BEGIN
+#define PACK_STRUCT_STRUCT  __attribute__((packed))
 #define PACK_STRUCT_END
+#endif
 
 #define LWIP_PLATFORM_DIAG(x)
 
+#if defined(_WIN32) && !defined(__GNUC__)
+__declspec(noreturn) void abort(void);
+#else
 void abort(void) __attribute__((__noreturn__));
+#endif
 
 #define LWIP_PLATFORM_ASSERT(x) \
     do { abort(); } while (0)

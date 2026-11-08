@@ -11,8 +11,10 @@
 #include <chrono>
 #include <poll.h>
 #include <termios.h>
-#include <unistd.h>
 #endif
+/* <unistd.h> is NOT guarded: this file uses STDIN_FILENO on every platform, and on Windows
+ * it is satisfied by //src/common:win_compat's stand-in rather than the system header. */
+#include <unistd.h>
 
 namespace edc
 {

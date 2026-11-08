@@ -383,37 +383,26 @@ jobs:
 
       - name: Verify Windows DLL imports
         # The same class of bug the macOS deployment target had: nothing checked what the
-        # shipped .exe actually needs at run time. MinGW links libstdc++-6.dll and
-        # libgcc_s_seh-1.dll dynamically unless -static is passed, and pkg_tar ships only
-        # edgeclaw.exe -- so the archive would abort on a clean machine with "The code
-        # execution cannot proceed because libstdc++-6.dll was not found". This prints the
-        # real import list (so the next reader sees facts, not an inference from BUILD
-        # files) and fails if a C++ runtime DLL is among them.
+        # shipped .exe actually needs at run time. The archive carries edgeclaw.exe and
+        # nothing else, so a runtime DLL import means "The code execution cannot proceed
+        # because <dll> was not found" on a clean machine.
+        #
+        # This used to grep the import list for libstdc++/libgcc/libwinpthread, which is what
+        # a MinGW link adds unless it is static. Windows is built with MSVC now, where those
+        # names can never appear -- the equivalent mistake is a dynamic CRT, which adds
+        # VCRUNTIME140.dll and the api-ms-win-crt-* set. Rather than swap one blacklist for
+        # another (and have this silently pass whichever way the build goes next), the check
+        # lives in tools/check_windows_imports.py and rejects BOTH families. It reads the PE
+        # import directory directly, so it needs no dumpbin/vcvars and no objdump on PATH --
+        # the old `x86_64-w64-mingw32-objdump || objdump` lookup had nothing to match on a
+        # machine that no longer builds with MinGW.
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          set -euo pipefail
           # The archive's own executable: edgeclaw.exe, as extracted by the step above --
           # not a path guessed from the label.
-          BIN="$SHIPPED_BIN"
-          echo "checking: $BIN"
-          # Tools differ per image; both read PE, prefer the one matching the compiler.
-          OBJDUMP=$(command -v x86_64-w64-mingw32-objdump || command -v objdump || true)
-          if [[ -z "$OBJDUMP" ]]; then
-            echo "::error::no objdump available to inspect $BIN"
-            exit 1
-          fi
-          echo "using: $OBJDUMP"
-          IMPORTS=$("$OBJDUMP" -p "$BIN" | awk '/DLL Name/{print $3}')
-          echo "--- DLL imports of $BIN ---"
-          echo "$IMPORTS"
-          echo "---------------------------"
-          BAD=$(echo "$IMPORTS" | grep -iE 'libstdc\+\+|libgcc|libwinpthread' || true)
-          if [[ -n "$BAD" ]]; then
-            echo "::error::exe needs C++ runtime DLLs the tarball does not ship: $BAD"
-            echo "::error::-static is missing from the //:windows LINK_OPTS branch"
-            exit 1
-          fi
-          echo "ok: no C++ runtime DLL imports -- the exe is self-contained"
+          python tools/check_windows_imports.py "$SHIPPED_BIN"
 
       - name: Collect artifact
         # bash on every runner: the packaging names below are bash, and Git for

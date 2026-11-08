@@ -177,6 +177,25 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 }
 #endif /* _WIN32 */
 
+/* mode_t: <sys/types.h> has _mode_t, not mode_t. Shared guard with src/common/win_compat's
+ * <unistd.h>, so a file including both does not define it twice. */
+#if !defined(EDC_MODE_T_DEFINED)
+#define EDC_MODE_T_DEFINED
+typedef unsigned short mode_t;
+#endif
+
+/* POSIX permission bits. MSVC's <sys/stat.h> spells them _S_IREAD/_S_IWRITE/_S_IEXEC and has
+ * no S_IXUSR at all, while code ported from POSIX tests S_IXUSR directly. */
+#ifndef S_IRUSR
+#define S_IRUSR _S_IREAD
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR _S_IWRITE
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR _S_IEXEC
+#endif
+
 /* ---- file mode macros (Windows _S_IF*) ---- */
 #ifndef S_ISDIR
 #define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)

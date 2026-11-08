@@ -10,7 +10,12 @@ LINK_OPTS = select({
     # ws2_32/bcrypt/userenv entries are import libraries for DLLs that are part of
     # Windows, so they stay dynamic (and -static does not turn them into anything else).
     # Verified by the "Verify Windows DLL imports" step in release.yml.
-    "//:windows": ["-static", "-lstdc++", "-lws2_32", "-lbcrypt", "-luserenv"],
+    # MSVC spellings. There is no `-static` for link.exe (a static CRT is a compile-time
+    # choice, selected by the `static_link_msvcrt` feature in .bazelrc) and no `-lstdc++`
+    # (MSVC links its own STL). The GNU `-lfoo` forms reached link.exe as `/lfoo`, which it
+    # does not recognise -- it warns `LNK4044` and links nothing, so the symbols these
+    # libraries provide surfaced as LNK2019 at the end instead.
+    "//:windows": ["ws2_32.lib", "bcrypt.lib", "userenv.lib"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": ["-lstdc++"],
     # `--config=asan`: same reason -- ASAN needs a dynamic runtime.

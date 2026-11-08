@@ -6,7 +6,7 @@ LINK_OPTS = select({
     # `-static` for the same reason as //src/tui: the shipped Windows artifact must not
     # depend on libgcc/libwinpthread DLLs that the tarball does not carry. See the
     # longer note in src/tui/BUILD.
-    "//:windows": ["-static", "-lws2_32", "-lbcrypt", "-luserenv"],
+    "//:windows": ["ws2_32.lib", "bcrypt.lib", "userenv.lib"],
     # `--config=asan` sets //:sanitize: ASAN cannot link statically.
     "//:sanitize": [],
     "//conditions:default": ["-static", "-Wl,--no-gc-sections"],

@@ -1,0 +1,16 @@
+diff --git a/BUILD.bazel b/BUILD.bazel
+index f81a89b..e22db54 100644
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -14,7 +14,10 @@ CJSON_COPTS = select({
+         "-fvisibility=hidden",  # Symbol visibility
+     ],
+     "@rules_cc//cc/compiler:msvc-cl": [
+-        "/Za",  # Equivalent to -std=c89 (enforce ANSI C)
++        # "/Za" dropped by //patches:cjson-no-za.patch: it is the MSVC "disable language
++        # extensions" switch, and cl refuses to combine it with /std:c11
++        # (`error D8016: "/std:c11" and "/Za" are incompatible`), which this project passes
++        # for all C. cJSON builds fine without it.
+         "/W3",  # Moderate warning level (instead of -Wc++-compat)
+         "/GS",  # Stack protection (equivalent to -fstack-protect-strong)
+     ],

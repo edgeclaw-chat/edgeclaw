@@ -9,6 +9,7 @@
 #include "utlist_fix.h"
 #include <stdlib.h>
 #include <string.h>
+#include "edc_list.h"
 
 /* The history slot array's only bulk operation; defined with the history section below
  * and needed by edc_task_group_free() at the top. */
@@ -521,7 +522,7 @@ void edc_task_group_add_task(struct edc_task_group *group, struct edc_task *task
     task->group_id = group->group_id;
     task->group = group;
 
-    LL_APPEND2(group->members, task, group_next);
+    EDC_LL_APPEND2(struct edc_task, group->members, task, group_next);
     group->member_count++;
     edc_task_group_refresh_busy(group, time(NULL));
 }

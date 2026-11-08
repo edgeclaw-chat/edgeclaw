@@ -34,7 +34,7 @@ LINK_OPTS = select({
     "//:macos": ["-lresolv"],
     # `-static` for the same reason as //src/tui: no dependency on libgcc/libwinpthread
     # DLLs that the release does not carry. See the longer note in src/tui/BUILD.
-    "//:windows": ["-static", "-lws2_32", "-lbcrypt", "-luserenv"],
+    "//:windows": ["ws2_32.lib", "bcrypt.lib", "userenv.lib"],
     # `--define=valgrind=1`: dynamic link so valgrind can intercept malloc.
     "//:valgrind": [],
     # `--config=asan` sets //:sanitize: ASAN cannot link statically.

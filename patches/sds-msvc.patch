@@ -1,0 +1,86 @@
+﻿git : warning: in the working copy of 'a/sds.h', LF will be replaced by CRLF the next time Git touches it
+所在位置 行:1 字符: 290
++ ... p\sdspatch; git diff --no-index --no-prefix a/sds.h b/sds.h > D:\gith ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: in the... Git touches it:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+warning: in the working copy of 'b/sds.h', LF will be replaced by CRLF the next time Git touches it
+diff --git a/sds.h b/sds.h
+index adcc12c..a41b7a7 100644
+--- a/sds.h
++++ b/sds.h
+@@ -40,38 +40,68 @@ extern const char *SDS_NOINIT;
+ #include <stdarg.h>
+ #include <stdint.h>
+ 
++/* MSVC provides neither <unistd.h> nor a ssize_t in <sys/types.h>, and the declarations at
++ * the bottom of this header are written in terms of ssize_t. */
++#ifdef _MSC_VER
++typedef __int64 ssize_t;
++#endif
++
+ typedef char *sds;
+ 
++/* `__attribute__((packed))` is GCC/Clang-only. MSVC spells the same layout
++ * `#pragma pack(push, 1)`, and the two agree byte for byte here: sdshdr8/16/32/64 occupy
++ * 3/5/9/17 bytes either way. That equality is what matters -- sds.c's SDS_HDR() walks
++ * backwards from the payload by the size of these headers. */
++#ifdef _MSC_VER
++#define SDS_PACK_BEGIN __pragma(pack(push, 1))
++#define SDS_PACK_END __pragma(pack(pop))
++#define SDS_STRUCT(name) struct name
++#else
++#define SDS_PACK_BEGIN
++#define SDS_PACK_END
++#define SDS_STRUCT(name) struct __attribute__ ((__packed__)) name
++#endif
++
+ /* Note: sdshdr5 is never used, we just access the flags byte directly.
+  * However is here to document the layout of type 5 SDS strings. */
+-struct __attribute__ ((__packed__)) sdshdr5 {
++SDS_PACK_BEGIN
++SDS_STRUCT(sdshdr5) {
+     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
+     char buf[];
+ };
+-struct __attribute__ ((__packed__)) sdshdr8 {
++SDS_PACK_END
++SDS_PACK_BEGIN
++SDS_STRUCT(sdshdr8) {
+     uint8_t len; /* used */
+     uint8_t alloc; /* excluding the header and null terminator */
+     unsigned char flags; /* 3 lsb of type, 5 unused bits */
+     char buf[];
+ };
+-struct __attribute__ ((__packed__)) sdshdr16 {
++SDS_PACK_END
++SDS_PACK_BEGIN
++SDS_STRUCT(sdshdr16) {
+     uint16_t len; /* used */
+     uint16_t alloc; /* excluding the header and null terminator */
+     unsigned char flags; /* 3 lsb of type, 5 unused bits */
+     char buf[];
+ };
+-struct __attribute__ ((__packed__)) sdshdr32 {
++SDS_PACK_END
++SDS_PACK_BEGIN
++SDS_STRUCT(sdshdr32) {
+     uint32_t len; /* used */
+     uint32_t alloc; /* excluding the header and null terminator */
+     unsigned char flags; /* 3 lsb of type, 5 unused bits */
+     char buf[];
+ };
+-struct __attribute__ ((__packed__)) sdshdr64 {
++SDS_PACK_END
++SDS_PACK_BEGIN
++SDS_STRUCT(sdshdr64) {
+     uint64_t len; /* used */
+     uint64_t alloc; /* excluding the header and null terminator */
+     unsigned char flags; /* 3 lsb of type, 5 unused bits */
+     char buf[];
+ };
++SDS_PACK_END
+ 
+ #define SDS_TYPE_5  0
+ #define SDS_TYPE_8  1
