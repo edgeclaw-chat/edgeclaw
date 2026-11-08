@@ -36,6 +36,17 @@
 /* ---- basic types ---- */
 typedef SSIZE_T ssize_t;
 
+/* POSIX puts SSIZE_MAX in <limits.h>; MSVC defines neither that nor ssize_t. Supplying it
+ * here is not cosmetic: lwIP's <lwip/arch.h> chooses between taking ssize_t from <unistd.h>
+ * and `typedef int ssize_t` by testing #ifdef SSIZE_MAX. With the macro missing, lwIP would
+ * typedef it as `int` on top of the SSIZE_T above -- error C2371: redefinition; different
+ * basic types -- in any file that includes this header and then a lwIP one. Every header in
+ * this project that supplies ssize_t therefore has to supply SSIZE_MAX with it
+ * (see src/common/win_compat/unistd.h and the sds patch). */
+#ifndef SSIZE_MAX
+#define SSIZE_MAX (((ssize_t)((((size_t)-1) >> 1))))
+#endif
+
 #ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
 #endif

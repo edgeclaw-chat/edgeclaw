@@ -1,23 +1,24 @@
-﻿git : warning: in the working copy of 'a/sds.h', LF will be replaced by CRLF the next time Git touches it
-所在位置 行:1 字符: 290
-+ ... p\sdspatch; git diff --no-index --no-prefix a/sds.h b/sds.h > D:\gith ...
-+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (warning: in the... Git touches it:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-warning: in the working copy of 'b/sds.h', LF will be replaced by CRLF the next time Git touches it
 diff --git a/sds.h b/sds.h
-index adcc12c..a41b7a7 100644
+index adcc12c..a067487 100644
 --- a/sds.h
 +++ b/sds.h
-@@ -40,38 +40,68 @@ extern const char *SDS_NOINIT;
+@@ -40,38 +40,77 @@ extern const char *SDS_NOINIT;
  #include <stdarg.h>
  #include <stdint.h>
  
 +/* MSVC provides neither <unistd.h> nor a ssize_t in <sys/types.h>, and the declarations at
-+ * the bottom of this header are written in terms of ssize_t. */
++ * the bottom of this header are written in terms of ssize_t.
++ *
++ * SSIZE_MAX has to come with it: lwIP's <lwip/arch.h> does
++ *     #ifdef SSIZE_MAX ... #else typedef int ssize_t; #endif
++ * and MSVC defines no SSIZE_MAX, so including that header after this one made lwIP typedef
++ * ssize_t as `int` on top of the __int64 above -- error C2371: redefinition; different basic
++ * types. Supplying the macro is also simply correct: POSIX puts SSIZE_MAX in <limits.h>. */
 +#ifdef _MSC_VER
++#ifndef SSIZE_MAX
 +typedef __int64 ssize_t;
++#define SSIZE_MAX INT64_MAX
++#endif
 +#endif
 +
  typedef char *sds;

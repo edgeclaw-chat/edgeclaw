@@ -23,6 +23,15 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+/* WIN32_LEAN_AND_MEAN keeps <windows.h> from pulling in <winsock.h>. Without it, any
+ * translation unit that includes <dirent.h> and later <winsock2.h> -- the transport and
+ * lwIP code do -- gets
+ *   error C2011: 'fd_set': 'struct' type redefinition  (and sockaddr, timeval, hostent)
+ * because winsock2.h cannot coexist with the winsock.h that already defined them. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 
 #ifndef DT_UNKNOWN
