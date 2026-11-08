@@ -92,39 +92,13 @@ static sds edc_llm_var_resolver(const char *name, void *user_data)
     if (!sched)
         return NULL;
 
-    /* {{SELF}} -> the task in front (the foreground group's last unfinished member), not
-     * the screen focus: that one may sit on a task that already finished. */
-    if (strcmp(name, "SELF") == 0)
-    {
-        struct edc_task *front = edc_scheduler_current_task(edc_session_manager_get_active(sched->sessions));
-        return front ? sdscatprintf(sdsempty(), "%" PRId64, front->task_id) : NULL;
-    }
-
-    /* {{LAST}} -> the last completed task's output */
-    if (strcmp(name, "LAST") == 0)
-    {
-        struct edc_task *last = NULL;
-        uint32_t highest_seq = 0;
-        struct edc_task_group *g;
-        struct edc_session *active = edc_session_manager_get_active(sched->sessions);
-        DL_FOREACH(active ? active->groups : NULL, g)
-        {
-            struct edc_task *t;
-            LL_FOREACH2(g->members, t, group_next)
-            {
-                if (edc_task_is_completed(t) && t->completion_seq > highest_seq)
-                {
-                    highest_seq = t->completion_seq;
-                    last = t;
-                }
-            }
-        }
-        return (last && last->output) ? sdsdup(last->output) : NULL;
-    }
-
-    /* {{<digits>}} -> look up by task id (global; lazily activates the owning session if needed) */
-    /* `name` comes from the message text, so it is parsed here -- the one place a task id
-     * still arrives as a string. */
+    /* {{<digits>}} -> look up by task id (global; lazily activates the owning session if
+     * needed).
+     *
+     * THE ONLY FORM. `{{LAST}}` and `{{SELF}}` were removed, so every name that arrives
+     * here is a digit string: the scanner copies anything else verbatim and never calls
+     * back. `name` still arrives as text because it is cut out of the user's message --
+     * this is the one place a task id is parsed. */
     struct edc_task *t = edc_session_store_resolve_task(sched->sessions, sched,
                                                         (int64_t)strtoll(name, NULL, 10), NULL);
     return (t && t->output) ? sdsdup(t->output) : NULL;
@@ -271,10 +245,75 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         }
     }
 
+    /* Expand deferred {{…}} references in the current turn's user messages.
+     *
+     * THIS RUNS BEFORE THE JOIN SPLICE BELOW, and the order matters. Expansion is for
+     * what the USER typed; a dependency's output is model-generated DATA and its bytes
+     * are final -- the same rule that makes an @file body synthetic (see the skip
+     * below). Splice first and a literal {{LAST}} inside a subtask's result gets
+     * rewritten, persisted, and sent with no notice to anyone. */
+    if (task->has_deferred_vars && task->active_turn)
+    {
+        for (int mj = 0; mj < task->active_turn->msg_count; mj++)
+        {
+            cJSON *msg = edc_turn_msg_at(task->active_turn, mj);
+            if (!msg)
+                continue;
+            cJSON *role = cJSON_GetObjectItem(msg, "role");
+            if (!(role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0))
+            {
+                cJSON_Delete(msg);
+                continue;
+            }
+            /* Pass expansions (an @file's body) are not what the user typed: their
+             * bytes are final. Expanding {{…}} inside them would rewrite the file. */
+            cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
+            if (synthetic && cJSON_IsTrue(synthetic))
+            {
+                cJSON_Delete(msg);
+                continue;
+            }
+            cJSON *content = cJSON_GetObjectItem(msg, "content");
+            if (content && cJSON_IsString(content))
+            {
+                /* The error out-param matters: a KNOWN form that cannot be resolved
+                 * ({{LAST}} with no completed task carrying output) makes the whole call
+                 * fail, so this message -- including the references in it that COULD have
+                 * resolved -- is left exactly as typed. That degradation is the right one
+                 * (nothing is lost and the model sees what the user wrote), but it used to
+                 * be silent: the user asked for a substitution, did not get one, and had no
+                 * way to find out. Say so instead. */
+                sds var_err = NULL;
+                sds expanded =
+                    edc_shell_expand_vars(content->valuestring, edc_llm_var_resolver, sched, &var_err);
+                if (expanded)
+                {
+                    cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
+                    sdsfree(expanded);
+                    /* Persist the expansion: the row is the truth, not this copy. */
+                    edc_msg_append(task->active_turn->task_id, task->active_turn->turn_ord, mj, msg,
+                                   edc_token_estimate_msg(msg));
+                }
+                else
+                {
+                    log_warn("task %s: task reference %s left as typed (the message is unchanged)",
+                             edc_id_str(task->task_id), var_err ? var_err : "(unresolvable)");
+                }
+                if (var_err)
+                    sdsfree(var_err);
+            }
+            cJSON_Delete(msg);
+        }
+        task->has_deferred_vars = 0;
+    }
+
     /* Inject completed dependency tasks' output (user inputs + final output).
      *
      * Collected in dependency order and spliced ONCE: prepending per edge would reverse the
-     * order of the blocks (each one would land in front of the previous). */
+     * order of the blocks (each one would land in front of the previous).
+     *
+     * AFTER the {{…}} expansion above, deliberately: this text is DATA, so it must not be
+     * in scope when references are substituted. */
     sds material = NULL;
     struct edc_task_dep *dep;
     LL_FOREACH(task->deps, dep)
@@ -335,45 +374,6 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
         sdsfree(material);
     }
 
-    /* expand deferred {{…}} references in the current turn's user messages */
-    if (task->has_deferred_vars && task->active_turn)
-    {
-        for (int mj = 0; mj < task->active_turn->msg_count; mj++)
-        {
-            cJSON *msg = edc_turn_msg_at(task->active_turn, mj);
-            if (!msg)
-                continue;
-            cJSON *role = cJSON_GetObjectItem(msg, "role");
-            if (!(role && cJSON_IsString(role) && strcmp(role->valuestring, "user") == 0))
-            {
-                cJSON_Delete(msg);
-                continue;
-            }
-            /* Pass expansions (an @file's body) are not what the user typed: their
-             * bytes are final. Expanding {{…}} inside them would rewrite the file. */
-            cJSON *synthetic = cJSON_GetObjectItem(msg, "synthetic");
-            if (synthetic && cJSON_IsTrue(synthetic))
-            {
-                cJSON_Delete(msg);
-                continue;
-            }
-            cJSON *content = cJSON_GetObjectItem(msg, "content");
-            if (content && cJSON_IsString(content))
-            {
-                sds expanded = edc_shell_expand_vars(content->valuestring, edc_llm_var_resolver, sched, NULL);
-                if (expanded)
-                {
-                    cJSON_ReplaceItemInObject(msg, "content", cJSON_CreateString(expanded));
-                    sdsfree(expanded);
-                    /* Persist the expansion: the row is the truth, not this copy. */
-                    edc_msg_append(task->active_turn->task_id, task->active_turn->turn_ord, mj, msg,
-                                   edc_token_estimate_msg(msg));
-                }
-            }
-            cJSON_Delete(msg);
-        }
-        task->has_deferred_vars = 0;
-    }
 
     /* Which tool definitions this request carries:
      *   - a normal task            -> the full set;

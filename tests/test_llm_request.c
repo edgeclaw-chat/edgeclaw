@@ -67,6 +67,22 @@ static int test_passed = 0;
  *  ══════════════════════════════════════════════════════════════ */
 
 static struct edc_llm_actor_req *g_req; /* 测试自己持有 (摘下来, 不让 actor 释放) */
+/* Log capture: these tests assert on what the operator is told, not just on the text. */
+static char g_log[4096];
+static void capture_log(log_Event *ev)
+{
+    const size_t used = strlen(g_log);
+    if (used + 1 >= sizeof(g_log))
+        return;
+    vsnprintf(g_log + used, sizeof(g_log) - used, ev->fmt, ev->ap);
+    const size_t n = strlen(g_log);
+    if (n + 1 < sizeof(g_log))
+    {
+        g_log[n] = '\n';
+        g_log[n + 1] = '\0';
+    }
+}
+
 static int g_req_msgs;
 
 static void llm_capture_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -554,6 +570,199 @@ static void test_join_injection_shape(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Case 2e: JOIN 材料是 **数据**, 不是语法
+ *  ══════════════════════════════════════════════════════════════
+ *
+ * 这条用例曾经是一个缺陷的现场记录: 请求组装先 prepend_to_task_input() 把依赖输出
+ * 拼进目标的第一条 user 消息, 之后才跑 {{…}} 展开 —— 材料落在扫描作用域里, 于是
+ * 源输出中字面的引用被替换掉并写回数据库, 谁都没被告知。
+ *
+ * 修法: 展开移到拼接之前 (两者互不依赖)。展开只该看见用户敲的字。
+ * 这条用例现在断言**期望值**: 目标自己的引用展开, 材料里的原样保留。
+ * 谁再把顺序调回去, 这里立刻红。(已做变异验证。)
+ *
+ * 引用形式是**显式 id** (`{{<id>}}` 是唯一形式, `{{LAST}}`/`{{SELF}}` 已删除),
+ * 所以两个 id 都在运行时取自真实任务, 不写死。
+ */
+static void test_join_material_is_data_not_syntax(void)
+{
+    TEST("JOIN 材料里的 {{…}} 是数据, 不被展开");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-data"));
+    (void)leader;
+
+    /* 被引用的任务: 它的 output 里不带大括号, 所以"替换了几次"可以直接数出来。 */
+    struct edc_task *marker =
+        edc_task_new(edc_test_id("mk"), edc_test_session_id("sess-data"), edc_test_id("mk"), "marker",
+                     edc_channel_adapter);
+    marker->output = sdsnew("MARKER-OUTPUT");
+    edc_task_await_exec(marker);
+    edc_task_mark_completed(marker);
+    marker->completion_seq = 2;
+    edc_task_group_add_task(g, marker);
+
+    const long long mid = (long long)marker->task_id;
+    char src_out[256];
+    char dst_in[256];
+    snprintf(src_out, sizeof(src_out), "SOURCE-OUTPUT: the template says {{%lld}} literally", mid);
+    snprintf(dst_in, sizeof(dst_in), "DEST-OWN {{%lld}} end", mid);
+
+    /* 源任务: output 里带**字面的**引用 —— 模型生成的内容, 不是我们的语法。 */
+    struct edc_task *src =
+        edc_task_new(edc_test_id("src-data"), edc_test_session_id("sess-data"), edc_test_id("src-data"),
+                     "quote the template", edc_channel_adapter);
+    src->output = sdsnew(src_out);
+    edc_task_await_exec(src);
+    edc_task_mark_completed(src);
+    src->completion_seq = 3;
+    edc_task_group_add_task(g, src);
+
+    /* 目标: 自己的输入**确实**带引用 (has_deferred_vars 为真), 同时 JOIN 源。 */
+    struct edc_task *dst =
+        edc_task_new(edc_test_id("dst-data"), edc_test_session_id("sess-data"), edc_test_id("dst-data"),
+                     "summarize", edc_channel_adapter);
+    edc_task_add_dependency(dst, src, TASK_DEP_JOIN);
+    attach_turn(&h, dst, dst_in);
+    dst->has_deferred_vars = 1; /* 解释器给带引用的输入置这一位 */
+
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, dst, NULL, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "请求发出去了");
+
+    const char *input = NULL;
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
+    {
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
+        input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+
+    CHECK(input && strstr(input, "[subtask quote the template result]:") != NULL, "材料带标记进了输入");
+    CHECK(input && strstr(input, "DEST-OWN MARKER-OUTPUT end") != NULL, "目标自己的引用照常展开");
+
+    /* 材料里那个: **原样保留**。它是源输出的一部分, 不是用户写的引用。 */
+    CHECK(input && strstr(input, src_out) != NULL, "材料里的引用原样保留 (依赖输出是数据)");
+
+    int replaced = 0;
+    if (input)
+        for (const char *q = input; (q = strstr(q, "MARKER-OUTPUT")) != NULL; q += 1)
+            replaced++;
+    CHECK(replaced == 1, "只有目标自己那一处被替换 (材料里那份没被动)");
+
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  Cases 2f/2g: 解析不了的引用 —— 降级方式, 以及它是否静默
+ *  ══════════════════════════════════════════════════════════════
+ *
+ * edc_shell_expand_vars 的契约: 认识的形式但查不到值 → 返回 NULL + 文案。
+ * 本调用点原来传的 out_error 是 NULL, `if (expanded)` 于是直接跳过:
+ *   (a) 整条消息一个字都不展开 —— 同一句里那些**本来能解析**的引用也一起失效;
+ *   (b) 没有任何日志, 用户和操作者都无从知道引用没生效。
+ *
+ * 2f 钉住 (a)+(b), 2g 单独证明"一处坏引用会拖垮整条", 因为 2f 只有一个引用,
+ * 分不出"是这个失败"还是"别的失败"。
+ *
+ * 怎么造出一个"认识但查不到"的引用: 写一个不存在的 task id。collect 阶段会拒绝
+ * 建任务, 但请求组装这一层直接扫文本, 所以它到这里仍然是一个合法拼写、非法目标。
+ */
+
+/* 2f: 唯一一个引用解析不了 → 原文送出, 坏引用留着(没被吞成空), 且**记日志**。 */
+static void test_unresolvable_reference_is_literal_and_logged(void)
+{
+    TEST("解析不了的 {{<id>}}: 原文送出 + 留日志 (不再静默)");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    make_group(&h, &leader, edc_test_session_id("sess-bad"));
+    (void)leader;
+
+    struct edc_task *dst =
+        edc_task_new(edc_test_id("dst-bad"), edc_test_session_id("sess-bad"), edc_test_id("dst-bad"),
+                     "summarize", edc_channel_adapter);
+    /* 999999 这个 id 不存在 ⇒ resolver 返回 NULL ⇒ 整条调用失败。 */
+    attach_turn(&h, dst, "A {{999999}} C");
+    dst->has_deferred_vars = 1;
+
+    g_log[0] = '\0';
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, dst, NULL, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "请求发出去了");
+
+    const char *input = NULL;
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
+    {
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
+        input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+
+    CHECK(input && strcmp(input, "A {{999999}} C") == 0, "原文送出 (信息不丢)");
+    CHECK(input && strstr(input, "{{999999}}") != NULL, "坏引用没有被吞成空串");
+
+    /* 不再静默: 有一条日志点名了它。 */
+    CHECK(strstr(g_log, "{{999999}}") != NULL, "日志里点名了失败的引用");
+
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* 2g: 同一句里一个能解析、一个不能 → 能解析的那个**也不展开**(整条放弃)。 */
+static void test_one_bad_reference_disables_the_good_ones(void)
+{
+    TEST("一处坏引用拖垮整条: 能解析的那个也没展开 (现状)");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-mixed"));
+    (void)g;
+
+    /* 这个 id **能**解析 (leader 有 output), 用来和下面那个不存在的 id 对照。 */
+    leader->output = sdsnew("LEADER-OUTPUT");
+    leader->completion_seq = 1;
+    const long long lid = (long long)leader->task_id;
+    char mixed[256];
+    snprintf(mixed, sizeof(mixed), "A {{%lld}} B {{999999}} C", lid);
+
+    struct edc_task *dst =
+        edc_task_new(edc_test_id("dst-mixed"), edc_test_session_id("sess-mixed"), edc_test_id("dst-mixed"),
+                     "summarize", edc_channel_adapter);
+    /* {{999999}}: 该 id 不存在 ⇒ 解析不了。它和能解析的那个在同一句里。 */
+    attach_turn(&h, dst, mixed);
+    dst->has_deferred_vars = 1;
+
+    g_log[0] = '\0';
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, dst, NULL, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "请求发出去了");
+
+    const char *input = NULL;
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
+    {
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
+        input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+
+    /* 现状: 整条放弃 ⇒ 能解析的那个也没换。这条断言就是"全有或全无"的证据。 */
+    CHECK(input && strcmp(input, mixed) == 0, "整条原样 (可解析的那个也没换)");
+    CHECK(input && strstr(input, "LEADER-OUTPUT") == NULL, "可解析的引用没有生效 —— 被坏引用拖累");
+
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Case 3: 摘要调用的 max_tokens (P2b-2)
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -904,6 +1113,11 @@ int main(void)
     test_session_memory_notice_reaches_the_tail();
     test_head_blocks_cache_layout();
     test_join_injection_shape();
+    log_add_callback(capture_log, NULL, LOG_TRACE);
+
+    test_join_material_is_data_not_syntax();
+    test_unresolvable_reference_is_literal_and_logged();
+    test_one_bad_reference_disables_the_good_ones();
     test_curate_request_is_self_contained();
     test_summary_request_is_capped();
     test_fold_request_is_self_contained();

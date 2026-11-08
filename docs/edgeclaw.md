@@ -135,12 +135,37 @@ and `'` single-quotes. Recognized token types:
 | `>>`  | TOK_REDIR_APPEND | Redirect stdout to file (append) |
 | `2>`  | TOK_REDIR_ERR | Redirect stderr to file |
 
-Quoting and escapes follow Python's string rules: `"..."` and `'...'` both process
-escapes (`\n`, `\t`, `\\`, `\"`, `\'`, `\xHH`; an unknown escape keeps its backslash),
-and `"""` / `'''` are the multi-line forms. The two quote kinds differ in exactly one
-thing: a `{{…}}` reference is expanded inside double quotes and never inside single ones
-(single quotes are the way to write a literal `{{`). A quoted region must open the
-argument for anything after the closing quote to be read as options.
+Quoting is bash's, not Python's, and there are five forms. They differ in exactly three
+things: which escapes are processed, whether `{{…}}` expands, and what the body may hold.
+
+| Form | Escapes | `{{…}}` | The body may hold |
+|------|---------|---------|-------------------|
+| `"…"` | only `\"` and `\\`; any other `\x` keeps its backslash (`\n` is two characters) | expanded | a bare `'`, not a `"` |
+| `'…'` | none: raw bytes, a `\` is a `\` | never — this is how you write a literal `{{` | a bare `"`, not a `'` |
+| `"""…"""` | as `"…"` | expanded | a bare `"`, at most two in a row (see below) |
+| `'''…'''` | ANSI-C: `\n` `\t` `\r` `\\` `\'` `\"` `\xHH` `\uHHHH` | never | a bare `'`, at most two in a row; `"` too |
+| `$'…'` | as `'''…'''` | never | anything up to the next `'` |
+
+**`"""…"""` and `'''…'''` are the shapes pasted text wants**, and the reason is the
+delimiter: it is a **run of three**, so a run of one or two quotes of the same kind inside
+the body is ordinary text — `"""(he said "hi")"""` is one string, not a string cut short by
+the bare `"`. Three in a row close the block (a fourth then starts the next token, opening
+a new quote), and a real newline inside is just a newline.
+
+`'''…'''` is **not** a raw form: it is `$'…'` spelled as a block, so `'''a\nb'''` holds a
+newline where `'a\nb'` holds a backslash and an `n` — and, like `$'…'`, it never expands
+`{{…}}`.
+
+A quoted region must open the argument for anything after the closing quote to be read as
+options.
+
+**One pair of quotes is one operand.** Adjacent quoted regions are NOT joined the way C
+joins adjacent string literals: `"a""b"` and `"a"'b'` are two words, so the second one
+lands where only options may go and the line is refused. There is nothing to express by
+joining — this layer has no `$VAR` and no globbing — and merging is what used to let a
+single word carry one "interpolate `{{…}}`" flag for a region that was written as
+literal. Put the whole text inside one pair: `"ab"`, or `"see {{3}} and {{ 4 }}"` when
+one part is a reference and the other only looks like one.
 
 ### Parser & AST
 
@@ -207,11 +232,15 @@ analyze src/ for bugs                 a MESSAGE -- one task, nothing parsed
 "alpha|beta"                          shell -- one task whose text contains the |
 ```
 
-The quoting rule is Python's: `"…"` interpolates `{{…}}`, `'…'` is raw (no interpolation),
-`"""…"""` / `'''…'''` span lines (the shape pasted text wants), escapes as in Python. Inside
-a shell line it is mandatory: an unquoted operand is refused, never guessed (`"a" | b` comes
-back with the fix). There is no escape character for the sigils — quoting is what makes a
-`+` or `@` literal: `"+1 issue"` is a `+` and a task in the *current* group.
+The quoting rule is bash's, and it has five forms — `"…"`, `'…'`, `"""…"""`, `'''…'''`
+and `$'…'` — differing in which escapes they process, whether `{{…}}` expands, and what the
+body may hold (the table is under **Shell Architecture** above). The two triple forms span
+lines and let the body hold bare quotes, which is why they are what pasted text wants;
+`'''…'''` is `$'…'` block-shaped, so it *does* process escapes while staying raw of `{{…}}`.
+Inside a shell line quoting is mandatory: an unquoted operand is refused, never guessed
+(`"a" | b` comes back with the fix). There is no escape character for the sigils —
+quoting is what makes a `+` or `@` literal: `"+1 issue"` is a `+` and a task in the
+*current* group.
 
 The redirect target is a string too — `"say hi" > "out.md"` — and its quotes are
 delimiters, not part of the path, which is what makes a filename with a space in it
@@ -538,7 +567,7 @@ Two dependency types:
 
 | Type | Syntax | Behavior | On source CANCELLED |
 |------|--------|----------|---------------------|
-| **JOIN** | `\|` (pipe) | Source output is injected into destination's LLM context | Destination is CANCELLED too — the dependency can never be satisfied |
+| **JOIN** | `\|` (pipe), `-d`/`--with` | Source output is spliced in front of the destination's input, once per edge (see Context Sharing) | Destination is CANCELLED too — the dependency can never be satisfied |
 | **SEQUENCE** | `;` | Destination waits for source, but no output injection | Destination is cancelled too, and the edge stays: resuming it returns it to the wait |
 
 ### Fork
@@ -745,8 +774,20 @@ the active task. Other tasks complete silently; use
 Task references (`{{…}}`) undergo a **two-phase expansion** — and they belong to the
 **shell** syntax: only a line the shell parses recognizes one.
 
+**A reference names its task: `{{<id>}}` and nothing else.** There is no `{{LAST}}`
+(which completed task?) and no `{{SELF}}` (which task is "me"?). Both used to exist and
+both were removed: `{{LAST}}` tied a task's input to completion order, and `{{SELF}}`
+could only ever name the task created *before* it, because collection runs before the
+spawn. Writing the id is unambiguous, and it is the whole vocabulary.
+
+And because every string in a shell line is quoted, **the reference has to be written
+inside the quotes**. `"based on {{3}}, plan the fix"` is a reference; `based on
+{{3}}, plan the fix` is a plain message — the shell layer never sees it, nothing is
+collected, nothing is substituted, and the braces reach the model as typed. A line that
+starts with `"`, `'` or `+` is the only place a reference can live.
+
 A task created by a **command** takes its input as text, never as a shell line. So a
-`{{LAST}}` written in a `/task new` description, or in a `/prompt` or `/skill` body, is
+`{{3}}` written in a `/task new` description, or in a `/prompt` or `/skill` body, is
 plain text: no reference is recognized, no dependency is made, nothing is substituted. The
 same goes for the operators there — a command's input is not split into a `|` chain, and
 `>` does not redirect.
@@ -756,7 +797,7 @@ The sigil is `{{…}}`, **not** `$`: `$` belongs to the prompt template layer (`
 
 ### Phase 1: Collect (at task creation)
 
-When a task is created with `{{<id>}}`, `{{LAST}}`, or `{{SELF}}`:
+When a task is created with `{{<id>}}`:
 1. The reference is **validated** — the target task must exist
 2. An **implicit dependency** is added from this task to the referenced task
 3. The `{{…}}` text is **preserved** as-is in the task input
@@ -772,13 +813,13 @@ its dependency, then substitutes the output before LLM processing begins.
 
 | Reference | Meaning |
 |----------|---------|
-| `{{LAST}}` | Output of the most recently completed task (by completion order) |
-| `{{<id>}}` | Output of task with id N (e.g. `{{1}}`, `{{2}}`) |
-| `{{SELF}}` | Task ID of the current foreground active task |
+| `{{<id>}}` | Output of the task with that id (e.g. `{{1}}`, `{{12}}`) |
 
-**Only these forms count.** Any other `{{…}}` — a pasted `{{ var }}`, a stray brace — is
-copied verbatim, and so is every `$`: nothing becomes a reference unless it is spelled
-exactly, which is what makes pasted text (Jinja, shell snippets, `$HOME`, `$5.00`) safe.
+**Only that form counts.** Any other `{{…}}` — `{{LAST}}`, `{{SELF}}`, a pasted
+`{{ var }}`, a stray brace — is copied verbatim, and so is every `$`: nothing becomes a
+reference unless it is spelled exactly, which is what makes pasted text (Jinja, shell
+snippets, `$HOME`, `$5.00`) safe. A removed spelling is not an error, it is text: that is
+the same rule, applied to the names this version no longer knows.
 
 Expansion happens **after** pipe splitting and redirect stripping, so any `|`
 or `>` in expanded output is treated as literal text.
@@ -789,15 +830,36 @@ or `>` in expanded output is treated as literal text.
 
 **Within a group**: all tasks share the full conversation history automatically.
 
-**Cross-task** (a `-d` dependency, or a `|` pipe): the source task's user inputs
-and final output are injected into the destination's LLM context as a
-Q&A-style system message:
+**Cross-task** (a `-d` dependency, or a `|` pipe -- both add the same JOIN edge):
+when the source task completes, its **final output** is spliced in front of the
+destination's own input. Not a separate message: the destination's first `user`
+message is rewritten to carry the material, then a blank line, then the text the
+task was created with. Only the output travels -- the source's prompt and earlier
+turns stay in its own task:
 
 ```
-[子任务 analyze (id=task-1)]:
-Q: help me analyze src/ for bugs
-A: Found 3 performance issues ...
+[subtask analyze result]:
+Found 3 performance issues ...
 ```
+
+Two consequences worth knowing:
+
+- **One splice per edge.** The edge is marked `injected` as soon as the material
+  is in the input, so a task that runs again (resumed, or its next turn) does not
+  receive the same output twice -- it is already in its history. Several edges are
+  spliced in dependency order, as one block separated by blank lines.
+- **A memory source contributes its output alone.** When the source is a memory
+  sink (`/group fold`, curation), its "input" is the whole corpus (a fold prompt
+  can be hundreds of KB) and says what its output says, so only the output is
+  spliced -- with no `[subtask ...]` header.
+
+A source that ends any other way injects nothing: a `CANCELLED` source cancels its
+JOIN destination (the edge can never be satisfied), and a SEQUENCE (`;`) edge only
+waits -- it never carries output.
+
+(The one abnormal shape: a task whose active turn holds no `user` message -- nothing
+to splice into -- gets the material as an extra `system` message instead, so the
+output is never silently dropped.)
 
 ---
 
@@ -818,8 +880,8 @@ Welcome! How can I help?
 > "scan src/ for vulnerabilities" | "create a fix plan" | "apply the patches"
 ```
 
-Creates three tasks in sequence. Task 2 receives task 1's output injected into
-its LLM context. Task 3 receives task 2's output. All share the same group.
+Creates three tasks in sequence. Task 2 gets task 1's output spliced in front of
+its own input; task 3 gets task 2's. All share the same group.
 (Each operand is quoted because the line uses an operator — see Shell-like
 Syntax above.)
 
@@ -855,10 +917,10 @@ cap, and visible in the text the model reads.
 ### Variable Expansion
 
 ```
-> find performance bottlenecks in src/
+> find performance bottlenecks in src/                  # a message, not shell syntax
 ... task 1 completes with output ...
-> based on {{LAST}}, create an optimization plan
-... task 2 waits for task 1, then sees its output ...
+> "based on {{1}}, create an optimization plan"        # shell: quoted, so it expands
+... task 3 waits for task 1, then sees its output ...
 ```
 
 ### Local Shell
@@ -875,7 +937,7 @@ cap, and visible in the text the model reads.
 
 Three separate conversations, wired together by hand. `--new-group` is what makes them
 separate -- without it they would all land in the group in front. `-d <id>` makes a task
-wait for another, and the source's inputs + output are injected into it.
+wait for another, and the source's output is spliced into its input.
 
 ```
 > /task new "security audit" --new-group
@@ -885,7 +947,7 @@ wait for another, and the source's inputs + output are injected into it.
 ... task-1, task-2 complete → task-3 runs with both reports injected ...
 
 > /task fg task-3
-→ LLM sees task-1 and task-2 Q&A injected as context
+→ task-3's input carries both reports, each under a [subtask ... result] header
 ```
 
 ### Fork

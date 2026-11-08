@@ -135,6 +135,17 @@ static int task_count(struct edc_session *sess)
     return n;
 }
 
+/* How many JOIN edges a task has -- i.e. how many references were actually collected.
+ * `deps_total` also counts the BARRIER that orders a group, so it cannot answer this. */
+static int task_join_deps(const struct edc_task *t)
+{
+    int n = 0;
+    for (const struct edc_task_dep *d = t ? t->deps : NULL; d; d = d->next)
+        if (d->type == TASK_DEP_JOIN)
+            n++;
+    return n;
+}
+
 /* A task that is waiting keeps out of send_llm, so lookup by description is the only
  * way to reach it. */
 static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
@@ -606,6 +617,42 @@ int main(void)
         CHECK(t && t->deps_total >= 1, "with a dependency taken from the reference");
         CHECK(t && t->has_deferred_vars, "and registered for the deferred expansion");
         CHECK(task_count(sess) == b4v + 1, "exactly one task");
+    }
+
+    TEST("{{LAST}} / {{SELF}} are not references any more: plain text, no dependency");
+    {
+        /* 只认显式 id。删掉的两个拼写走"不认识"那条路：原样保留、不建依赖、不报错。
+         * 这是粘贴安全的同一规则（`{{ var }}` 也一样），不是特例。 */
+        const int b4r = task_count(sess);
+        drive_command(cfg, sm, sched, "\"see {{LAST}} and {{SELF}}\"");
+        struct edc_task *t = find_task_by_desc(sess, "see {{LAST}} and {{SELF}}");
+        CHECK(t != NULL, "the task was created");
+        CHECK(t && task_join_deps(t) == 0, "and it took NO dependency (neither spelling is a reference)");
+        CHECK(t && !t->has_deferred_vars, "nor registered a deferred expansion");
+        CHECK(task_count(sess) == b4r + 1, "exactly one task");
+
+        /* 对照：一个真实的 id 仍然建依赖（否则上一条可能只是因为什么都不工作）。 */
+        const int b4i = task_count(sess);
+        drive_command(cfg, sm, sched, "\"see {{1}}\"");
+        struct edc_task *u = find_task_by_desc(sess, "see {{1}}");
+        CHECK(u != NULL, "the id form still creates a task");
+        CHECK(u && task_join_deps(u) >= 1, "and it DOES take a JOIN dependency");
+        CHECK(task_count(sess) == b4i + 1, "exactly one task");
+    }
+
+    TEST("BUG 4: a literal apostrophe in the stage does not swallow its `{{…}}`");
+    {
+        /* The apostrophe is CONTENT -- the user typed the outer double quotes -- so the
+         * `{{1}}` must still be collected. Count JOIN edges, not `deps_total`: a task in a
+         * group also gets a BARRIER from the task in front of it, so `deps_total >= 1` is
+         * true even when no reference was collected (that weak assertion passed on the
+         * buggy code). */
+        const int b4p = task_count(sess);
+        drive_command(cfg, sm, sched, "\"it's {{1}}\"");
+        struct edc_task *t = find_task_by_desc(sess, "it's {{1}}");
+        CHECK(t != NULL, "the task was created");
+        CHECK(t && task_join_deps(t) == 1, "and the reference still took its JOIN dependency");
+        CHECK(task_count(sess) == b4p + 1, "exactly one task");
     }
 
     TEST("an unterminated quote at the START of a shell line is an error, not a message");

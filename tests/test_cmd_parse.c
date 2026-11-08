@@ -137,7 +137,7 @@ static void test_triple_body_holds_quotes_with_flags(void)
  *   `$$`    → 当前前台任务的 task_id（`edc_llm_request.c` 的 resolver；**不是**转义）
  *   `$N`    → 任务 N 的输出
  *   `$LAST` → 最后一个已完成任务的输出
- *   `$NAME` → 任务 NAME 的输出
+ *   `{{<id>}}` → 任务 id 的输出（唯一形式；`{{LAST}}`/`{{SELF}}` 已删除）
  * 引用不到是**硬错误**（返回 NULL + 文案），且 `collect_var_refs` 那时已经把依赖建好了。
  *
  * 为什么钉它：`/prompt` 的模板层也用 `$`（`$1` = 第一个参数），两层的 `$N` 直接撞车。
@@ -145,12 +145,8 @@ static void test_triple_body_holds_quotes_with_flags(void)
 static sds shape_resolver(const char *name, void *user_data)
 {
     (void)user_data;
-    if (strcmp(name, "SELF") == 0)
-        return sdsnew("<front>");
     if (strcmp(name, "1") == 0)
         return sdsnew("<task1-output>");
-    if (strcmp(name, "LAST") == 0)
-        return sdsnew("<last-output>");
     return NULL;
 }
 
@@ -162,25 +158,53 @@ static void test_expand_task_refs(void)
     sds err = NULL;
     sds out = NULL;
 
-    out = edc_shell_expand_vars("{{SELF}}", shape_resolver, NULL, &err);
-    T_STREQ(out, "<front>", "expand: `{{SELF}}` = 当前前台任务（原 `$$`）");
-    sdsfree(out);
-
     out = edc_shell_expand_vars("{{1}}", shape_resolver, NULL, &err);
     T_STREQ(out, "<task1-output>", "expand: `{{1}}` = 任务 1 的输出");
     sdsfree(out);
 
+    /* `{{LAST}}` / `{{SELF}}` 已删除：只认 `{{<id>}}`。它们不再是"认识但查不到"
+     * （那会返回 NULL + 文案），而是**根本不认识** —— 走原样保留那条路，
+     * 与 `{{ var }}` / `{{ 1 }}` 同类。这是粘贴安全的同一规则。 */
     out = edc_shell_expand_vars("{{LAST}}", shape_resolver, NULL, &err);
-    T_STREQ(out, "<last-output>", "expand: `{{LAST}}` = 最后完成的任务输出");
+    T_STREQ(out, "{{LAST}}", "expand: `{{LAST}}` 不是引用 → 原样（不是错误）");
+    T_CHECK(err == NULL, "expand: 也不报错");
     sdsfree(out);
 
-    /* 单引号是**唯一**能挡住这一层的东西；双引号挡不住。 */
+    out = edc_shell_expand_vars("{{SELF}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "{{SELF}}", "expand: `{{SELF}}` 不是引用 → 原样");
+    T_CHECK(err == NULL, "expand: 也不报错");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("{{ 1 }}", shape_resolver, NULL, &err);
+    T_STREQ(out, "{{ 1 }}", "expand: 空格不合法 → 原样（拼写必须精确）");
+    sdsfree(out);
+
+    /* 引号在这一层**没有状态**：文本已经被 edc_cmd_unquote 剥掉了定界符，残留的引号
+     * 是用户打的字。所以 "'{{1}}'" 里的 {{1}} 照样展开（用户输入 "'{{1}}'" 时正是
+     * 这个形状）。"字面"由上一层决定：词法器的 interp 标志对 '…' 为假，那种区域根本
+     * 不会进这个函数。见 edc_shell_vars.c 顶部的说明。 */
     out = edc_shell_expand_vars("'{{1}}'", shape_resolver, NULL, &err);
-    T_STREQ(out, "'{{1}}'", "expand: 单引号内不展开——但**引号本身留在文本里**");
+    T_STREQ(out, "'<task1-output>'", "expand: 文本里的撇号不是引号区 → 引用照样展开");
     sdsfree(out);
 
     out = edc_shell_expand_vars("\"{{1}}\"", shape_resolver, NULL, &err);
     T_STREQ(out, "\"<task1-output>\"", "expand: 双引号挡不住 `{{…}}`");
+    sdsfree(out);
+
+    /* ── BUG 4（2026-11-08 钉住）：用户字面输入的撇号不该挡住引用 ─────────
+     * 走到这一层时文本**已经去过引号**（词法器存的是 edc_cmd_unquote 的值），
+     * 所以残留的 ' 是用户当内容打的撇号，不是"单引号区"的开始。展开器再按引号
+     * 区判断一次，`"it's {{1}}"` 的引用就被当字面量留下了。 */
+    out = edc_shell_expand_vars("it's {{1}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "it's <task1-output>", "expand: 字面撇号不挡住引用");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("it's 'x' and {{1}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "it's 'x' and <task1-output>", "expand: 一对字面撇号也不挡住");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("say \"hi\" then {{1}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "say \"hi\" then <task1-output>", "expand: 字面双引号不挡住（对照：今天就对）");
     sdsfree(out);
 
     /* 不是我们的形式 → **原样保留**，不报错。这是粘贴安全的那条规则：`{{ var }}`
@@ -206,7 +230,7 @@ static void test_expand_task_refs(void)
 static sds stub_resolver(const char *name, void *user_data)
 {
     (void)user_data;
-    if (strcmp(name, "LAST") == 0)
+    if (strcmp(name, "1") == 0)
         return sdsnew("value");
     return NULL; /* 其余一律"查不到" */
 }
@@ -227,7 +251,7 @@ static void test_expand_vars_out_error(void)
     sdsfree(err);
 
     err = (sds)(uintptr_t)1;
-    out = edc_shell_expand_vars("{{LAST}}", stub_resolver, NULL, &err);
+    out = edc_shell_expand_vars("{{1}}", stub_resolver, NULL, &err);
     T_STREQ(out, "value", "expand: 查得到 → 展开");
     T_CHECK(err == NULL, "expand: 成功路径 *out_error 仍被置 NULL");
     sdsfree(out);

@@ -163,6 +163,11 @@ The first character decides what the line is. That is the whole rule.
 > /task list                                # everything that is running, queued or done
 ```
 
+Quoting is bash's: `"…"` interpolates `{{…}}`, `'…'` is raw, and the two **triple forms**
+`"""…"""` / `'''…'''` span lines with bare quotes allowed inside — the shape pasted text
+wants (`'''…'''` is `$'…'` block-shaped, so `\n` there is a newline). Full table:
+`docs/edgeclaw.md`, *Shell Architecture*.
+
 While you type a `/` command the completion list sits just above the input: ↑/↓ to move,
 Tab to complete, Esc to dismiss. Enter sends what you typed — unless you have walked the
 list with ↑/↓, in which case Enter picks the highlighted row instead (Tab does the same,

@@ -57,6 +57,12 @@ typedef struct
      * "引号在这里算语法"是模式的事（SHELL_OFF 下引号只定边界，不构成 shell 行）。
      * 分类器两者都要，所以模式随 token 流一起给它 —— 而不是让分类器再去猜或再收一个参数。 */
     edc_lex_mode mode;
+    /* 两个引号区紧挨着（中间没有任何字节）：`"a""b"`、`"a"'b'`。词法器**不合并**它们
+     * （一个引号区就是一个操作数），所以这里记下第二个引号区的起始字节，由调用方给出
+     * 一句人话。不用 token 形态表达：在 shell 行上它表现为"第二段落进选项区"，在命令行
+     * 上表现为"多了一个 argv"，两种症状都不是根因。 */
+    bool adjacent_quoted;
+    size_t adjacent_at;
 } edc_lex_out;
 
 /* 词法器永不失败：不认识的字节也只是一段 word。返回 false 只在内存分配失败时。 */
@@ -88,5 +94,15 @@ static inline sds edc_lex_unterminated_quote(const char *text, size_t col)
                         col, snippet, cut ? "…" : "");
 }
 
+
+/* 两个引号区紧挨着：一句话说明这是"一个操作数只能有一对引号"，而不是别的。 */
+static inline sds edc_lex_adjacent_quotes(size_t col)
+{
+    return sdscatprintf(sdsempty(),
+                        "Two quoted strings sit next to each other at column %zu. A word carries ONE pair of "
+                        "quotes, and adjacent quoted strings are not joined — put the whole text inside one "
+                        "pair instead: `\"part one part two\"`.",
+                        col);
+}
 
 #endif

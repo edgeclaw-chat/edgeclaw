@@ -93,6 +93,36 @@ int main(void)
     /* Quoted and unquoted text are NOT concatenated (decided 2026-10-22): a word is one
      * TEXT or one STRING, so `a"b c"d` is three words. C concatenates adjacent literals;
      * we do not, and this is the test that says so. */
+    /* Quoted regions do not join EITHER (2026-11-08). An adjacent pair used to merge
+     * into one TK_STRING carrying a single has_var_refs, so `"x {{1}}"'y {{2}}'` expanded
+     * the literal half too and collected a dependency for it. One quoted region = one
+     * operand is the rule that removes the whole class. */
+    TEST("`\"a\"\"b\"` : two quoted regions are TWO words (they never join)");
+    CHECK(edc_lex("\"a\"\"b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 3, "two words + EOF");
+    CHECK(o.toks[0].kind == TK_STRING && o.toks[0].value && strcmp(o.toks[0].value, "a") == 0, "first `a`");
+    CHECK(o.toks[1].kind == TK_STRING && o.toks[1].value && strcmp(o.toks[1].value, "b") == 0, "second `b`");
+    CHECK(o.adjacent_quoted, "and the stream records that they sat next to each other");
+    edc_lex_out_free(&o);
+
+    TEST("`\"a\"'b'` : mixed kinds -- also two words, same record");
+    CHECK(edc_lex("\"a\"'b'", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 3, "two words + EOF");
+    CHECK(o.adjacent_quoted, "adjacent_quoted is set for the mixed pair too");
+    edc_lex_out_free(&o);
+
+    TEST("`a\"b\"` : a bare fragment followed by a quote is NOT recorded as adjacent");
+    CHECK(edc_lex("a\"b\"", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(!o.adjacent_quoted, "different kinds already split; nothing to complain about");
+    edc_lex_out_free(&o);
+
+    TEST("`a$b` : bare chunks still join (the `$` split must not break a word)");
+    CHECK(edc_lex("a$b", EDC_LEX_SHELL_ON, &o), "lex ok");
+    CHECK(o.count == 2, "ONE word + EOF");
+    CHECK(o.toks[0].kind == TK_TEXT && o.toks[0].value && strcmp(o.toks[0].value, "a$b") == 0,
+          "the value is still `a$b`");
+    edc_lex_out_free(&o);
+
     TEST("`a\"b c\"d` : quoted and bare text do NOT mix -- three words");
     CHECK(edc_lex("a\"b c\"d", EDC_LEX_SHELL_ON, &o), "lex ok");
     CHECK(o.count == 4, "three words + EOF");

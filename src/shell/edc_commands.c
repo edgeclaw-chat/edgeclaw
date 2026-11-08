@@ -220,14 +220,18 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "text contains the `|`.)"},
     {"Input", "`\"desc\"`", "SHELL syntax: a string literal (one task, but the line IS parsed)",
      "A shell line is recognised by its FIRST character. Every string in shell syntax is quoted, so such a "
-     "line always begins with `\"` or `'` -- or with its sigil, `+` / `!`. The quoting rule is Python's: "
-     "`\"…\"` interpolates `{{…}}`, `'…'` is raw, `\"\"\"…\"\"\"` / `'''…'''` span lines (the shape pasted "
-     "text wants), escapes as in Python. Inside a shell line EVERY string is quoted: an unquoted operand is "
+     "line always begins with `\"` or `'` -- or with its sigil, `+` / `!`. Quoting is bash's, in five "
+     "forms: `\"…\"` expands `{{…}}` and honours only `\\\"` and `\\\\`; `'…'` is raw -- no escapes at "
+     "all, and no `{{…}}`; `\"\"\"…\"\"\"` is `\"…\"` whose body may hold bare quotes; `'''…'''` and "
+     "`$'…'` are ANSI-C, where `\\n` is a newline. The two triple forms span lines and are what pasted "
+     "text wants. Inside a shell line EVERY string is quoted: an unquoted operand is "
      "refused, never guessed (`\"a\" | b` is ambiguous, `\"a\" | \"b\"` is a pipe, `\"a|b\"` is one task). "
      "Everything AFTER the closing quote must be an option (`-d <id>`, `-g <group>`, `2>` …; there is no "
      "`--bg` in shell syntax -- backgrounding is the trailing `&`): "
      "anything else is refused rather than silently dropped, so `\"hello\" and more` is an error, not a "
-     "task called `hello`."},
+     "task called `hello`. Finally, one pair of quotes is one operand: adjacent quoted regions are NOT "
+     "joined (`\"a\"\"b\"` and `\"a\"'b'` are two words, so the second lands in that option area) -- "
+     "put the whole text in one pair and write `\"ab\"`."},
     {"Input", "`+\"desc\"`", "a new group + task",
      "`+` is a SHELL sigil, so the line is a shell line and its description is a quoted string -- like "
      "every string in shell syntax. The description goes into a NEW group; a plain message joins the "
@@ -254,7 +258,12 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "quotes are delimiters, not part of the path -- which is also what makes a filename with a space in "
      "it expressible (`> \"my file.txt\"`). `if x > 5` is therefore prose, not a redirect, and is refused "
      "rather than silently writing a file called `5`."},
-    {"Input", "`{{LAST}}` `{{1}}` `{{SELF}}`", "task references (last output / a task's output / current task id)", NULL},
+    {"Input", "`{{1}}` `{{12}}`", "a task reference: that task's output, by id -- the only form",
+     "`{{<id>}}` is substituted with the output of the task that has that id, and makes this task "
+     "wait for it. It must be written INSIDE the quotes of a shell line: `\"based on {{3}}, plan\"`. "
+     "There is no `{{LAST}}` and no `{{SELF}}` -- a reference names its task explicitly, so it never "
+     "depends on completion order or on which task happens to be in front. Any other `{{...}}` "
+     "(a pasted `{{ var }}`, a stray brace) is copied verbatim, which is what makes pasted text safe."},
 
     {"General", "/help [<command>]", "show this list, or the detail of one command",
      "`/help` alone lists every command; `/help <command>` (a prefix, or a subcommand name "
@@ -3834,6 +3843,21 @@ static bool edc_commands_parse_line(struct edc_reply_to to, const char *content,
     for (int i = 0; i < toks.count; i++)
         if (toks.toks[i].kind == TK_BAD_QUOTED)
             bad_quote = true;
+
+    /* Two quoted strings with nothing between them. On a shell line the grammar catches
+     * this as "something after the closing quote"; a command line has no such place, so
+     * without this check `/task new "a""b"` would quietly become TWO arguments -- a
+     * different command call, not a syntax error. */
+    if (toks.adjacent_quoted && !bad_quote)
+    {
+        sds why = edc_lex_adjacent_quotes(toks.adjacent_at + 1);
+        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", why);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(why);
+        edc_lex_out_free(&toks);
+        return false;
+    }
 
     sds err = NULL;
     const bool ok = edc_parse(&toks, ast, &err);

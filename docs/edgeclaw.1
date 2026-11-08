@@ -105,9 +105,20 @@ SHELL SYNTAX (on by default)
        task, verbatim, nothing parsed out of it.  That is ordinary
        conversation, and it needs no quoting.  A line that begins with a quote
        -- or with the sigil + -- is SHELL syntax, and inside it EVERY
-       string is quoted: the rule is Python's ("..." interpolates {{...}},
-       '...' is raw, """...""" / '''...''' span lines, the shape pasted text
-       wants; escapes as in Python).  An unquoted operand in a shell line is
+       string is quoted.  Quoting is bash's, in five forms:
+           "..."      only \" and \\ are escapes (\n is two characters);
+                      {{...}} expands
+           '...'      raw bytes, a \ is a \; no {{...}} expansion (this is
+                      how you write a literal {{)
+           """..."""  as "...", and the body may hold a bare "; spans lines
+           '''...'''  $'...' written as a block: \n \t \xHH \uHHHH apply, no
+                      {{...}} expansion; the body may hold a bare '; spans
+                      lines
+           $'...'     ANSI-C escapes; no {{...}} expansion
+       The two triple forms are what pasted text wants: the delimiter is a
+       RUN of three, so one or two quotes of the same kind inside the body
+       are literal ("""(he said "hi")""" is one string), and a run of three
+       closes the block.  An unquoted operand in a shell line is
        refused, never guessed -- so the second line above is two tasks (the
        second fed the first's output) and the third is one task whose text
        contains the |.  Quoting is also how you write a description that
@@ -119,6 +130,9 @@ SHELL SYNTAX (on by default)
        -g <group>, 2>, ...).  Anything else there is refused rather than
        dropped, so "hello" and more is an error -- not a task quietly
        called hello.
+       One pair of quotes is one operand: adjacent quoted regions are NOT
+       joined, so "a""b" and "a"'b' are two words and the second one sits
+       in that option area.  Put the whole text in one pair instead.
 
      Implicit task creation
            > analyze src/ for bugs
@@ -144,8 +158,8 @@ SHELL SYNTAX (on by default)
      Pipe (|)
            > "scan for issues" | "fix them" | "write a report"
        Each segment is a separate task, labeled [pipe].  Each task depends
-       on the previous one.  When a task completes, its output is injected
-       into the next task's LLM context.
+       on the previous one.  When a task completes, its output is spliced
+       in front of the next task's input.
 
      Sequential (;)
            > "review src/" ; "run tests" ; "summarize" > report.md
@@ -164,23 +178,27 @@ SHELL SYNTAX (on by default)
        After the task completes, its output is written to the specified file.
        >> appends.  2> writes stderr.  Quoted > is not interpreted.
 
-     Task references ({{...}})
-           > {{LAST}}
-           > {{1}}
-           > {{SELF}}
+     Task references ({{N}})
+           > "based on {{3}}, plan the fix"
+           > "{{1}} summarize that"
+       A reference NAMES ITS TASK: {{<id>}} is the only form.  There is no
+       {{LAST}} (which completed task?) and no {{SELF}} (which task is
+       "me"?); both were removed, because {{LAST}} tied the input to
+       completion order and {{SELF}} could only name the task created
+       before it -- collection runs before the spawn.
        These belong to the SHELL syntax: only a line the shell parses
-       recognizes one.  A task created by a COMMAND takes its input as
-       text -- a {{LAST}} in a /task new description or in a /prompt or
-       /skill body is plain text, and neither is such an input split into
-       a | chain or redirected by >.
-       {{LAST}}  — output of the most recently completed task (by
-                   completion order, not creation order).
-       {{N}}     — output of task with id N (e.g. {{1}}, {{2}}).
-       {{SELF}}  — task id of the current foreground active task.
+       recognizes one -- so the reference must be written INSIDE the
+       quotes.  A bare line is a message: "based on {{3}}" typed without
+       the quotes is text, and the braces reach the model as typed.  A
+       task created by a COMMAND takes its input as text -- a {{3}} in a
+       /task new description or in a /prompt or /skill body is plain
+       text, and neither is such an input split into a | chain nor
+       redirected by >.
        The sigil is {{...}} and NOT $: $ belongs to the prompt template
        layer ($1 .. $N, $ARGUMENTS).
-       Only those three forms count; any other {{...}} (a pasted
-       {{ var }}, a stray brace) is copied verbatim, and so is every $.
+       Only {{<id>}} counts; any other {{...}} ({{LAST}}, {{SELF}}, a
+       pasted {{ var }}, a stray brace) is copied verbatim -- not an
+       error, just text -- and so is every $.
        Expansion happens after pipe splitting and redirect stripping, so
        any | or > in the expanded output is treated as literal text.
 
@@ -267,10 +285,11 @@ SHELL ARCHITECTURE
        cycle detection runs on every new dependency to prevent deadlocks.
 
        Dependency types:
-         JOIN      (|)       Source output injected into destination's LLM
-                             context.  A source that fails / is cancelled /
-                             interrupted cascades: the destination is
-                             cancelled too, and the edge stays.
+         JOIN      (|)       Source output spliced in front of the
+                             destination's input, once per edge.  A source
+                             that fails / is cancelled / interrupted
+                             cascades: the destination is cancelled too, and
+                             the edge stays.
          SEQUENCE  (;)       Same waiting and cascade, but NO output
                              injection.
 
@@ -372,7 +391,7 @@ SHELL-LIKE JOB CONTROL
      bg %n            /task bg [id]
      kill %n          /task stop <id>
      !cmd             !git status  (local shell: a task of its own)
-     {{LAST}} {{1}} {{SELF}}   task references
+     {{1}} {{12}}              task references (output of that task id)
 
 COMMAND REFERENCE
      General
@@ -393,7 +412,7 @@ COMMAND REFERENCE
                                    placeholder takes the remaining args; a body
                                    with no placeholder gets the args appended.
                                    A body is a DOCUMENT, not a command line:
-                                   | ; & > in it do nothing, and a {{LAST}}
+                                   | ; & > in it do nothing, and a {{3}}
                                    reference in it stays text.  So a template
                                    means the same thing whatever the reader's
                                    /shell setting is.
@@ -530,13 +549,23 @@ OUTPUT
 CONTEXT SHARING
      Within a group: all tasks share the full conversation history.
 
-     Cross-task (a -d dependency, or a | pipe): source task's user
-     inputs and final output are injected into the destination's LLM context
-     as a Q&A-style system message:
+     Cross-task (a -d dependency, or a | pipe -- the same JOIN edge):
+     when the source completes, its final output is spliced in FRONT of the
+     destination's own input; it is not sent as a separate message.  The
+     destination's first user message is rewritten to carry the material,
+     then a blank line, then the text the task was created with:
 
-         [子任务 analyze (id=1)]:
-         Q: help me analyze src/ for bugs
-         A: Found 3 performance issues ...
+         [subtask analyze result]:
+         Found 3 performance issues ...
+
+     Only the output travels -- the source's prompt and earlier turns stay
+     in its own task.  The edge is marked injected once the material is in,
+     so a task that runs again (resumed, or its next turn) does not get the
+     same output twice; it is already in its history.  Several edges are
+     spliced in dependency order as one block.  A memory source (/group
+     fold, curation) contributes its output alone, with no [subtask ...]
+     header, because its "input" is the whole corpus.  A cancelled source
+     injects nothing and cancels its JOIN destination.
 
 WORKFLOW EXAMPLES
      Simple conversation
@@ -572,8 +601,10 @@ WORKFLOW EXAMPLES
      Variable expansion (two-phase)
            > find performance bottlenecks in src/
            ... task 1 completes ...
-           > based on {{LAST}}, create an optimization plan
-           ... task 2 waits for task 1, then sees its output ...
+           > "based on {{1}}, create an optimization plan"
+           ... task 3 waits for task 1, then sees its output ...
+       (The second line is quoted BECAUSE it carries a reference: a bare
+       line is a message, so its {{1}} would stay literal text.)
 
      Fork (child leads its own group)
            > /task fork task-0 "audit the database schema"

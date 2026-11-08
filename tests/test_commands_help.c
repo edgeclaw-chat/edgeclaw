@@ -106,6 +106,20 @@ int main(void)
     CHECK(has(t, "its description is a quoted string"), "and that the description is a quoted string");
     sdsfree(t);
 
+    TEST("/help's quoting rule is bash's, and names all five forms");
+    {
+        sds q = edc_commands_help_text("\"desc\"");
+        /* The escapes are NOT Python's: `'...'` is raw and `"..."` honours only \" and \\.
+         * Saying "Python's" here was wrong from the day the quoting was rewritten, and /help is
+         * in the binary -- a user reads it, so it is not a docs-only slip. */
+        CHECK(!has(q, "Python's"), "no longer claims Python's rules");
+        CHECK(has(q, "bash's"), "says whose rules they are");
+        CHECK(has(q, "$'"), "mentions the ANSI-C form `$'...'` (the fifth one)");
+        CHECK(has(q, "ANSI-C"), "and names it");
+        CHECK(has(q, "no escapes at all"), "`'...'` is described as raw");
+        sdsfree(q);
+    }
+
     TEST("/help <unknown> says so");
     t = edc_commands_help_text("frobnicate");
     CHECK(has(t, "No command matches"), "no-match message");
