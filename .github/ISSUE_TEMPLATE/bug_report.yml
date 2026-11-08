@@ -32,7 +32,6 @@ body:
         - Linux armv7
         - macOS aarch64
         - Windows x86_64
-        - Android (device agent)
         - Built from source, other
     validations:
       required: true

@@ -424,16 +424,23 @@ jobs:
           VERSION="${{ github.ref_name }}"
           ARTIFACT="${{ matrix.target }}.tar.gz"
           cp "bazel-bin/${ARTIFACT}" .
+          # One name per archive, and it carries the tag. That is what makes an archive
+          # opened a year from now identifiable without running it, and it is what a
+          # pinned download cites.
+          #
+          # A version-less alias was published here until now, so that
+          # `releases/latest/download/<name>` could resolve: that URL looks an asset up
+          # BY NAME in the newest release, and a name containing the version cannot be
+          # written down before the tag exists. It was removed because `latest` never
+          # resolves to a pre-release, so while every tag carries a suffix the alias was
+          # unreachable -- the README pins an explicit tag instead, and builds the
+          # filename from it. The consequence to keep in mind: `releases/latest/download/`
+          # stays unusable after the first stable release too. That is the trade-off that
+          # was chosen; do not reinstate the alias without also deciding what the README
+          # should say, because a second name per archive is otherwise just 25 MB of
+          # duplicates nobody links to.
           if [[ "$VERSION" == v* ]]; then
             mv "${ARTIFACT}" "${{ matrix.target }}_${VERSION}.tar.gz"
-            # Two names per archive, on purpose. The versioned one is the immutable
-            # artifact: it says what it is a year later, and it is what a pinned
-            # download uses. The version-less copy is what makes
-            # releases/latest/download/<name> work at all -- that URL resolves an
-            # asset name, and a name containing the version cannot be written down
-            # before the tag exists. Without it the README's own quick-start command
-            # is a 404 (it was, from the first release until this line existed).
-            cp "${{ matrix.target }}_${VERSION}.tar.gz" "${ARTIFACT}"
           fi
 
       - name: Upload artifact

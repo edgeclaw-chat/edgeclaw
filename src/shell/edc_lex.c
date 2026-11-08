@@ -614,8 +614,8 @@ static void yynoreturn yy_fatal_error ( const char* msg  );
 	(yy_hold_char) = *yy_cp; \
 	*yy_cp = '\0'; \
 	(yy_c_buf_p) = yy_cp;
-#define YY_NUM_RULES 30
-#define YY_END_OF_BUFFER 31
+#define YY_NUM_RULES 31
+#define YY_END_OF_BUFFER 32
 /* This struct is not used in this scanner,
    but its presence is necessary. */
 struct yy_trans_info
@@ -623,17 +623,17 @@ struct yy_trans_info
 	flex_int32_t yy_verify;
 	flex_int32_t yy_nxt;
 	};
-static const flex_int16_t yy_accept[82] =
+static const flex_int16_t yy_accept[83] =
     {   0,
-        0,    0,   31,   28,   27,   27,   29,   28,   29,   29,
-       28,   28,   17,   14,   13,   16,   28,   28,   27,    0,
-        8,    4,    0,    0,    0,   19,   18,    0,    9,    5,
-       28,   28,   28,   11,   12,   15,   26,    4,    0,    0,
-        6,    1,    5,    0,   28,   28,   28,   28,   24,   25,
-       10,    0,    0,    0,    7,    0,   28,   28,   28,   28,
-        0,    0,   20,   28,   28,   28,    3,    2,   28,   28,
-       28,   28,   28,   22,   23,   28,   28,   28,   28,   21,
-        0
+        0,    0,   32,   29,   28,   28,   30,   30,   30,   30,
+       29,   29,   18,   15,   14,   17,   29,   29,   28,    0,
+        9,    4,    0,    0,    0,   20,   19,    0,   10,    5,
+       29,   29,   29,   12,   13,   16,   27,    4,    0,    0,
+        6,    1,    5,    0,   29,   29,   29,   29,   25,   26,
+       11,    0,    8,    0,    0,    7,    0,   29,   29,   29,
+       29,    0,    0,   21,   29,   29,   29,    3,    2,   29,
+       29,   29,   29,   29,   23,   24,   29,   29,   29,   29,
+       22,    0
     } ;
 
 static const YY_CHAR yy_ec[256] =
@@ -670,79 +670,81 @@ static const YY_CHAR yy_ec[256] =
 
 static const YY_CHAR yy_meta[30] =
     {   0,
-        1,    2,    2,    2,    1,    2,    2,    1,    1,    1,
+        1,    2,    2,    2,    2,    2,    2,    1,    1,    1,
         2,    2,    2,    1,    1,    1,    1,    1,    1,    1,
         1,    1,    1,    1,    1,    1,    1,    1,    2
     } ;
 
-static const flex_int16_t yy_base[89] =
+static const flex_int16_t yy_base[90] =
     {   0,
-        0,  131,  139,    0,   28,   30,   31,  131,   34,   35,
-       31,  124,  141,  141,  123,  106,   50,    0,   41,   49,
-       53,  130,  130,   38,   59,  141,  141,   51,   60,  125,
-       50,   68,   71,  118,  141,  141,   78,  141,  126,   73,
-       74,  141,  141,   79,  110,  103,  109,  105,  141,  141,
-      141,  121,  120,   82,   87,  116,   89,   99,   93,   94,
-      115,  111,  141,   90,  108,   95,  141,  141,   90,   94,
-       93,   95,   87,  141,  141,   88,   57,   51,   97,  141,
-      141,   48,  100,  102,   46,  104,  106,  108
+        0,  133,  141,    0,   28,   30,   31,  133,   34,   35,
+       31,  126,  143,  143,  125,  108,   42,    0,   42,   50,
+       52,  132,  132,   55,   57,  143,  143,   61,   63,  127,
+       53,   71,   74,  120,  143,  143,   70,  143,   79,   81,
+       83,  143,  143,   84,  113,  106,  112,  108,  143,  143,
+      143,   89,   91,  124,   93,   94,  120,   96,  103,   97,
+       98,  119,  115,  143,   94,  112,   99,  143,  143,   94,
+       70,  100,  102,   53,  143,  143,   40,   34,   25,  104,
+      143,  143,   46,  107,  109,   40,  111,  113,  115
     } ;
 
-static const flex_int16_t yy_def[89] =
+static const flex_int16_t yy_def[90] =
     {   0,
-       81,    1,   81,   82,   81,   81,   83,   82,   81,   84,
-       82,   82,   81,   81,   81,   81,   85,   82,   81,   83,
-       83,   81,   83,   86,   81,   81,   81,   84,   84,   81,
-       82,   82,   82,   81,   81,   81,   85,   81,   87,   86,
-       86,   81,   81,   88,   82,   82,   82,   82,   81,   81,
-       81,   87,   81,   88,   88,   81,   82,   82,   82,   82,
-       81,   81,   81,   82,   82,   82,   81,   81,   82,   82,
-       82,   82,   82,   81,   81,   82,   82,   82,   82,   81,
-        0,   81,   81,   81,   81,   81,   81,   81
+       82,    1,   82,   83,   82,   82,   84,   82,   82,   85,
+       83,   83,   82,   82,   82,   82,   86,   83,   82,   84,
+       84,   82,   84,   87,   82,   82,   82,   85,   85,   82,
+       83,   83,   83,   82,   82,   82,   86,   82,   88,   87,
+       87,   82,   82,   89,   83,   83,   83,   83,   82,   82,
+       82,   88,   88,   88,   89,   89,   89,   83,   83,   83,
+       83,   88,   89,   82,   83,   83,   83,   82,   82,   83,
+       83,   83,   83,   83,   82,   82,   83,   83,   83,   83,
+       82,    0,   82,   82,   82,   82,   82,   82,   82
     } ;
 
-static const flex_int16_t yy_nxt[171] =
+static const flex_int16_t yy_nxt[173] =
     {   0,
         4,    5,    6,    7,    8,    9,   10,   11,    4,   12,
        13,   14,   15,    4,    4,    4,    4,    4,    4,    4,
         4,    4,    4,    4,    4,    4,    4,    4,   16,   19,
        19,   19,   19,   21,   22,   25,   26,   29,   31,   27,
-       41,   30,   19,   19,   42,   23,   37,   32,   18,   33,
-       18,   21,   38,   29,   18,   21,   38,   43,   18,   18,
-       25,   26,   29,   23,   18,   45,   43,   23,   46,   49,
-       49,   47,   50,   50,   79,   41,   41,   48,   18,   42,
-       42,   55,   18,   78,   55,   56,   18,   18,   56,   55,
-       63,   63,   18,   56,   74,   74,   75,   75,   80,   80,
+       37,   30,   18,   19,   19,   23,   18,   32,   80,   33,
+       18,   18,   21,   38,   21,   38,   18,   41,   25,   26,
+       79,   42,   78,   29,   23,   29,   23,   43,   45,   43,
+       18,   46,   49,   49,   47,   50,   50,   77,   18,   18,
+       48,   53,   54,   41,   18,   41,   56,   42,   74,   42,
+       57,   53,   54,   53,   54,   56,   56,   64,   64,   57,
 
-       20,   20,   28,   28,   40,   40,   52,   52,   54,   54,
-       77,   76,   73,   72,   71,   70,   69,   68,   67,   66,
-       65,   64,   62,   61,   53,   60,   59,   58,   57,   53,
-       51,   44,   81,   39,   36,   35,   34,   24,   81,   17,
-        3,   81,   81,   81,   81,   81,   81,   81,   81,   81,
-       81,   81,   81,   81,   81,   81,   81,   81,   81,   81,
-       81,   81,   81,   81,   81,   81,   81,   81,   81,   81
+       57,   75,   75,   76,   76,   81,   81,   20,   20,   28,
+       28,   40,   40,   52,   52,   55,   55,   73,   72,   71,
+       70,   69,   68,   67,   66,   65,   63,   62,   61,   60,
+       59,   58,   51,   44,   82,   39,   36,   35,   34,   24,
+       82,   17,    3,   82,   82,   82,   82,   82,   82,   82,
+       82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
+       82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
+       82,   82
     } ;
 
-static const flex_int16_t yy_chk[171] =
+static const flex_int16_t yy_chk[173] =
     {   0,
         1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
         1,    1,    1,    1,    1,    1,    1,    1,    1,    1,
         1,    1,    1,    1,    1,    1,    1,    1,    1,    5,
         5,    6,    6,    7,    7,    9,    9,   10,   11,    9,
-       24,   10,   19,   19,   24,    7,   85,   11,   82,   11,
-       17,   20,   20,   28,   17,   21,   21,   28,   17,   17,
-       25,   25,   29,   20,   17,   31,   29,   21,   31,   32,
-       32,   31,   33,   33,   78,   40,   41,   31,   37,   40,
-       41,   44,   37,   77,   54,   44,   37,   37,   54,   55,
-       57,   57,   37,   55,   71,   71,   72,   72,   79,   79,
+       86,   10,   17,   19,   19,    7,   83,   11,   79,   11,
+       17,   17,   20,   20,   21,   21,   17,   24,   25,   25,
+       78,   24,   77,   28,   20,   29,   21,   28,   31,   29,
+       37,   31,   32,   32,   31,   33,   33,   74,   37,   37,
+       31,   39,   39,   40,   37,   41,   44,   40,   71,   41,
+       44,   52,   52,   53,   53,   55,   56,   58,   58,   55,
 
-       83,   83,   84,   84,   86,   86,   87,   87,   88,   88,
-       76,   73,   70,   69,   66,   65,   64,   62,   61,   60,
-       59,   58,   56,   53,   52,   48,   47,   46,   45,   39,
-       34,   30,   23,   22,   16,   15,   12,    8,    3,    2,
-       81,   81,   81,   81,   81,   81,   81,   81,   81,   81,
-       81,   81,   81,   81,   81,   81,   81,   81,   81,   81,
-       81,   81,   81,   81,   81,   81,   81,   81,   81,   81
+       56,   72,   72,   73,   73,   80,   80,   84,   84,   85,
+       85,   87,   87,   88,   88,   89,   89,   70,   67,   66,
+       65,   63,   62,   61,   60,   59,   57,   54,   48,   47,
+       46,   45,   34,   30,   23,   22,   16,   15,   12,    8,
+        3,    2,   82,   82,   82,   82,   82,   82,   82,   82,
+       82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
+       82,   82,   82,   82,   82,   82,   82,   82,   82,   82,
+       82,   82
     } ;
 
 static yy_state_type yy_last_accepting_state;
@@ -826,8 +828,8 @@ static void push_unquoted(const char *raw, size_t len)
     chunk_t *c = push(C_UNQUOTED);
     c->text = sdsnewlen(raw, len);
 }
-#line 830 "edc_lex.c"
-#line 831 "edc_lex.c"
+#line 832 "edc_lex.c"
+#line 833 "edc_lex.c"
 
 #define INITIAL 0
 
@@ -1052,8 +1054,24 @@ YY_DECL
 #line 71 "edc_lex.l"
     /* bash quoting (see edc_cmd_parse.c): '…' is RAW, "…" carries only \" and \\, and the
      * escape-carrying form is ANSI-C -- spelled $'…' the way bash spells it, or '''…'''
-     * (the in-tree alias). """…""" is "…" with a body that may hold a bare ". */
-#line 1057 "edc_lex.c"
+     * (the in-tree alias). """…""" is "…" with a body that may hold a bare ".
+     *
+     * The triple bodies follow PYTHON's rule, not "no quote of this kind may appear":
+     * the delimiter is a RUN of three, so a run of one or two inside the body is
+     * literal text (`"""(he said "hi")"""`). Spelled as `(""{0,2}[^"])*` rather than
+     * `[^"]*` for exactly that reason -- `[^"]*` was the bug: the block then failed to
+     * match as a whole, fell through to the ORDINARY quote rule (longest match picks
+     * `"…"` for the first two quotes), and ONE `"""…"""` reached the
+     * parser as STRING/TEXT/STRING. On a shell line that is `syntax error, unexpected
+     * T_TEXT, expecting end of file`; on `/task new` it silently became three argv
+     * entries instead of one description.
+     *
+     * The rule has to agree with edc_cmd_unquote, the layer that strips the delimiters:
+     * scan_region() with opener=3 closes only on three consecutive quotes, so the lexer
+     * must hand it a body that may hold one or two. A trailing run of four or more still
+     * behaves as it does in Python: the first three close the block and the leftovers
+     * start the next token. */
+#line 1075 "edc_lex.c"
 
 	while ( /*CONSTCOND*/1 )		/* loops until end-of-file is reached */
 		{
@@ -1081,13 +1099,13 @@ yy_match:
 			while ( yy_chk[yy_base[yy_current_state] + yy_c] != yy_current_state )
 				{
 				yy_current_state = (int) yy_def[yy_current_state];
-				if ( yy_current_state >= 82 )
+				if ( yy_current_state >= 83 )
 					yy_c = yy_meta[yy_c];
 				}
 			yy_current_state = yy_nxt[yy_base[yy_current_state] + yy_c];
 			++yy_cp;
 			}
-		while ( yy_base[yy_current_state] != 141 );
+		while ( yy_base[yy_current_state] != 143 );
 
 yy_find_action:
 		yy_act = yy_accept[yy_current_state];
@@ -1114,31 +1132,31 @@ do_action:	/* This label is used only to access EOF actions. */
 case 1:
 /* rule 1 can match eol */
 YY_RULE_SETUP
-#line 74 "edc_lex.l"
+#line 90 "edc_lex.l"
 { push_quoted(yytext, false); }
 	YY_BREAK
 case 2:
 /* rule 2 can match eol */
 YY_RULE_SETUP
-#line 75 "edc_lex.l"
+#line 91 "edc_lex.l"
 { push_quoted(yytext, false); }
 	YY_BREAK
 case 3:
 /* rule 3 can match eol */
 YY_RULE_SETUP
-#line 76 "edc_lex.l"
+#line 92 "edc_lex.l"
 { push_quoted(yytext, true); }
 	YY_BREAK
 case 4:
 /* rule 4 can match eol */
 YY_RULE_SETUP
-#line 77 "edc_lex.l"
+#line 93 "edc_lex.l"
 { push_quoted(yytext, true); }
 	YY_BREAK
 case 5:
 /* rule 5 can match eol */
 YY_RULE_SETUP
-#line 78 "edc_lex.l"
+#line 94 "edc_lex.l"
 { push_quoted(yytext, false); }
 	YY_BREAK
 case 6:
@@ -1148,7 +1166,7 @@ YY_LINENO_REWIND_TO(yy_cp - 1);
 (yy_c_buf_p) = yy_cp -= 1;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 79 "edc_lex.l"
+#line 95 "edc_lex.l"
 { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 7:
@@ -1158,7 +1176,7 @@ YY_LINENO_REWIND_TO(yy_cp - 1);
 (yy_c_buf_p) = yy_cp -= 1;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 80 "edc_lex.l"
+#line 96 "edc_lex.l"
 { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 8:
@@ -1168,7 +1186,7 @@ YY_LINENO_REWIND_TO(yy_cp - 1);
 (yy_c_buf_p) = yy_cp -= 1;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 81 "edc_lex.l"
+#line 97 "edc_lex.l"
 { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 9:
@@ -1178,60 +1196,70 @@ YY_LINENO_REWIND_TO(yy_cp - 1);
 (yy_c_buf_p) = yy_cp -= 1;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 82 "edc_lex.l"
+#line 98 "edc_lex.l"
 { chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 10:
+/* rule 10 can match eol */
+*yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
+YY_LINENO_REWIND_TO(yy_cp - 1);
+(yy_c_buf_p) = yy_cp -= 1;
+YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 83 "edc_lex.l"
-{ chunk_t *c = push(C_REDIR); c->fd = 2; c->append = true; }
+#line 99 "edc_lex.l"
+{ chunk_t *c = push(C_BADQ); c->text = sdsnewlen(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 84 "edc_lex.l"
-{ chunk_t *c = push(C_REDIR); c->fd = 2; }
+#line 100 "edc_lex.l"
+{ chunk_t *c = push(C_REDIR); c->fd = 2; c->append = true; }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 85 "edc_lex.l"
-{ chunk_t *c = push(C_REDIR); c->fd = 1; c->append = true; }
+#line 101 "edc_lex.l"
+{ chunk_t *c = push(C_REDIR); c->fd = 2; }
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 86 "edc_lex.l"
-{ chunk_t *c = push(C_REDIR); c->fd = 1; }
+#line 102 "edc_lex.l"
+{ chunk_t *c = push(C_REDIR); c->fd = 1; c->append = true; }
 	YY_BREAK
 case 14:
 YY_RULE_SETUP
-#line 87 "edc_lex.l"
-{ chunk_t *c = push(C_REDIR); c->fd = 0; }
+#line 103 "edc_lex.l"
+{ chunk_t *c = push(C_REDIR); c->fd = 1; }
 	YY_BREAK
 case 15:
 YY_RULE_SETUP
-#line 88 "edc_lex.l"
-{ push(C_OROR); }
+#line 104 "edc_lex.l"
+{ chunk_t *c = push(C_REDIR); c->fd = 0; }
 	YY_BREAK
 case 16:
 YY_RULE_SETUP
-#line 89 "edc_lex.l"
-{ push(C_PIPE); }
+#line 105 "edc_lex.l"
+{ push(C_OROR); }
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 90 "edc_lex.l"
-{ push(C_SEQ); }
+#line 106 "edc_lex.l"
+{ push(C_PIPE); }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 91 "edc_lex.l"
-{ push(C_ANDAND); }
+#line 107 "edc_lex.l"
+{ push(C_SEQ); }
 	YY_BREAK
 case 19:
+YY_RULE_SETUP
+#line 108 "edc_lex.l"
+{ push(C_ANDAND); }
+	YY_BREAK
+case 20:
 *yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
 (yy_c_buf_p) = yy_cp -= 1;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 92 "edc_lex.l"
+#line 109 "edc_lex.l"
 { push(C_BG); }
 	YY_BREAK
 /* The trailing space is TRAILING CONTEXT (`/`), not part of the match: it must survive as
@@ -1246,55 +1274,45 @@ YY_RULE_SETUP
      * the separator. Values stay separate words -- and that is the whole point of splitting
      * here: `/task new x -d 1` gives ["x","-d","1"] (the handler's getopt sees the option)
      * while `/task new 'x -d 1'` gives ["x -d 1"] (one word, the text). */
-case 20:
-/* rule 20 can match eol */
+case 21:
+/* rule 21 can match eol */
 *yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
 YY_LINENO_REWIND_TO(yy_bp + 4);
 (yy_c_buf_p) = yy_cp = yy_bp + 4;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 105 "edc_lex.l"
+#line 122 "edc_lex.l"
 { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
 	YY_BREAK
-case 21:
-/* rule 21 can match eol */
+case 22:
+/* rule 22 can match eol */
 *yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
 YY_LINENO_REWIND_TO(yy_bp + 11);
 (yy_c_buf_p) = yy_cp = yy_bp + 11;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 106 "edc_lex.l"
+#line 123 "edc_lex.l"
 { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
 	YY_BREAK
-case 22:
-/* rule 22 can match eol */
+case 23:
+/* rule 23 can match eol */
 *yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
 YY_LINENO_REWIND_TO(yy_bp + 6);
 (yy_c_buf_p) = yy_cp = yy_bp + 6;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 107 "edc_lex.l"
+#line 124 "edc_lex.l"
 { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
 	YY_BREAK
-case 23:
-/* rule 23 can match eol */
+case 24:
+/* rule 24 can match eol */
 *yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
 YY_LINENO_REWIND_TO(yy_bp + 7);
 (yy_c_buf_p) = yy_cp = yy_bp + 7;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 108 "edc_lex.l"
+#line 125 "edc_lex.l"
 { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
-	YY_BREAK
-case 24:
-/* rule 24 can match eol */
-*yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
-YY_LINENO_REWIND_TO(yy_bp + 2);
-(yy_c_buf_p) = yy_cp = yy_bp + 2;
-YY_DO_BEFORE_ACTION; /* set up yytext again */
-YY_RULE_SETUP
-#line 109 "edc_lex.l"
-{ chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
 	YY_BREAK
 case 25:
 /* rule 25 can match eol */
@@ -1303,36 +1321,53 @@ YY_LINENO_REWIND_TO(yy_bp + 2);
 (yy_c_buf_p) = yy_cp = yy_bp + 2;
 YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 110 "edc_lex.l"
-{ chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
+#line 126 "edc_lex.l"
+{ chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
 	YY_BREAK
 case 26:
+/* rule 26 can match eol */
+*yy_cp = (yy_hold_char); /* undo effects of setting up yytext */
+YY_LINENO_REWIND_TO(yy_bp + 2);
+(yy_c_buf_p) = yy_cp = yy_bp + 2;
+YY_DO_BEFORE_ACTION; /* set up yytext again */
 YY_RULE_SETUP
-#line 111 "edc_lex.l"
-{ chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
+#line 127 "edc_lex.l"
+{ chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }
 	YY_BREAK
 case 27:
-/* rule 27 can match eol */
 YY_RULE_SETUP
-#line 112 "edc_lex.l"
-{ push(C_WS); }
+#line 128 "edc_lex.l"
+{ chunk_t *c = push(C_SLASH); c->text = sdsnewlen(yytext + 1, (size_t)yyleng - 1); }
 	YY_BREAK
 case 28:
+/* rule 28 can match eol */
 YY_RULE_SETUP
-#line 113 "edc_lex.l"
-{ push_unquoted(yytext, (size_t)yyleng); }
+#line 129 "edc_lex.l"
+{ push(C_WS); }
 	YY_BREAK
+/* `$` is EXCLUDED from the bare-text run so `$'...` can start its own chunk.
+     * Without this, `+$'a b'` split as UNQUOTED`+$` + QUOTED`a b`: the sigil stayed
+     * glued to a `$`, became a plain word, and the whole line fell back to a message --
+     * one of the four quoting forms silently did not work behind `+`. It cannot change
+     * any word's VALUE: a lone `$` becomes its own C_UNQUOTED chunk and the word
+     * builder joins adjacent chunks of the same kind (`a$b` -> `a` / `$` / `b` ->
+     * `a$b`). It only lets the ANSI-C rule match where the form actually starts. */
 case 29:
 YY_RULE_SETUP
-#line 114 "edc_lex.l"
-{ push_unquoted(yytext, 1); }
+#line 137 "edc_lex.l"
+{ push_unquoted(yytext, (size_t)yyleng); }
 	YY_BREAK
 case 30:
 YY_RULE_SETUP
-#line 115 "edc_lex.l"
+#line 138 "edc_lex.l"
+{ push_unquoted(yytext, 1); }
+	YY_BREAK
+case 31:
+YY_RULE_SETUP
+#line 139 "edc_lex.l"
 YY_FATAL_ERROR( "flex scanner jammed" );
 	YY_BREAK
-#line 1336 "edc_lex.c"
+#line 1371 "edc_lex.c"
 case YY_STATE_EOF(INITIAL):
 	yyterminate();
 
@@ -1630,7 +1665,7 @@ static int yy_get_next_buffer (void)
 		while ( yy_chk[yy_base[yy_current_state] + yy_c] != yy_current_state )
 			{
 			yy_current_state = (int) yy_def[yy_current_state];
-			if ( yy_current_state >= 82 )
+			if ( yy_current_state >= 83 )
 				yy_c = yy_meta[yy_c];
 			}
 		yy_current_state = yy_nxt[yy_base[yy_current_state] + yy_c];
@@ -1658,11 +1693,11 @@ static int yy_get_next_buffer (void)
 	while ( yy_chk[yy_base[yy_current_state] + yy_c] != yy_current_state )
 		{
 		yy_current_state = (int) yy_def[yy_current_state];
-		if ( yy_current_state >= 82 )
+		if ( yy_current_state >= 83 )
 			yy_c = yy_meta[yy_c];
 		}
 	yy_current_state = yy_nxt[yy_base[yy_current_state] + yy_c];
-	yy_is_jam = (yy_current_state == 81);
+	yy_is_jam = (yy_current_state == 82);
 
 		return yy_is_jam ? 0 : yy_current_state;
 }
@@ -2340,7 +2375,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 115 "edc_lex.l"
+#line 139 "edc_lex.l"
 
 static void emit(edc_lex_out *out, edc_tok_kind k, sds text, bool refs, int fd, bool append, size_t b, size_t e)
 {
@@ -2375,19 +2410,15 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
         size_t e = strlen(src);
         while (e > (size_t)(p - src) && (src[e - 1] == ' ' || src[e - 1] == '\t'))
             e--;
-        if (mode == EDC_LEX_SHELL_OFF)
-        {
-            /* 开关关闭：`!` 不是 sigil —— 整行就是一段文本，并记一笔给 note */
-            out->saw_disabled = true;
-            out->disabled_at = 0;
-            emit(out, TK_TEXT, sdsnew(src), false, 0, false, 0, strlen(src));
-        }
-        else
-        {
-            emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
-            if (e > (size_t)(p - src))
-                emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
-        }
+        /* `!` is a DISPATCH PREFIX, not shell syntax: the switch never gates it.
+         * docs/input-syntax.zh.md says so in words ("`/` and `!` are not shell
+         * syntax, the switch has no effect on them"), and `/` next door already
+         * behaves that way. Under SHELL_OFF this used to fall through to one TK_TEXT,
+         * so turning the shell syntax off silently took `!cmd` (and `!!`) away too --
+         * a different promise than the one the manual and the UI badge make. */
+        emit(out, TK_SIGIL_LOCALSHELL, NULL, false, 0, false, 0, 1);
+        if (e > (size_t)(p - src))
+            emit(out, TK_RAW_REST, sdsnewlen(p, e - (size_t)(p - src)), false, 0, false, (size_t)(p - src), e);
         emit(out, TK_EOF, NULL, false, 0, false, strlen(src), strlen(src));
         return true;
     }

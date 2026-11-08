@@ -32,6 +32,18 @@ static void set_err(const char *msg)
     if (!g_err && msg)
         g_err = sdsnew(msg);
 }
+
+/* A bare word may not follow the closing quote of a description: that is where the
+ * OPTION area starts (`-d <id>`, `-g <group>`, `> file`). The token is quoted back so
+ * the message points at the word the user has to move inside the quotes or delete.
+ * EDC_AFTER_DESC_HINT carries the wording; edc_parse.h owns it, because the doc and
+ * the message must not drift apart. */
+static void after_desc_err(const edc_tok *t)
+{
+    if (!t || g_err)
+        return;
+    g_err = sdscatprintf(sdsempty(), EDC_AFTER_DESC_HINT, t->value ? t->value : "");
+}
 static struct edc_ast_stage *cur_stage(void) { return g_stage; }
 
 /* ── 建树 ─────────────────────────────────────────────────── */
@@ -197,6 +209,14 @@ rest
     | T_SEQ seq_pipe stage_head rest
     | T_ANDAND strict_pipe stage_head rest
     | T_OROR unless_pipe stage_head rest
+    /* docs §"引号之后只能跟选项": a bare word after the closing quote is an ERROR
+     * (`"hello" and more`), never silently dropped -- the old tokenizer accepted the
+     * description and threw the rest away. bison's default message here is
+     * "unexpected T_TEXT, expecting end of file", which names neither the rule nor the
+     * fix, so these two productions exist only to say it in words (same trick as
+     * stage_head's T_TEXT line above). */
+    | T_TEXT                            { after_desc_err(g_cur); YYERROR; }
+    | T_STRING                          { after_desc_err(g_cur); YYERROR; }
     ;
 /* 中规则动作（独立非终结符）: `&&` 的 strict 位必须落在**它自己**新建的那个 pipeline 上。
  * 写在这条规则的末尾不行 —— rest 会继续建 pipeline, 那时 g_pipe 已经指向最后一个了。 */

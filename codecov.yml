@@ -1,0 +1,43 @@
+# Codecov configuration -- https://docs.codecov.com/docs/codecov-yaml
+#
+# IMPORTANT: Codecov reads this file from the repository's DEFAULT branch
+# (master here). A copy that only lives on `dev` is silently ignored.
+#
+# Uploads come from .github/workflows/tests.yml (codecov-action@v4, OIDC,
+# flags: unittests); PRs are dev -> master, so the PR head SHA has already
+# been uploaded by the time the PR exists.
+
+coverage:
+  precision: 2
+  round: down
+  # Colour scale only -- it does not decide pass/fail.
+  range: "60...90"
+
+  status:
+    # "Set project coverage checks on a pull request": without this block
+    # Codecov only reports patch (git diff) coverage on a PR.
+    project:
+      default:
+        target: auto      # compare against the base commit
+        threshold: 1%     # tolerate 1% jitter (flaky/partially-runnable tests)
+        base: auto
+        # informational: true   # <-- uncomment to make it non-blocking
+    patch:
+      default:
+        target: auto
+        threshold: 0%
+
+  # "Show project coverage changes on the pull request comment":
+  # hide_project_coverage defaults to TRUE (patch only), so it must be
+  # turned off explicitly or `reach` in the layout shows nothing.
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false   # true = only comment when coverage moves
+  require_base: false
+  require_head: true
+  hide_project_coverage: false
+
+# Codecov is a signal, not a gate: don't wait for / fail on other CI checks.
+codecov:
+  require_ci_to_pass: false

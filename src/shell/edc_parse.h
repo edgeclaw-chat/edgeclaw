@@ -22,4 +22,13 @@ bool edc_parse(const edc_lex_out *toks, edc_ast *out, sds *err);
 #define EDC_QUOTED_DESC_HINT                                                                                           \
     "a task description with options must be quoted: write `\"<desc>\" --bg`, or drop the options"
 
+/* docs §"引号之后只能跟选项": once the description's quote closes, the OPTION area
+ * begins (`-d <id>`, `-g <group>`, `> file`). Any other word there is refused -- never
+ * silently dropped -- and this is the ONE wording for it, taking the offending word as
+ * `%s`. It names the fix (`put it inside the quotes`) because that is the only thing
+ * the user can act on; bison's "unexpected T_TEXT, expecting end of file" says neither. */
+#define EDC_AFTER_DESC_HINT                                                                                            \
+    "`%s` cannot follow the closing quote: only options may go there (`-d <task>`, `-g <group>`, `> file`, "           \
+    "`2> file`, or `&` at the end). To keep it in the description, put it inside the quotes: `\"<desc>\"`."
+
 #endif

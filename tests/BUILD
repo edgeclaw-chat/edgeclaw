@@ -43,6 +43,18 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The wall-clock helpers: the millisecond clock that feeds message ids, and the
+# format/parse pair every timestamp in a log line goes through. Asserted as
+# round trips, so the test does not encode the build machine's timezone.
+cc_test(
+    name = "test_datetime",
+    srcs = ["test_datetime.c"],
+    deps = [
+        "//src/common:edc_datetime_utils",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # 活体手测（打真 API + 要 EDGECLAW_MASTER_KEY），不当自动化跑；手动：
 # EDGECLAW_MASTER_KEY=... bazel test //tests:test_llm_actor --test_output=all
 cc_test(
@@ -315,6 +327,16 @@ sh_test(
     data = ["//src/cli:edgeclaw_cli"],
 )
 
+# tools/install.sh: which tag is current, which asset this machine needs, and what a failed
+# download is allowed to leave behind. Offline -- `curl` and `uname` are shimmed -- because
+# the interesting cases are the refusals, and a test that needs GitHub to answer is a test
+# that fails for reasons that have nothing to do with this script.
+sh_test(
+    name = "test_install_sh",
+    srcs = ["test_install_sh.sh"],
+    data = ["//tools:install"],
+)
+
 cc_test(
     name = "test_tools_search_loop",
     srcs = ["test_tools_search_loop.c", "test_ws.h"],
@@ -458,6 +480,22 @@ cc_test(
 cc_test(
     name = "test_shell_switch",
     srcs = ["test_shell_switch.c", "test_ws.h"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# The shell input syntax as a SPEC: every row is a sentence from
+# docs/input-syntax.zh.md, driven through the real edc_lex -> edc_classify ->
+# edc_parse pipeline and asserted on the AST. It exists because one class of bug
+# has no natural home in a feature test -- a lexer rule that disagrees with the
+# documented quoting (a """...""" body holding a bare quote was split into three
+# words, which the grammar then refused mid-line). A matrix over
+# (quote form x payload that collides with the delimiter) fails on any cell.
+cc_test(
+    name = "test_shell_spec",
+    srcs = ["test_shell_spec.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],

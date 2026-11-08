@@ -104,6 +104,33 @@ static void test_flags_after_quotes(void)
     edc_cmd_task_opts_free(&o);
 }
 
+/* The unquoting half already followed Python (`scan_region` only closes on three
+ * consecutive delimiters); what was broken was the LEXER in front of it, which cut the
+ * block into STRING/TEXT/STRING before this function ever ran. Pinned here too so the
+ * two layers cannot drift apart again: this is what the user's text becomes once the
+ * lexer hands over ONE word. */
+static void test_triple_body_holds_quotes(void)
+{
+    check("\"\"\"he said \"hi\" here\"\"\"",
+          "he said \"hi\" here",
+          0, 0, "\"\"\": a bare quote inside the body");
+    check("'''it's fine'''", "it's fine",
+          1, 0, "''': a bare apostrophe inside the body");
+    check("\"\"\"a \"\" b\"\"\"", "a \"\" b",
+          0, 0, "\"\"\": a run of TWO quotes inside the body");
+}
+
+static void test_triple_body_holds_quotes_with_flags(void)
+{
+    struct edc_cmd_task_opts o;
+    sds a = sdsnew("\"\"\"task \"x\" y\"\"\" --bg");
+    edc_cmd_parse_task_opts(a, &o);
+    sdsfree(a);
+    T_STREQ(o.input, "task \"x\" y", "\"\"\" body with quotes: the description");
+    T_CHECK(o.bg == 1, "\"\"\" body with quotes: the trailing --bg is still read");
+    edc_cmd_task_opts_free(&o);
+}
+
 /* ── `$` 的语法：这一层没有"字面 $"这条写法 ──────────────────────
  *
  * 这一层（`edc_shell_expand_vars`）的 `$` 是**任务引用**，不是变量插值：
@@ -244,6 +271,8 @@ int main(void)
     test_triple_multiline_bg();
     test_plain_unquoted();
     test_flags_after_quotes();
+    test_triple_body_holds_quotes();
+    test_triple_body_holds_quotes_with_flags();
     test_escapes();
     /* `edc_cmd_desc_needs_quotes` is gone: the rule it enforced ("an unquoted description
      * may not carry options") existed because raw text could not say where the description
