@@ -7,13 +7,13 @@ name: Tests
 # Not triggered by pull_request for the same reason as build.yml: `PR Check` already runs the
 # suite (plus ten platforms) for a PR to master.
 #
-# There is deliberately NO Windows leg here, and it is worth being explicit about why rather
-# than leaving the absence to be rediscovered: the suite is not portable to Windows yet. It
-# uses fork/waitpid, termios, pthread, mkdtemp, symlink, strtok_r and strptime, none of which
-# MSVC provides, so a windows-latest job would fail on the tests themselves rather than on the
-# product. What IS checked on Windows -- that the shipped binaries link, start, and need no
-# DLL the archive does not carry -- lives in build.yml's `windows` job. Adding a Windows leg
-# here is the last step of porting //tests, not a missing line in this file.
+# The Windows leg below runs the SAME suite with MSVC. It could not, until the suite was
+# portable: it used fork/waitpid, termios, pthread, mkdtemp, symlink, strtok_r and strptime,
+# and it prepared scratch trees with POSIX shell commands. Those are either shimmed now
+# (//src/common:win_compat), replaced by a helper (tests/test_fs_util.h), or marked
+# POSIX_ONLY in tests/BUILD when the SUBJECT of the test does not exist on Windows -- 16
+# targets, which the leg reports as skipped. Measured before adding it: 118 pass, 0 fail,
+# 16 skipped, on a machine with no C:\tmp (a fresh runner).
 on:
   push:
     branches:
@@ -46,6 +46,45 @@ jobs:
         run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
         env:
           TMPDIR: ${{ runner.temp }}
+
+  # The same suite with MSVC. It exists because the platform that ships a Windows binary was
+  # the one platform whose tests ran nowhere: a change that compiled and passed under gcc could
+  # break three Windows-only paths (path separators, the CRT's environment, symlink refusal)
+  # and nothing on trunk would notice until a release was cut.
+  #
+  # The build step is separate for the same reason as the Linux leg -- "manual" targets are
+  # skipped by `bazel test` and would otherwise never compile -- and POSIX_ONLY targets are
+  # reported as skipped rather than failed, so this job is green on its own terms.
+  windows:
+    name: Test (windows/amd64, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-test-windows
+          repository-cache: true
+
+      # No toolchain stanza: MSVC comes from the runner's Visual Studio Build Tools and Bazel
+      # autodetects it. That is what makes this job also a check on the toolchain resolution --
+      # if it ever stops finding cl.exe, the failure is here rather than in a release.
+      - name: Build every test target (including manual)
+        shell: bash
+        run: |
+          bazel build --keep_going --platforms=//:amd64_windows //tests:all \
+                --action_env=TMPDIR="$RUNNER_TEMP"
+
+      # `--test_output=errors` so a failure prints the assertion that broke, not just the
+      # target name. The scratch directories come from Bazel's TEST_TMPDIR, never a hardcoded
+      # /tmp, which is why this works on a machine with no C:\tmp at all.
+      - name: Test
+        shell: bash
+        run: |
+          bazel test --keep_going --platforms=//:amd64_windows --test_output=errors //tests:all \
+                --action_env=TMPDIR="$RUNNER_TEMP"
 
   asan:
     name: AddressSanitizer + UBSan
