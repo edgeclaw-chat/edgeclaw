@@ -97,6 +97,24 @@ int main(void)
     CHECK(ast.cmd && strcmp(ast.cmd->argv[2], "a|b") == 0, "a|b is one word");
     edc_ast_free(&ast);
 
+    /* A command line has no "option area" to catch a second operand, so two adjacent
+     * quoted regions would silently become two argv entries -- a different command call,
+     * not a syntax error. edc_commands_parse_line refuses it before parse; this pins the
+     * lexer-level fact it keys on (`adjacent_quoted`), because that is what makes the
+     * refusal possible at all. */
+    TEST("two adjacent quoted regions are flagged, so the command layer can refuse them");
+    {
+        edc_lex_out t;
+        CHECK(edc_lex("/task new \"a\"\"b\"", EDC_LEX_SHELL_OFF, &t), "lex ok (SHELL_OFF, as commands use)");
+        CHECK(t.adjacent_quoted, "flagged even with the switch off");
+        CHECK(t.count >= 3, "and the two regions are separate words");
+        edc_lex_out_free(&t);
+
+        CHECK(edc_lex("/task new \"a\" 'b'", EDC_LEX_SHELL_OFF, &t), "lex ok");
+        CHECK(!t.adjacent_quoted, "a space between them is not adjacency");
+        edc_lex_out_free(&t);
+    }
+
     TEST("/model --bg: an option word is an ordinary argument");
     CHECK(parse_line("/model --bg", &ast, &err), "parsed");
     CHECK(ast.cmd && ast.cmd->argc == 1 && strcmp(ast.cmd->argv[0], "--bg") == 0, "--bg kept as a word");

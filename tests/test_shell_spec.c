@@ -780,51 +780,89 @@ static void expect_two_operands_refused(const char *label, const char *src)
     line_free(&r);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  [7] 相邻引号区：一个操作数只能有一对引号
+ *  ══════════════════════════════════════════════════════════════
+ *
+ * 这一节曾经记录一个缺陷：`"x {{1}}"'y {{2}}'` 会**合并成一个词**，整词共用一个
+ * 「要不要插值」的 bool，于是单引号那半也被展开（`OUT1OUT2`，应为 `OUT1{{2}}`），
+ * 而且那半的 `{{…}}` 还会被当引用**收集成依赖**——写在意在字面的引号里的
+ * `{{999999}}` 甚至能拒掉整条输入。
+ *
+ * 结论：相邻合并本身不该存在。这个层级既没有 `$VAR` 也没有通配符，拼出来的字符串
+ * 没有任何业务可表达的东西；而且 2026-10-22 已经定过"一个词要么是 TEXT 要么是
+ * STRING"（`a"b c"d` 是三个词），相邻两个引号区只是**漏网**——两半都是 TK_STRING，
+ * 于是类型没变、不断词。
+ *
+ * 现在：一个引号区就是一个完整的操作数，绝不接在已开着的词后面。所以下面每一格
+ * 的第二段都落进选项区（shell 行）或得到明确的 "Two quoted strings" 拒绝（命令行）。
+ */
+
+/* 断言：两个引号区紧挨着 → 一句专门的拒绝，理由点名列号，并给出改法。 */
+static void expect_adjacent_refused(const char *label, const char *src)
+{
+    struct line r;
+    line_run(&r, src, EDC_LEX_SHELL_ON);
+
+    printf("  %-52s ", label);
+    if (r.class_err && strstr(r.class_err, "Two quoted strings sit next to each other") != NULL)
+    {
+        OK(); /* 分类层直接给了那句话 */
+    }
+    else if (r.class_err)
+    {
+        FAILF("refused for the wrong reason: %s", r.class_err);
+    }
+    else if (r.kind != EDC_IN_SHELL)
+    {
+        FAILF("classified %s, wanted SHELL", kind_name(r.kind));
+    }
+    else if (r.shell_ok)
+    {
+        FAILF("it PARSED -- two adjacent quoted regions were accepted");
+    }
+    else if (!r.parse_err || strstr(r.parse_err, "cannot follow the closing quote") == NULL)
+    {
+        FAILF("refused, but not by the option-area rule: %s", r.parse_err ? r.parse_err : "?");
+    }
+    else
+    {
+        OK();
+    }
+    printf("\n");
+    line_free(&r);
+}
+
 static void test_adjacent_regions(void)
 {
-    printf("\n[7] 相邻引号区：合并规则 / 插值标志 / 最终文本\n");
+    printf("\n[7] 相邻引号区：一个操作数只能有一对引号（不合并）\n");
 
-    /* 7a. 有空白 = 两个操作数。第二段落在选项区，被拒 —— 文档写明的既有行为，不是 bug。 */
+    /* 7a. 有空白 = 两个操作数，第二段落进选项区。既有行为。 */
     expect_two_operands_refused("`\"a\" 'b'` (空格) : 被拒（选项区）", D "a" D " " S "b" S);
     expect_two_operands_refused("`\"{{1}}\" '{{2}}'` (空格) : 被拒", D "{{1}}" D " " S "{{2}}" S);
 
-    /* 7b. 紧邻 = 拼成一个词（shell 的拼接语义，本身是对的）。 */
-    {
-        static const char *const ab[] = {"ab"};
-        expect_shell("`\"a\"'b'` : 一个词 `ab`", D "a" D S "b" S, 1, ab);
-        expect_shell("`'a'\"b\"` : 一个词 `ab`", S "a" S D "b" D, 1, ab);
-        expect_shell("`\"a\"\"b\"` : 一个词 `ab`", D "a" D D "b" D, 1, ab);
-        expect_shell("`'a''b'` : 一个词 `ab`", S "a" S S "b" S, 1, ab);
-    }
+    /* 7b. 紧邻也一样：同种、异种都拒绝。这正是"一个操作数一对引号"。 */
+    expect_adjacent_refused("`\"a\"\"b\"` : 同种双引号紧邻 → 拒", D "a" D D "b" D);
+    expect_adjacent_refused("`'a''b'` : 同种单引号紧邻 → 拒", S "a" S S "b" S);
+    expect_adjacent_refused("`\"a\"'b'` : 异种紧邻 → 拒", D "a" D S "b" S);
+    expect_adjacent_refused("`'a'\"b\"` : 异种紧邻（反向）→ 拒", S "a" S D "b" D);
 
-    /* 7c. 单个区：各自的语义（对照组，应当全绿）。 */
+    /* 7c. 曾经出错的四格：以前会合并并"两个都展开"，现在直接拒绝。 */
+    expect_adjacent_refused("`\"{{1}}\"'{{2}}'` : 曾误展开两处 → 拒", D "{{1}}" D S "{{2}}" S);
+    expect_adjacent_refused("`'{{1}}'\"{{2}}\"` : 曾误展开两处 → 拒", S "{{1}}" S D "{{2}}" D);
+    expect_adjacent_refused("`\"{{1}}\"'plain'` : 曾是合法的合并 → 拒", D "{{1}}" D S "plain" S);
+    expect_adjacent_refused("`\"a\"'{{1}}'` : 字面段带引用 → 拒", D "a" D S "{{1}}" S);
+
+    /* 7d. 单个引号区：各自的语义（对照组，必须一直绿）。 */
     expect_one_word("`\"{{1}}\"` : 展开", D "{{1}}" D, "{{1}}", true, "OUT1");
     expect_one_word("`'{{1}}'` : 字面", S "{{1}}" S, "{{1}}", false, "{{1}}");
     expect_one_word("`\"\"\"{{1}}\"\"\"` : 展开", D3 "{{1}}" D3, "{{1}}", true, "OUT1");
     expect_one_word("`'''{{1}}'''` : 字面", S3 "{{1}}" S3, "{{1}}", false, "{{1}}");
 
-    /* 7d. 相邻异种引号区：**已知缺陷**，两格。
-     *
-     * 合并成一个词后，「要不要插值」只剩 token 上的一个 bool（= 各区之"或"）。所以只要
-     * **可插值段里带引用**，整词都会展开，字面段里的 `{{…}}` 也一起被换掉。
-     *
-     * 精确的触发条件（矩阵其余各行证明它不是普遍现象）：
-     *   紧邻 + 无空白 + 插值段含 `{{…}}` + 字面段也含 `{{…}}`
-     * 反例 `"a"'{{1}}'`（字面段带引用、插值段不带）→ has_var_refs 为假，反而不展开，
-     * 是对的。也就是说缺陷只在"两边都带引用"时出现。
-     *
-     * 下面两行断言的是**现状**（绿），括号里写的是**应该有**的结果。要修就得让
-     * 引号区的字面身份活到展开阶段（见 test 末尾的注释）。 */
-    expect_one_word("`\"{{1}}\"'{{2}}'` : 现状两个都展开（应为 OUT1{{2}}）", D "{{1}}" D S "{{2}}" S,
-                    "{{1}}{{2}}", true, "OUT1OUT2");
-    expect_one_word("`'{{1}}'\"{{2}}\"` : 现状两个都展开（应为 {{1}}OUT2）", S "{{1}}" S D "{{2}}" D,
-                    "{{1}}{{2}}", true, "OUT1OUT2");
-    expect_one_word("`\"{{1}}\"'plain'` : 引用在那段展开", D "{{1}}" D S "plain" S, "{{1}}plain", true,
-                    "OUT1plain");
-    expect_one_word("`'plain'\"{{1}}\"` : 引用在那段展开", S "plain" S D "{{1}}" D, "plain{{1}}", true,
-                    "plainOUT1");
-    expect_one_word("`\"a\"'{{1}}'` : {{1}} 在字面段里 → 不展开", D "a" D S "{{1}}" S, "a{{1}}", false,
-                    "a{{1}}");
+    /* 7e. 逃生口：一处引号里同时写引用和字面大括号 —— `{{ 2 }}` 拼写不精确，
+     * 不是引用，原样保留。这条是"想混用怎么办"的答案。 */
+    expect_one_word("`\"see {{1}} and {{ 2 }}\"` : 一处引号内混用", D "see {{1}} and {{ 2 }}" D,
+                    "see {{1}} and {{ 2 }}", true, "see OUT1 and {{ 2 }}");
 }
 
 static void test_unterminated(void)

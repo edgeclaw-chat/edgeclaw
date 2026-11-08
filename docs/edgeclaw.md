@@ -159,6 +159,14 @@ newline where `'a\nb'` holds a backslash and an `n` — and, like `$'…'`, it n
 A quoted region must open the argument for anything after the closing quote to be read as
 options.
 
+**One pair of quotes is one operand.** Adjacent quoted regions are NOT joined the way C
+joins adjacent string literals: `"a""b"` and `"a"'b'` are two words, so the second one
+lands where only options may go and the line is refused. There is nothing to express by
+joining — this layer has no `$VAR` and no globbing — and merging is what used to let a
+single word carry one "interpolate `{{…}}`" flag for a region that was written as
+literal. Put the whole text inside one pair: `"ab"`, or `"see {{3}} and {{ 4 }}"` when
+one part is a reference and the other only looks like one.
+
 ### Parser & AST
 
 A recursive-descent parser builds an AST (Abstract Syntax Tree). Node hierarchy:

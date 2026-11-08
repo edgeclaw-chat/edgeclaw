@@ -2488,12 +2488,35 @@ bool edc_lex(const char *src, edc_lex_mode mode, edc_lex_out *out)
             {
                 out->saw_disabled = true;
             }
-            /* 一个真正的 word 片段。类型一变就先把这个词吐出去（不混拼）；两个引号区
-             * 相邻同理 —— 它们是两个词，不是 C 那样的字面量拼接。 */
+            /* 一个真正的 word 片段。**一个引号区就是一个完整的操作数**，它绝不接在已经
+             * 开着的词后面：`"a""b"` / `"a"'b'` / `'a''b'` 都是**两个词**，于是第二个落进
+             * 选项区、由文法给出 "cannot follow the closing quote" 那一句。
+             *
+             * 为什么不允许拼接：这一层没有 `$VAR`、没有通配符，拼出来的字符串没有任何业务
+             * 可表达的东西，没人会故意写。2026-10-22 的决策（e7bfb82）已经否掉了混拼
+             * （`a"b c"d` 是三个词），理由是「混拼是让一个词变成**部分带引号**的唯一途径」；
+             * 相邻的两个引号区当时漏网了 —— 两半都是 TK_STRING，于是 type 没变、不断词，
+             * 而「要不要插值」是按词记的**一个** bool，结果单引号那半也被展开、也被当引用
+             * 收集（`"x {{1}}"'y {{2}}'` 会建两条依赖；`{{999999}}` 写在意在字面的引号里
+             * 会拒掉整条输入）。
+             *
+             * 裸文本仍然按同类合并：词法器故意把 `$` 切成独立的 C_UNQUOTED chunk（这样
+             * `$'...'` 才能起一个引号区），合并是 `a$b` 仍为一个词的原因。 */
             if (c->kind == C_QUOTED || c->kind == C_UNQUOTED)
             {
                 const int want = (c->kind == C_QUOTED) ? W_STRING : W_TEXT;
-                if (word != W_NONE && word != want)
+                const bool joins = (word != W_NONE) && (word == want) && (c->kind != C_QUOTED);
+                if (word == W_STRING && c->kind == C_QUOTED)
+                {
+                    /* 第二个引号区紧接第一个：记一笔给调用方（命令层没有"选项区"可以兜底，
+                     * 不报就静默变成两个 argv）。 */
+                    if (!out->adjacent_quoted)
+                    {
+                        out->adjacent_quoted = true;
+                        out->adjacent_at = c->b;
+                    }
+                }
+                if (word != W_NONE && !joins)
                 {
                     emit(out, word == W_STRING ? TK_STRING : TK_TEXT, cur, refs, 0, false, wb, we);
                     cur = NULL;

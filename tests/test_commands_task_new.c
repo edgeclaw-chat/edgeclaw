@@ -308,6 +308,35 @@ int main(void)
         CHECK(g_llm_task->deps_total == 0, "and no dependency was made for it");
     }
 
+    TEST("adjacent quoted regions on a command line are REFUSED, not joined");
+    {
+        /* 两个引号区紧挨着：描述会被"用空格拼接"悄悄改成 `a b`（用户没打过空格）。
+         * 所以命令层在 parse 之前就拒绝，理由与 shell 行共用同一句。 */
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        const int before = count_tasks(sess);
+        drive_command(cfg, sm, sched, "/task new \"a\"\"b\" --new-group");
+        CHECK(g_llm_task == NULL, "no task was created");
+        CHECK(count_tasks(sess) == before, "and none is queued");
+
+        /* 对照：同一段文字写在一对引号里就正常。 */
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "/task new \"ab\" --new-group");
+        CHECK(g_llm_task != NULL, "one pair of quotes is accepted");
+        if (g_llm_task)
+        {
+            const char *sent = first_user_content(g_llm_task->active_turn);
+            CHECK(sent && strcmp(sent, "ab") == 0, "and the text is exactly `ab`");
+        }
+
+        /* 对照：有空格就是两个正常的词（多词描述是有意支持的），不算相邻。 */
+        g_llm_calls = 0;
+        g_llm_task = NULL;
+        drive_command(cfg, sm, sched, "/task new \"a\" \"b\" --new-group");
+        CHECK(g_llm_task != NULL, "with a space between them it is a normal two-word description");
+    }
+
     TEST("/task new joins every non-option word into the description");
     /* There is no "option area" any more: an option is a word the handler recognises, and
      * everything else is text. Two words therefore mean a two-word description -- not a

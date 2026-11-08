@@ -229,7 +229,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "Everything AFTER the closing quote must be an option (`-d <id>`, `-g <group>`, `2>` …; there is no "
      "`--bg` in shell syntax -- backgrounding is the trailing `&`): "
      "anything else is refused rather than silently dropped, so `\"hello\" and more` is an error, not a "
-     "task called `hello`."},
+     "task called `hello`. Finally, one pair of quotes is one operand: adjacent quoted regions are NOT "
+     "joined (`\"a\"\"b\"` and `\"a\"'b'` are two words, so the second lands in that option area) -- "
+     "put the whole text in one pair and write `\"ab\"`."},
     {"Input", "`+\"desc\"`", "a new group + task",
      "`+` is a SHELL sigil, so the line is a shell line and its description is a quoted string -- like "
      "every string in shell syntax. The description goes into a NEW group; a plain message joins the "
@@ -3841,6 +3843,21 @@ static bool edc_commands_parse_line(struct edc_reply_to to, const char *content,
     for (int i = 0; i < toks.count; i++)
         if (toks.toks[i].kind == TK_BAD_QUOTED)
             bad_quote = true;
+
+    /* Two quoted strings with nothing between them. On a shell line the grammar catches
+     * this as "something after the closing quote"; a command line has no such place, so
+     * without this check `/task new "a""b"` would quietly become TWO arguments -- a
+     * different command call, not a syntax error. */
+    if (toks.adjacent_quoted && !bad_quote)
+    {
+        sds why = edc_lex_adjacent_quotes(toks.adjacent_at + 1);
+        sds reply = sdscatprintf(sdsempty(), "**Syntax error** — %s", why);
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        sdsfree(why);
+        edc_lex_out_free(&toks);
+        return false;
+    }
 
     sds err = NULL;
     const bool ok = edc_parse(&toks, ast, &err);

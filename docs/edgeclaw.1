@@ -130,6 +130,9 @@ SHELL SYNTAX (on by default)
        -g <group>, 2>, ...).  Anything else there is refused rather than
        dropped, so "hello" and more is an error -- not a task quietly
        called hello.
+       One pair of quotes is one operand: adjacent quoted regions are NOT
+       joined, so "a""b" and "a"'b' are two words and the second one sits
+       in that option area.  Put the whole text in one pair instead.
 
      Implicit task creation
            > analyze src/ for bugs

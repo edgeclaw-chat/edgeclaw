@@ -27,6 +27,19 @@
  *   - **这词是引号串吗** → token 种类（`TK_STRING`），纯词法。
  *   - **引号在这里算语法吗** → `toks->mode`，词法器的开关。
  * 挤在一个 `fully_quoted` 里时，关闭开关就必须把 flag 关掉，于是"是引号串"也就丢了。 */
+/* 流里有没有未闭合的引号块（任意位置，不只第一个 token）。
+ *
+ * 相邻引号区的判定要用到它：`+\"\"\"a \"b\"` 会被切成 空串 / `a ` / `b` / BAD_QUOTED，
+ * 于是"两段引号紧挨着"（前两个）和"这句话没说完"（最后一个）同时成立。后者才是
+ * 用户要修的那件事，所以它优先。 */
+static bool stream_has_bad_quote(const edc_lex_out *toks)
+{
+    for (int i = 0; toks && i < toks->count; i++)
+        if (toks->toks[i].kind == TK_BAD_QUOTED)
+            return true;
+    return false;
+}
+
 edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
 {
     if (err)
@@ -47,6 +60,20 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
             *err = edc_lex_unterminated_quote(f->value, f->begin + 1);
         return EDC_IN_MESSAGE;
     }
+
+    /* 两个引号区紧挨着（"a""b" / "a"'b'）：一个操作数只能有一对引号，它们不合并。
+     * 不在这里说的话，shell 行只会给出"第二段落进选项区"那种症状描述，而命令行那侧
+     * 更糟：会静默变成两个 argv（见 edc_commands_parse_line 的同一条检查）。
+     *
+     * 放在**未闭合引号之后**：一个没闭合的引号块也会留下"第二个引号区"的痕迹
+     * （+"""a "b"），但"这句话没说完"才是用户要修的那件事。 */
+    if (toks->adjacent_quoted && !stream_has_bad_quote(toks))
+    {
+        if (err)
+            *err = edc_lex_adjacent_quotes(toks->adjacent_at + 1);
+        return EDC_IN_MESSAGE;
+    }
+
     /* 行首就是一个引号串 ⇒ 这是一条 shell 行 —— 但**只在开关打开时**。TK_STRING 是
      * 词法事实（"这词是闭合引号区"），"引号算语法"是模式的事：开关关掉时引号只定边界，
      * `"a" | "b"` 是一条普通消息。所以两件事各问各的，不再挤在一个 flag 里。 */
