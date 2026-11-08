@@ -24,6 +24,7 @@
 #include "edc_interp.h"
 #include "edc_lex.h"
 #include "edc_parse.h"
+#include "edc_shell_vars.h"
 #include "sds.h"
 
 #include <stdio.h>
@@ -332,6 +333,11 @@ static void test_quote_double(void)
         {"CJK and emoji survive", D "中文 ☂ 混合 text" D, "中文 ☂ 混合 text", false},
         {"empty body is allowed", D D, "", false},
         {"`{{LAST}}` interpolates here", D "see {{LAST}}" D, "see {{LAST}}", true},
+        /* 用户字面打进去的撇号只是内容：它不该切词，也不该让引用失去标记。
+         * （下游的展开器今天仍被它骗到——见 test_cmd_parse 里 BUG 4 那一组。） */
+        {"a literal apostrophe does not unmark the ref", D "it" S "s {{LAST}}" D, "it" S "s {{LAST}}", true},
+        {"a literal pair of apostrophes neither", D "it" S "s " S "x" S " and {{1}}" D,
+         "it" S "s " S "x" S " and {{1}}", true},
     };
     run_quote_rows("[2a] `\"…\"` : only \\\" and \\\\ are escapes, everything else is literal", rows,
                    sizeof rows / sizeof rows[0]);
@@ -663,6 +669,168 @@ struct badq_row
     const char *label, *src;
 };
 
+/* ── 7. 相邻引号区：合并成一个词？插值标志归谁？ ────────────────────────
+ *
+ * 为什么要有这一节：`"{{1}}"'{{2}}'`（两个引号区紧邻、中间无空白）在词法器里被拼成
+ * **一个** token，而「要不要插值」是按 token 记的**一个 bool**。于是单引号区那一段的
+ * "字面"身份在合并时就丢了。丢成什么样，用矩阵把每一格打出来，不靠推断。
+ *
+ * 期望值写的是**设计意图**：每个区保留自己的语义（`"…"` 展开、`'…'` 字面）。
+ * 有一格红就说明那一格没做到。 */
+
+static sds adj_resolver(const char *name, void *user)
+{
+    (void)user;
+    if (strcmp(name, "LAST") == 0)
+        return sdsnew("OUTLAST");
+    if (strcmp(name, "SELF") == 0)
+        return sdsnew("7");
+    if (name[0] >= '0' && name[0] <= '9')
+        return sdscatprintf(sdsempty(), "OUT%s", name);
+    return NULL;
+}
+
+/* 把这个词的文本跑一遍展开（调用方 free）。 */
+static sds adj_expand(const char *text_in)
+{
+    sds err = NULL;
+    sds out = edc_shell_expand_vars(text_in, adj_resolver, NULL, &err);
+    if (!out)
+    {
+        out = sdscatprintf(sdsempty(), "ERROR(%s)", err ? err : "?");
+        if (err)
+            sdsfree(err);
+    }
+    return out;
+}
+
+/* 断言：一行 → 一个词；文本 / has_var_refs / 最终展开结果。
+ *
+ * 展开那一步**按闸门**取：has_var_refs 为假时展开器根本不会被调用（edc_interp 只在
+ * has_var_refs 为真时收集、且只有 {{LAST}} 会留下 deferred 标记），所以这里也只是
+ * 把文本原样当作结果 —— 否则会断言一个生产里不存在的路径。 */
+static void expect_one_word(const char *label, const char *src, const char *want_text, bool want_refs,
+                            const char *want_out)
+{
+    struct line r;
+    line_run(&r, src, EDC_LEX_SHELL_ON);
+
+    printf("  %-48s ", label);
+    if (r.class_err)
+    {
+        FAILF("classify refused it: %s", r.class_err);
+        printf("\n");
+        line_free(&r);
+        return;
+    }
+    if (r.kind != EDC_IN_SHELL || !r.shell_ok)
+    {
+        FAILF("did not parse (%s%s%s)", kind_name(r.kind), r.parse_err ? ": " : "",
+              r.parse_err ? r.parse_err : "");
+        printf("\n");
+        line_free(&r);
+        return;
+    }
+    if (ast_stages(&r.ast) != 1)
+    {
+        FAILF("%d stage(s), wanted 1", ast_stages(&r.ast));
+        printf("\n");
+        line_free(&r);
+        return;
+    }
+
+    const struct edc_ast_stage *s = ast_stage(&r.ast, 0);
+    const char *got_text = s->msg.text ? s->msg.text : "";
+
+    if (strcmp(got_text, want_text) != 0)
+    {
+        FAILF("text is `%s`, wanted `%s`", got_text, want_text);
+    }
+    else if (s->has_var_refs != want_refs)
+    {
+        FAILF("has_var_refs is %d, wanted %d", (int)s->has_var_refs, (int)want_refs);
+    }
+    else
+    {
+        sds out = s->has_var_refs ? adj_expand(got_text) : sdsnew(got_text);
+        if (strcmp(out, want_out) != 0)
+            FAILF("final text is `%s`, wanted `%s`", out, want_out);
+        else
+            OK();
+        sdsfree(out);
+    }
+    printf("\n");
+    line_free(&r);
+}
+
+/* 断言：两个操作数（有空白隔开）→ 第二段落进选项区 → 被拒。 */
+static void expect_two_operands_refused(const char *label, const char *src)
+{
+    struct line r;
+    line_run(&r, src, EDC_LEX_SHELL_ON);
+
+    printf("  %-48s ", label);
+    if (r.class_err)
+        FAILF("classify refused it: %s", r.class_err);
+    else if (r.kind != EDC_IN_SHELL)
+        FAILF("classified %s, wanted SHELL", kind_name(r.kind));
+    else if (r.shell_ok)
+        FAILF("it PARSED -- the second operand was accepted (option-area leak)");
+    else if (!r.parse_err || strstr(r.parse_err, "cannot follow the closing quote") == NULL)
+        FAILF("refused, but not by the option-area rule: %s", r.parse_err ? r.parse_err : "?");
+    else
+        OK();
+    printf("\n");
+    line_free(&r);
+}
+
+static void test_adjacent_regions(void)
+{
+    printf("\n[7] 相邻引号区：合并规则 / 插值标志 / 最终文本\n");
+
+    /* 7a. 有空白 = 两个操作数。第二段落在选项区，被拒 —— 文档写明的既有行为，不是 bug。 */
+    expect_two_operands_refused("`\"a\" 'b'` (空格) : 被拒（选项区）", D "a" D " " S "b" S);
+    expect_two_operands_refused("`\"{{1}}\" '{{2}}'` (空格) : 被拒", D "{{1}}" D " " S "{{2}}" S);
+
+    /* 7b. 紧邻 = 拼成一个词（shell 的拼接语义，本身是对的）。 */
+    {
+        static const char *const ab[] = {"ab"};
+        expect_shell("`\"a\"'b'` : 一个词 `ab`", D "a" D S "b" S, 1, ab);
+        expect_shell("`'a'\"b\"` : 一个词 `ab`", S "a" S D "b" D, 1, ab);
+        expect_shell("`\"a\"\"b\"` : 一个词 `ab`", D "a" D D "b" D, 1, ab);
+        expect_shell("`'a''b'` : 一个词 `ab`", S "a" S S "b" S, 1, ab);
+    }
+
+    /* 7c. 单个区：各自的语义（对照组，应当全绿）。 */
+    expect_one_word("`\"{{1}}\"` : 展开", D "{{1}}" D, "{{1}}", true, "OUT1");
+    expect_one_word("`'{{1}}'` : 字面", S "{{1}}" S, "{{1}}", false, "{{1}}");
+    expect_one_word("`\"\"\"{{1}}\"\"\"` : 展开", D3 "{{1}}" D3, "{{1}}", true, "OUT1");
+    expect_one_word("`'''{{1}}'''` : 字面", S3 "{{1}}" S3, "{{1}}", false, "{{1}}");
+
+    /* 7d. 相邻异种引号区：**已知缺陷**，两格。
+     *
+     * 合并成一个词后，「要不要插值」只剩 token 上的一个 bool（= 各区之"或"）。所以只要
+     * **可插值段里带引用**，整词都会展开，字面段里的 `{{…}}` 也一起被换掉。
+     *
+     * 精确的触发条件（矩阵其余各行证明它不是普遍现象）：
+     *   紧邻 + 无空白 + 插值段含 `{{…}}` + 字面段也含 `{{…}}`
+     * 反例 `"a"'{{1}}'`（字面段带引用、插值段不带）→ has_var_refs 为假，反而不展开，
+     * 是对的。也就是说缺陷只在"两边都带引用"时出现。
+     *
+     * 下面两行断言的是**现状**（绿），括号里写的是**应该有**的结果。要修就得让
+     * 引号区的字面身份活到展开阶段（见 test 末尾的注释）。 */
+    expect_one_word("`\"{{1}}\"'{{2}}'` : 现状两个都展开（应为 OUT1{{2}}）", D "{{1}}" D S "{{2}}" S,
+                    "{{1}}{{2}}", true, "OUT1OUT2");
+    expect_one_word("`'{{1}}'\"{{2}}\"` : 现状两个都展开（应为 {{1}}OUT2）", S "{{1}}" S D "{{2}}" D,
+                    "{{1}}{{2}}", true, "OUT1OUT2");
+    expect_one_word("`\"{{1}}\"'plain'` : 引用在那段展开", D "{{1}}" D S "plain" S, "{{1}}plain", true,
+                    "OUT1plain");
+    expect_one_word("`'plain'\"{{1}}\"` : 引用在那段展开", S "plain" S D "{{1}}" D, "plain{{1}}", true,
+                    "plainOUT1");
+    expect_one_word("`\"a\"'{{1}}'` : {{1}} 在字面段里 → 不展开", D "a" D S "{{1}}" S, "a{{1}}", false,
+                    "a{{1}}");
+}
+
 static void test_unterminated(void)
 {
     static const struct badq_row rows[] = {
@@ -808,6 +976,7 @@ int main(void)
     test_quote_single();
     test_quote_triple_double();
     test_quote_ansi();
+    test_adjacent_regions();
     test_shapes();
     test_redirects();
     test_option_area();

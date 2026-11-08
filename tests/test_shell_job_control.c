@@ -135,6 +135,17 @@ static int task_count(struct edc_session *sess)
     return n;
 }
 
+/* How many JOIN edges a task has -- i.e. how many references were actually collected.
+ * `deps_total` also counts the BARRIER that orders a group, so it cannot answer this. */
+static int task_join_deps(const struct edc_task *t)
+{
+    int n = 0;
+    for (const struct edc_task_dep *d = t ? t->deps : NULL; d; d = d->next)
+        if (d->type == TASK_DEP_JOIN)
+            n++;
+    return n;
+}
+
 /* A task that is waiting keeps out of send_llm, so lookup by description is the only
  * way to reach it. */
 static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *desc)
@@ -606,6 +617,21 @@ int main(void)
         CHECK(t && t->deps_total >= 1, "with a dependency taken from the reference");
         CHECK(t && t->has_deferred_vars, "and registered for the deferred expansion");
         CHECK(task_count(sess) == b4v + 1, "exactly one task");
+    }
+
+    TEST("BUG 4: a literal apostrophe in the stage does not swallow its `{{…}}`");
+    {
+        /* The apostrophe is CONTENT -- the user typed the outer double quotes -- so the
+         * `{{1}}` must still be collected. Count JOIN edges, not `deps_total`: a task in a
+         * group also gets a BARRIER from the task in front of it, so `deps_total >= 1` is
+         * true even when no reference was collected (that weak assertion passed on the
+         * buggy code). */
+        const int b4p = task_count(sess);
+        drive_command(cfg, sm, sched, "\"it's {{1}}\"");
+        struct edc_task *t = find_task_by_desc(sess, "it's {{1}}");
+        CHECK(t != NULL, "the task was created");
+        CHECK(t && task_join_deps(t) == 1, "and the reference still took its JOIN dependency");
+        CHECK(task_count(sess) == b4p + 1, "exactly one task");
     }
 
     TEST("an unterminated quote at the START of a shell line is an error, not a message");

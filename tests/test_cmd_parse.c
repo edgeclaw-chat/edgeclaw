@@ -174,13 +174,32 @@ static void test_expand_task_refs(void)
     T_STREQ(out, "<last-output>", "expand: `{{LAST}}` = 最后完成的任务输出");
     sdsfree(out);
 
-    /* 单引号是**唯一**能挡住这一层的东西；双引号挡不住。 */
+    /* 引号在这一层**没有状态**：文本已经被 edc_cmd_unquote 剥掉了定界符，残留的引号
+     * 是用户打的字。所以 "'{{1}}'" 里的 {{1}} 照样展开（用户输入 "'{{1}}'" 时正是
+     * 这个形状）。"字面"由上一层决定：词法器的 interp 标志对 '…' 为假，那种区域根本
+     * 不会进这个函数。见 edc_shell_vars.c 顶部的说明。 */
     out = edc_shell_expand_vars("'{{1}}'", shape_resolver, NULL, &err);
-    T_STREQ(out, "'{{1}}'", "expand: 单引号内不展开——但**引号本身留在文本里**");
+    T_STREQ(out, "'<task1-output>'", "expand: 文本里的撇号不是引号区 → 引用照样展开");
     sdsfree(out);
 
     out = edc_shell_expand_vars("\"{{1}}\"", shape_resolver, NULL, &err);
     T_STREQ(out, "\"<task1-output>\"", "expand: 双引号挡不住 `{{…}}`");
+    sdsfree(out);
+
+    /* ── BUG 4（2026-11-08 钉住）：用户字面输入的撇号不该挡住引用 ─────────
+     * 走到这一层时文本**已经去过引号**（词法器存的是 edc_cmd_unquote 的值），
+     * 所以残留的 ' 是用户当内容打的撇号，不是"单引号区"的开始。展开器再按引号
+     * 区判断一次，`"it's {{LAST}}"` 的引用就被当字面量留下了。 */
+    out = edc_shell_expand_vars("it's {{LAST}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "it's <last-output>", "expand: 字面撇号不挡住引用");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("it's 'x' and {{1}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "it's 'x' and <task1-output>", "expand: 一对字面撇号也不挡住");
+    sdsfree(out);
+
+    out = edc_shell_expand_vars("say \"hi\" then {{1}}", shape_resolver, NULL, &err);
+    T_STREQ(out, "say \"hi\" then <task1-output>", "expand: 字面双引号不挡住（对照：今天就对）");
     sdsfree(out);
 
     /* 不是我们的形式 → **原样保留**，不报错。这是粘贴安全的那条规则：`{{ var }}`
