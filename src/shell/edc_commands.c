@@ -220,9 +220,11 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "text contains the `|`.)"},
     {"Input", "`\"desc\"`", "SHELL syntax: a string literal (one task, but the line IS parsed)",
      "A shell line is recognised by its FIRST character. Every string in shell syntax is quoted, so such a "
-     "line always begins with `\"` or `'` -- or with its sigil, `+` / `!`. The quoting rule is Python's: "
-     "`\"…\"` interpolates `{{…}}`, `'…'` is raw, `\"\"\"…\"\"\"` / `'''…'''` span lines (the shape pasted "
-     "text wants), escapes as in Python. Inside a shell line EVERY string is quoted: an unquoted operand is "
+     "line always begins with `\"` or `'` -- or with its sigil, `+` / `!`. Quoting is bash's, in five "
+     "forms: `\"…\"` expands `{{…}}` and honours only `\\\"` and `\\\\`; `'…'` is raw -- no escapes at "
+     "all, and no `{{…}}`; `\"\"\"…\"\"\"` is `\"…\"` whose body may hold bare quotes; `'''…'''` and "
+     "`$'…'` are ANSI-C, where `\\n` is a newline. The two triple forms span lines and are what pasted "
+     "text wants. Inside a shell line EVERY string is quoted: an unquoted operand is "
      "refused, never guessed (`\"a\" | b` is ambiguous, `\"a\" | \"b\"` is a pipe, `\"a|b\"` is one task). "
      "Everything AFTER the closing quote must be an option (`-d <id>`, `-g <group>`, `2>` …; there is no "
      "`--bg` in shell syntax -- backgrounding is the trailing `&`): "
