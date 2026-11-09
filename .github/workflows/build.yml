@@ -5,7 +5,7 @@ name: Build
 # `master` or a `v*` tag. So the branch everybody actually works on was the one branch no
 # workflow ever built -- and a status badge pointed at it would have said "no status" forever.
 #
-# Deliberately NOT triggered by pull_request: `PR Check` already builds ten platforms and
+# Deliberately NOT triggered by pull_request: `PR Check` already builds five platforms and
 # runs the suite for a PR to master, and duplicating that here would double the minutes.
 # It builds the three shipped targets and checks the release archive's licences, i.e. the
 # things a push to trunk should not break.

@@ -55,6 +55,30 @@ Read these before a patch; they are the difference between a review and a rewrit
   the code is noise; a comment recording the measurement or the bug that forced the shape
   is what makes the next change safe.
 
+## Changing the grammar
+
+`edc_lex.c` and `edc_parse.tab.c` are **generated but committed**, so a plain `bazel build`
+never runs flex or bison — that is deliberate, because making them build prerequisites meant
+"it builds on my machine" stopped being true across platforms. The two generator rules are
+tagged `manual`; `tools/regen_grammar.sh` is the only supported entry point.
+
+So after editing `src/shell/edc_lex.l` or `src/shell/edc_parse.y`:
+
+```bash
+tools/regen_grammar.sh          # regenerate the three committed files
+git add src/shell/              # they are part of the patch
+```
+
+Forget the regeneration and CI fails in the "Verify the grammar output is current" step,
+which re-runs the script with `--check` and prints a diff plus the command to run. It is a
+byte comparison, so editing only comments in the grammar is a no-op — bison does not copy
+comments into its output, and the check is right to stay quiet.
+
+Do not run `bazel build //src/shell:lex_c` to regenerate: the script is what pins the tool
+versions (Bison 3.8.x, Flex 2.6.x), normalises the version string bison writes into line 1,
+and rejects output containing an absolute path. All three are what make `--check` able to
+compare bytes across machines.
+
 ## Commits
 
 [Conventional Commits][cc], English, lowercase imperative subject, no trailing period:
@@ -74,7 +98,7 @@ release is a tag on `master`. Nothing is committed to `master` directly.
 1. Branch from `dev`.
 2. Make the change, with tests.
 3. Open the PR **against `master`** — that is the only base `PR Check` runs for, and it
-   builds ten platforms plus the full suite. A PR against another branch gets no CI.
+   builds five platforms plus the full suite. A PR against another branch gets no CI.
 4. Keep the PR to one concern where you can. A bug fix that also reformats a file is two
    changes, and the reformatting hides the fix.
 

@@ -5,7 +5,7 @@ name: Tests
 # is therefore the honest "are the tests green" signal for the branch people work on.
 #
 # Not triggered by pull_request for the same reason as build.yml: `PR Check` already runs the
-# suite (plus ten platforms) for a PR to master.
+# suite (plus five platforms) for a PR to master.
 #
 # The Windows leg below runs the SAME suite with MSVC. It could not, until the suite was
 # portable: it used fork/waitpid, termios, pthread, mkdtemp, symlink, strtok_r and strptime,

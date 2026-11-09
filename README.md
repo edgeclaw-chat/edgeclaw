@@ -116,23 +116,27 @@ Requires Bazel plus a C/C++17 toolchain.
 
 #### Windows
 
-Bazel runs the flex/bison genrules through a bash, and on Windows it picks that bash
-from the environment — `C:\Windows\System32\bash.exe` (WSL) shadows Git's one, so the
-build only worked where a WSL distro happened to provide flex and bison. Run once, then
-open a new terminal:
+Visual Studio's C++ workload (MSVC) plus Bazel — that is the compiler toolchain; there is
+no MinGW involved. Bazel also needs a `bash` for its `genrule` commands, and on Windows it
+picks one **from the environment**: `C:\Windows\System32\bash.exe` (WSL) shadows Git's one,
+so the build depended on whichever terminal it was started from. Run once, then open a new
+terminal:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\windows\setup-build-env.ps1
 bazel shutdown
 ```
 
-This pins `BAZEL_SH` to the bash of the git on PATH, makes your flex/bison visible
-(adds a directory to the user PATH only if they are not already on it — pass
-`-ToolsDir` if needed), and stops Git Bash from rewriting `//labels`. Afterwards
-`bazel build` behaves the same in Windows Terminal and in Git Bash, and WSL is not
-involved. No path is hardcoded: everything is discovered on the machine that runs the
-script. See [tools/windows/README.md](tools/windows/README.md) for what it changes and
-how flex/bison are expected to be provided.
+This pins `BAZEL_SH` to the bash of the git on PATH and stops Git Bash from rewriting
+Bazel labels (`//tests:all` → `/tests:all`). Afterwards `bazel build` behaves the same in
+Windows Terminal and in Git Bash, and WSL is not involved. No path is hardcoded: everything
+is discovered on the machine that runs the script. See
+[tools/windows/README.md](tools/windows/README.md) for what it changes.
+
+**flex and bison are not build prerequisites.** Their output is committed
+(`src/shell/edc_lex.c`, `edc_parse.tab.c`), so a plain build never runs them; the two
+generator rules are tagged `manual`. You need them only if you change the grammar, and then
+the entry point is `tools/regen_grammar.sh` — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### First run
 

@@ -8,19 +8,25 @@
     Two things on Windows are environment-dependent, and this script fixes both
     for the current user (HKCU only). Neither fix contains a hardcoded location:
 
-      1. WHICH SHELL. The flex/bison genrules in //src/shell use bash syntax, so
+      1. WHICH SHELL. Several genrules on the default build path are bash
+         commands (//:models_catalog_json, the embed/version generators), so
          Bazel picks a bash -- and on Windows it picks one from the environment.
          Windows Terminal ends up with C:\Windows\System32\bash.exe (WSL, which
-         only works by accident if that distro has flex/bison); Git Bash ends up
-         with Git's own bash, which has neither. Fix: set BAZEL_SH to the bash of
-         the git that is on PATH here. The value is discovered on this machine,
-         never assumed.
+         only works if that distro is installed); Git Bash ends up with Git's own
+         bash. Fix: set BAZEL_SH to the bash of the git that is on PATH here. The
+         value is discovered on this machine, never assumed.
 
-      2. FLEX / BISON ARE HOST TOOLS (see //src/shell:BUILD). They are looked up
-         on PATH, exactly like gcc or python -- that is the portable contract,
-         and it is what the Linux and macOS builds rely on too. If they are not
-         on PATH yet, pass -ToolsDir <dir> and this script adds that one
-         directory to the user PATH; the directory is your input, not a default.
+         This used to matter more: the flex/bison generators were also on the
+         default path, so a build needed both tools as well. Their output is
+         committed now and those rules are tagged manual, so a build needs only
+         the shell.
+
+      2. FLEX / BISON, for regenerating the grammar only. Not a build
+         prerequisite -- src/shell/edc_lex.c and edc_parse.tab.c are committed.
+         They are needed when you edit edc_lex.l / edc_parse.y, and then the
+         entry point is tools/regen_grammar.sh. If they are not on PATH yet, pass
+         -ToolsDir <dir> and this script adds that one directory to the user
+         PATH; the directory is your input, not a default.
 
     Git Bash also needs one more thing: its MSYS runtime rewrites arguments that
     look like paths, which turns single-component Bazel labels such as
@@ -31,7 +37,7 @@
 
 .PARAMETER ToolsDir
     Directory containing flex and bison, used ONLY if they are not already on
-    PATH. No default: if the tools are on PATH, this is not needed at all.
+    PATH. Not needed for a plain build; see (2) above.
 
 .PARAMETER BashPath
     Explicit bash.exe. Default: derived from the `git` on PATH.
