@@ -80,7 +80,6 @@ int symlink(const char *target, const char *linkpath)
     DWORD attrs;
     DWORD flags = 0;
     int rc;
-    DWORD err;
 
     if (wtarget == NULL || wlink == NULL)
     {
@@ -95,9 +94,12 @@ int symlink(const char *target, const char *linkpath)
         flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
 
     rc = CreateSymbolicLinkW(wlink, wtarget, flags) ? 0 : -1;
-    err = GetLastError();
     if (rc != 0)
     {
+        /* Read the error HERE, not before the branch: a successful call does not set
+         * last-error, so fetching it on the success path would produce a value that looks
+         * meaningful and is not. */
+        DWORD err = GetLastError();
         /* EPERM is the useful answer for "you are not allowed", which is the common case
          * here; POSIX would have succeeded. ENOSYS would suggest Windows lacks the call. */
         errno = (err == ERROR_PRIVILEGE_NOT_HELD) ? EPERM : EACCES;
