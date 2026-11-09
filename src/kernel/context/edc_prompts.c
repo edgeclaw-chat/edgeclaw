@@ -238,7 +238,13 @@ struct edc_prompt *edc_prompt_load(const char *dir, const char *name, const stru
     if (!prompt)
         return NULL;
 
-    prompt->source = sdsdup(dir);
+    /* sdsnew, not sdsdup: `dir` is a PLAIN C string by this function's contract
+     * (edc_prompts.h takes `const char *`). sdsdup expects an sds and reads the length out
+     * of a header in front of the pointer -- which is an out-of-bounds read for a plain
+     * string, and it only looked harmless because the one caller in edc_prompt_load_roots
+     * happens to pass an sds from edc_path_join(). ASan caught it the moment a test passed
+     * a stack buffer instead. */
+    prompt->source = sdsnew(dir);
     return prompt;
 }
 

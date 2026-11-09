@@ -58,6 +58,14 @@ jobs:
   windows:
     name: Test (windows/amd64, MSVC)
     runs-on: windows-latest
+    # Git Bash's MSYS runtime rewrites arguments that look like paths, and a Bazel label
+    # starts with `//`, so `//tests:all` arrives as `/tests:all` and Bazel refuses it:
+    #   ERROR: Skipping '/tests:all': invalid package name '/tests'
+    # This is the same trap tools/windows/setup-build-env.ps1 disables for local development
+    # (it writes the same variable into ~/.bashrc), and the same one the catalog-refresh step
+    # in release.yml sets for itself. Job level, because every step here uses `shell: bash`.
+    env:
+      MSYS2_ARG_CONV_EXCL: '//'
     steps:
       - uses: actions/checkout@v4
 
