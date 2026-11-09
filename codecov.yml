@@ -27,9 +27,9 @@ coverage:
         target: auto
         threshold: 0%
 
-  # "Show project coverage changes on the pull request comment":
-  # hide_project_coverage defaults to TRUE (patch only), so it must be
-  # turned off explicitly or `reach` in the layout shows nothing.
+# "Show project coverage changes on the pull request comment":
+# hide_project_coverage defaults to TRUE (patch only), so it must be
+# turned off explicitly or `reach` in the layout shows nothing.
 comment:
   layout: "reach, diff, flags, files"
   behavior: default
@@ -37,6 +37,28 @@ comment:
   require_base: false
   require_head: true
   hide_project_coverage: false
+
+# ── Files the coverage run cannot measure ────────────────────────────────────
+#
+# Coverage is uploaded from ONE job -- the Ubuntu `coverage` leg in tests.yml -- so code
+# that is compiled only for Windows has no line to report. Codecov does not skip such a
+# file: when it appears in the diff but has no coverage row, the whole file scores 0%, and
+# that is counted against the patch status.
+#
+# It is what failed the check on the dev->master merge a7e8576 ("24.39% of diff hit,
+# target 65.20%"). Broken down against Codecov's own report: 31 of the 41 executable lines
+# added under src/ were hit -- 75.61% -- and the shortfall came from win_compat.c, which
+# contributed ~86 scored-as-missing lines of its own. That file is 110 lines behind a
+# single `#ifdef _MSC_VER`, and src/common/BUILD select()s it out of every non-Windows
+# build, so there is literally nothing for the uploading run to execute.
+#
+# This is not hiding untested code. These paths are unmeasurable by the only run that
+# reports, and leaving them in makes the patch number measure the size of the Windows port
+# rather than the quality of the change.
+ignore:
+  - "src/common/win_compat"
+  - "src/common/win_compat/**"
+  - "src/sandbox/edc_sandbox_helper_win.c"
 
 # Codecov is a signal, not a gate: don't wait for / fail on other CI checks.
 codecov:
