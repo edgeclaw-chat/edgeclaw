@@ -196,7 +196,18 @@ static void test_parse(void)
     if (!mkdtemp(dir_buf))
         return;
     const char *dir = dir_buf;
-    char cmd[256];
+    /* 4096, like the sibling tests, and large on purpose. This buffer used to be 256,
+     * which truncates once TEST_TMPDIR is long: CI's is ~99 characters and
+     * "rm -rf <dir> && mkdir -p <dir>" costs 70 + 2*len(TEST_TMPDIR) bytes, so the mkdir
+     * half was silently cut -- the directory mkdtemp had just created was removed and
+     * never recreated, and the six writes below all failed with "cannot write" while the
+     * TEST lines reported FAIL: loaded. The failure pointed at file writes, not at the
+     * mangled command, which is what made it expensive to find.
+     *
+     * 4096 cannot truncate here: dir_buf bounds the path at 1023 bytes, so the command is
+     * at most 70 + 2*1023 = 2116. No runtime check is needed, and a check that can never
+     * fire would just be something to trust wrongly later. */
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", dir, dir);
     if (test_sh(cmd) != 0)
         return;
