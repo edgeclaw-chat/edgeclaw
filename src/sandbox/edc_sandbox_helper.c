@@ -3,6 +3,7 @@
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_sandbox_helper_blob.h"
+#include "edc_compat.h"
 #include "log.h"
 #include <stdlib.h>
 #include <string.h>

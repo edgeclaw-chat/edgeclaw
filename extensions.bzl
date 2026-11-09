@@ -10,7 +10,6 @@ load('//thirdparty/libyuarel:repo.bzl', libyuarel_repo = "repo")
 load('//toolchain:arm_toolchain_repo.bzl', 'arm_toolchain_repo')
 load('//toolchain:aarch64_toolchain_repo.bzl', 'aarch64_toolchain_repo')
 load('//toolchain:android_toolchain_repo.bzl', 'aarch64_android_toolchain_repo', 'arm_android_toolchain_repo')
-load('//toolchain:mingw_toolchain_repo.bzl', 'mingw_toolchain_repo')
 load('//toolchain:musl_toolchain_repo.bzl', 'musl_toolchain_repo')
 
 def _bc_thirdparty_deps_impl(module_ctx):
@@ -56,12 +55,9 @@ arm_android_toolchain = module_extension(
     implementation = _arm_android_toolchain_impl,
 )
 
-def _mingw_toolchain_impl(module_ctx):
-    mingw_toolchain_repo(name = "mingw_toolchain")
-
-mingw_toolchain = module_extension(
-    implementation = _mingw_toolchain_impl,
-)
+# The Windows toolchain needs no repository rule and no module extension: Windows is built
+# with MSVC, which Bazel autodetects by itself. The `mingw_toolchain` extension that used to
+# be declared here (and registered from MODULE.bazel) was removed along with MinGW support.
 
 # One repo per target arch, deliberately NOT registered via register_toolchains():
 # they are only reachable through `--extra_toolchains` in the musl_* configs, so a

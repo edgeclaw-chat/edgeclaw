@@ -11,22 +11,28 @@ bazel shutdown          # a running bazel server keeps the environment it starte
 Open a new terminal first (existing ones keep their old environment).
 
 Nothing in this repository names a location. The script discovers what it needs on the
-machine it runs on; see [Where the tools come from](#where-the-tools-come-from).
+machine it runs on; see [flex and bison](#flex-and-bison-only-for-changing-the-grammar)
+for the optional part.
 
 ## Why any setup is needed
 
-The flex/bison genrules in `//src/shell` (`lex_c`, `parse_c`) are bash commands, so Bazel
-has to pick a bash — and on Windows it picks one **from the environment**. That makes the
-build depend on the terminal it was started from. Measured with `bazel aquery`:
+Bazel runs `genrule` commands through a `bash`, and on Windows it picks one **from the
+environment**. Several rules in the default build path are genrules — `//:models_catalog_json`
+(it begins `if [ -n '$(SRCS)' ]`), the three embed/version generators — so the build depends
+on which terminal it was started from. Measured with `bazel aquery`:
 
-| Started from | genrule shell Bazel picks | flex / bison |
-|---|---|---|
-| Windows Terminal (PowerShell) | `C:\Windows\System32\bash.exe` — **WSL** | whatever that WSL distro has in `/usr/bin` |
-| Git Bash | `<Git>\usr\bin\bash.exe` — Git for Windows | none: Git ships neither |
+| Started from | genrule shell Bazel picks |
+|---|---|
+| Windows Terminal (PowerShell) | `C:\Windows\System32\bash.exe` — **WSL** |
+| Git Bash | `<Git>\usr\bin\bash.exe` — Git for Windows |
 
-So "it builds in Windows Terminal" was really "this machine happens to have a WSL distro
-that ships flex and bison", and "it fails in Git Bash" was "Git's bash has neither, and
-nothing on PATH provides them".
+Neither is reliably present: the first depends on a WSL distro being installed, the second
+on which terminal you opened. Pinning `BAZEL_SH` makes the answer the same everywhere.
+
+This used to be worse, and the reason the script exists at all: the flex/bison generator
+rules were on the default build path, so a build also needed flex and bison on `PATH`. They
+are not any more — their output is committed and the rules are tagged `manual` — so what a
+build needs from the environment is now just a bash.
 
 There is a second, independent Git Bash trap: the MSYS runtime rewrites arguments that
 look like paths, and it eats one slash off single-component Bazel labels
@@ -39,23 +45,28 @@ selectively and looks random.
 
 | Setting | Value | Why |
 |---|---|---|
-| `BAZEL_SH` | the `bash.exe` of the `git` found on PATH | Pins the genrule shell in *every* terminal, so WSL is never consulted again. Discovered per machine, never assumed. |
-| `PATH` (user) | `-ToolsDir`, **only if** flex/bison are not already reachable | Makes them visible to the genrule. There is no default directory: if they are already on PATH, nothing is added. |
+| `BAZEL_SH` | the `bash.exe` of the `git` found on PATH | Pins the genrule shell in *every* terminal, so WSL is never consulted. Discovered per machine, never assumed. |
+| `PATH` (user) | `-ToolsDir`, **only if** flex/bison are not already reachable | Optional, and only for regenerating the grammar (see below). There is no default directory: if they are already on PATH, nothing is added. |
 | `~/.bashrc` | `export MSYS2_ARG_CONV_EXCL='//'` | Stops the label rewriting; scoped to `//` so ordinary path arguments still convert. |
 
 `BAZEL_SH` is a documented Bazel variable, so none of this needs a change to `.bazelrc`
 (shared with CI and the other platforms) and no machine-specific path enters the repo.
 
 The script also refuses a bash whose `uname -sr` says `microsoft`: a WSL distro may well
-have flex and bison, but that is the dependency this setup exists to remove.
+have a bash, but depending on one is the thing this setup exists to remove.
 
-## Where the tools come from
+## flex and bison: only for changing the grammar
 
-**flex and bison are host tools** — that is a deliberate, documented choice
-(`_HOST_TOOLS_CHECK` in `//src/shell:BUILD`), and it is
-the same contract the Linux and macOS builds use: the tools are found on `PATH`, like
-`gcc` or `python`. A build that needs them can therefore never be self-contained; what it
-*can* be is location-independent, which is why nothing here hardcodes a directory.
+**They are not build prerequisites.** `src/shell/edc_lex.c` and `edc_parse.tab.c` are
+committed, `//src/shell:lex` compiles them directly, and the two generator rules
+(`lex_c`, `parse_c`) are tagged `manual` — off every default build path. CI checks the
+committed output is not stale (`tools/regen_grammar.sh --check`), so editing the grammar
+without regenerating fails with the command to run rather than producing a silent mismatch.
+
+So install them only if you intend to edit `edc_lex.l` or `edc_parse.y`. When you do, the
+entry point is `tools/regen_grammar.sh`, never Bazel directly: it pins tool versions (Bison
+3.8.x, Flex 2.6.x), normalises what the generators write, and refuses output containing an
+absolute path — all of which is what lets `--check` compare bytes across machines.
 
 Windows ships neither tool. Options, in order of least surprise:
 
@@ -78,10 +89,10 @@ Windows ships neither tool. Options, in order of least surprise:
    and pass the directory holding that wrapper (and a matching `flex` wrapper) to
    `-ToolsDir`.
 
-Either way, **GNU Bison 3.0+** is required: the grammar uses `%define api.value.type` /
-`%define parse.error` and the genrule passes `-Werror=conflicts-*`. macOS' system bison
-is 2.3 from 2006; Git for Windows ships none. `_HOST_TOOLS_CHECK` turns all of those into
-one readable error instead of a raw tool complaint.
+Either way, **GNU Bison 3.8.x** is required: the grammar uses `%define api.value.type` /
+`%define parse.error`, and `regen_grammar.sh` refuses other versions because the version
+string is embedded in the generated file's first line. macOS' system bison is 2.3 from
+2006; Git for Windows ships none.
 
 ## Verifying
 
@@ -109,7 +120,7 @@ bazel query //tests:all
 $git = (Get-Command git).Source
 $bash = Join-Path (Split-Path (Split-Path $git -Parent) -Parent) 'bin\bash.exe'
 [Environment]::SetEnvironmentVariable('BAZEL_SH', $bash, 'User')
-# only if flex/bison are not on PATH yet:
+# optional, only for regenerating the grammar (see above):
 [Environment]::SetEnvironmentVariable('PATH', '<dir>;' + [Environment]::GetEnvironmentVariable('PATH','User'), 'User')
 ```
 ```bash

@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <uv.h>
+#include "edc_list.h"
 
 #define DEVICE_FILE_CHUNK_SIZE (256u * 1024u)
 
@@ -1137,16 +1138,15 @@ static void edc_tool_device_download_exec_async(struct edc_toolbox_call_ctx *tb_
 static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params,
-              edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("remote_path",
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("local_path", edc_param_str_type("Local file path on host to upload", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("remote_path",
                                          edc_param_str_type("Remote file path on device destination", NULL), true));
-    LL_APPEND(params, edc_tool_param_new(
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new(
                           "mode",
                           edc_param_str_type(
                               "File permission mode in octal, e.g. \"644\" for rw-r--r-- (default \"644\")", NULL),
                           false));
-    LL_APPEND(params, edc_tool_param_new(
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new(
                           "timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
     struct edc_tool *tool =
@@ -1162,11 +1162,10 @@ static struct edc_tool *edc_tool_create_device_upload(struct edc_toolbox *tb)
 static struct edc_tool *edc_tool_create_device_download(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("remote_path",
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("remote_path",
                                          edc_param_str_type("Remote file path on device to download", NULL), true));
-    LL_APPEND(params,
-              edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), true));
-    LL_APPEND(params, edc_tool_param_new(
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("local_path", edc_param_str_type("Local destination file path on host", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new(
                           "timeout", edc_param_int_type("Timeout per chunk in seconds (default 60)", 1, 3600), false));
 
     struct edc_tool *tool = edc_tool_new(

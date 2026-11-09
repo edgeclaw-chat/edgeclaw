@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 /* ── 单测的 session 仓库 ─────────────────────────────────────────
  * scheduler 现在**同包直调 store** (P3 的 `resolve_session` 端口已退休),
  * 所以测试给它的不是"解析函数"而是**仓库**: 一个只装着
@@ -60,6 +61,17 @@ static int test_passed = 0;
         }                                                                                                              \
     } while (0)
 
+/* One scratch workspace for every case that needs an EXISTING directory, created under
+ * Bazel's per-test TEST_TMPDIR. These used to be fixed "/tmp/test_edc_workdir_ws" paths: that
+ * assumes /tmp exists, which is POSIX-only -- on Windows it names "\tmp" on the current
+ * drive, so the directory was never created and the product (correctly) refused the bind. */
+static char g_ws[1024];
+
+static const char *case_ws(void)
+{
+    return g_ws;
+}
+
 static struct edc_config *make_config(const char *workspace)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
@@ -70,7 +82,7 @@ static struct edc_config *make_config(const char *workspace)
 /* Create a fresh temporary directory; caller rmdir()s it. */
 static void make_tmpdir(char *buf, size_t cap)
 {
-    snprintf(buf, cap, "/tmp/edc_workdir_test_XXXXXX");
+        test_tmp_template(buf, cap, "edc_workdir_test");
     if (!mkdtemp(buf))
     {
         perror("mkdtemp");
@@ -85,7 +97,7 @@ static void test_explicit_workdir(void)
     char dir[256];
     make_tmpdir(dir, sizeof(dir));
 
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-w"), "W", dir);
 
     char real[PATH_MAX];
@@ -110,7 +122,7 @@ static void test_explicit_workdir(void)
 static void test_default_unbound(void)
 {
     TEST("no workdir → unbound");
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-def"), "Def");
     CHECK(edc_session_get_workdir(s) == NULL, "default session is unbound");
     edc_session_free(s);
@@ -121,7 +133,7 @@ static void test_default_unbound(void)
 static void test_invalid_workdir(void)
 {
     TEST("invalid workdir fails creation (no default fallback)");
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-bad"), "Bad", "/no/such/dir/edgeclaw-xyz");
     CHECK(s == NULL, "session creation fails on a nonexistent workdir");
     edc_config_free(cfg);
@@ -192,7 +204,7 @@ static void test_persist_roundtrip(void)
     char real[PATH_MAX];
     realpath(dir, real);
 
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     struct edc_session *s = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-p"), "P", dir);
 
     /* Through the store, which is the path production takes -- there is no intermediate
@@ -219,7 +231,7 @@ static void test_verify_path_at(void)
     char real[PATH_MAX];
     realpath(dir, real);
 
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     cfg->enable_sandbox = true;
     cfg->sandbox_root_real = sdsnew(real);
     edc_config_add_sandbox_rw(cfg, real);
@@ -264,7 +276,7 @@ static void test_system_prompt_cwd(void)
     char real[PATH_MAX];
     realpath(dir, real);
 
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     sds prompt = edc_context_build_system_prompt(cfg, real);
     CHECK(prompt != NULL, "prompt built");
     CHECK(prompt && strstr(prompt, real) != NULL, "prompt contains bound workdir");
@@ -278,7 +290,7 @@ static void test_system_prompt_cwd(void)
 static void test_system_prompt_has_no_clock(void){
     TEST("system prompt: 无时钟 / 无未替换占位符 (确定性纪律)");
 
-    struct edc_config *cfg = make_config("/tmp/test_edc_noclock_ws");
+    struct edc_config *cfg = make_config(case_ws());
     sds a = edc_context_build_system_prompt(cfg, NULL);
     sds b = edc_context_build_system_prompt(cfg, NULL);
     CHECK(a && b && strcmp(a, b) == 0, "连续构造两次逐字节相同");
@@ -347,9 +359,9 @@ static void test_workspace_files_are_not_prompt_sources(void)
 {
     TEST("工作区不再提供提示词：旧的 workspace/AGENTS.md 不被注入");
 
-    char ws[64];
+    char ws[1024];
     make_tmpdir(ws, sizeof(ws));
-    char stale[128];
+    char stale[4096];
     snprintf(stale, sizeof(stale), "%s/AGENTS.md", ws);
     EdcError *err = NULL;
     edc_file_write(stale,
@@ -414,6 +426,9 @@ static void test_project_context_discovery(void)
     char old_home_copy[1024];
     snprintf(old_home_copy, sizeof(old_home_copy), "%s", old_home ? old_home : "");
     setenv("HOME", home, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", home, 1);
 
     struct edc_config *cfg = make_config(ws);
     sds p = edc_context_build_system_prompt(cfg, sub);
@@ -459,6 +474,9 @@ static void test_project_context_discovery(void)
     edc_config_free(cfg);
 
     setenv("HOME", old_home_copy, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", old_home_copy, 1);
 
     /* 收尾 */
     snprintf(path, sizeof(path), "%s/.edgeclaw/AGENTS.md", home);
@@ -493,7 +511,7 @@ static void test_task_workdir_owner(void)
     CHECK(realpath(dirA, realA) != NULL, "realpath(A)");
     CHECK(realpath(dirB, realB) != NULL, "realpath(B)");
 
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     struct edc_session *A = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-A"), "A", dirA);
     struct edc_session *B = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-B"), "B", dirB);
 
@@ -533,7 +551,7 @@ static void test_task_workdir_owner(void)
 static void test_history_dir_convention(void)
 {
     TEST("session dir is <workspace>/<session_id> (frontend derives chat.jsonl from it)");
-    struct edc_config *cfg = make_config("/tmp/test_edc_workdir_ws");
+    struct edc_config *cfg = make_config(case_ws());
     struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-dir"), "D");
 
     /* The directory keeps the historical "s<id>" spelling (edc_session_dir_name): it
@@ -546,8 +564,13 @@ static void test_history_dir_convention(void)
     edc_session_free(s);
 
     /* Binding a workdir must not move the state directory: cwd and storage are
-     * two different things, and the frontend only knows the second one. */
-    struct edc_session *b = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-dir2"), "B", "/tmp");
+     * two different things, and the frontend only knows the second one.
+     *
+     * The workdir has to be an existing absolute directory, and the workspace is exactly
+     * that on every platform. It used to be "/tmp", which exists on POSIX only -- on Windows
+     * that names "\tmp" on the current drive, the bind was refused (correctly: the product
+     * checks), and the assertion compared a history_dir that had never been set. */
+    struct edc_session *b = edc_session_new_with_workdir(cfg, edc_test_session_id("sess-dir2"), "B", cfg->workspace);
     sds expected2 = edc_path_join(cfg->workspace,
                                   edc_session_dir_name(edc_test_session_id("sess-dir2")), NULL);
     CHECK(b->history_dir && strcmp(b->history_dir, expected2) == 0, "bound workdir does not change history_dir");
@@ -584,6 +607,12 @@ static void test_absolute_workdir_not_anchored(void)
 
 int main(void)
 {
+    test_tmp_template(g_ws, sizeof(g_ws), "edc_workdir_ws");
+    if (!mkdtemp(g_ws))
+    {
+        perror("mkdtemp");
+        return 1;
+    }
     edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("== test_session_workdir ==");
 

@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 static int passed = 0, failed = 0;
 
@@ -88,7 +89,7 @@ int main(void)
     char cmd[1024];
     /* A workspace with ONE skill at first. */
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s/skills/first", ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
     char skill[1024];
     snprintf(skill, sizeof(skill), "%s/skills/first/SKILL.md", ws);
@@ -133,7 +134,7 @@ int main(void)
 
     /* A NEW skill appears on disk after the prompt was built. */
     snprintf(cmd, sizeof(cmd), "mkdir -p %s/skills/second", ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
     snprintf(skill, sizeof(skill), "%s/skills/second/SKILL.md", ws);
     write_file_at(skill, "---\ndescription: the second skill\n---\nbody\n");
@@ -159,7 +160,7 @@ int main(void)
     sdsfree(after_first);
 
     snprintf(cmd, sizeof(cmd), "rm -rf %s", ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         printf("  (cleanup failed)\n");
 
     printf("\n  %d passed, %d failed\n", passed, failed);

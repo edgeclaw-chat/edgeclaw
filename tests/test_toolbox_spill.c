@@ -40,9 +40,34 @@ static int test_passed = 0;
     } \
 } while (0)
 
+/* Substring test that is insensitive to the path SEPARATOR.
+ *
+ * The assertions below state the shape the spill path must have (".../15/tool-output/..."),
+ * which is a statement about path COMPONENTS, not about which character separates them. The
+ * product builds the path with edc_path_norm()/edc_path_join(), so on Windows the components
+ * are separated by '\\' and a literal "/15/tool-output/" comparison fails against a perfectly
+ * correct path: the log reads "\tmp\edgeclaw-test-xxxx\15\tool-output/exec_shell-1.txt". The
+ * same applies to comparing against cfg->workspace, which is the caller's spelling.
+ * Normalise both sides to '/' before searching, so this tests the structure and not the
+ * platform's separator. */
 static bool contains(const char *hay, const char *needle)
 {
-    return hay && needle && strstr(hay, needle) != NULL;
+    if (!hay || !needle)
+        return false;
+
+    char h[2048];
+    char n[1024];
+    size_t hl = strlen(hay), nl = strlen(needle);
+    if (hl >= sizeof(h) || nl >= sizeof(n))
+        return strstr(hay, needle) != NULL;
+
+    for (size_t i = 0; i < hl; i++)
+        h[i] = (hay[i] == '\\') ? '/' : hay[i];
+    h[hl] = '\0';
+    for (size_t i = 0; i < nl; i++)
+        n[i] = (needle[i] == '\\') ? '/' : needle[i];
+    n[nl] = '\0';
+    return strstr(h, n) != NULL;
 }
 
 /* Read a whole file; NULL when it cannot be opened. */

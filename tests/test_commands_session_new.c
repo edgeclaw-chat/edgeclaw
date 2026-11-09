@@ -32,6 +32,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 volatile int _run_loop = 1;
 
@@ -74,8 +75,8 @@ static bool bound_to(struct edc_session *s, const char *dir)
 int main(void)
 {
     edc_test_workspace(); /* disposable store for anything that writes state */
-    char ws[256];
-    snprintf(ws, sizeof(ws), "%s", "/tmp/edc_cmd_session_new_XXXXXX");
+    char ws[1024];
+    test_tmp_template(ws, sizeof(ws), "edc_cmd_session_new");
     if (!mkdtemp(ws))
     {
         perror("mkdtemp");
@@ -83,7 +84,7 @@ int main(void)
     }
 
     /* 一个真实存在的目录（绑定的目标）。 */
-    char dir[300];
+    char dir[4096];
     snprintf(dir, sizeof(dir), "%s/repo", ws);
     if (mkdir(dir, 0755) != 0)
     {
@@ -98,7 +99,7 @@ int main(void)
     }
 
     /* 名字/路径里带空格的目录。 */
-    char spaced[300];
+    char spaced[4096];
     snprintf(spaced, sizeof(spaced), "%s/my repo", ws);
     if (mkdir(spaced, 0755) != 0)
     {
@@ -126,7 +127,7 @@ int main(void)
     sched->ctx = edc_session_manager_get_active(sm);
 
     const int base = sm->session_count;
-    char cmd[512];
+    char cmd[4096];
     printf("  (baseline: %d session(s))\n", base);
 
     /* ── ① 裸 `/session new` ─────────────────────────────────── */

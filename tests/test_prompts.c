@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h> /* symlink/unlink */
+#include "test_fs_util.h"
 
 /* Split a tail the way a shell does -- a TEST helper only.
  *
@@ -188,10 +189,27 @@ static void test_expand(void)
 
 static void test_parse(void)
 {
-    const char *dir = "/tmp/edc_prompt_unit";
-    char cmd[256];
+    /* Under TEST_TMPDIR: "/tmp" is POSIX-only, and a FIXED name would also make two runs
+     * of this binary share one tree. */
+    char dir_buf[1024];
+    test_tmp_template(dir_buf, sizeof(dir_buf), "edc_prompt_unit");
+    if (!mkdtemp(dir_buf))
+        return;
+    const char *dir = dir_buf;
+    /* 4096, like the sibling tests, and large on purpose. This buffer used to be 256,
+     * which truncates once TEST_TMPDIR is long: CI's is ~99 characters and
+     * "rm -rf <dir> && mkdir -p <dir>" costs 70 + 2*len(TEST_TMPDIR) bytes, so the mkdir
+     * half was silently cut -- the directory mkdtemp had just created was removed and
+     * never recreated, and the six writes below all failed with "cannot write" while the
+     * TEST lines reported FAIL: loaded. The failure pointed at file writes, not at the
+     * mangled command, which is what made it expensive to find.
+     *
+     * 4096 cannot truncate here: dir_buf bounds the path at 1023 bytes, so the command is
+     * at most 70 + 2*1023 = 2116. No runtime check is needed, and a check that can never
+     * fire would just be something to trust wrongly later. */
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", dir, dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return;
 
     write_file_at(dir, "full.md",

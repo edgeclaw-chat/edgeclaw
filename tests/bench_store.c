@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <uv.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -66,7 +67,7 @@ int main(int argc, char **argv)
     char cmd[600];
     snprintf(cmd, sizeof(cmd), "rm -f '%s/edgeclaw.db' '%s/edgeclaw.db-wal' '%s/edgeclaw.db-shm'",
              ws, ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clear an old database)\n");
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);

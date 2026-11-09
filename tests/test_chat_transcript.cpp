@@ -10,6 +10,7 @@
 // columns) by skipping exactly that line instead of losing the whole log.
 #include "edc_chat_transcript.hpp"
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -110,11 +111,32 @@ void TestLegacyShapes()
           "non-numeric render column");
 }
 
+/* Where the two fixtures below are written: Bazel's per-test TEST_TMPDIR, which exists on
+ * every platform and is cleaned up for us. A fixed "/tmp/..." path was POSIX-only -- on
+ * Windows it resolves to "\tmp" on the current drive, and std::ofstream does not create
+ * parent directories, so the writes failed silently and every decode saw an empty file. */
+static std::string ScratchDir()
+{
+    const char *base = getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = getenv("TMPDIR");
+#ifdef _WIN32
+    if (!base || !*base)
+        base = getenv("TEMP");
+    if (!base || !*base)
+        base = ".";
+#else
+    if (!base || !*base)
+        base = "/tmp";
+#endif
+    return std::string(base);
+}
+
 void TestLoadTranscript()
 {
     std::cout << "loading a file skips the bad lines and keeps the good ones\n";
 
-    const std::string path = "/tmp/test_chat_transcript_chat.jsonl";
+    const std::string path = ScratchDir() + "/test_chat_transcript_chat.jsonl";
     const std::string good1 = edc::EncodeTranscriptLine(MakeEntry("user", 0, "", "", "first"));
     const std::string good2 = edc::EncodeTranscriptLine(MakeEntry("reply", 1, "42", "", "second"));
     {
@@ -161,7 +183,7 @@ void TestProgressiveReplay()
 {
     std::cout << "progressive replay: tail + prefix rebuild the log; cancel stops early\n";
 
-    const std::string path = "/tmp/test_chat_transcript_progressive.jsonl";
+    const std::string path = ScratchDir() + "/test_chat_transcript_progressive.jsonl";
     const int total = 1000;
     {
         std::ofstream f(path, std::ios::binary | std::ios::trunc);

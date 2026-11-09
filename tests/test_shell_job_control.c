@@ -39,9 +39,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 /* Stub for _run_loop pulled in by edc_commands (transitively linked). */
 volatile int _run_loop = 1;
+
+/* Per-run scratch directory, created under Bazel's per-test TEST_TMPDIR. These cases used a
+ * FIXED "/tmp/test_..." path: that both assumes /tmp exists (POSIX-only -- on Windows it means
+ * "\tmp" on the current drive) and makes two runs of the binary share one tree, which leaves
+ * state behind when a run is killed. */
+static char g_scratch[1024];
 
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
@@ -165,10 +172,16 @@ static struct edc_task *find_task_by_desc(struct edc_session *sess, const char *
 
 int main(void)
 {
-    const char *ws = "/tmp/test_shell_job_control_ws";
-    char cmd[256];
+    test_tmp_template(g_scratch, sizeof(g_scratch), "scratch");
+    if (!mkdtemp(g_scratch))
+    {
+        perror("mkdtemp");
+        return 1;
+    }
+    const char *ws = g_scratch;
+    char cmd[4096];
     snprintf(cmd, sizeof(cmd), "rm -rf %s && mkdir -p %s", ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     struct edc_config *cfg = calloc(1, sizeof(*cfg));
@@ -565,7 +578,7 @@ int main(void)
         /* Input redirect is gone: the parser refuses it (and says to use @file), so no
          * task is built. This pins the failure closed -- a line that used to append a
          * file must not silently become something else. */
-        char path[256];
+        char path[4096];
         snprintf(path, sizeof(path), "%s/context.txt", ws);
         FILE *f = fopen(path, "w");
         if (f)
@@ -573,7 +586,7 @@ int main(void)
             fputs("FILE-CONTENT-MARKER\n", f);
             fclose(f);
         }
-        char line[512];
+        char line[4096];
         snprintf(line, sizeof(line), "\"read the context\" < \"%s\"", path);
         const int before_in = task_count(sess);
         drive_command(cfg, sm, sched, line);

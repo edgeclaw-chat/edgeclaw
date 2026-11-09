@@ -60,6 +60,7 @@ cc_library(
     deps = [
             "//src/actor:actor",
             "//src/common:common",
+            "//src/common:edc_list",
             "//src/common:utlist_fix",
             "//src/common:version",
             "//src/shell:shell_parse",

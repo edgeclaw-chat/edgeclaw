@@ -126,10 +126,6 @@ int main(int argc, char **argv)
 
     edc_log_init();
 
-    /* No headless branch here: the non-interactive frontend is its own binary
-     * (`edgeclaw_cli`), which links this app WITHOUT ftxui. Keeping the terminal code out of
-     * that binary is the point -- see src/cli/BUILD. */
-
     // Settle the colour depth first: ftxui::Color::RGB() quantises to whatever
     // depth is in force when the colour is built, and the palettes are built
     // lazily on first use. Left to ftxui, a Windows session comes up 256-colour
@@ -160,8 +156,7 @@ int main(int argc, char **argv)
              * The message names the cause it can know, gives both ways forward, and names
              * the log file rather than saying "the log" -- the previous wording
              * ("failed to start, see the log for details") left a user who could not start
-             * the program to work out where its logs even go. `edgeclaw_cli` already said
-             * the useful thing; this is that same sentence, not a second opinion. */
+             * the program to work out where its logs even go. */
             const char *log = edc_log_path();
             fprintf(stderr,
                     "edgeclaw: failed to start.\n"

@@ -43,6 +43,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_failed = 0;
 static int g_passed = 0;
@@ -201,7 +202,9 @@ static void test_connection_failed(void)
 
 int main(void)
 {
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_endpoint_probe_%" PRId64,
              (tmp && *tmp) ? tmp : "/tmp", (int64_t)getpid());
     snprintf(g_cert, sizeof(g_cert), "%s/cert.pem", g_dir);
@@ -209,7 +212,7 @@ int main(void)
 
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "    (warning: could not create %s)\n", g_dir);
 
     printf("workspace: %s\n", g_dir);
@@ -233,7 +236,7 @@ int main(void)
     test_connection_failed();
 
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

@@ -20,9 +20,20 @@ arm_android_toolchain = use_extension("//:extensions.bzl", "arm_android_toolchai
 use_repo(arm_android_toolchain, "arm_android_toolchain")
 register_toolchains("@arm_android_toolchain//:arm_android_toolchain")
 
-mingw_toolchain = use_extension("//:extensions.bzl", "mingw_toolchain")
-use_repo(mingw_toolchain, "mingw_toolchain")
-register_toolchains("@mingw_toolchain//:mingw_windows_toolchain")
+# ── Windows: MSVC only ────────────────────────────────────────────────────────
+# There used to be a `mingw_toolchain` extension here that discovered a MinGW gcc at
+# repository-rule time and registered a cc_toolchain for it. It is gone: Windows is built
+# with MSVC, and only MSVC. Nothing needs to be registered for that -- Bazel's own
+# autodetected toolchain (@@rules_cc++cc_configure_extension+local_config_cc) becomes the
+# selected toolchain for a Windows host as soon as no other Windows cc_toolchain is in the
+# candidate set. Verified with --toolchain_resolution_debug: with the registration removed,
+# resolution reports
+#   type @@bazel_tools//tools/cpp:toolchain_type -> toolchain ...local_config_cc//:cc-compiler-x64_windows
+# and no `--extra_toolchains`/`--config` flag is needed. The consequence is that a Windows
+# build machine MUST have Visual Studio Build Tools with the C++ workload installed, and Bazel
+# must be able to find it (vcvars in the environment, or BAZEL_VC / BAZEL_VS). There is no
+# second compiler to fall back to.
+
 
 # musl toolchains for the fully static Linux release binaries. Intentionally not
 # registered: they are selected by `--config=musl_<arch>`, which passes
@@ -86,6 +97,18 @@ single_version_override(
 bazel_dep(name = "pcre2", version = "10.49")
 
 bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
+
+# cJSON's BUILD passes "/Za" (MSVC: ANSI-only, no language extensions) for msvc-cl, and cl
+# refuses to combine it with the /std:c11 this project passes for every C file:
+#   error D8016: '/std:c11' and '/Za' are incompatible
+# Dropping /Za is the smaller change of the two -- cJSON compiles fine without it (it is
+# C89-clean, the switch only forbids MS extensions it does not rely on), and it keeps the
+# single global /std:c11 rather than a per-target exception.
+single_version_override(
+    module_name = "cjson",
+    patches = ["//patches:cjson-no-za.patch"],
+    patch_strip = 1,
+)
 
 # Session state persistence.
 # The BCR module ships SQLite's stock compile options, which this project cannot use as-is

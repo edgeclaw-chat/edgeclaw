@@ -36,6 +36,17 @@
 /* ---- basic types ---- */
 typedef SSIZE_T ssize_t;
 
+/* POSIX puts SSIZE_MAX in <limits.h>; MSVC defines neither that nor ssize_t. Supplying it
+ * here is not cosmetic: lwIP's <lwip/arch.h> chooses between taking ssize_t from <unistd.h>
+ * and `typedef int ssize_t` by testing #ifdef SSIZE_MAX. With the macro missing, lwIP would
+ * typedef it as `int` on top of the SSIZE_T above -- error C2371: redefinition; different
+ * basic types -- in any file that includes this header and then a lwIP one. Every header in
+ * this project that supplies ssize_t therefore has to supply SSIZE_MAX with it
+ * (see src/common/win_compat/unistd.h and the sds patch). */
+#ifndef SSIZE_MAX
+#define SSIZE_MAX (((ssize_t)((((size_t)-1) >> 1))))
+#endif
+
 #ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
 #endif
@@ -128,15 +139,40 @@ static inline char *win32_realpath(const char *path, char *resolved)
             free(resolved);
         return NULL;
     }
+    /* _fullpath only NORMALISES the string: it happily returns an absolute path for something
+     * that does not exist. POSIX realpath() fails with ENOENT instead, and callers rely on
+     * that -- "does this directory exist?" is answered by realpath() returning NULL all over
+     * this codebase (edc_file_index_query, edc_path_guard_resolve, the sandbox checks).
+     * Without this test a missing directory looks present on Windows and the caller goes on
+     * to read it. _access(path, 0) is the existence check; use the ORIGINAL path, because the
+     * normalised one can differ in case on a case-insensitive filesystem. */
+    if (_access(path, 0) != 0)
+    {
+        if (need_free)
+            free(resolved);
+        errno = ENOENT;
+        return NULL;
+    }
     return resolved;
 }
 #define realpath(p, r) win32_realpath(p, r)
 
 /* ---- environment ---- */
-#define unsetenv(name) SetEnvironmentVariable(name, NULL)
+/* unsetenv must reach the CRT, not just Win32: getenv() reads the CRT's copy of the
+ * environment, and SetEnvironmentVariable(name, NULL) only updates the Win32 block. With that
+ * version a variable looked unset to the OS and still set to the program -- which is how
+ * test_models_catalog kept loading its fixture after unsetenv("EDGECLAW_MODELS_CATALOG").
+ * _putenv_s(name, "") is the call that removes it from the CRT's environment. */
+#define unsetenv(name) _putenv_s((name), "")
+/* POSIX setenv(): with overwrite == 0 an EXISTING variable must keep its value. This used to
+ * discard the argument -- (void)overwrite; then set it unconditionally -- so every
+ * `setenv(name, value, 0)` in the tree silently clobbered what was there. Both halves have to
+ * move together: SetEnvironmentVariable() is what a child process sees, _putenv_s() is what
+ * getenv() reads, and they must agree. */
 static inline int win32_setenv(const char *name, const char *value, int overwrite)
 {
-    (void)overwrite;
+    if (!overwrite && getenv(name) != NULL)
+        return 0;
     SetEnvironmentVariable(name, value);
     return _putenv_s(name, value) == 0 ? 0 : -1;
 }
@@ -177,6 +213,25 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 }
 #endif /* _WIN32 */
 
+/* mode_t: <sys/types.h> has _mode_t, not mode_t. Shared guard with src/common/win_compat's
+ * <unistd.h>, so a file including both does not define it twice. */
+#if !defined(EDC_MODE_T_DEFINED)
+#define EDC_MODE_T_DEFINED
+typedef unsigned short mode_t;
+#endif
+
+/* POSIX permission bits. MSVC's <sys/stat.h> spells them _S_IREAD/_S_IWRITE/_S_IEXEC and has
+ * no S_IXUSR at all, while code ported from POSIX tests S_IXUSR directly. */
+#ifndef S_IRUSR
+#define S_IRUSR _S_IREAD
+#endif
+#ifndef S_IWUSR
+#define S_IWUSR _S_IWRITE
+#endif
+#ifndef S_IXUSR
+#define S_IXUSR _S_IEXEC
+#endif
+
 /* ---- file mode macros (Windows _S_IF*) ---- */
 #ifndef S_ISDIR
 #define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
@@ -184,11 +239,55 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
 #endif
-#ifndef S_ISLNK
-#define S_ISLNK(m) (0)
+
+/* lstat() and S_ISLNK(): MSVC provides neither, and for a while this header stubbed them as
+ * `stat` and `(0)` -- which did not merely lose information, it silently disarmed a security
+ * check. edc_path_guard_resolve() refuses a path whose LAST component is a symlink
+ * (rules->refuse_symlink) by asking lstat() + S_ISLNK(); with the stub that test could never
+ * be true on Windows, so a symlinked state database -- the exact hole the check exists for in
+ * a model-writable workspace -- was accepted. Implemented instead of stubbed.
+ *
+ * A reparse point is the Win32 spelling of a link, so GetFileAttributesW decides. The
+ * attributes are read on the UTF-8 -> UTF-16 conversion below, because the ANSI variants would
+ * mangle a non-ASCII path and silently answer "not a link". */
+#ifndef S_IFLNK
+#define S_IFLNK 0xA000
 #endif
+#ifndef S_ISLNK
+#define S_ISLNK(m) (((m) & _S_IFMT) == S_IFLNK)
+#endif
+static inline int win32_lstat(const char *path, struct stat *buf)
+{
+    wchar_t *wide;
+    DWORD attrs;
+
+    /* Ask Win32 first: it reports a reparse point -- the Win32 spelling of a link -- and it
+     * also succeeds for a DANGLING link, where stat() fails because there is no target to
+     * report. Only then fall back to stat() for the type/size of a real target. */
+    wide = edc_utf8_to_wide(path);
+    if (wide == NULL)
+        return -1;
+    attrs = GetFileAttributesW(wide);
+    free(wide);
+
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+    {
+        /* A link: its own mode, not the target's. st_size is the link's, which is what POSIX
+         * lstat() reports; callers here only test S_ISLNK. */
+        if (stat(path, buf) != 0)
+            memset(buf, 0, sizeof(*buf));
+        buf->st_mode = (buf->st_mode & ~_S_IFMT) | S_IFLNK;
+        return 0;
+    }
+
+    if (stat(path, buf) == 0)
+        return 0;
+    /* stat() failed and it is not a reparse point: nothing usable to report. */
+    memset(buf, 0, sizeof(*buf));
+    return -1;
+}
 #ifndef lstat
-#define lstat(path, buf) stat(path, buf)
+#define lstat(path, buf) win32_lstat(path, buf)
 #endif
 
 #ifndef F_OK

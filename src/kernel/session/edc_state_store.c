@@ -16,6 +16,7 @@
 #include "edc_version.h"
 
 #include "edc_config.h"
+#include "edc_compat.h" /* lstat + S_ISLNK: refuse_symlink() needs them on every platform */
 #include "edc_datetime_utils.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
@@ -458,20 +459,21 @@ static bool fs_type_is_local(const char *dir, const char **why)
  * The workspace is writable by the model, which has already planted
  * `workspace/jobs.json -> ~/.edgeclaw/config.json` once (see edc_file_fopen_safe). A
  * symlinked database would let a model redirect our writes onto any file the process can
- * open, so any of the three files being a link refuses startup. */
+ * open, so any of the three files being a link refuses startup.
+ *
+ * Enforced on Windows too. It could not be, while src/common/edc_compat.h stubbed
+ * lstat() as stat() and S_ISLNK() as 0 -- that is, while the platform could not tell a link
+ * from its target, so this `#ifndef _WIN32` was a hole rather than a deliberate limitation.
+ * edc_compat.h now implements both (a reparse point is a link), which makes the same check
+ * meaningful on both platforms. */
 static bool refuse_symlink(const char *path, const char *what)
 {
-#ifndef _WIN32
     struct stat st;
     if (lstat(path, &st) == 0 && S_ISLNK(st.st_mode))
     {
         log_error("state_store: refusing to start: %s (%s) is a symbolic link", path, what);
         return false;
     }
-#else
-    (void)path;
-    (void)what;
-#endif
     return true;
 }
 

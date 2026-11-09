@@ -12,6 +12,7 @@
 #include <edc_param_types.h>
 #include <inttypes.h> /* PRId64 */
 #include <string.h>
+#include "edc_list.h"
 
 static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
 static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
@@ -408,9 +409,9 @@ static void edc_tool_create_read_file(struct edc_toolbox *tb)
     const char *name = "read_file";
     const char *desc = "Read the contents of a file at the given path.";
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("offset", edc_param_int_type("1-based line to start from (default 1)", 1, G_MAXINT64), false));
-    LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("How many lines to read (default 2000)", 1, 100000), false));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("The file path to read", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("offset", edc_param_int_type("1-based line to start from (default 1)", 1, G_MAXINT64), false));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("limit", edc_param_int_type("How many lines to read (default 2000)", 1, 100000), false));
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_read_file_async);
     edc_tool_set_snippet(tool, "Read a file (whole, or a line range)");
     /* Both halves of this are now true: the window really exists (offset/limit), and the tool
@@ -448,8 +449,8 @@ static void edc_tool_create_write_file(struct edc_toolbox *tb)
     const char *desc = "Write the contents of a file at the given path.";
 
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("The file path to write", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("content", edc_param_str_type("The content to write", NULL), true));
 
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_write_file_async);
     edc_tool_set_snippet(tool, "Write a file (missing parent directories are created)");
@@ -469,7 +470,7 @@ static void edc_tool_create_list_dir(struct edc_toolbox *tb)
     const char *desc = "List the contents of a directory at the given path.";
 
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("The directory path to list", NULL), true));
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_list_dir_async);
     edc_tool_set_snippet(tool, "List one directory level");
     edc_tool_set_guidelines(tool, "One level only -- it does not recurse.");

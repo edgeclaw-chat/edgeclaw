@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 volatile int _run_loop = 1;
 
@@ -176,7 +177,10 @@ int main(void)
     edc_actor_runner_start(g_runner);
     edc_channel_adapter_init(g_chan, NULL, on_channel_send);
 
-    char ws[] = "/tmp/edc_cmd_report_XXXXXX";
+    char ws[1024];
+
+
+    test_tmp_template(ws, sizeof(ws), "edc_cmd_report");
     if (!mkdtemp(ws))
     {
         perror("mkdtemp");

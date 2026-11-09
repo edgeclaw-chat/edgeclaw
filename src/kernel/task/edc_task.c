@@ -15,6 +15,7 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include "edc_list.h"
 
 /* The old state-name mapping is retired (R3b): the display name has one source,
  * edc_task_state_str, derived from (step, life). */
@@ -1153,14 +1154,14 @@ bool edc_task_add_dependency(struct edc_task *target, struct edc_task *source, e
     dep_t->source = source;
     dep_t->target = target;
     dep_t->type = type;
-    LL_APPEND(target->deps, dep_t);
+    EDC_LL_APPEND(struct edc_task_dep, target->deps, dep_t);
 
     /* Add the matching node to source->dependents */
     struct edc_task_dep *dep_s = g_new0(struct edc_task_dep, 1);
     dep_s->source = source;
     dep_s->target = target;
     dep_s->type = type;
-    LL_APPEND(source->dependents, dep_s);
+    EDC_LL_APPEND(struct edc_task_dep, source->dependents, dep_s);
 
     target->deps_total++;
 
@@ -1642,7 +1643,7 @@ struct edc_tool_call_record *edc_task_tool_call_add(struct edc_task *task, const
     rec->name = name ? sdsnew(name) : NULL;
     rec->args = args ? cJSON_Duplicate(args, 1) : NULL;
     rec->status = TOOL_CALL_PENDING;
-    LL_APPEND(task->tool_calls, rec);
+    EDC_LL_APPEND(struct edc_tool_call_record, task->tool_calls, rec);
     return rec;
 }
 

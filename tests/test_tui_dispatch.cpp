@@ -22,6 +22,7 @@
 //      runner 线程上（Post() 的 else 分支），会和本测试自己的断言抢同一个 widget。
 
 #include "edc_tui_window.hpp"
+#include "edc_compat.h"
 #include "tui_dispatch_msgs.h"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -103,6 +104,9 @@ bool SetupHome(std::string *out_home)
     sf.close();
 
     setenv("HOME", home.c_str(), 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", home.c_str(), 1);
     setenv("EDGECLAW_MASTER_KEY", "harness-master-key", 1);
     setenv("EDGECLAW_TUI_NO_PULL", "1", 1); /* 接缝 2：构造期/回调里都不拉树 */
     *out_home = home;

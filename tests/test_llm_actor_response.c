@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_passed = 0;
 static int g_failed = 0;
@@ -76,7 +77,7 @@ static void drop_dir(void)
 {
     char cmd[700];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "    (warning: could not remove %s)\n", g_dir);
 }
 
@@ -457,7 +458,7 @@ int main(void)
         snprintf(ssl_dir, sizeof(ssl_dir), "%s/ssl", g_dir);
         char cmd[700];
         snprintf(cmd, sizeof(cmd), "mkdir -p '%s' && cp '%s' '%s/cacert.pem'", ssl_dir, g_cert, ssl_dir);
-        if (system(cmd) != 0)
+        if (test_sh(cmd) != 0)
         {
             fprintf(stderr, "could not install the trust anchor\n");
             return 1;

@@ -1,6 +1,7 @@
 #include "edc_compat.h"
 #include "edc_error.h"
 #include "edc_file_utils.h"
+#include "edc_path.h" /* edc_path_norm: the search root has to match the walker's spelling */
 #include "edc_sandbox.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
@@ -23,6 +24,9 @@
 #else
 #include <regex.h>
 #endif
+
+/* Outside the conditional above: EDC_LL_APPEND is used on every platform. */
+#include "edc_list.h"
 
 /* ── grep / find, in C ──────────────────────────────────────────────────────
  *
@@ -475,6 +479,24 @@ static sds search_finish(struct search_job *job)
 
 static void run_search(struct search_job *job)
 {
+    /* The root is held in its NORMAL form, and this is the one place that guarantees it.
+     *
+     * relative_path() strips this string as a PREFIX from the paths the walk produces, and the
+     * walk builds those with edc_path_join(), which normalises to the platform separator. If
+     * the two spellings differ the prefix never matches, so every hit keeps its ABSOLUTE path
+     * instead of the root-relative one -- the result then leaks the search root to the model
+     * and the "paths are relative" contract quietly stops holding. Both entry points reach
+     * here (the tool path via the sandbox's realpath, the synchronous one straight from its
+     * caller), so normalising here covers both rather than leaving each to remember.
+     *
+     * Only reachable on Windows, where a path has two valid separator spellings; on POSIX
+     * edc_path_norm is a no-op for an absolute path. */
+    {
+        sds normalised_root = edc_path_norm(job->root);
+        sdsfree(job->root);
+        job->root = normalised_root;
+    }
+
     regex_t re;
     regex_t *rep = NULL;
     if (job->is_grep && !job->literal)
@@ -506,6 +528,8 @@ sds edc_search_run_blocking(const char *root, bool is_grep, const char *pattern,
     struct search_job job;
     memset(&job, 0, sizeof(job));
     job.is_grep = is_grep;
+    /* run_search() normalises job.root, which is what makes relative_path() able to strip it
+     * as a prefix from the walk's (normalised) paths -- see the note there. */
     job.root = sdsnew(root);
     job.pattern = sdsnew(pattern ? pattern : "");
     job.glob = (glob && *glob) ? sdsnew(glob) : NULL;
@@ -670,13 +694,13 @@ void edc_tools_search_register(struct edc_toolbox *tb)
 {
     {
         struct edc_tool_param *params = NULL;
-        LL_APPEND(params, edc_tool_param_new("pattern", edc_param_str_type("Search pattern (POSIX ERE, or a literal string when `literal` is set)", NULL), true));
-        LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("Directory to search (default: the session's directory)", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("glob", edc_param_str_type("Only search files matching this glob, e.g. \"*.c\"", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("ignore_case", edc_param_bool_type("Case-insensitive match"), false));
-        LL_APPEND(params, edc_tool_param_new("literal", edc_param_bool_type("Treat the pattern as a literal string, not a regex"), false));
-        LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("Maximum matches to return (default 100)", 1, 100000), false));
-        LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("pattern", edc_param_str_type("Search pattern (POSIX ERE, or a literal string when `literal` is set)", NULL), true));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("Directory to search (default: the session's directory)", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("glob", edc_param_str_type("Only search files matching this glob, e.g. \"*.c\"", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("ignore_case", edc_param_bool_type("Case-insensitive match"), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("literal", edc_param_bool_type("Treat the pattern as a literal string, not a regex"), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("limit", edc_param_int_type("Maximum matches to return (default 100)", 1, 100000), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
 
         struct edc_tool *tool = edc_tool_new("grep",
                                              "Search file contents for a pattern. Returns matching lines as "
@@ -691,10 +715,10 @@ void edc_tools_search_register(struct edc_toolbox *tb)
     }
     {
         struct edc_tool_param *params = NULL;
-        LL_APPEND(params, edc_tool_param_new("glob", edc_param_str_type("File name glob, e.g. \"*.c\" (default: every file)", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("path", edc_param_str_type("Directory to walk (default: the session's directory)", NULL), false));
-        LL_APPEND(params, edc_tool_param_new("limit", edc_param_int_type("Maximum paths to return (default 100)", 1, 100000), false));
-        LL_APPEND(params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("glob", edc_param_str_type("File name glob, e.g. \"*.c\" (default: every file)", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("Directory to walk (default: the session's directory)", NULL), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("limit", edc_param_int_type("Maximum paths to return (default 100)", 1, 100000), false));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
 
         struct edc_tool *tool = edc_tool_new("find",
                                              "List files under a directory, optionally filtered by a name glob. "

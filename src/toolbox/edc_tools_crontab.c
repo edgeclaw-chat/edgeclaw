@@ -24,6 +24,7 @@
 #include <time.h>
 
 #include "timezone.h"
+#include "edc_list.h"
 
 /* ---------- wall-clock <-> unix time, for schedules WITHOUT an IANA tz ----------
  * A user writing at="2026-10-18T15:00:00" (no tz) means 15:00 on THIS host, i.e.
@@ -656,28 +657,24 @@ static void edc_tool_crontab_exec_async(struct edc_toolbox_call_ctx *ctx, struct
 static void edc_tool_create_crontab(struct edc_toolbox *tb)
 {
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("action",
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("action",
                                          edc_param_str_type("Action to perform", "add", "list", "remove", NULL), true));
-    LL_APPEND(params, edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), false));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("message", edc_param_str_type("Reminder message (for add)", NULL), false));
 
-    LL_APPEND(params,
-              edc_tool_param_new("every_seconds",
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("every_seconds",
                                  edc_param_int_type("Interval in seconds (for recurring task)", 1, G_MAXINT64), false));
-    LL_APPEND(params, edc_tool_param_new(
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new(
                           "cron_expr",
                           edc_param_str_type("Cron expression like '0 2 * * *' (for scheduled tasks)", NULL), false));
 
-    LL_APPEND(params,
-              edc_tool_param_new(
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new(
                   "tz", edc_param_str_type("IANA timezone for cron expressions (e.g. 'China/Beijing')", NULL), false));
 
-    LL_APPEND(
-        params,
-        edc_tool_param_new(
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new(
             "at", edc_param_str_type("ISO datetime for one-time execution (e.g. '2026-05-01T12:00:00')", NULL), false));
 
-    LL_APPEND(params, edc_tool_param_new("job_id", edc_param_str_type("Job ID (for remove)", NULL), false));
-    LL_APPEND(params, edc_tool_param_new("name", edc_param_str_type("Job Name (for add)", NULL), false));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("job_id", edc_param_str_type("Job ID (for remove)", NULL), false));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("name", edc_param_str_type("Job Name (for add)", NULL), false));
 
     struct edc_tool *tool =
         edc_tool_new("crontab", "Schedule reminders and recurring tasks. Actions: add, list, remove.", params,

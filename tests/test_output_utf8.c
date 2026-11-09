@@ -18,6 +18,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+/* CP_ACP / MultiByteToWideChar, used ONLY to ask the operating system which of the two
+ * branches below this code page takes: the product makes the same call, and a test that
+ * guessed instead would encode the guess rather than the contract. */
+#include <windows.h>
+#endif
+
 static int passed = 0;
 static int failed = 0;
 
@@ -121,14 +128,32 @@ int main(void)
     }
 
     /* Legal in neither: the repair path. The point is that the damage is visible (U+FFFD) and
-     * the result is still valid UTF-8 -- not that some plausible text was invented. */
+     * the result is still valid UTF-8 -- not that some plausible text was invented.
+     *
+     * WHICH inputs are "legal in neither" depends on the ANSI code page, which is why this
+     * asserts conditionally. A single-byte page maps all 256 byte values, so nothing in this
+     * range is illegal and the repair path cannot be reached; a double-byte page rejects
+     * plenty. Assuming one case is what made this pass on a GBK machine and fail on a US
+     * runner with CP437. The condition is asked of the OS rather than guessed: MultiByteToWideChar
+     * with MB_ERR_INVALID_CHARS is the same call the implementation makes, so the test pins
+     * the contract ("refused bytes become U+FFFD, accepted bytes do not") instead of pinning
+     * one code page. */
     {
-        char *out = edc_platform_output_to_utf8("\xFF\xFE\n", 3, &len, &converted);
-        CHECK(out != NULL, "a line that is legal in no encoding is repaired, not dropped");
+        static const char k_refused[] = "\xFF\xFE\n";
+        const bool ansi_refuses =
+            MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, k_refused, 3, NULL, 0) <= 0;
+
+        char *out = edc_platform_output_to_utf8(k_refused, 3, &len, &converted);
+        CHECK(out != NULL, "a line that is not UTF-8 is repaired, not dropped");
         if (out)
         {
             CHECK(edc_utf8_is_valid(out, len), "the repaired line is valid UTF-8");
-            CHECK(memchr(out, '\xEF', len) != NULL, "and carries U+FFFD where the sequence should have been");
+            if (ansi_refuses)
+                CHECK(memchr(out, '\xEF', len) != NULL,
+                      "and carries U+FFFD where the sequence should have been");
+            else
+                CHECK(memchr(out, '\xEF', len) == NULL,
+                      "this code page accepts those bytes, so there was nothing to repair");
             CHECK(converted == 1, "and counts as converted");
             free(out);
         }

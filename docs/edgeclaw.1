@@ -22,10 +22,12 @@ OPTIONS
      --help, -h
              Print usage and exit.  Likewise answered before anything else.
 
-     --no-sandbox
+     --no-sandbox, --sandbox=off
              Disable the filesystem sandbox for this run, without touching
-             config.json.  On platforms with no kernel sandbox backend this has
-             no effect; see the sandbox section.
+             config.json.  --sandbox=on (or a bare --sandbox) does the opposite
+             and forces it on where the platform allows.  On platforms with no
+             kernel sandbox backend these have no effect; see the sandbox
+             section.
 
      With no arguments it starts the interactive interface.  On first run,
      when config.json does not exist, it is created with defaults.

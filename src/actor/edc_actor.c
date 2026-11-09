@@ -2,10 +2,26 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+/* Atomic 64-bit increment, spelled once for every compiler.
+ *
+ * `__sync_add_and_fetch` is a GCC/Clang builtin: MSVC does not have it, so on Windows the
+ * reference stayed unresolved until link time (`LNK2019: unresolved external symbol
+ * __sync_add_and_fetch`) rather than failing where it is written. _InterlockedIncrement64 is
+ * the MSVC equivalent and returns the incremented value, like the builtin. */
+#if defined(_MSC_VER)
+#include <intrin.h>
+static __inline uint64_t edc_atomic_inc_u64(volatile uint64_t *p)
+{
+    return (uint64_t)_InterlockedIncrement64((volatile __int64 *)p);
+}
+#else
+#define edc_atomic_inc_u64(p) __sync_add_and_fetch((p), 1)
+#endif
+
 static void *generate_request_id(void)
 {
     static volatile uint64_t counter = 0;
-    uint64_t id = __sync_add_and_fetch(&counter, 1);
+    uint64_t id = edc_atomic_inc_u64(&counter);
     return (void *)(uintptr_t)id;
 }
 

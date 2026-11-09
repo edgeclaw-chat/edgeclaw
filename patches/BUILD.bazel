@@ -1,5 +1,7 @@
 exports_files([
+    "cjson-no-za.patch",
     "ftxui-conpty-input.patch",
     "log-format-attribute.patch",
+    "sds-msvc.patch",
     "sed-static-link.patch",
 ])

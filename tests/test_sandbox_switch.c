@@ -51,7 +51,9 @@ static int failed = 0;
  * parallel do not collide. */
 static bool scratch_home(char *buf, size_t cap)
 {
-    const char *base = getenv("TMPDIR");
+    const char *base = getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = getenv("TMPDIR");
     if (!base || !base[0])
         base = getenv("TEMP");
     if (!base || !base[0])

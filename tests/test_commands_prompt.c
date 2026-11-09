@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
@@ -169,7 +170,7 @@ int main(void)
     /* Create the prompts/ directory only: the workspace itself must survive, the store is
      * open on it. */
     snprintf(cmd, sizeof(cmd), "mkdir -p %s/prompts", ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     write_prompt(ws, "review",
@@ -551,7 +552,7 @@ int main(void)
     {
         char cmd[1024];
         snprintf(cmd, sizeof(cmd), "mkdir -p %s/skills/pdf", ws);
-        if (system(cmd) != 0)
+        if (test_sh(cmd) != 0)
             return 1;
         char path[1024];
         snprintf(path, sizeof(path), "%s/skills/pdf/SKILL.md", ws);

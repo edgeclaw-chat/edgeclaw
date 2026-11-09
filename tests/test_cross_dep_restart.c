@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -113,7 +114,7 @@ static void give_input(struct edc_task *t)
  * the dependency unrestorable. */
 static void build_and_save(const char *ws, bool delete_b_state, sds *out_at_id, sds *out_bt_id)
 {
-    char cmd[512];
+    char cmd[2048];
     /* the workspace is created once and the store stays open on it: no rm here */
 
 
@@ -239,7 +240,7 @@ static void scenario_unresolvable(const char *ws)
  * the fixpoint loop. */
 static void scenario_multihop(const char *ws)
 {
-    char cmd[512];
+    char cmd[2048];
     /* the workspace is created once and the store stays open on it: no rm here */
 
 
@@ -305,22 +306,41 @@ static void scenario_multihop(const char *ws)
  * a version mismatch that has nothing to do with what is being tested. */
 static void wipe(const char *ws)
 {
-    char cmd[512];
+    char cmd[2048];
     snprintf(cmd, sizeof(cmd),
              "rm -rf '%s'; mkdir -p '%s'", ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "warning: could not reset %s\n", ws);
+}
+
+/* The three workspaces live under Bazel's per-test TEST_TMPDIR instead of a fixed
+ * "/tmp/test_cross_dep_restart_[abc]": "/tmp" is POSIX-only (on Windows it means "\tmp" on the
+ * current drive, where mkdir -p would create it at the drive root), and a fixed name also
+ * makes concurrent or leftover runs share one tree. */
+static char g_root[1024];
+
+static const char *case_dir(const char *suffix)
+{
+    static char buf[1024];
+    snprintf(buf, sizeof(buf), "%s/%s", g_root, suffix);
+    return buf;
 }
 
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
-    wipe("/tmp/test_cross_dep_restart_a");
-    wipe("/tmp/test_cross_dep_restart_b");
-    wipe("/tmp/test_cross_dep_restart_c");
-    scenario_restore("/tmp/test_cross_dep_restart_a");
-    scenario_unresolvable("/tmp/test_cross_dep_restart_b");
-    scenario_multihop("/tmp/test_cross_dep_restart_c");
+    test_tmp_template(g_root, sizeof(g_root), "cross_dep_restart");
+    if (!mkdtemp(g_root))
+    {
+        perror("mkdtemp");
+        return 1;
+    }
+    wipe(case_dir("a"));
+    wipe(case_dir("b"));
+    wipe(case_dir("c"));
+    scenario_restore(case_dir("a"));
+    scenario_unresolvable(case_dir("b"));
+    scenario_multihop(case_dir("c"));
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -95,9 +96,9 @@ int main(void)
     edc_test_workspace(); /* open the disposable store before anything writes */
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    test_sh(cmd);
     snprintf(cmd, sizeof(cmd), "mkdir -p %s", TEST_WS);
-    system(cmd);
+    test_sh(cmd);
 
     struct edc_config *cfg = g_new0(struct edc_config, 1);
     cfg->workspace = sdsnew(TEST_WS);
@@ -232,7 +233,7 @@ int main(void)
     edc_session_manager_free(sm);
     edc_config_free(cfg);
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    system(cmd);
+    test_sh(cmd);
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;

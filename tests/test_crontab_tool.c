@@ -40,6 +40,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_failed = 0;
 static int g_passed = 0;
@@ -90,7 +91,7 @@ static void reset_dir(void)
 {
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "    (warning: could not reset %s)\n", g_dir);
 }
 
@@ -230,7 +231,25 @@ static void test_add_at(void)
     CHECK(job != NULL, "the one-shot job was written");
 
     struct tm want = {0};
+#if defined(_WIN32)
+    /* The product's own Windows branch parses the same format with sscanf (it has no
+     * strptime in the CRT), so the expectation is built the same way here. */
+    {
+        int year, mon, day, hour, min, sec;
+        if (sscanf("2031-05-01T12:00:00", "%d-%d-%dT%d:%d:%d",
+                   &year, &mon, &day, &hour, &min, &sec) == 6)
+        {
+            want.tm_year = year - 1900;
+            want.tm_mon = mon - 1;
+            want.tm_mday = day;
+            want.tm_hour = hour;
+            want.tm_min = min;
+            want.tm_sec = sec;
+        }
+    }
+#else
     strptime("2031-05-01T12:00:00", "%Y-%m-%dT%H:%M:%S", &want);
+#endif
     const long long expect = (long long)mktime(&want);
     CHECK(job_next_run(job) == expect, "next_run is that wall clock, interpreted as host-local time");
     CHECK(job_str(job, "schedule", "once") == NULL, "once is a bool, not a string");
@@ -656,7 +675,9 @@ static void test_add_to_file_without_jobs_key(void)
 int main(void)
 {
     edc_test_workspace(); /* disposable store for anything that writes state */
-    const char *tmp = getenv("TMPDIR");
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = getenv("TMPDIR");
     snprintf(g_dir, sizeof(g_dir), "%s/edc_test_crontab_tool_%ld",
              (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
 
@@ -679,7 +700,7 @@ int main(void)
     capture_reset();
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

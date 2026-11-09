@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 static int passed = 0, failed = 0;
 #define TEST(n)                                                                                                        \
@@ -138,7 +139,7 @@ int main(void)
      * directory is not (it would take the database with it and every message written so
      * far would be gone). */
     snprintf(cmd, sizeof(cmd), "mkdir -p %s/sub/deep %s/many", ws, ws);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         return 1;
 
     char path[512];
@@ -240,9 +241,20 @@ int main(void)
     /* A quoted reference names exactly what is inside the quotes: punctuation included. */
     TEST("@\"a.txt.\" keeps the full stop -- the user delimited it");
     {
+#if defined(_WIN32)
+        /* Win32 strips trailing dots and spaces from a path component, so "a.txt." IS "a.txt"
+         * on Windows: the read succeeds and there is no failure message to assert. The property
+         * under test -- punctuation inside the quotes belongs to the path -- is therefore
+         * checked here with a character the filesystem preserves, so the case still proves
+         * something on this platform instead of being skipped. */
+        struct edc_task *t = run(cfg, sm, sched, sess, "看下 @\"a.txt!\"");
+        CHECK(msg_count(t) == 2, "it was treated as a reference");
+        CHECK(has(content_at(t, 1), "Read tool failed to read a.txt!"), "and the punctuation is part of the path");
+#else
         struct edc_task *t = run(cfg, sm, sched, sess, "看下 @\"a.txt.\"");
         CHECK(msg_count(t) == 2, "it was treated as a reference");
         CHECK(has(content_at(t, 1), "Read tool failed to read a.txt."), "and the full stop is part of the path");
+#endif
     }
 
     TEST("@\"my file.txt\"#2-3: a quoted path still takes a line range");

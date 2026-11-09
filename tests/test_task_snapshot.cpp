@@ -208,7 +208,10 @@ void TestParsedSnapshotRenders()
     // first pass only primes it (same two-pass scheme as test_task_widget).
     constexpr int kW = 40;
     constexpr int kH = 20;
-    auto make_screen = [] {
+    /* kW/kH are captured explicitly: MSVC in C++ mode refuses an implicit capture of a local
+     * constexpr in a lambda with no capture-default (error C3493), where gcc and clang treat
+     * it as a constant expression and do not require a capture. */
+    auto make_screen = [kW, kH] {
         return ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kW), ::ftxui::Dimension::Fixed(kH));
     };
     ::ftxui::Screen screen = make_screen();

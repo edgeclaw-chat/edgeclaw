@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "test_fs_util.h"
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -116,7 +117,7 @@ int main(void)
     edc_test_workspace(); /* open the disposable store before anything writes */
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         log_warn("could not clean %s", TEST_WS);
 
     struct edc_config *cfg = make_config();
@@ -182,7 +183,7 @@ int main(void)
     free(cfg);
     edc_state_store_close();
     snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_WS);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         log_warn("could not clean %s", TEST_WS);
 
     log_info("passed=%d failed=%d", g_passed, g_failed);

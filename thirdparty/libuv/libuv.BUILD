@@ -18,16 +18,23 @@ _LOCAL_DEFINES = [
     "//conditions:default": [],
 })
 
-_COPTS = [
-    "-fno-strict-aliasing",
-    "-fvisibility=hidden",
-    "-Wall",
-    "-Wextra",
-    "-Wno-unused-parameter",
-    "-Wstrict-prototypes",
-    "-Wno-incompatible-pointer-types",
-    "-Wno-discarded-qualifiers",
-]
+_COPTS = select({
+    # MSVC: none of the flags below exist. cl.exe reads `-Wextra` as the switch
+    # `/Wextra` and rejects it outright -- `error D8021: invalid numeric argument
+    # '/Wextra'` -- which failed EVERY libuv source file on Windows, not just one.
+    # libuv itself compiles fine with MSVC; only these warning flags are GNU-specific.
+    "@platforms//os:windows": [],
+    "//conditions:default": [
+        "-fno-strict-aliasing",
+        "-fvisibility=hidden",
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+        "-Wstrict-prototypes",
+        "-Wno-incompatible-pointer-types",
+        "-Wno-discarded-qualifiers",
+    ],
+})
 
 cc_library(
     name = "src_headers",
@@ -119,14 +126,24 @@ cc_library(
     hdrs = glob(["include/**/*.h"]),
     copts = _COPTS,
     linkopts = select({
+        # MSVC spellings. The GNU forms this used to carry (`-lws2_32` and friends) reached
+        # link.exe as `/lws2_32`, which is not an option it knows: it prints
+        # `warning LNK4044: unrecognized option '/lws2_32'` and links NOTHING, so every
+        # socket/userenv/IP-helper symbol libuv needs came back as LNK2019 at the end.
         "@platforms//os:windows": [
-            "-lws2_32",
-            "-luserenv",
-            "-liphlpapi",
-            "-lpsapi",
-            "-lshell32",
-            "-lole32",
-            "-ldbghelp",
+            "ws2_32.lib",
+            "userenv.lib",
+            "iphlpapi.lib",
+            "psapi.lib",
+            "shell32.lib",
+            "ole32.lib",
+            "dbghelp.lib",
+            # user32/advapi32: libuv's tty and process code calls the window-message API
+            # (GetMessageA/TranslateMessage/DispatchMessageA/MapVirtualKeyW) and the token
+            # API (OpenProcessToken), which MSVC does not pull in implicitly the way the
+            # MinGW driver did.
+            "user32.lib",
+            "advapi32.lib",
         ],
         "//conditions:default": [
             "-pthread",

@@ -37,6 +37,7 @@
 
 #include "edc_api.h"
 #include "edc_app.h"
+#include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_models.h"
 #include "sds.h"
@@ -46,6 +47,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int g_passed = 0;
 static int g_failed = 0;
@@ -112,11 +114,11 @@ static void setup(void)
 
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_home);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         die("could not clear the temp home");
 
     snprintf(cmd, sizeof(cmd), "mkdir -p '%s' '%s/prompts' '%s/skills/demo'", g_workspace, g_workspace, g_workspace);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         die("could not create the workspace");
 
     /* api_key is PLAINTEXT on purpose: no `EDGECLAW_ENC:` prefix means no decryption, so the
@@ -153,6 +155,9 @@ static void setup(void)
     write_file_or_die(catalog, kCatalog);
 
     setenv("HOME", g_home, 1);
+    /* libuv uv_os_homedir() prefers USERPROFILE on Windows, so a test that
+     * relocates the home directory has to move both or it reads the real one. */
+    setenv("USERPROFILE", g_home, 1);
     setenv("EDGECLAW_MASTER_KEY", "app-boundary-master-key", 1);
     setenv("EDGECLAW_MODELS_CATALOG", catalog, 1);
     edc_models_reset(); /* the loader is a process-wide cache; start from our file */
@@ -170,7 +175,7 @@ static void teardown(void)
     }
     char cmd[1024];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_home);
-    if (system(cmd) != 0)
+    if (test_sh(cmd) != 0)
         fprintf(stderr, "teardown: could not remove %s\n", g_home);
 }
 
@@ -496,11 +501,17 @@ static void test_mention_exists_resolves_through_the_sandbox()
     CHECK(edc_app_mention_exists(NULL, g_workspace, "src/main.c") == 0, "no app, no answer");
     /* The mark follows the SANDBOX's answer, not stat()'s -- that is the whole reason this
      * resolves through the sandbox instead of stat()ing. The default config's ro list
-     * includes /usr, so an existing path there is readable and IS a reference; a path under
-     * no list at all is refused even though it is just as absent. Both arms matter: a
-     * stat()-only implementation would answer 1 for /root and 0 for /usr, i.e. exactly
-     * backwards. */
-    CHECK(edc_app_mention_exists(g_app, g_workspace, "/usr") == 1,
+     * includes /usr (C:\Windows on Windows), so an existing path there is readable and IS a
+     * reference; a path under no list at all is refused even though it is just as absent.
+     * Both arms matter: a stat()-only implementation would answer 1 for /root and 0 for /usr,
+     * i.e. exactly backwards. */
+#if defined(_WIN32)
+    /* EDC_SANDBOX_DEFAULT_RO_PATHS on this platform (see edc_config.h). */
+    const char *ro_existing = "C:\\Windows";
+#else
+    const char *ro_existing = "/usr";
+#endif
+    CHECK(edc_app_mention_exists(g_app, g_workspace, ro_existing) == 1,
           "an existing path inside the ro list is a reference");
     CHECK(edc_app_mention_exists(g_app, g_workspace, "/root/definitely-not-listed") == 0,
           "a path outside every sandbox list is refused, so it never wears the mark");
@@ -535,6 +546,21 @@ static void test_prompt_and_skill_readers_need_a_workspace()
 
 /* ── Paths ────────────────────────────────────────────────────────────────── */
 
+/* The expectations below are written with '/' while the app builds its paths in NORMAL form
+ * (edc_path_norm: the platform's separator). On Windows that is the same path in a different
+ * spelling, and the assertion compares strings, so the expectation is normalised first.
+ * No-op on POSIX, where '/' is the only separator. */
+static void native_sep(char *s)
+{
+#if defined(_WIN32)
+    for (; *s; s++)
+        if (*s == '/')
+            *s = '\\';
+#else
+    (void)s;
+#endif
+}
+
 static void test_chat_log_path_is_built_by_convention()
 {
     TEST("the transcript path is <workspace>/<session_id>/chat.jsonl");
@@ -542,6 +568,7 @@ static void test_chat_log_path_is_built_by_convention()
     CHECK(edc_app_chat_log_path_for(g_app, "sess-1", buf, sizeof(buf)), "a session id resolves");
     char expected[700];
     snprintf(expected, sizeof(expected), "%s/sess-1/chat.jsonl", g_workspace);
+    native_sep(expected);
     CHECK(strcmp(buf, expected) == 0, "path: got '%s' want '%s'", buf, expected);
 
     /* The guard list, in one place: an empty id, a missing buffer, a too-small buffer and no
@@ -568,6 +595,7 @@ static void test_history_path_lives_under_the_home()
     CHECK(edc_app_history_path(buf, sizeof(buf)), "the path resolves");
     char expected[700];
     snprintf(expected, sizeof(expected), "%s/.edgeclaw/.tui_history", g_home);
+    native_sep(expected);
     CHECK(strcmp(buf, expected) == 0, "path: got '%s' want '%s'", buf, expected);
 
     char tiny[8];

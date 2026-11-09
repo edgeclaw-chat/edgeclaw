@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <uv.h>
+#include "edc_list.h"
 
 #define BC_MASTER_KEY_ENV "EDGECLAW_MASTER_KEY"
 #define CMD_TIMEOUT_SEC 30
@@ -698,11 +699,9 @@ struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
     const char *name = "exec_shell";
     const char *desc = "Execute shell command and return output";
     struct edc_tool_param *params = NULL;
-    LL_APPEND(params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), true));
-    LL_APPEND(params,
-              edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
-    LL_APPEND(params,
-              edc_tool_param_new("working_dir",
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), true));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));
+    EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("working_dir",
                                  edc_param_str_type("Working directory (relative to sandbox root)", NULL), false));
     struct edc_tool *tool = edc_tool_new(name, desc, params, edc_tool_exec_shell_async);
     /* A running command is the one thing here that must be killed when its task is

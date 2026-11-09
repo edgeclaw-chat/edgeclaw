@@ -3,7 +3,11 @@ build --enable_platform_specific_config
 #build --copt=-ffunction-sections
 #build --copt=-fdata-sections
 #build --linkopt=-Wl,--gc-sections
-build --conlyopt="-std=gnu99"
+# `-std=gnu99` is a GCC spelling. It used to sit here unconditionally, so cl.exe was handed
+# it as well and answered `D9002: ignoring unknown option '-std=gnu99'` on every single C
+# compile. It now lives in the `linux` / `macos` configs (activated by
+# --enable_platform_specific_config above); Windows gets `/std:c11` from the `windows`
+# config further down instead.
 build --@mbedtls//:mbedtls_config=//src:mbedtls_config
 
 # SQLite compile options (session state persistence). The BCR module compiles sqlite3.c with
@@ -32,7 +36,10 @@ build --@mbedtls//:mbedtls_config=//src:mbedtls_config
 build --per_file_copt='sqlite3\.c$@-DSQLITE_DQS=0,-DSQLITE_OMIT_LOAD_EXTENSION'
 
 # Pure C project: override default link_libs to exclude -lstdc++
-build --repo_env=BAZEL_LINKLIBS=-lm
+# Scoped to Linux/macOS: `-lm` is a GNU-driver spelling. MSVC links the CRT by default and
+# has no libm to name, so handing this to link.exe would only produce errors.
+build:linux --repo_env=BAZEL_LINKLIBS=-lm
+build:macos --repo_env=BAZEL_LINKLIBS=-lm
 
 # Fix hedron_compile_commands' C++ helper binary linking (pure C project lacks -lstdc++)
 build:cc --linkopt=-lstdc++
@@ -41,10 +48,31 @@ build:dbg --compilation_mode=dbg
 build:dbg --copt=-g
 build:dbg --strip=never
 
-# MinGW-w64 toolchain on Windows (auto-detects gcc in PATH)
-# Falls back to MSVC if MinGW not found
-build:windows --extra_toolchains=@mingw_toolchain//:mingw_windows_toolchain
-build:windows --repo_env=PATH
+# ── Linux / macOS: GNU toolchains ────────────────────────────────────────────
+# The gcc/clang language level for C sources. Linux/macOS only -- see the note at the top
+# where `-std=gnu99` used to be unconditional.
+build:linux --conlyopt=-std=gnu99
+build:macos --conlyopt=-std=gnu99
+
+# ── Windows: MSVC ────────────────────────────────────────────────────────────
+# MinGW is not supported. The `@mingw_toolchain` extension and its
+# `--extra_toolchains` line used to live here; both are gone, so Bazel falls back to its
+# own autodetected MSVC toolchain on a Windows host (see the note in MODULE.bazel).
+# `--repo_env=PATH` went with them: it existed only so the MinGW repository rule could
+# find gcc on PATH, and it has no meaning for MSVC.
+build:windows --copt=/utf-8
+build:windows --host_copt=/utf-8
+# Static CRT, for the same reason the MinGW build passed `-static`: the release archive ships
+# only edgeclaw.exe, so anything it imports besides Windows itself would be a missing
+# dependency on a clean machine. cl links VCRUNTIME140.dll by default; /MT (Bazel's
+# `static_link_msvcrt` feature) puts that runtime inside the binary instead. The UCRT
+# api-ms-win-crt-* DLLs remain dynamic, which is correct -- they are part of Windows 10+.
+build:windows --features=static_link_msvcrt
+build:windows --host_features=static_link_msvcrt
+# `_Static_assert` (src/common/edc_platform.c) and the C99 designated initializers used
+# throughout need C11; MSVC's default C mode is C89 and rejects both.
+build:windows --conlyopt=/std:c11
+
 
 # ── macOS: pin the deployment target ─────────────────────────────────────────
 # Without this, the minimum OS is whatever the build machine's SDK says it is, and

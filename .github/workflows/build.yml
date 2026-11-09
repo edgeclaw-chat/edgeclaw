@@ -5,7 +5,7 @@ name: Build
 # `master` or a `v*` tag. So the branch everybody actually works on was the one branch no
 # workflow ever built -- and a status badge pointed at it would have said "no status" forever.
 #
-# Deliberately NOT triggered by pull_request: `PR Check` already builds ten platforms and
+# Deliberately NOT triggered by pull_request: `PR Check` already builds five platforms and
 # runs the suite for a PR to master, and duplicating that here would double the minutes.
 # It builds the three shipped targets and checks the release archive's licences, i.e. the
 # things a push to trunk should not break.
@@ -34,7 +34,7 @@ jobs:
       # project produced `Disk quota exceeded` disguised as a compile error.
       - name: Build
         run: |
-          bazel build //src/tui:edgeclaw //src/cli:edgeclaw_cli //:edgeclaw \
+          bazel build //src/tui:edgeclaw //:edgeclaw \
                 --action_env=TMPDIR="$RUNNER_TEMP"
         env:
           TMPDIR: ${{ runner.temp }}
@@ -92,3 +92,90 @@ jobs:
           echo "$tarball carries $(echo "$entries" | grep -c 'LICENSE') licence file(s)"
         env:
           TMPDIR: ${{ runner.temp }}
+
+  # Windows used to be built only by Release (on a push to master or a v* tag), with MinGW
+  # discovered from the environment. Nothing on the trunk ever compiled this code with the
+  # compiler Windows now uses, so a change that only worked under gcc could sit on dev for
+  # days and then fail at the one moment a release is being cut. This job is that signal:
+  # it builds the Windows artifacts with MSVC on every push to trunk.
+  #
+  # `shell: bash` because the rest of this file is bash and Git for Windows provides it; the
+  # labels and flags below are the same strings release.yml passes, so the two cannot drift.
+  windows:
+    name: Build (windows/amd64, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-build-windows
+          repository-cache: true
+
+      # No toolchain stanzas and no compiler installation: MSVC comes from the runner's
+      # Visual Studio Build Tools, which Bazel autodetects. That is the whole point of the
+      # toolchain change this job protects -- if Bazel stops finding MSVC, the failure
+      # appears here rather than in a release.
+      - name: Build
+        shell: bash
+        run: |
+          bazel build --compilation_mode=opt --platforms=//:amd64_windows \
+                //src/tui:edgeclaw //:edgeclaw \
+                --action_env=TMPDIR="$RUNNER_TEMP"
+
+      # A binary that links but cannot start is a failure the build alone cannot see. This is
+      # cheap and it exercises the CRT, the generated version header and the platform table.
+      # It smoke-tests the SHIPPED binary -- the one the archive carries -- so what is
+      # verified here is what a user runs.
+      - name: Smoke test the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(bazel cquery --output=files //src/tui:edgeclaw \
+                  --compilation_mode=opt --platforms=//:amd64_windows \
+                  --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$exe" ] && [ -f "$exe" ] || { echo "::error::no binary was produced"; exit 1; }
+          echo "running: $exe"
+          "$exe" --version | tee version.txt
+          grep -q 'platform windows/amd64' version.txt \
+            || { echo "::error::the binary does not report the platform it was built for"; exit 1; }
+
+      # The archive ships edgeclaw.exe and nothing else, so a runtime DLL import means the
+      # program aborts on a clean machine instead of running. Same check release.yml applies
+      # to the artifact users download; here it runs on what the trunk produced.
+      - name: Verify the Windows binary is self-contained
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(bazel cquery --output=files //src/tui:edgeclaw \
+                  --compilation_mode=opt --platforms=//:amd64_windows \
+                  --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$exe" ] && [ -f "$exe" ] || { echo "::error:://src/tui:edgeclaw produced no binary"; exit 1; }
+          python tools/check_windows_imports.py "$exe"
+
+      # A compiler switch is easy to make and hard to notice: if some other Windows
+      # cc_toolchain ever becomes selectable again, everything here would silently build with
+      # it. Assert the choice instead of assuming it.
+      #
+      # The unique --define is load-bearing: toolchain resolution only prints when analysis
+      # actually runs, so a warm cache would produce an empty log and this grep would pass or
+      # fail for the wrong reason. Changing the define forces a fresh analysis.
+      - name: Report the toolchain Bazel selected
+        shell: bash
+        run: |
+          set -euo pipefail
+          bazel build --nobuild --toolchain_resolution_debug='.*' \
+                --define=ci_toolchain_probe=${{ github.run_id }}-${{ github.run_attempt }} \
+                --platforms=//:amd64_windows //src/tui:edgeclaw \
+                --action_env=TMPDIR="$RUNNER_TEMP" > toolchain.log 2>&1 || true
+          grep 'tools/cpp:toolchain_type -> toolchain' toolchain.log | tail -1 || true
+          if grep -q 'cc-compiler-x64_windows' toolchain.log; then
+            echo "ok: MSVC (local_config_cc) is the selected C++ toolchain"
+          else
+            echo "::error::the Windows build did not select MSVC -- check that VS Build Tools"
+            echo "::error::is present and that no other Windows cc_toolchain is registered"
+            tail -30 toolchain.log
+            exit 1
+          fi

@@ -10,6 +10,7 @@
 #include "edc_toolbox.h"
 #include "log.h"
 #include "sds.h"
+#include "test_fs_util.h"
 #include <cJSON.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,6 +19,19 @@
 
 static int test_failed = 0;
 static int test_passed = 0;
+
+/* Scratch root for the three cases, under Bazel's per-test TEST_TMPDIR. These used to be fixed
+ * "/tmp/test_crontab_service_[abc]" paths: that assumes /tmp exists, which a Windows machine
+ * does not provide ("/tmp" there means "\tmp" on the current drive) -- mkdir() then failed
+ * silently, write_jobs() wrote nothing, and the cases failed with no readable cause. */
+static char g_base[1024];
+
+static const char *case_dir(const char *which)
+{
+    static char buf[1024];
+    snprintf(buf, sizeof(buf), "%s/%s", g_base, which);
+    return buf;
+}
 
 #define TEST(name)                                                                                                     \
     do                                                                                                                 \
@@ -79,7 +93,7 @@ static struct edc_config *make_config(const char *dir)
 static void test_due_once_job_fires_and_is_removed(void)
 {
     TEST("crontab service: a due one-shot job fires on the pump and is dropped");
-    const char *dir = "/tmp/test_crontab_service_a";
+    const char *dir = case_dir("a");
     struct edc_config *cfg = make_config(dir);
     long long past = (long long)time(NULL) - 10;
     char json[512];
@@ -111,7 +125,7 @@ static void test_due_once_job_fires_and_is_removed(void)
 static void test_due_every_job_advances(void)
 {
     TEST("crontab service: a due recurring job fires and its next_run advances");
-    const char *dir = "/tmp/test_crontab_service_b";
+    const char *dir = case_dir("b");
     struct edc_config *cfg = make_config(dir);
     long long past = (long long)time(NULL) - 10;
     char json[512];
@@ -148,7 +162,7 @@ static void test_due_every_job_advances(void)
 static void test_future_job_not_disturbed(void)
 {
     TEST("crontab service: an idle scan does not advance a not-yet-due job");
-    const char *dir = "/tmp/test_crontab_service_c";
+    const char *dir = case_dir("c");
     struct edc_config *cfg = make_config(dir);
     long long future = (long long)time(NULL) + 100000;
     char json[512];
@@ -182,6 +196,12 @@ static void test_future_job_not_disturbed(void)
 int main(void)
 {
     edc_test_workspace(); /* disposable store for anything that writes state */
+    test_tmp_template(g_base, sizeof(g_base), "edc_crontab_svc");
+    if (!mkdtemp(g_base))
+    {
+        perror("mkdtemp");
+        return 1;
+    }
     test_due_once_job_fires_and_is_removed();
     test_due_every_job_advances();
     test_future_job_not_disturbed();
