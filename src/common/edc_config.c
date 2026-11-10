@@ -151,6 +151,14 @@ sds *edc_config_default_deny_paths(void)
         ".zsh_history",
         ".bash_history",
         ".zsh_history.save",
+        /* the "keep secrets in a dotfile and source it" convention, which is what the
+         * README-adjacent advice amounts to. Without these the user has to name their own
+         * file by hand -- the app cannot guess an arbitrary name, but it can cover the
+         * names this pattern conventionally uses. */
+        ".secrets.env",
+        ".secrets",
+        ".envrc",
+        ".env.local",
         /* the app's own secrets: the EDGECLAW_ENC ciphertext is readable by design, and
          * .key_hash is a passphrase verifier -- together they are an offline oracle */
         ".edgeclaw/config.json",
