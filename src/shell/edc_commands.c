@@ -308,7 +308,7 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/sandbox rm-ro <dir>", "drop a read-only path", NULL},
     {"General", "/sandbox add-rw <dir>", "make a path read-write (it leaves the ro/deny lists)", NULL},
     {"General", "/sandbox rm-rw <dir>", "drop a read-write path", NULL},
-    {"General", "/sandbox add-deny <dir>", "mask a dir (wins over ro/rw; e.g. ~/.ssh)", NULL},
+    {"General", "/sandbox add-deny <path>", "mask a dir or file (wins over ro/rw; e.g. ~/.ssh, ~/.zshrc)", NULL},
     {"General", "/sandbox rm-deny <dir>", "unmask a dir", NULL},
 
     {"Scheduling", "/jobs", "list the scheduled jobs (cron / every / one-shot) with when they run next", NULL},

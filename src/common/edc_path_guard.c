@@ -129,8 +129,13 @@ sds edc_path_guard_resolve(const struct edc_path_rules *rules, const char *path,
     }
 
     /* 5. A second name for the same inode (hardlink). lstat cannot see this; st_nlink can.
-     *    Only asked for content that ends up in the model's context. */
-    if (rules->refuse_hardlink && stat(resolved, &lst) == 0 && lst.st_nlink > 1)
+     *    Only asked for content that ends up in the model's context.
+     *
+     *    Regular files only: a DIRECTORY's nlink counts its subdirectories, so every
+     *    directory with a child has nlink > 1 and the check would refuse list_dir on the
+     *    entire tree. The callers that set this flag read files, which is why it never
+     *    showed, but edc_sandbox_verify_path_at now sets it too and would have. */
+    if (rules->refuse_hardlink && stat(resolved, &lst) == 0 && S_ISREG(lst.st_mode) && lst.st_nlink > 1)
     {
         edc_error_set(error, EDC_ERR_FAILED,
                       "'%s' has %" PRIu64 " links (a hardlink to another file); refusing to use it", path,

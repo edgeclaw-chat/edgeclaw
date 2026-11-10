@@ -594,13 +594,39 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
         *changed = true;
     }
 
-    /* Materialize the deny list (empty by default) so the knob is visible and
-     * editable. Entries are masked out of the namespace by the sandbox helper
-     * (Landlock cannot express deny) and rejected by the tool path check. */
-    if (!cJSON_GetObjectItem(sandbox, "deny_paths"))
+    /* Materialize the deny list so the knob is visible and editable, and seed it with the
+     * sensitive $HOME paths (see edc_config_default_deny_paths): an empty list is the
+     * default that protects nothing, while the home directory stays readable.
+     *
+     * Filled when the key is ABSENT (fresh install, or an upgrade from a version that did
+     * not write it) and when it is EMPTY (an install that never configured one -- the
+     * shape every config.json written by the previous release has). A list with entries is
+     * left alone, so a user who removed one default keeps it removed; the one rough edge is
+     * that clearing ALL of them brings the defaults back on the next launch.
+     *
+     * Entries are masked out of the namespace by the sandbox helper (Landlock cannot
+     * express deny) and rejected by the tool path check. */
     {
-        cJSON_AddItemToObject(sandbox, "deny_paths", cJSON_CreateArray());
-        *changed = true;
+        cJSON *deny = cJSON_GetObjectItem(sandbox, "deny_paths");
+        const bool seed = !deny || (cJSON_IsArray(deny) && cJSON_GetArraySize(deny) == 0);
+        if (!deny)
+        {
+            cJSON_AddItemToObject(sandbox, "deny_paths", cJSON_CreateArray());
+            deny = cJSON_GetObjectItem(sandbox, "deny_paths");
+            *changed = true;
+        }
+        if (seed && cJSON_IsArray(deny))
+        {
+            sds *defaults = edc_config_default_deny_paths();
+            for (int i = 0; defaults && defaults[i]; i++)
+            {
+                cJSON_AddItemToArray(deny, cJSON_CreateString(defaults[i]));
+                sdsfree(defaults[i]);
+            }
+            free(defaults);
+            if (cJSON_GetArraySize(deny) > 0)
+                *changed = true;
+        }
     }
 
     /* The dedicated sandbox directory is gone: the launch directory is the
@@ -795,6 +821,22 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
             free(ro);
         }
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);
+    }
+    /* The deny list is part of the written panorama like the two arrays above, and it is
+     * the one that protects something: leaving it out meant a fresh install ran with no
+     * mask at all until the NEXT launch's top-up added an empty array. Seeded here, so the
+     * first run already has the sensitive $HOME paths denied (see
+     * edc_config_default_deny_paths). */
+    {
+        cJSON *deny_arr = cJSON_CreateArray();
+        sds *deny = edc_config_default_deny_paths();
+        for (int i = 0; deny && deny[i]; i++)
+        {
+            cJSON_AddItemToArray(deny_arr, cJSON_CreateString(deny[i]));
+            sdsfree(deny[i]);
+        }
+        free(deny);
+        cJSON_AddItemToObject(sandbox, "deny_paths", deny_arr);
     }
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 

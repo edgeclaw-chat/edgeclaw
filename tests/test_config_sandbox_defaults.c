@@ -234,6 +234,109 @@ int main(void)
 
     edc_config_free(cfg);
 
+    /* ── 4b. the deny list starts with the sensitive $HOME paths ──────────── */
+    /* edc_homedir() follows $HOME, so a scratch home decides what the defaults can see.
+     * Only a path that resolves is expected back: an entry naming something this install
+     * does not have matches nothing and earns a startup warning, so it is dropped instead
+     * of padding the list. */
+    char sb_home[1024];
+    test_tmp_template(sb_home, sizeof(sb_home), "edc_sb_deny_home");
+    if (mkdtemp(sb_home))
+    {
+        char planted_ssh[PATH_MAX], planted_hist[PATH_MAX], absent[PATH_MAX];
+        snprintf(planted_ssh, sizeof(planted_ssh), "%s/.ssh", sb_home);
+        snprintf(planted_hist, sizeof(planted_hist), "%s/.zsh_history", sb_home);
+        snprintf(absent, sizeof(absent), "%s/.gnupg", sb_home);
+        test_mkdir(planted_ssh);
+        FILE *fh = fopen(planted_hist, "w");
+        if (fh)
+        {
+            fputs("export SOME_TOKEN=not-a-real-one\n", fh);
+            fclose(fh);
+        }
+
+        char saved_home[PATH_MAX];
+        const char *old_home = getenv("HOME");
+        snprintf(saved_home, sizeof(saved_home), "%s", old_home ? old_home : "");
+        setenv("HOME", sb_home, 1);
+
+        sds *defs = edc_config_default_deny_paths();
+        if (!has_path(defs, planted_ssh) || !has_path(defs, planted_hist))
+        {
+            dump_list("default deny", defs);
+            fprintf(stderr, "  $HOME = [%s]\n", sb_home);
+        }
+        T_CHECK(has_path(defs, planted_ssh), "the defaults deny ~/.ssh");
+        T_CHECK(has_path(defs, planted_hist), "the defaults deny ~/.zsh_history");
+        T_CHECK(!has_path(defs, absent), "a default naming a path that does not exist is dropped");
+        T_CHECK(list_is_canonical(defs), "the default deny list is canonical");
+        for (int i = 0; defs && defs[i]; i++)
+            sdsfree(defs[i]);
+        free(defs);
+
+        /* ... and the seed reaches a freshly written config.json. */
+        char seeded[1024];
+        test_tmp_template(seeded, sizeof(seeded), "edc_sb_deny_seed");
+        if (mkdtemp(seeded))
+        {
+            T_CHECK(edc_init_env(seeded, true), "edc_init_env writes a config.json");
+            struct edc_config *sc = edc_config_load(seeded);
+            T_CHECK(sc != NULL, "the seeded config reads back");
+            if (sc)
+            {
+                if (!has_path(sc->sandbox_deny_paths, planted_ssh))
+                    dump_list("seeded deny_paths", sc->sandbox_deny_paths);
+                T_CHECK(has_path(sc->sandbox_deny_paths, planted_ssh), "config.json deny_paths has ~/.ssh");
+                T_CHECK(has_path(sc->sandbox_deny_paths, planted_hist), "config.json deny_paths has ~/.zsh_history");
+                T_CHECK(list_is_canonical(sc->sandbox_deny_paths), "the seeded deny list is canonical");
+                edc_config_free(sc);
+            }
+            test_rm_rf(seeded);
+        }
+
+        setenv("HOME", saved_home, 1);
+        test_rm_rf(sb_home);
+    }
+
+    /* ── 4c. a deny entry may name a single FILE ──────────────────────────── */
+    /* That is the case deny exists for: the secrets worth masking are files in
+     * directories the model is meant to keep reading. ro/rw stay directory-only. */
+    cfg = edc_config_load(home);
+    if (cfg)
+    {
+        char denied_file[PATH_MAX];
+        snprintf(denied_file, sizeof(denied_file), "%s/its_a_secret", home);
+        FILE *sf = fopen(denied_file, "w");
+        if (sf)
+        {
+            fputs("not a real secret\n", sf);
+            fclose(sf);
+        }
+
+        sds msg = NULL;
+        bool ok = edc_config_set_sandbox_path(cfg, denied_file, EDC_SANDBOX_PATH_DENY, true, &msg);
+        if (!ok)
+            fprintf(stderr, "  deny of a file failed: %s\n", msg ? msg : "(no message)");
+        T_CHECK(ok, "a regular file can be added to the deny list");
+        T_CHECK(has_path(cfg->sandbox_deny_paths, denied_file), "the denied file is in deny_paths");
+        if (msg)
+            sdsfree(msg);
+        msg = NULL;
+
+        ok = edc_config_set_sandbox_path(cfg, denied_file, EDC_SANDBOX_PATH_RW, true, &msg);
+        T_CHECK(!ok, "rw still refuses a regular file");
+        if (msg)
+            sdsfree(msg);
+        msg = NULL;
+
+        ok = edc_config_set_sandbox_path(cfg, "/no/such/path/anywhere", EDC_SANDBOX_PATH_DENY, true, &msg);
+        T_CHECK(!ok, "denying a path that does not exist is reported, not accepted silently");
+        if (msg)
+            sdsfree(msg);
+
+        edc_config_free(cfg);
+    }
+
     /* Best-effort cleanup (the other config tests leave their home behind too). */
     char conf_path[sizeof(home) + 16];
     snprintf(conf_path, sizeof(conf_path), "%s/config.json", home);

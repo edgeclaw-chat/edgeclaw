@@ -72,6 +72,27 @@ const char *edc_sandbox_platform_ro_paths(void);
 const char *edc_sandbox_default_rw_paths(void);
 const char *edc_sandbox_default_ro_paths(void);
 
+/* A fresh, NULL-terminated array of the sensitive $HOME paths the deny list starts
+ * with, or NULL where the sandbox has no backend.
+ *
+ * The home directory is the one subtree the sandbox makes READABLE but not writable
+ * (the model may read the user's files, must not modify them), so every dotfile in it
+ * is model-visible: shell history and rc files carry tokens in plain text, ~/.ssh a
+ * private key. Deny is the only list that masks a path out of an allowed parent --
+ * edc_path_guard for the tool reads, a namespace mount for shell commands -- so these
+ * names are the ones that are pure liability.
+ *
+ * Only paths that resolve are returned: an unresolvable deny entry matches nothing and
+ * earns a startup warning (edc_sandbox_report_unresolved_paths), so naming a path this
+ * install does not have would be noise rather than policy.
+ *
+ * Deliberately NOT blanket "~/.edgeclaw" or "~/.config": the workspace and the skills
+ * live under the former, and deny wins over rw, so a blanket entry would mask the app's
+ * own state. Only the secret files themselves are named.
+ *
+ * Caller frees the array (sdsfree each + free). */
+sds *edc_config_default_deny_paths(void);
+
 struct llm_api_conf
 {
     sds model;

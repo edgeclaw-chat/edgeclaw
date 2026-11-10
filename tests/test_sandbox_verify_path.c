@@ -18,9 +18,12 @@
 #include "edc_config.h"
 #include "edc_sandbox.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int passed = 0;
 static int failed = 0;
@@ -116,6 +119,88 @@ int main(void)
     CHECK(out != NULL && strcmp(out, rel) == 0, "without a base the path is returned as given");
     if (out)
         sdsfree(out);
+
+    /* ── the hardlink rule ───────────────────────────────────────────────── */
+    /* The deny list matches PATHS, so a second name for a secret -- the classic
+     * `ln ~/.ssh/id_ed25519 ~/ws/innocent` -- lands under a name no deny entry covers,
+     * and the mask the deny list promises would be bypassed. The read path therefore
+     * refuses a regular file with more than one link.
+     *
+     * A directory has to stay exempt: its nlink counts its children, so the naive check
+     * refused every directory that had one -- which list_dir would have hit as soon as
+     * this flag reached the tool entry point. Writes are exempt too, so trees that
+     * hardlink their outputs keep working. */
+    {
+        char hl_root[PATH_MAX];
+        snprintf(hl_root, sizeof(hl_root), "/tmp/edc_hl_XXXXXX");
+        if (mkdtemp(hl_root))
+        {
+            char secret[PATH_MAX], plain[PATH_MAX], alias[PATH_MAX];
+            snprintf(secret, sizeof(secret), "%s/secret.txt", hl_root);
+            snprintf(plain, sizeof(plain), "%s/plain.txt", hl_root);
+            snprintf(alias, sizeof(alias), "%s/innocent.txt", hl_root);
+
+            FILE *f = fopen(secret, "w");
+            if (f)
+            {
+                fputs("PRIVATE KEY\n", f);
+                fclose(f);
+            }
+            f = fopen(plain, "w");
+            if (f)
+            {
+                fputs("hello\n", f);
+                fclose(f);
+            }
+            CHECK(link(secret, alias) == 0, "the test can hardlink a file");
+
+            sds rw[2] = {sdsnew(hl_root), NULL};
+            struct edc_config conf2;
+            memset(&conf2, 0, sizeof(conf2));
+            conf2.enable_sandbox = true;
+            conf2.sandbox_root_real = sdsnew(hl_root);
+            conf2.sandbox_rw_paths = rw;
+
+            EdcError *hl_err = NULL;
+            sds got = edc_sandbox_verify_path_at(&conf2, NULL, alias, false, &hl_err);
+            CHECK(got == NULL, "a hardlinked file is refused for a model-facing read");
+            if (got)
+                sdsfree(got);
+            if (hl_err)
+                edc_error_free(hl_err);
+            hl_err = NULL;
+
+            got = edc_sandbox_verify_path_at(&conf2, NULL, plain, false, &hl_err);
+            CHECK(got != NULL, "an ordinary file in the same directory still reads");
+            if (got)
+                sdsfree(got);
+            if (hl_err)
+                edc_error_free(hl_err);
+            hl_err = NULL;
+
+            got = edc_sandbox_verify_path_at(&conf2, NULL, hl_root, false, &hl_err);
+            CHECK(got != NULL, "a directory holding children is not mistaken for a hardlink");
+            if (got)
+                sdsfree(got);
+            if (hl_err)
+                edc_error_free(hl_err);
+            hl_err = NULL;
+
+            got = edc_sandbox_verify_path_at(&conf2, NULL, alias, true, &hl_err);
+            CHECK(got != NULL, "the hardlink rule does not apply to writes");
+            if (got)
+                sdsfree(got);
+            if (hl_err)
+                edc_error_free(hl_err);
+
+            sdsfree(conf2.sandbox_root_real);
+            sdsfree(rw[0]);
+            unlink(alias);
+            unlink(secret);
+            unlink(plain);
+            rmdir(hl_root);
+        }
+    }
 
     printf("%d passed, %d failed\n", passed, failed);
     return failed == 0 ? 0 : 1;

@@ -93,6 +93,64 @@ static sds *edc_config_default_rw_paths(const char *workspace)
     return out;
 }
 
+/* Default deny list: the credential and history files under $HOME (see the header).
+ * Relative to $HOME so the same list works for every user; resolved before returning,
+ * so what lands in config.json is the canonical spelling and an entry naming a path
+ * this install does not have is simply absent. */
+sds *edc_config_default_deny_paths(void)
+{
+    if (!edc_platform_has_sandbox())
+        return NULL;
+
+    sds home = edc_homedir();
+    if (!home || sdslen(home) == 0)
+    {
+        sdsfree(home);
+        return NULL;
+    }
+
+    static const char *const k_rel[] = {
+        /* keys and credentials */
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".netrc",
+        ".npmrc",
+        ".git-credentials",
+        ".docker/config.json",
+        ".config/gh",
+        ".config/gcloud",
+        ".password-store",
+        /* shell history: what is typed on the command line lands here, tokens included */
+        ".zsh_history",
+        ".bash_history",
+        ".zsh_history.save",
+        /* the app's own secrets: the EDGECLAW_ENC ciphertext is readable by design, and
+         * .key_hash is a passphrase verifier -- together they are an offline oracle */
+        ".edgeclaw/config.json",
+        ".edgeclaw/.key_hash",
+    };
+
+    const size_t count = sizeof(k_rel) / sizeof(k_rel[0]);
+    sds *out = g_new0(sds, count + 1);
+    int n = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        sds cand = edc_path_join(home, k_rel[i], NULL);
+        char *real = realpath(cand, NULL);
+        if (real)
+        {
+            out[n++] = sdsnew(real);
+            free(real);
+        }
+        sdsfree(cand);
+    }
+    out[n] = NULL;
+    sdsfree(home);
+    return out;
+}
+
 static bool sds_array_contains(sds *arr, const char *s)
 {
     if (!arr)
@@ -1319,11 +1377,40 @@ bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_s
     if (!resolved)
     {
         if (msg)
-            *msg = sdscatprintf(sdsempty(), "no such directory: %s", path);
+            *msg = sdscatprintf(sdsempty(), "no such path: %s", path);
         return false;
     }
+
+    /* A deny entry may name a single FILE, and that is the case it exists for: the
+     * secrets worth masking are files (.zshrc, .zsh_history, ~/.netrc), and they sit in
+     * directories the model is meant to keep reading. The backends already handle it --
+     * edc_ns_sandbox masks a directory with a tmpfs and a file with a dead device node --
+     * but this check used to refuse anything that was not a directory, so the only way to
+     * deny a file was to hand-edit config.json.
+     *
+     * ro/rw stay directory-only: they describe subtrees, and a writable single file is
+     * better expressed by the deny list's neighbour entries anyway. */
     struct stat st;
-    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
+    if (stat(resolved, &st) != 0)
+    {
+        if (msg)
+            *msg = sdscatprintf(sdsempty(), "cannot stat: %s", resolved);
+        free(resolved);
+        return false;
+    }
+    if (kind == EDC_SANDBOX_PATH_DENY)
+    {
+        /* Directories and regular files both make sense; something else (a socket, a
+         * device node) is not a secret and cannot be masked meaningfully. */
+        if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))
+        {
+            if (msg)
+                *msg = sdscatprintf(sdsempty(), "not a file or directory: %s", resolved);
+            free(resolved);
+            return false;
+        }
+    }
+    else if (!S_ISDIR(st.st_mode))
     {
         if (msg)
             *msg = sdscatprintf(sdsempty(), "not a directory: %s", resolved);

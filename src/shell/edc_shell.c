@@ -200,8 +200,8 @@ sds edc_shell_sandbox_text(struct edc_config *conf)
                                                      : "off (not supported on this platform)";
     sds reply = sdscatprintf(sdsempty(), "## Sandbox `%s`\n\n", state);
     reply = edc_shell_sandbox_paths_md(reply, conf);
-    reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro|add-deny <dir>` · "
-                          "`/sandbox rm-rw|rm-ro|rm-deny <dir>`\n");
+    reply = sdscat(reply, "\nManage: `/sandbox add-rw|add-ro <dir>` · `/sandbox add-deny <dir|file>` · "
+                          "`/sandbox rm-rw|rm-ro|rm-deny <path>`\n");
     return reply;
 }
 
@@ -319,8 +319,8 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             bool add = (strncmp(verb, "add-", 4) == 0);
             if (nargs != 2)
             {
-                edc_commands_reply(to, "Usage: /sandbox add-rw|add-ro|add-deny <dir> | "
-                                       "rm-rw|rm-ro|rm-deny <dir> (quote a directory that contains "
+                edc_commands_reply(to, "Usage: /sandbox add-rw|add-ro <dir> | add-deny <dir|file> | "
+                                       "rm-rw|rm-ro|rm-deny <dir|file> (quote a path that contains "
                                        "spaces)");
             }
             else

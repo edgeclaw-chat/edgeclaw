@@ -173,6 +173,13 @@ static sds sandbox_verify(struct edc_config *conf, const char *base, const char 
         .root = NULL, /* containment is expressed by the rw/ro lists below, not a root */
         .writable = writable,
         .refuse_symlink = writable,
+        /* Reads refuse a hardlink, writes do not. The deny list matches PATHS, so
+         * `ln ~/.ssh/id_ed25519 ~/ws/innocent` used to hand the model the key under a name
+         * no deny entry covers -- the file half of what this mask is for. Writes are left
+         * alone on purpose: refusing nlink > 1 there would break legitimate trees that
+         * hardlink their outputs, and the write path already has the shrink-retry ladder.
+         * Directories are exempt inside the guard (a dir's nlink counts its children). */
+        .refuse_hardlink = !writable,
         .deny_paths = conf->sandbox_deny_paths,
     };
     sds resolved = edc_path_guard_resolve(&rules, path, error);
