@@ -194,6 +194,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_upgrade",
+    srcs = ["test_upgrade.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_update",
     srcs = ["test_update.c"],
     deps = [

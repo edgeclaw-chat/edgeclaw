@@ -250,6 +250,7 @@ cc_library(
         "edc_semver.c",
         "edc_state_probe.c",
         "edc_update.c",
+        "edc_upgrade.c",
         "edc_update_pubkey.c",
     ],
     hdrs = [
@@ -264,6 +265,7 @@ cc_library(
         "edc_redact.h",
         "edc_semver.h",
         "edc_update.h",
+        "edc_upgrade.h",
         "edc_update_pubkey.h",
         "edc_crontab_jobs.h",
         "edc_endpoint_probe.h",
