@@ -246,6 +246,7 @@ cc_library(
         "edc_init_env.c",
         "edc_log.c",
         "edc_payload.c",
+        "edc_redact.c",
         "edc_state_probe.c",
     ],
     hdrs = [
@@ -256,6 +257,7 @@ cc_library(
         "edc_compat.h",
         "edc_config.h",
         "edc_containers.h",
+        "edc_redact.h",
         "edc_crontab_jobs.h",
         "edc_endpoint_probe.h",
         "edc_https_client.h",

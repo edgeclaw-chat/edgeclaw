@@ -17,6 +17,7 @@
 
 #include "edc_config.h"
 #include "edc_init_env.h"
+#include "edc_sandbox.h"
 #include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -376,6 +377,55 @@ int main(void)
         cfg = NULL;
     }
     remove(kh);
+
+    /* ── 4e. a directory in BOTH lists is read-only (the tie rule) ─────────── */
+    /* path_allowed() resolves a tie between an rw and an ro entry to read-only, so that
+     * launching from ~ does not silently make the whole home writable. The consequence
+     * worth pinning is the one a user would hit: `/sandbox add-rw ~` succeeds, is persisted,
+     * and still denies writes -- which is why edc_config_load() warns about the overlap.
+     * Asserted here as the outcome (a write is refused) rather than as the log line. */
+    edc_config_free(cfg);
+    cfg = NULL;
+    {
+        char tie_home[1024];
+        test_tmp_template(tie_home, sizeof(tie_home), "edc_sb_tie");
+        if (mkdtemp(tie_home))
+        {
+            char saved_home2[PATH_MAX];
+            const char *old2 = getenv("HOME");
+            snprintf(saved_home2, sizeof(saved_home2), "%s", old2 ? old2 : "");
+            setenv("HOME", tie_home, 1);
+
+            char tie_edc[1024];
+            test_tmp_template(tie_edc, sizeof(tie_edc), "edc_sb_tie_edc");
+            if (mkdtemp(tie_edc))
+            {
+                T_CHECK(edc_init_env(tie_edc, true), "a scratch install for the tie case");
+
+                /* Ask for $HOME itself to be writable. */
+                T_CHECK(edc_config_update_sandbox_path(tie_edc, tie_home, EDC_SANDBOX_PATH_RW, true),
+                        "persist $HOME into rw_paths");
+
+                struct edc_config *tc = edc_config_load(tie_edc);
+                if (tc)
+                {
+                    char probe[PATH_MAX];
+                    snprintf(probe, sizeof(probe), "%s/some_file", tie_home);
+                    EdcError *tie_err = NULL;
+                    sds ok_write = edc_sandbox_verify_path_at(tc, NULL, probe, true, &tie_err);
+                    T_CHECK(ok_write == NULL, "a write under a tied directory is DENIED (ro wins the tie)");
+                    if (ok_write)
+                        sdsfree(ok_write);
+                    if (tie_err)
+                        edc_error_free(tie_err);
+                    edc_config_free(tc);
+                }
+                test_rm_rf(tie_edc);
+            }
+            setenv("HOME", saved_home2, 1);
+            test_rm_rf(tie_home);
+        }
+    }
 
     /* Best-effort cleanup (the other config tests leave their home behind too). */
     char conf_path[sizeof(home) + 16];

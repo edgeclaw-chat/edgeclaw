@@ -701,20 +701,13 @@ struct edc_config *edc_config_load(const char *edc_home)
         sds home = edc_homedir();
         if (home && sdslen(home) > 0)
         {
-            int ro_count = 0;
-            if (config->sandbox_ro_paths)
-            {
-                while (config->sandbox_ro_paths[ro_count])
-                    ro_count++;
-            }
-            config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
-            config->sandbox_ro_paths[ro_count] = home;
-            config->sandbox_ro_paths[ro_count + 1] = NULL;
+            /* add_unique rather than a blind append. sds_array_canonicalize() below already
+             * collapses the duplicate, so this was never an unbounded-growth bug -- but
+             * appending a second copy only to have the next pass remove it is wasted work,
+             * and it makes the intent ("home is read-only") read as an accumulation. */
+            sds_array_add_unique(&config->sandbox_ro_paths, home);
         }
-        else
-        {
-            sdsfree(home);
-        }
+        sdsfree(home);
     }
 
     /* Migrate the legacy "whole filesystem readable" default: older config.json
@@ -817,6 +810,32 @@ struct edc_config *edc_config_load(const char *edc_home)
     sds_array_canonicalize(&config->sandbox_ro_paths);
     sds_array_canonicalize(&config->sandbox_rw_paths);
     sds_array_canonicalize(&config->sandbox_deny_paths);
+
+    /* path_allowed() resolves a tie between an rw and an ro entry to READ-ONLY. So adding
+     * a directory to rw_paths while the same directory sits in ro_paths -- which the built-in
+     * read-only home does for `~` itself -- leaves it read-only, and `/sandbox add-rw`
+     * reports success while changing nothing. The symptom ("I configured it and it is still
+     * denied") looks like a bug elsewhere, so name it here. */
+    for (int i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[i]; i++)
+    {
+        char *rw_real = realpath(config->sandbox_rw_paths[i], NULL);
+        if (!rw_real)
+            continue;
+        for (int j = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[j]; j++)
+        {
+            char *ro_real = realpath(config->sandbox_ro_paths[j], NULL);
+            if (ro_real && strcmp(rw_real, ro_real) == 0)
+            {
+                log_warn("sandbox: '%s' appears in both rw_paths and ro_paths; a tie resolves to read-only, "
+                         "so writes there stay DENIED -- remove the ro entry (`/sandbox rm-ro %s`) or name a "
+                         "more specific subdirectory",
+                         config->sandbox_rw_paths[i], config->sandbox_ro_paths[j]);
+            }
+            if (ro_real)
+                free(ro_real);
+        }
+        free(rw_real);
+    }
 
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {

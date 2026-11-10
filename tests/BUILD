@@ -184,6 +184,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_redact",
+    srcs = ["test_redact.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_https_client_get",
     srcs = ["test_https_client_get.c", "test_ws.h"],
     deps = [
@@ -1260,6 +1270,7 @@ cc_test(
     srcs = ["test_config_sandbox_defaults.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
+        "//src/sandbox:sandbox",
     ],
     linkopts = LINK_OPTS,
     target_compatible_with = POSIX_ONLY,

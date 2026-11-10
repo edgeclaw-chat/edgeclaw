@@ -2,6 +2,7 @@
 #include "edc_actor.h"
 #include "edc_compat.h"
 #include "edc_error.h"
+#include "edc_redact.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_task.h"
@@ -239,6 +240,20 @@ static void edc_toolbox_actor_callback(struct edc_toolbox_call_ctx *tb_ctx, sds 
     /* A tool may declare that its output must reach the model whole (read_file and the memory
      * tools: they bound themselves, in a way that knows what the output MEANS). */
     const bool keep_full = tb_ctx->tool && tb_ctx->tool->keep_full_output;
+
+    /* Scrub credentials BEFORE the cap, not after: the cap cuts at a byte offset, so a
+     * token straddling the cut would no longer match and its visible head would survive.
+     * This is the single choke point for tool output (req->result is assigned only below),
+     * which is why the scrub lives here rather than in each tool. */
+    {
+        sds scrubbed = edc_redact_secrets(result);
+        if (scrubbed)
+        {
+            sdsfree(result);
+            result = scrubbed;
+        }
+    }
+
     if (!keep_full)
         result = edc_toolbox_actor_cap_result(state, tb_ctx, req, result);
 
