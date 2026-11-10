@@ -345,8 +345,12 @@ try {
         Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
     }
     catch {
+        # The exception text is included: without it a failure here reads as "the URL must be
+        # wrong", when the usual cause is that the connection never happened at all (a sandbox
+        # that isolates loopback, a DNS failure, a proxy).
         Fail @"
 download failed: $url
+$($_.Exception.Message)
 The tag exists but has no $target asset, or the network is unavailable. Check the assets at
 https://github.com/$Repo/releases/tag/$releaseTag
 "@

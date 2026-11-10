@@ -428,10 +428,16 @@ cc_test(
 # download is allowed to leave behind. Offline -- `curl` and `uname` are shimmed -- because
 # the interesting cases are the refusals, and a test that needs GitHub to answer is a test
 # that fails for reasons that have nothing to do with this script.
+# test_install_ps1 serves its fixtures over loopback and drives pwsh, so it cannot run inside
+# the network namespace the sandbox creates -- loopback is unreachable there, which showed up
+# as "download failed" with a perfectly correct URL. `local = True` runs it outside the
+# sandbox; nothing it touches is shared with the other tests (private temp dir, a port it
+# picks itself).
 sh_test(
     name = "test_install_ps1",
     srcs = ["test_install_ps1.sh"],
     data = ["//tools:install.ps1"],
+    local = True,
     target_compatible_with = POSIX_ONLY,
 )
 
