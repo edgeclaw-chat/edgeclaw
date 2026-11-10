@@ -56,15 +56,31 @@ openssl ec -in "$SIGNKEY" -pubout -out "$SIGNPUB" 2>/dev/null
 
 RUN_PS1="${WORK}/install-under-test.ps1"
 cp "$INSTALL_PS1" "$RUN_PS1"
+# Swap the embedded key for the throwaway one, as the raw P-256 point in hex -- the form the
+# PowerShell script uses (it cannot use ImportFromPem on Windows PowerShell 5.1).
 python3 - "$RUN_PS1" "$SIGNPUB" <<'PYEOF'
+import subprocess
 import sys
+
 script, pub = sys.argv[1], sys.argv[2]
+der = subprocess.run(
+    ["openssl", "pkey", "-pubin", "-in", pub, "-outform", "DER"],
+    capture_output=True, check=True,
+).stdout
+marker = b"\x03\x42\x00\x04"
+idx = der.rfind(marker)
+if idx < 0:
+    sys.exit("could not extract the test public key")
+point = der[idx + 3: idx + 3 + 65]
+if len(point) != 65 or point[0] != 0x04:
+    sys.exit("extracted test key is not a 65-byte uncompressed point")
+hex_point = point.hex()
+
 text = open(script, encoding="utf-8").read()
-pem = open(pub, encoding="utf-8").read().strip()
-marker = "@'\n"
-start = text.index(marker) + len(marker)
+opening = "@'\n"
+start = text.index(opening) + len(opening)
 end = text.index("\n'@\n", start)
-open(script, "w", encoding="utf-8").write(text[:start] + pem + text[end:])
+open(script, "w", encoding="utf-8").write(text[:start] + hex_point + text[end:])
 PYEOF
 
 # Sign every archive in the fixture directory. Called after each fixture is created, so the
@@ -149,6 +165,12 @@ grep -q "127.0.0.1:${PORT}" "$RUN_PS1" || { echo "could not point the script at 
 run_ps1() {
     pwsh -NoProfile -NonInteractive -File "$RUN_PS1" "$@" 2>&1
 }
+
+# The installer reads the target architecture from PROCESSOR_ARCHITECTURE, which on Windows is
+# "AMD64" and on the Linux runner is unset. Setting it is not a hack around a check -- it is
+# what the test is doing: presenting the environment a Windows x64 machine would present, the
+# same way the sh installer's test fakes `uname` output to reach each platform's branch.
+export PROCESSOR_ARCHITECTURE=AMD64
 
 # ── --dry-run needs no network for the asset, only the tag is given ───────────────────────
 out=$(run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin" -DryRun)

@@ -49,17 +49,18 @@ $Repo = 'edgeclaw-chat/edgeclaw'
 $Api = "https://api.github.com/repos/$Repo/releases"
 $Dl = "https://github.com/$Repo/releases/download"
 
-# The release signing public key. Compiled into the binary as well and committed as
-# tools/update_signing.pub.pem -- three copies of one key, kept in step by
-# tools/embed_pubkey_install.py and tools/gen_pubkey_c.py.
+# The release signing public key, as the raw uncompressed P-256 point (0x04 || X || Y), hex.
 #
-# It lives inside this script because the script is fetched standalone (curl/iwr | iex or a
-# one-off download), with no checkout to read a file from.
-$SigningPublicKeyPem = @'
------BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEUpTD9xJjm+ZfICQraLvCruln6hbY
-DU6ZgAlq/8hcrdOd/fF0L28GFF4rkCzwf3VkPUhu5ozsA7OzLw1mJvsptQ==
------END PUBLIC KEY-----
+# This form rather than PEM on purpose: "powershell" on a stock Windows 10/11 is Windows
+# PowerShell 5.1, which runs on .NET Framework -- and .NET Framework has no
+# ECDsa.ImportFromPem(). ECParameters/ImportParameters does exist there, and it takes the
+# point. The same 65 bytes are compiled into the binary (src/common/edc_update_pubkey.c), so
+# the two verifiers agree by construction rather than by both parsing ASN.1.
+#
+# The key is here rather than read from a file because this script is fetched standalone,
+# with no checkout beside it.
+$SigningPublicKeyHex = @'
+045294c3f712639be65f20242b68bbc2aee967ea16d80d4e9980096affc85cadd39dfdf1742f6f06145e2b902cf07f75643d486ee68cec03b3b32f0d6626fb29b5
 '@
 
 function Fail {
@@ -73,10 +74,16 @@ function Get-Sha256Hex {
     (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-# The archive for this machine. Only the two Windows targets are published; there is no
-# arm64 Windows build, and saying so here is better than requesting a 404.
+# The archive for this machine. Only an amd64 Windows build is published.
+#
+# The architecture comes from the environment, which is right on Windows and absent
+# elsewhere. Say what was actually seen when it is not that build: an empty value in the
+# message reads like a bug in this script rather than a missing variable.
 function Resolve-Target {
     $arch = $env:PROCESSOR_ARCHITECTURE
+    if ([string]::IsNullOrEmpty($arch)) {
+        Fail 'PROCESSOR_ARCHITECTURE is not set, so the target cannot be determined; this installer runs on Windows'
+    }
     if ($arch -ne 'AMD64') {
         Fail "no Windows build for ${arch} -- only amd64 is published"
     }
@@ -178,9 +185,35 @@ Refusing to install.
     }
 
     $sumsBytes = [IO.File]::ReadAllBytes($sumsPath)
+
+    # Build the P-256 public key from the raw point. ECParameters/ImportParameters works on
+    # .NET Framework 4.6.2+ (Windows PowerShell 5.1) as well as .NET 5+ (pwsh 7), which is why
+    # the key is stored as a point rather than as PEM.
+    #
+    # Converted byte by byte rather than with a cast or a regex split: `[byte[]] @('0x04', ...)`
+    # does not parse a hex prefix, and the versions that tolerate it differ between Windows
+    # PowerShell and pwsh. ToByte(base 16) is the same everywhere.
+    $hex = $SigningPublicKeyHex.Trim()
+    if ($hex.Length -ne 130) {
+        Fail "the embedded public key is malformed (expected 130 hex characters, found $($hex.Length))"
+    }
+    $point = New-Object byte[] 65
+    for ($i = 0; $i -lt 65; $i++) {
+        $point[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
+    }
+    if ($point[0] -ne 0x04) {
+        Fail 'the embedded public key is malformed (not an uncompressed EC point)'
+    }
+    $ecParams = [System.Security.Cryptography.ECParameters]::new()
+    $ecParams.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
+    $q = [System.Security.Cryptography.ECPoint]::new()
+    $q.X = $point[1..32]
+    $q.Y = $point[33..64]
+    $ecParams.Q = $q
+
     $ecdsa = [System.Security.Cryptography.ECDsa]::Create()
     try {
-        $ecdsa.ImportFromPem($SigningPublicKeyPem)
+        $ecdsa.ImportParameters($ecParams)
         if (-not $ecdsa.VerifyData($sumsBytes, $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {
             Fail @"
 the release signature does not verify
