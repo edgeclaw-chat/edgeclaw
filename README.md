@@ -278,7 +278,7 @@ docs/         manual, input pipeline, design notes
   "sandbox": {
     "enable": true,
     "rw_paths": ["<home>/.edgeclaw/workspace", "/tmp", "/dev", "<home>/.cache"],
-    "ro_paths": ["/usr", "/lib", "/bin", "/etc", "/proc", "/sys", "/run"],
+    "ro_paths": ["/usr", "/lib", "/bin", "/etc", "/proc", "/sys", "/run", "/opt"],
     "deny_paths": []
   },
   "channel": { "type": "adapter" }
@@ -287,6 +287,12 @@ docs/         manual, input pipeline, design notes
 
 `max_iter: -1` means "keep going until the model answers"; a positive number caps the
 model/tool rounds. `sandbox.deny_paths` wins over `ro_paths` / `rw_paths`.
+
+`/opt` is in the read-only list because that is where a toolchain installed outside the
+package manager lives -- on Linux the musl cross compilers the static release binaries are
+built with. Editing the sandbox lists of a running app does not reach a `bazel` server that
+is already up: it is a long-lived process and the kernel rules it was started under are
+irreversible, so `bazel shutdown` before the next build.
 
 Environment: `EDGECLAW_MASTER_KEY` (skip the passphrase prompt), `EDGECLAW_MODELS_CATALOG`,
 `EDGECLAW_THEME`, `EDGECLAW_HTTPS_TIMEOUT_MS`, `EDGECLAW_SNAPSHOT_TRACE`.

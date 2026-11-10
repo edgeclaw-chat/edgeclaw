@@ -25,6 +25,18 @@
  * /Applications/Xcode-*.app/.../libxcrun.dylib). /opt and /usr/local cover
  * Homebrew on Apple Silicon and Intel respectively.
  *
+ * Linux names /opt for the same reason macOS does -- it is where software installed
+ * outside the distribution's package manager lives. Here that is a toolchain: the musl
+ * cross compilers this repo builds its static release binaries with are unpacked under
+ * /opt (see toolchain/musl_toolchain_repo.bzl, which searches /opt/<triple>/bin/ and
+ * friends), and Landlock covers exec as well as read, so without the entry the very build
+ * that toolchain exists for dies on its first compile with
+ *
+ *     execvp(/opt/aarch64-linux-musl/bin/aarch64-linux-musl-gcc, ...): Permission denied
+ *
+ * which says nothing about the sandbox being the reason. Read-only is the right grant: the
+ * compilers, the sysroot headers and the libraries are all this list ever needs.
+ *
  * Windows has no fixed layout to name here: %SystemRoot% is C:\Windows on almost every
  * machine, and "almost" is exactly the assumption that leaves a whitelist pointing at a
  * directory which does not exist (granting nothing, silently). Its list is therefore built
@@ -35,7 +47,7 @@
 #elif defined(__APPLE__)
 #define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/System,/Library,/Applications,/bin,/sbin,/etc,/dev,/opt,/usr/local"
 #else
-#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run"
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run,/opt"
 #endif
 
 /* Default writable set, minus the two entries that depend on runtime values

@@ -176,6 +176,13 @@ int main(void)
     T_CHECK(has_path(cfg->sandbox_ro_paths, "/proc"), "Linux ro has /proc");
     T_CHECK(!has_path(cfg->sandbox_ro_paths, "/System"), "Linux ro has no /System");
     T_CHECK(edc_sandbox_default_tmpdir() == NULL, "TMPDIR is a macOS-only rw entry");
+    /* /opt is where a musl cross toolchain gets unpacked (see edc_config.h), and Landlock
+     * covers exec as well as read -- so without this entry the very build the toolchain
+     * exists for dies on its first compile with
+     * "execvp(/opt/...-gcc, ...): Permission denied", which says nothing about the sandbox. */
+    if (!has_path(cfg->sandbox_ro_paths, "/opt"))
+        dump_list("ro_paths", cfg->sandbox_ro_paths);
+    T_CHECK(has_path(cfg->sandbox_ro_paths, "/opt"), "Linux ro has /opt (musl cross toolchains)");
 #endif
 
     /* ── 3. migration of a config.json written on the other platform ─────── */

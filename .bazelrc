@@ -166,6 +166,13 @@ build:asan --per_file_copt='.*lwip/src/.*\.c$@-fno-sanitize=alignment'
 # explicitly with MUSL_CROSS_COMPILE_<ARCH>=/path/to/bin/<triple>- .
 # If none is found the build fails with an explanation and nothing else changes.
 #
+# Inside edgeclaw's own sandboxed shell /opt must be on the read-only list, because the
+# kernel denies exec of a path it cannot read: without it the first compile fails with
+# `execvp(/opt/.../<triple>-gcc, ...): Permission denied`. /opt is in the default
+# whitelist (see EDC_SANDBOX_DEFAULT_RO_PATHS); an existing config.json predates it, so
+# add it once with `/sandbox add-ro /opt` -- and `bazel shutdown` afterwards, since a
+# running server keeps the Landlock ruleset it was started with.
+#
 # NOTE: pass --compilation_mode=opt (or reuse a release config) when you want the
 # shipped artifact; the default fastbuild produces a much larger binary.
 #
