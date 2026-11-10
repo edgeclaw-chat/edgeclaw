@@ -152,7 +152,12 @@ static void test_open_creates_schema(void)
 
     /* The database holds every conversation and every memory entry. SQLite creates it with
      * the process umask, so without this it is 0644. The workspace directory being 0700 is
-     * the real boundary; this is the layer that survives a database copied out of it. */
+     * the real boundary; this is the layer that survives a database copied out of it.
+     *
+     * POSIX only: edc_file_restrict_owner() is a documented no-op on Windows (mode bits are
+     * not the mechanism there, and inventing an ACL was out of scope), so asserting a mode
+     * would be asserting that a no-op did something. */
+#ifndef _WIN32
     {
         struct stat st;
         const bool got = path && stat(path, &st) == 0;
@@ -167,6 +172,11 @@ static void test_open_creates_schema(void)
             printf("    workspace mode is %04o, expected 0700\n", got ? (unsigned)(st.st_mode & 0777) : 0);
         CHECK(got && (st.st_mode & 0777) == 0700, "the workspace is 0700");
     }
+#else
+    /* Say so out loud, so a reader of the Windows log does not think the check silently
+     * vanished: this platform inherits ACLs instead. */
+    printf("    (mode bits are not enforced on Windows; edc_file_restrict_owner is a no-op)\n");
+#endif
 
     free_config(cfg);
 }
