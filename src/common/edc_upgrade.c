@@ -149,20 +149,33 @@ edc_upgrade_method edc_upgrade_detect(const char *exe_path, const char *home)
 
 bool edc_upgrade_supported(void)
 {
-#if defined(_WIN32)
-    /* The installer is a POSIX sh script. A Windows shell (Git Bash, MSYS) has different path
-     * and HOME semantics, so the install would land somewhere unexpected or fail halfway.
-     * Reporting "cannot" is better than reporting "done" for something that did not happen. */
-    return false;
-#else
+    /* Every platform this build ships for has a native installer, so the answer is always
+     * yes -- what differs is WHICH one, chosen by edc_upgrade_argv().
+     *
+     * POSIX gets tools/install.sh, a sh script. Windows gets tools/install.ps1, because a
+     * default Windows install has no sh at all: the quick-start path there is "download the
+     * tarball, unpack it with the tar that ships with Windows, run the exe". Handing that
+     * user a .sh script to enable updates would mean requiring Git for Windows purely for
+     * this -- and a development machine that happens to have one is not evidence that a
+     * user's machine does.
+     *
+     * The PowerShell script needs nothing beyond what Windows 10+ already carries:
+     * Invoke-WebRequest, tar, Get-FileHash, and .NET's ECDsa for the signature. */
     return true;
+}
+
+/* Which installer runs on this platform. */
+const char *edc_upgrade_installer_filename(void)
+{
+#if defined(_WIN32)
+    return "install.ps1";
+#else
+    return "install.sh";
 #endif
 }
 
 const char *edc_upgrade_unavailable_reason(edc_upgrade_method method)
 {
-    if (!edc_upgrade_supported())
-        return "automatic upgrade is not available on this platform; upgrade by hand";
     switch (method)
     {
     case EDC_UPGRADE_METHOD_INSTALLER:
@@ -176,10 +189,20 @@ const char *edc_upgrade_unavailable_reason(edc_upgrade_method method)
 sds edc_upgrade_manual_hint(const char *tag)
 {
     const char *t = (tag && tag[0]) ? tag : "<version>";
+#if defined(_WIN32)
+    /* Pinned to the tag for the same reason the automated path is: the script and the archive
+     * it verifies must come from the same release. */
+    return sdscatprintf(
+        sdsempty(),
+        "powershell -NoProfile -ExecutionPolicy Bypass -File "
+        "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.ps1 -Tag %s",
+        t, t);
+#else
     return sdscatprintf(sdsempty(),
                         "curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.sh "
                         "| sh -s -- --tag %s",
                         t, t);
+#endif
 }
 
 sds *edc_upgrade_argv(edc_upgrade_method method, const char *script_path, const char *tag, const char *dir)
@@ -191,6 +214,45 @@ sds *edc_upgrade_argv(edc_upgrade_method method, const char *script_path, const 
     if (!script_path || !script_path[0] || !tag || !tag[0] || !dir || !dir[0])
         return NULL;
 
+#if defined(_WIN32)
+    /* powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File <script> -Tag <tag> -Dir <dir>
+     *
+     * -NoProfile: the user's profile is not a dependency of an upgrade, and a profile that
+     * prints or sets an alias would corrupt what we capture.
+     * -NonInteractive: nothing may block on a prompt. stdin is /dev/null-equivalent here, so a
+     * prompt would hang until the timeout.
+     * -ExecutionPolicy Bypass: the default policy forbids running unsigned scripts. This script
+     * is fetched over TLS pinned to the release tag and is the thing performing the
+     * signature-checked install -- requiring the user to loosen a machine-wide policy first
+     * would be worse than scoping it to this one invocation. */
+    /* Every argument is spelled out rather than built from a table: the flag set alternates
+     * name/value, and index arithmetic over it was harder to read than eleven lines. */
+    sds *argv = calloc(12, sizeof(sds));
+    if (!argv)
+        return NULL;
+    int n = 0;
+    argv[n++] = sdsnew("powershell");
+    argv[n++] = sdsnew("-NoProfile");
+    argv[n++] = sdsnew("-NonInteractive");
+    argv[n++] = sdsnew("-ExecutionPolicy");
+    argv[n++] = sdsnew("Bypass");
+    argv[n++] = sdsnew("-File");
+    argv[n++] = sdsnew(script_path);
+    argv[n++] = sdsnew("-Tag");
+    argv[n++] = sdsnew(tag);
+    argv[n++] = sdsnew("-Dir");
+    argv[n++] = sdsnew(dir);
+    argv[n] = NULL;
+    for (int i = 0; i < n; i++)
+    {
+        if (!argv[i])
+        {
+            edc_upgrade_argv_free(argv);
+            return NULL;
+        }
+    }
+    return argv;
+#else
     /* argv is `sh <script> --tag <tag> --dir <dir>`.
      *
      * The script is a FILE rather than fed on stdin, deliberately: stdin has to stay on
@@ -202,25 +264,26 @@ sds *edc_upgrade_argv(edc_upgrade_method method, const char *script_path, const 
      * already told the user which one they are getting, and letting the installer decide again
      * would let the two disagree if a release lands in between. --dir pins the destination to
      * where the running binary is, so the upgrade replaces itself and not something else. */
-    static const char *const fixed[] = {"sh", NULL, "--tag", NULL, "--dir", NULL};
-    const char *values[3] = {script_path, tag, dir};
-
     sds *argv = calloc(7, sizeof(sds));
     if (!argv)
         return NULL;
-
-    int v = 0;
+    argv[0] = sdsnew("sh");
+    argv[1] = sdsnew(script_path);
+    argv[2] = sdsnew("--tag");
+    argv[3] = sdsnew(tag);
+    argv[4] = sdsnew("--dir");
+    argv[5] = sdsnew(dir);
+    argv[6] = NULL;
     for (int i = 0; i < 6; i++)
     {
-        argv[i] = sdsnew(fixed[i] ? fixed[i] : values[v++]);
         if (!argv[i])
         {
             edc_upgrade_argv_free(argv);
             return NULL;
         }
     }
-    argv[6] = NULL;
     return argv;
+#endif
 }
 
 void edc_upgrade_argv_free(sds *argv)

@@ -9,6 +9,14 @@ sh_binary(
     visibility = ["//visibility:public"],
 )
 
+# The Windows installer. A plain file rule rather than an exe rule: it runs under whatever
+# PowerShell the machine has (Windows PowerShell 5.1 ships with Windows 10+, pwsh 7 where it is
+# installed), and //tests:test_install_ps1 needs it in its runfiles as data, not as a binary.
+exports_files(
+    ["install.ps1"],
+    visibility = ["//visibility:public"],
+)
+
 # Build-time tool: turns the workspace/ tree into a C source file so it can be
 # linked into the binary (see //src/common:workspace_embedded_c).
 py_binary(

@@ -64,9 +64,19 @@ const char *edc_upgrade_unavailable_reason(edc_upgrade_method method);
  * no shell, Windows). Caller frees. */
 sds edc_upgrade_manual_hint(const char *tag);
 
-/* Whether this build can offer an in-app upgrade at all. False on Windows: the installer is a
- * POSIX sh script, and running one there would depend on a shell whose path and HOME
- * semantics differ from the native ones. */
+/* Whether this build can offer an in-app upgrade at all.
+ *
+ * Always true for a shipped platform: what differs is which installer runs, not whether one
+ * exists (see edc_upgrade_installer_filename). Kept as a function rather than a constant so
+ * a future platform without a native installer has one place to say so. */
 bool edc_upgrade_supported(void);
+
+/* The installer this platform runs: "install.sh" on POSIX, "install.ps1" on Windows.
+ *
+ * The caller fetches it from `<tag>/tools/<filename>` and passes the local copy to
+ * edc_upgrade_argv(). Windows needs its own because a default install has no `sh` -- the
+ * Windows quick start is "unpack the tarball with the bundled tar and run the exe", so
+ * requiring Git for Windows to enable updates would be a new dependency, not a convenience. */
+const char *edc_upgrade_installer_filename(void);
 
 #endif /* __EDC_UPGRADE_H__ */

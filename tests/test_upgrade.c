@@ -147,18 +147,70 @@ int main(void)
         expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "/s", "v1.2.3", NULL, NULL, "a missing dir produces no command");
         expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "/s", "v1.2.3", "", NULL, "an empty dir produces no command");
     }
+#else
+    {
+        /* Windows runs the PowerShell installer. The flags that matter are pinned here
+         * because each one has a failure mode when absent:
+         *   -NoProfile        a profile that prints would corrupt the captured output;
+         *   -NonInteractive   a prompt would hang until the timeout (stdin is not a terminal);
+         *   -ExecutionPolicy  the default policy refuses unsigned scripts. */
+        static const char *const want[] = {"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                                           "Bypass",     "-File",      "C:\\tmp\\install.ps1", "-Tag",
+                                           "v1.2.3",     "-Dir",        "C:\\Users\\u\\bin",   NULL};
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\tmp\\install.ps1", "v1.2.3", "C:\\Users\\u\\bin", want,
+                    "the PowerShell command carries the script, the tag and the directory");
 
-    CHECK(edc_upgrade_supported(), "POSIX can upgrade");
+        /* A pre-release tag reaches the script verbatim. */
+        static const char *const pre[] = {"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                                          "Bypass",     "-File",      "C:\\tmp\\install.ps1", "-Tag",
+                                          "v1.0.1-rc.1", "-Dir",       "C:\\Users\\u\\bin",   NULL};
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\tmp\\install.ps1", "v1.0.1-rc.1", "C:\\Users\\u\\bin", pre,
+                    "a pre-release tag is passed through unchanged");
+
+        /* A path with a space is one argument: argv, not a command line string, so no quoting
+         * is needed and none is added (and none would survive if it were). */
+        static const char *const spaced[] = {"powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                                             "Bypass",     "-File",      "C:\\a b\\install.ps1", "-Tag",
+                                             "v1.2.3",     "-Dir",        "C:\\Users\\u\\my bin", NULL};
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\a b\\install.ps1", "v1.2.3", "C:\\Users\\u\\my bin", spaced,
+                    "a path containing a space stays one argument");
+
+        expect_argv(EDC_UPGRADE_METHOD_UNKNOWN, "C:\\tmp\\install.ps1", "v1.2.3", "C:\\d", NULL,
+                    "an unknown method produces no command");
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, NULL, "v1.2.3", "C:\\d", NULL,
+                    "a missing script path produces no command");
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "", "v1.2.3", "C:\\d", NULL,
+                    "an empty script path produces no command");
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\s", NULL, "C:\\d", NULL, "a missing tag produces no command");
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\s", "", "C:\\d", NULL, "an empty tag produces no command");
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\s", "v1.2.3", NULL, NULL, "a missing dir produces no command");
+        expect_argv(EDC_UPGRADE_METHOD_INSTALLER, "C:\\s", "v1.2.3", "", NULL, "an empty dir produces no command");
+    }
 #endif
+
+    /* ── the installer filename is per platform ───────────────────────────── */
+    {
+        const char *fn = edc_upgrade_installer_filename();
+        CHECK(fn != NULL && fn[0] != '\0', "an installer filename is always reported");
+#if defined(_WIN32)
+        CHECK(strcmp(fn, "install.ps1") == 0, "Windows uses the PowerShell installer");
+#else
+        CHECK(strcmp(fn, "install.sh") == 0, "POSIX uses the sh installer");
+#endif
+        /* Every shipped platform has a native installer, so an upgrade is always offerable --
+         * what differs is which script runs. */
+        CHECK(edc_upgrade_supported(), "this platform can upgrade");
+    }
 
     /* ── the manual fallback always says something usable ─────────────────── */
     {
         sds hint = edc_upgrade_manual_hint("v1.2.3");
         CHECK(hint && strstr(hint, "v1.2.3") != NULL, "the manual hint names the version");
-        CHECK(hint && strstr(hint, "install.sh") != NULL, "the manual hint names the installer");
+        CHECK(hint && strstr(hint, edc_upgrade_installer_filename()) != NULL,
+              "the manual hint names the platform's installer");
         /* It must be pinned to the tag, not a moving branch -- the same rule the automated
          * path follows. */
-        CHECK(hint && strstr(hint, "/v1.2.3/tools/install.sh") != NULL, "the manual hint is pinned to the tag");
+        CHECK(hint && strstr(hint, "/v1.2.3/tools/") != NULL, "the manual hint is pinned to the tag");
         sdsfree(hint);
     }
     {

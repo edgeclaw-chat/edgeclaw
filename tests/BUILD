@@ -429,6 +429,15 @@ cc_test(
 # the interesting cases are the refusals, and a test that needs GitHub to answer is a test
 # that fails for reasons that have nothing to do with this script.
 sh_test(
+    name = "test_install_ps1",
+    srcs = ["test_install_ps1.sh"],
+    data = ["//tools:install.ps1"],
+    target_compatible_with = POSIX_ONLY,
+)
+
+# Runs test_install_ps1 only where pwsh exists: the script skips itself otherwise, and a
+# local run without pwsh proves nothing about the PowerShell installer.
+sh_test(
     name = "test_install_sh",
     srcs = ["test_install_sh.sh"],
     data = ["//tools:install"],
