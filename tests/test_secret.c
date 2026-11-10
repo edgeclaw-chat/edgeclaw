@@ -176,30 +176,72 @@ static sds read_hash_file(const char *dir)
     return out;
 }
 
-/* ── 1. first-time setup writes a verification hash ────────────────────────── */
+/* Pull one "key value" line out of the key record. Returns a fresh sds or NULL. */
+static sds record_field(const char *record, const char *key)
+{
+    if (!record)
+        return NULL;
+    const size_t klen = strlen(key);
+    const char *cur = record;
+    while (cur && *cur)
+    {
+        const char *nl = strchr(cur, '\n');
+        const size_t len = nl ? (size_t)(nl - cur) : strlen(cur);
+        if (len > klen && strncmp(cur, key, klen) == 0 && cur[klen] == ' ')
+            return sdsnewlen(cur + klen + 1, len - klen - 1);
+        cur = nl ? nl + 1 : NULL;
+    }
+    return NULL;
+}
+
+static bool is_lower_hex(const sds s, size_t n)
+{
+    if (!s || sdslen(s) != n)
+        return false;
+    for (size_t i = 0; i < n; i++)
+    {
+        const char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+/* ── 1. first-time setup writes the key record ─────────────────────────────── */
 static void test_setup_writes_hash(void)
 {
-    printf("\n── first-time setup ──\n");
+    printf("\n── first-time setup writes the key record ──\n");
     reset_dir();
 
     CHECK(init_with_input(true, g_dir, "correct horse\ncorrect horse\n"),
           "init(confirm) accepts a passphrase typed twice");
     CHECK(file_exists(g_dir, ".key_hash"), ".key_hash was written");
 
-    sds h = read_hash_file(g_dir);
-    CHECK(h && sdslen(h) == 64, "the hash is 64 hex characters (sha256)");
-    if (h && sdslen(h) == 64)
-    {
-        bool hex = true;
-        for (size_t i = 0; i < sdslen(h); i++)
-        {
-            const char c = h[i];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-                hex = false;
-        }
-        CHECK(hex, "and it is lowercase hex");
-    }
-    sdsfree(h);
+    sds rec = read_hash_file(g_dir);
+    sds v = record_field(rec, "v");
+    sds kdf = record_field(rec, "kdf");
+    sds iter = record_field(rec, "iter");
+    sds salt = record_field(rec, "salt");
+    sds verify = record_field(rec, "verify");
+
+    CHECK(v && strcmp(v, "2") == 0, "the record is version 2");
+    CHECK(kdf && strcmp(kdf, "pbkdf2-sha256") == 0, "the record names PBKDF2-HMAC-SHA256");
+    /* 600k is the floor the code ships with; the check is >= so raising the constant does
+     * not silently weaken it. */
+    CHECK(iter && atol(iter) >= 600000, "the iteration count is the hardened 600k");
+    CHECK(is_lower_hex(salt, 32), "the salt is 16 bytes of lowercase hex");
+    CHECK(is_lower_hex(verify, 64), "the verifier is a 32-byte HMAC in lowercase hex");
+    /* The file used to BE one bare digest. That shape had no salt, which made one
+     * precomputed table serve every install -- the reason for this rewrite. */
+    CHECK(rec && sdslen(rec) != 64 && strchr(rec, '\n') != NULL,
+          "the file is a record, not one bare digest");
+
+    sdsfree(v);
+    sdsfree(kdf);
+    sdsfree(iter);
+    sdsfree(salt);
+    sdsfree(verify);
+    sdsfree(rec);
 }
 
 /* ── 2. the same passphrase verifies ──────────────────────────────────────── */
@@ -221,7 +263,7 @@ static void test_verify_rejects_wrong_passphrase(void)
     CHECK(strstr(g_log, "Invalid passphrase") != NULL, "and names the passphrase as the problem");
 }
 
-/* ── 4. no hash at all: the message points at setup, not at the passphrase ── */
+/* ── 4. no record at all: the message points at setup, not at the passphrase ── */
 static void test_verify_without_hash(void)
 {
     printf("\n── verifying when setup never ran ──\n");
@@ -230,7 +272,7 @@ static void test_verify_without_hash(void)
     g_log[0] = '\0';
     CHECK(!init_with_input(false, g_dir, "anything\n"), "init(verify) fails without a .key_hash");
     printf("    log: %s\n", g_log);
-    CHECK(strstr(g_log, "verification file not found") != NULL,
+    CHECK(strstr(g_log, "run setup first") != NULL,
           "and says setup has not run, instead of blaming the passphrase");
     CHECK(strstr(g_log, "Invalid passphrase") == NULL, "it does not claim the passphrase was wrong");
 }
@@ -317,18 +359,138 @@ static void test_env_var_mode(void)
     reset_dir();
     edc_secret_cleanup();
 
-    /* This is the non-interactive path: no terminal at all, no .key_hash written (there is
-     * no passphrase to re-verify later). It consumes the variable by unsetting it. */
+    /* The non-interactive path. No passphrase prompt, but the SALT still has to be kept:
+     * it is an input to the key, so a fresh salt on the next launch would derive a
+     * different key and nothing encrypted before could ever be read again. */
     setenv("EDGECLAW_MASTER_KEY", "from-the-environment", 1);
-    const bool ok = edc_secret_init(false, g_dir);
-    CHECK(ok, "init succeeds from EDGECLAW_MASTER_KEY without a terminal");
+    CHECK(edc_secret_init(false, g_dir), "init succeeds from EDGECLAW_MASTER_KEY without a terminal");
     CHECK(getenv("EDGECLAW_MASTER_KEY") == NULL, "the variable is unset once the key is loaded");
-    CHECK(!file_exists(g_dir, ".key_hash"), "env-var mode writes no verification hash");
+    CHECK(file_exists(g_dir, ".key_hash"), "env-var mode records the salt it derived with");
+
+    sds rec = read_hash_file(g_dir);
+    sds salt_first = record_field(rec, "salt");
+    sdsfree(rec);
 
     /* And the process can use the key it loaded. */
-    sds enc = edc_secret_encrypt(sdsnew("sk-from-env"));
+    sds plain = sdsnew("sk-from-env");
+    sds enc = edc_secret_encrypt(plain);
     CHECK(enc != NULL, "the key loaded from the environment works for encryption");
+    sdsfree(plain);
+
+    /* A second launch with the same env key must land on the same salt -- that is the
+     * whole point of persisting it in this mode. */
+    edc_secret_cleanup();
+    setenv("EDGECLAW_MASTER_KEY", "from-the-environment", 1);
+    CHECK(edc_secret_init(false, g_dir), "a second env-var init succeeds");
+    rec = read_hash_file(g_dir);
+    sds salt_second = record_field(rec, "salt");
+    sdsfree(rec);
+    CHECK(salt_first && salt_second && strcmp(salt_first, salt_second) == 0,
+          "the salt is reused, not re-minted on every launch");
+
+    sds back = enc ? edc_secret_decrypt(enc) : NULL;
+    CHECK(back && strcmp(back, "sk-from-env") == 0,
+          "a value encrypted on the first launch still decrypts on the second");
+    if (back)
+        sdsfree(back);
+
+    sdsfree(salt_first);
+    sdsfree(salt_second);
     sdsfree(enc);
+}
+
+/* ── 8b. the salt is per install ─────────────────────────────────────────── */
+/* Two installs that pick the SAME passphrase must still get different keys. That is what
+ * the salt buys, and what the old empty-salt derivation gave away: one precomputed
+ * passphrase->key table served every install, and the verifier in .key_hash was the same
+ * bytes everywhere. */
+static void test_salt_is_per_install(void)
+{
+    printf("\n── the salt is per install ──\n");
+
+    reset_dir();
+    edc_secret_cleanup();
+    if (!init_with_input(true, g_dir, "same passphrase\nsame passphrase\n"))
+    {
+        printf("    (skipped: first setup failed)\n");
+        return;
+    }
+    sds rec = read_hash_file(g_dir);
+    sds salt_a = record_field(rec, "salt");
+    sds verify_a = record_field(rec, "verify");
+    sdsfree(rec);
+
+    reset_dir();
+    edc_secret_cleanup();
+    if (!init_with_input(true, g_dir, "same passphrase\nsame passphrase\n"))
+    {
+        printf("    (skipped: second setup failed)\n");
+        sdsfree(salt_a);
+        sdsfree(verify_a);
+        return;
+    }
+    rec = read_hash_file(g_dir);
+    sds salt_b = record_field(rec, "salt");
+    sds verify_b = record_field(rec, "verify");
+    sdsfree(rec);
+
+    CHECK(salt_a && salt_b && strcmp(salt_a, salt_b) != 0,
+          "two installs with one passphrase get different salts");
+    CHECK(verify_a && verify_b && strcmp(verify_a, verify_b) != 0,
+          "and therefore different verifiers (no shared passphrase->hash table)");
+
+    sdsfree(salt_a);
+    sdsfree(verify_a);
+    sdsfree(salt_b);
+    sdsfree(verify_b);
+}
+
+/* ── 8c. a version this build does not implement is refused ──────────────── */
+static void test_unknown_prefix_refused(void)
+{
+    printf("\n── a format version this build does not implement ──\n");
+    reset_dir();
+    edc_secret_cleanup();
+    if (!init_with_input(true, g_dir, "key four\nkey four\n"))
+    {
+        printf("    (skipped: setup failed)\n");
+        return;
+    }
+
+    /* Carries the family tag but an unknown version. Treating it as "not encrypted" would
+     * hand a ciphertext to the provider as the API key, and /connect could then re-encrypt
+     * over the real one. */
+    sds out = edc_secret_decrypt("EDGECLAW_ENC:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    CHECK(out == NULL, "a value from another format version is refused, not passed through");
+    if (out)
+        sdsfree(out);
+
+    /* No tag at all is still a plaintext key: hand-edited config.json files rely on it. */
+    out = edc_secret_decrypt("sk-plain-text-key");
+    CHECK(out && strcmp(out, "sk-plain-text-key") == 0, "a value with no tag is still plaintext");
+    if (out)
+        sdsfree(out);
+}
+
+/* ── 8d. a pre-v2 record cannot be reused ────────────────────────────────── */
+static void test_pre_v2_record_refused(void)
+{
+    printf("\n── the pre-v2 verification hash ──\n");
+    reset_dir();
+    edc_secret_cleanup();
+
+    /* What the previous release wrote: one bare digest, no salt. There is no way to derive
+     * the same key from it, so it has to be reported rather than guessed at. */
+    sds p = edc_path_join(g_dir, ".key_hash", NULL);
+    const char *legacy = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    CHECK(edc_file_write(p, legacy, -1, NULL), "a legacy record can be planted");
+    sdsfree(p);
+
+    g_log[0] = '\0';
+    CHECK(!init_with_input(false, g_dir, "anything\n"), "init(verify) refuses a pre-v2 record");
+    printf("    log: %s\n", g_log);
+    CHECK(strstr(g_log, "no salt") != NULL || strstr(g_log, "pre-v2") != NULL,
+          "and explains that the old hash carries no salt");
 }
 
 /* ── 9. using the module without a key ───────────────────────────────────── */
@@ -527,6 +689,9 @@ int main(void)
     test_empty_passphrase_rejected();
     test_encrypt_decrypt();
     test_env_var_mode();
+    test_salt_is_per_install();
+    test_unknown_prefix_refused();
+    test_pre_v2_record_refused();
     test_without_key();
     test_corrupt_ciphertext();
     test_prompt_eof();

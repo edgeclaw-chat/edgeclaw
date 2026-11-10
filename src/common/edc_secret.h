@@ -4,15 +4,36 @@
 #include "sds.h"
 #include <stdbool.h>
 
-#define BC_SECRET_PREFIX "EDGECLAW_ENC:"
+/* The ciphertext tag. It names the KDF and parameters the value was produced with, so a
+ * later change can migrate instead of guessing: the reader dispatches on it.
+ *
+ * ":v2:" is deliberately a SUPERSET of the bare "EDGECLAW_ENC:" this used to write. A
+ * build that only knows the older tag still matches the prefix, then fails base64 (':' is
+ * not in the alphabet) and reports an error -- rather than treating the ciphertext as a
+ * plaintext key and sending it upstream. A tag that did NOT start with the old prefix
+ * would be read as "not encrypted" and passed straight through. */
+#define BC_SECRET_PREFIX "EDGECLAW_ENC:v2:"
+
+/* Every tag that means "this is ciphertext", so a value carrying a version this build does
+ * not implement is refused instead of being mistaken for a plaintext api_key. */
+#define BC_SECRET_PREFIX_FAMILY "EDGECLAW_ENC:"
 
 /* Initialize the secret module. Loads the master key from the
  * EDGECLAW_MASTER_KEY environment variable or stdin.
- * If confirm_password is true (first-time setup), prompts for the
- * passphrase twice to confirm the user's input and stores a
- * verification hash in edc_home/.key_hash.
- * Otherwise prompts once and verifies against the stored hash.
- * edc_home may be NULL to skip storage/verification (env var mode).
+ *
+ * The key is derived with PBKDF2-HMAC-SHA256 over a per-install random salt, and the salt
+ * and iteration count live in edc_home/.key_hash together with a verifier:
+ *
+ *   {"v":2,"kdf":"pbkdf2-sha256","iter":600000,"salt":"<32 hex>","verify":"<64 hex>"}
+ *
+ * That file has to be read HERE rather than from config.json, because config.json is
+ * encrypted with the key that comes out of this derivation -- the salt is an input to the
+ * key, not something found alongside the ciphertext.
+ *
+ * If confirm_password is true (first-time setup), prompts twice, mints a new salt and
+ * writes the record. Otherwise it prompts once and verifies against the stored verifier.
+ * When edc_home is NULL no record can be kept, so the salt is ephemeral; the key still
+ * works for this process, but encrypted values will not survive a restart.
  * Must be called once at startup, before edc_config_load().
  * Returns true on success. */
 bool edc_secret_init(bool confirm_password, const char *edc_home);
