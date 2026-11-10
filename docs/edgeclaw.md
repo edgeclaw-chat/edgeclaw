@@ -587,14 +587,15 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
+| `/encrypt` | Turn encryption back on after choosing "no encryption" at setup: prompts for a passphrase and re-encrypts the stored API key. Refuses when a key is already loaded |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
 | `/sandbox list` | Show the sandbox allow/deny path lists |
 | `/sandbox add-ro <dir>` | Make a path read-only (it leaves the rw/deny lists) |
 | `/sandbox rm-ro <dir>` | Drop a read-only path |
 | `/sandbox add-rw <dir>` | Make a path read-write (it leaves the ro/deny lists) |
 | `/sandbox rm-rw <dir>` | Drop a read-write path |
-| `/sandbox add-deny <dir>` | Mask a dir (wins over ro/rw; e.g. `~/.ssh`) |
-| `/sandbox rm-deny <dir>` | Unmask a dir |
+| `/sandbox add-deny <dir\|file>` | Mask a directory or a single file (wins over ro/rw; e.g. `~/.ssh`, `~/.secrets.env`) |
+| `/sandbox rm-deny <dir\|file>` | Unmask a directory or file |
 | `/shell [on\|off]` | Turn the shell-like input syntax on or off (on by default; persisted; `/shell` alone reports the state) |
 
 ### Session

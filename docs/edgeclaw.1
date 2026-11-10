@@ -435,6 +435,10 @@ COMMAND REFERENCE
                                    edited on disk takes effect; config.json
                                    still needs a restart).
      /connect                      Guided setup (provider, API key, model).
+     /encrypt                      Turn encryption back on after choosing "no
+                                   encryption" at setup: prompts for a
+                                   passphrase and re-encrypts the stored API
+                                   key.  Refuses when a key is already loaded.
      /sandbox [on|off]             Enable/disable the filesystem sandbox.
      /sandbox list                 Show the allow/deny path lists.
      /sandbox add-ro <dir>         Make a path read-only (it leaves the rw/deny
@@ -443,8 +447,9 @@ COMMAND REFERENCE
      /sandbox add-rw <dir>         Make a path read-write (it leaves the ro/deny
                                    lists).
      /sandbox rm-rw <dir>          Drop a read-write path.
-     /sandbox add-deny <dir>       Mask a dir (wins over ro/rw; e.g. ~/.ssh).
-     /sandbox rm-deny <dir>        Unmask a dir.
+     /sandbox add-deny <dir|file>  Mask a directory or a single file (wins over
+                                   ro/rw; e.g. ~/.ssh, ~/.secrets.env).
+     /sandbox rm-deny <dir|file>   Unmask a directory or file.
      /shell [on|off]               Turn the shell-like input syntax on or
                                    off (on by default; persisted; /shell
                                    alone reports the state).
