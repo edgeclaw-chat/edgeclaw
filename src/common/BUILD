@@ -248,6 +248,7 @@ cc_library(
         "edc_payload.c",
         "edc_redact.c",
         "edc_state_probe.c",
+        "edc_update_pubkey.c",
     ],
     hdrs = [
         "edc_bundled_docs.h",
@@ -258,6 +259,7 @@ cc_library(
         "edc_config.h",
         "edc_containers.h",
         "edc_redact.h",
+        "edc_update_pubkey.h",
         "edc_crontab_jobs.h",
         "edc_endpoint_probe.h",
         "edc_https_client.h",

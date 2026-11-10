@@ -494,10 +494,63 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
 
+      # The archives are what users run, and until now nothing let them -- or the client --
+      # check what they downloaded. `install.sh` says as much in its own comments: "TLS to
+      # GitHub is the whole boundary".
+      #
+      # A checksum alone would fix corruption but not tampering: whoever can replace an
+      # archive can replace the sums file next to it. So the sums file is SIGNED, and the
+      # signature is what the client actually trusts. The public key is compiled into the
+      # binary (src/common/edc_update_pubkey.c), so the trust anchor ships with the thing
+      # that uses it and there is no separate file to swap.
+      #
+      # The signature covers the exact bytes of sha256sums.txt, which is why the file is
+      # written once, signed, and then never regenerated.
+      - name: Checksums and signature
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find . -mindepth 2 -maxdepth 2 -name '*.tar.gz' -print0 \
+            | xargs -0 -r sha256sum \
+            | awk '{ n = $2; sub(/.*\//, "", n); print $1 "  " n }' \
+            | LC_ALL=C sort -k2 > dist/sha256sums.txt
+          cat dist/sha256sums.txt
+          # Every archive must be listed exactly once: a sums file that silently omits a
+          # target would push that platform onto the manual-update path with no explanation.
+          archives=$(find . -mindepth 2 -maxdepth 2 -name '*.tar.gz' | wc -l)
+          listed=$(wc -l < dist/sha256sums.txt)
+          if [ "$archives" -ne "$listed" ]; then
+            echo "::error::$archives archives but $listed checksum lines"
+            exit 1
+          fi
+
+          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+            echo "::error::UPDATE_SIGNING_KEY is not set -- refusing to publish unsigned"
+            echo "::error::an update the client cannot verify is worse than no update at all"
+            exit 1
+          fi
+          printf '%s' "$UPDATE_SIGNING_KEY" > sign.pem
+          openssl dgst -sha256 -sign sign.pem -out dist/sums.sig dist/sha256sums.txt
+          openssl base64 -A -in dist/sums.sig -out dist/sha256sums.txt.sig
+          printf '\n' >> dist/sha256sums.txt.sig
+          rm -f sign.pem dist/sums.sig
+
+          # Verify against the committed public key BEFORE publishing: catching a mismatched
+          # key here costs a red job; catching it later costs every user a rejected update.
+          openssl base64 -d -A -in dist/sha256sums.txt.sig -out /tmp/check.sig
+          openssl dgst -sha256 -verify tools/update_signing.pub.pem \
+            -signature /tmp/check.sig dist/sha256sums.txt \
+            || { echo "::error::the signature does not verify against tools/update_signing.pub.pem"; exit 1; }
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: "*/*.tar.gz"
+          files: |
+            */*.tar.gz
+            dist/sha256sums.txt
+            dist/sha256sums.txt.sig
           generate_release_notes: true
           # A tag carrying a suffix (v2.0.2-rc.1, -beta.2, ...) is a pre-release, decided
           # by the tag itself rather than by a separate switch nobody would remember to
