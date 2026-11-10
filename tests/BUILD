@@ -204,6 +204,13 @@ cc_test(
 )
 
 sh_test(
+    name = "test_portability",
+    srcs = ["test_portability.sh"],
+    data = ["//tools:check_portability"],
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
     name = "test_update_keygen",
     srcs = ["test_update_keygen.sh"],
     data = [

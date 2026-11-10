@@ -42,6 +42,13 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
 
+      # Before the suite, and cheap: a POSIX-only libc call without the compatibility shim
+      # compiles everywhere here and fails only on the MSVC job below, where the reason is a
+      # bare "unresolved external symbol" in a link step. //tests:test_portability proves the
+      # checker can fail; this runs it against the real tree.
+      - name: Verify no POSIX-only calls lack the compatibility shim
+        run: python3 tools/check_portability.py
+
       - name: Test
         run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
         env:

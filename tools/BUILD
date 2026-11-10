@@ -52,6 +52,15 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+# Static portability lint: rejects a call to a symbol MSVC lacks (strcasecmp and friends)
+# in a file that does not include edc_compat.h. Such a file links on Linux and fails ONLY on
+# the Windows runner -- see //tests:test_portability.
+py_binary(
+    name = "check_portability",
+    srcs = ["check_portability.py"],
+    visibility = ["//visibility:public"],
+)
+
 # ── the release-signature pipeline ──────────────────────────────────────────
 #
 # Three copies of one public key must stay in step: this PEM, the C array compiled into

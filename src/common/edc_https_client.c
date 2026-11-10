@@ -1,5 +1,13 @@
 #include "edc_https_client.h"
 #include "edc_https_client_internal.h"
+
+/* strcasecmp/strncasecmp are POSIX; MSVC has only _stricmp/_strnicmp. edc_compat.h is where
+ * this repository maps them, and it is what every other file using them includes -- omitting
+ * it built fine on Linux and failed to LINK on Windows with "unresolved external symbol
+ * strcasecmp", which is a CI-only failure by construction. tools/check_portability.py exists
+ * so the next file that forgets is caught before the push. */
+#include "edc_compat.h"
+
 #include "llhttp.h"
 
 /* How many 3xx hops a single logical request may follow. GitHub's release download is one

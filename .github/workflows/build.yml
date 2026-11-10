@@ -44,6 +44,13 @@ jobs:
       - name: Verify third-party notices are current
         run: python3 tools/gen_notices.py --check
 
+      # A POSIX-only libc call (strcasecmp and friends) in a file without edc_compat.h links
+      # on every Unix and fails ONLY on the MSVC job in this very workflow. Caught here, the
+      # author learns before the Windows matrix entry goes red for a reason its log hides
+      # ("unresolved external symbol" appears 130 s into a link step).
+      - name: Verify no POSIX-only calls lack the compatibility shim
+        run: python3 tools/check_portability.py
+
       # The Linux and Android archives have always been built with -static and nothing ever
       # checked what came out -- the Windows job asserts on its import table, the Linux ones
       # asserted nothing. This reads DT_NEEDED and PT_INTERP out of the archive a user
