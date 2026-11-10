@@ -877,7 +877,7 @@ cc_test(
 )
 cc_test(
     name = "test_sandbox_verify_path",
-    srcs = ["test_sandbox_verify_path.c", "test_ws.h"],
+    srcs = ["test_sandbox_verify_path.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/sandbox:sandbox",

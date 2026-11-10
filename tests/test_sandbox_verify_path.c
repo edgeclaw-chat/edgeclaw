@@ -24,6 +24,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "test_fs_util.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -132,7 +133,9 @@ int main(void)
      * hardlink their outputs keep working. */
     {
         char hl_root[PATH_MAX];
-        snprintf(hl_root, sizeof(hl_root), "/tmp/edc_hl_XXXXXX");
+        /* Through the shared helper, not a hardcoded /tmp: bazel gives each test a private
+         * TEST_TMPDIR, and writing outside it escapes the sandbox the runner sets up. */
+        test_tmp_template(hl_root, sizeof(hl_root), "edc_hl");
         if (mkdtemp(hl_root))
         {
             char secret[PATH_MAX], plain[PATH_MAX], alias[PATH_MAX];
