@@ -93,15 +93,52 @@ mk_archive() {
 # Run the script against the fixtures. A local HTTP server stands in for GitHub: the script
 # uses Invoke-WebRequest, which needs a real URL, so serving the files is simpler and more
 # faithful than mocking the cmdlet.
-python3 -m http.server --directory "${WORK}/fixtures" 0 >"${WORK}/server.log" 2>&1 &
+#
+# The port is chosen BEFORE the server starts and then waited on. Parsing it out of the
+# server's own output had two failure modes -- Python buffers the banner, and under a build
+# sandbox the redirect may not flush at all -- which showed up as "could not start the fixture
+# server" in CI while passing locally.
+PORT=$(python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PY
+)
+[ -n "${PORT:-}" ] || { echo "could not pick a port for the fixture server" >&2; exit 1; }
+
+python3 -m http.server --bind 127.0.0.1 --directory "${WORK}/fixtures" "$PORT" \
+    >"${WORK}/server.log" 2>&1 &
 SERVER_PID=$!
 trap 'kill $SERVER_PID 2>/dev/null; rm -rf "$WORK"' EXIT
-for _ in $(seq 1 50); do
-    PORT=$(sed -n 's/.*port \([0-9]*\).*/\1/p' "${WORK}/server.log" | head -1)
-    [ -n "${PORT:-}" ] && break
+
+# Wait until it answers, rather than sleeping a guessed amount.
+ready=0
+for _ in $(seq 1 100); do
+    if python3 - "${PORT}" <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket()
+s.settimeout(0.2)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+finally:
+    s.close()
+PY
+    then
+        ready=1
+        break
+    fi
     sleep 0.1
 done
-[ -n "${PORT:-}" ] || { echo "could not start the fixture server" >&2; exit 1; }
+if [ "$ready" != 1 ]; then
+    echo "the fixture server did not come up on port ${PORT}" >&2
+    sed 's/^/  server: /' "${WORK}/server.log" >&2 || true
+    exit 1
+fi
 
 # The script resolves assets from github.com; point it at the fixture server by overriding the
 # download base. sed on a copy keeps the shipped script free of test hooks.
