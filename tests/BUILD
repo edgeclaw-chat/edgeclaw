@@ -194,6 +194,26 @@ cc_test(
 )
 
 cc_test(
+    name = "test_update",
+    srcs = ["test_update.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_semver",
+    srcs = ["test_semver.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_https_redirect",
     srcs = ["test_https_redirect.c"],
     deps = [
