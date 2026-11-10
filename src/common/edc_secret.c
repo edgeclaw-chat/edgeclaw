@@ -563,6 +563,83 @@ static bool verify_master_key(const char stored_hex[65])
     return match;
 }
 
+/* Switch an install that chose NO encryption back to encrypting, at runtime.
+ *
+ * The counterpart of pressing Enter at the first prompt. Without it that choice is one-way:
+ * the only other route back is re-running setup. The api_key itself is re-encrypted by the
+ * caller (edc_config_update_llm), because the value it needs is the one in the running
+ * config, which this module does not know about.
+ *
+ * Refuses when a key is already loaded -- changing the passphrase of an encrypted install is
+ * a different operation (the old one has to be verified first), and doing it silently here
+ * would look like it worked either way.
+ * Returns false with *msg set to an explanation the caller can show. */
+bool edc_secret_enable_encryption(const char *edc_home, sds *msg)
+{
+    if (msg)
+        *msg = NULL;
+
+    if (g_secret_ready)
+    {
+        if (msg)
+            *msg = sdsnew("already encrypted");
+        return false;
+    }
+    if (!edc_home || !edc_home[0])
+    {
+        if (msg)
+            *msg = sdsnew("no EdgeClaw home to store the key record in");
+        return false;
+    }
+    if (!isatty(STDIN_FILENO))
+    {
+        if (msg)
+            *msg = sdsnew("no terminal for a passphrase prompt");
+        return false;
+    }
+
+    fprintf(stderr,
+            "Encrypting the API key from now on. Type a passphrase and it will be required at every\n"
+            "launch; nothing is written to disk, so it cannot be recovered (forget it and you\n"
+            "re-enter the API key with /connect -- settings and history are unaffected).\n");
+
+    char buf[MAX_PASSPHRASE];
+    if (!read_passphrase_tty("Enter new passphrase: ", buf, sizeof(buf), NULL))
+        return false;
+
+    char confirm[MAX_PASSPHRASE];
+    if (!read_passphrase_tty("Confirm passphrase: ", confirm, sizeof(confirm), NULL))
+    {
+        memset(buf, 0, sizeof(buf));
+        return false;
+    }
+    if (strcmp(buf, confirm) != 0)
+    {
+        log_error("Passphrases do not match");
+        memset(buf, 0, sizeof(buf));
+        memset(confirm, 0, sizeof(confirm));
+        return false;
+    }
+    memset(confirm, 0, sizeof(confirm));
+
+    const bool ok = random_salt() && derive_key(buf, strlen(buf)) && kdf_store(edc_home);
+    memset(buf, 0, sizeof(buf));
+
+    if (!ok)
+    {
+        memset(g_master_key, 0, BC_KEY_SIZE);
+        if (msg)
+            *msg = sdsnew("could not set up encryption (see the log)");
+        return false;
+    }
+
+    g_encryption_disabled = false;
+    lock_master_key();
+    g_secret_ready = true;
+    log_info("encryption enabled: the API key will be stored encrypted");
+    return true;
+}
+
 bool edc_secret_init(bool confirm_password, const char *edc_home)
 {
     if (g_secret_ready)

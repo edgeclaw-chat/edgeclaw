@@ -906,6 +906,46 @@ inheriting the parent's memory and conversation context up to the fork point.
 
 ---
 
+## The API key: three ways to protect it
+
+`config.json` holds a provider API key. On first run EdgeClaw asks how to protect it, and
+the three answers are a policy choice, not a formality — they differ in what protects the
+key and in what it costs to start the program.
+
+| Choice | Where the key lives | Each launch | Protects against a copied disk? |
+|---|---|---|---|
+| **A passphrase** (type one) | AES-256-GCM ciphertext in `config.json`; the wrapping key is derived from the passphrase at startup and never written | type it once | **yes** — nothing on disk can decrypt it |
+| **Enter**, no passphrase | plaintext in `config.json` | nothing to type | **no** |
+| **`EDGECLAW_MASTER_KEY`** | same ciphertext; the passphrase comes from the environment | nothing to type | **only if that variable is not itself on disk** |
+
+The passphrase is hardened with PBKDF2-HMAC-SHA256 over 600,000 iterations and a
+per-install random salt, so guessing it offline is expensive. What it is *not* is
+recoverable: losing it costs the API key (re-enter it with `/connect`), not your settings
+or history.
+
+Choosing no encryption is a real option, not a degraded mode — an install that keeps
+nothing sensitive in `config.json` gains little from a prompt on every launch. What it
+cannot do is protect the key, and that is stated plainly at the prompt.
+
+**The environment variable is the CI/Docker route, and the easy one to get wrong.** It is
+read before the interactive prompt exists, which is what makes a headless start work. If
+you keep it in a file so a shell can source it — the common move — then the passphrase is
+on disk, and the first row's advantage quietly disappears: whoever can read that file (or
+the disk) has both halves. If you take that route, keep the file `0600` and deny it to the
+sandbox with `/sandbox add-deny <path>`.
+
+The mode is recorded by the shape of the value itself — a ciphertext carries the
+`EDGECLAW_ENC:v1:` tag, a plaintext key does not — so there is no separate flag that could
+disagree with reality, and a no-encryption install starts without a terminal.
+
+```
+/sandbox add-deny /home/you/.secrets.env    # after moving the key into a dotfile
+```
+
+Arguments to `/sandbox` are not shell-expanded: no `~`, no `$VAR`, no globs. That is why
+the example spells the path out — `~/.secrets.env` would be taken literally and match
+nothing.
+
 ## Files
 
 | Path | Description |
@@ -914,7 +954,7 @@ inheriting the parent's memory and conversation context up to the fork point.
 | `~/.edgeclaw/config.json` | Configuration (API key, model) |
 | `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
-| `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
+| `~/.edgeclaw/workspace/<sid>/chat.jsonl` | Session transcript (one bubble per line) |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from

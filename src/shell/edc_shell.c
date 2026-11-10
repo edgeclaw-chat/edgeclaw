@@ -14,6 +14,7 @@
 #include "edc_lex.h"
 #include "edc_parse.h"
 #include "edc_passes.h"
+#include "edc_secret.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -267,6 +268,50 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
             sdsfree(reply);
         }
         sdsfree(argtext);
+        return true;
+    }
+    if (strcmp(cmd->name, "encrypt") == 0)
+    {
+        /* The way back out of "no encryption" (Enter at the first prompt). Without it that
+         * choice is one-way short of re-running setup. */
+        if (!cfg)
+        {
+            edc_commands_reply(to, "**Encrypt** — config not ready");
+            return true;
+        }
+
+        sds msg = NULL;
+        if (!edc_secret_enable_encryption(cfg->edc_home, &msg))
+        {
+            sds reply = sdscatprintf(sdsempty(), "**Encrypt** — %s",
+                                     msg ? msg : "cannot enable encryption");
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            if (msg)
+                sdsfree(msg);
+            return true;
+        }
+        if (msg)
+            sdsfree(msg);
+
+        /* Re-encrypt the key that is currently stored in the clear. It has to happen after
+         * the key is derivable, and it reuses the same writer /connect uses so the rest of
+         * config.json is preserved. */
+        const char *key = cfg->llm_api_conf.api_key;
+        bool rewrote = false;
+        if (key && key[0])
+            rewrote = edc_config_update_llm(cfg->edc_home, cfg->llm_api_conf.api_url, cfg->llm_api_conf.model, key);
+
+        sds reply = sdsnew("**Encrypt** — encryption is ON; the passphrase is required at every launch.\n");
+        if (!key || !key[0])
+            reply = sdscat(reply, "\nNo API key is stored yet — `/connect` will store the next one encrypted.");
+        else if (rewrote)
+            reply = sdscat(reply, "\nThe stored API key is now encrypted in `config.json`.");
+        else
+            reply = sdscat(reply, "\n**The stored key could NOT be re-encrypted** (see the log); it is still in "
+                                  "the clear — re-enter it with `/connect`.");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
         return true;
     }
     if (strcmp(cmd->name, "sandbox") == 0)

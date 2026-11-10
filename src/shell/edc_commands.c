@@ -279,6 +279,12 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "subcommand word."},
     {"General", "/model search <q>", "search chat models across all providers", NULL},
     {"General", "/connect", "guided setup: choose a provider, API key, and model", NULL},
+    {"General", "/encrypt", "turn encryption back on (after choosing \"no encryption\" at setup)",
+     "Prompts for a new passphrase, stores the key record, and re-encrypts the API key that "
+     "`config.json` currently holds in the clear.\n\n"
+     "This is the way back from pressing Enter at the first-run prompt. It refuses when a key is "
+     "already loaded: changing the passphrase of an encrypted install is a different operation "
+     "(the old one has to be verified first)."},
     {"General", "/prompt", "list the templates in workspace/prompts/", NULL},
     {"General", "/prompt <name> [args…]",
      "run a template: its placeholders are filled in and the body becomes ONE task, as written",
@@ -388,6 +394,7 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"General", "/whoami", "show the current session, model and foreground task", NULL},
     {"General", "/model", "list / switch / search models", NULL},
     {"General", "/connect", "guided setup: provider, API key, model", NULL},
+    {"General", "/encrypt", "turn encryption back on after choosing not to", NULL},
     {"General", "/prompt", "list and run prompt templates", NULL},
     {"General", "/skill", "list and run skills", NULL},
     {"General", "/reload", "re-read resources, rebuild the system prompt", NULL},

@@ -369,6 +369,116 @@ static void test_no_encryption_no_reprompt(void)
     sdsfree(enc);
 }
 
+/* Run edc_secret_enable_encryption() against a pty carrying |input|. |reset| clears the
+ * loaded key first -- the refusal cases need it NOT to, or "already encrypted" is wiped
+ * before the call can report it. */
+static bool enable_encryption_with_input(const char *edc_home, const char *input, sds *msg_out, bool reset)
+{
+    if (reset)
+    {
+        edc_secret_cleanup();
+        unsetenv("EDGECLAW_MASTER_KEY");
+    }
+    if (msg_out)
+        *msg_out = NULL;
+
+    if (tty_begin() != 0)
+    {
+        printf("    (skipped: cannot open a pty)\n");
+        return false;
+    }
+    tty_feed(input);
+    const bool ok = edc_secret_enable_encryption(edc_home, msg_out);
+    tty_end();
+    return ok;
+}
+
+/* ── 6d. /encrypt: back out of "no encryption" ────────────────────────────── */
+/* Pressing Enter at the first prompt is otherwise one-way short of re-running setup. What
+ * must hold: a passphrase becomes required again, the record is written, and an api_key
+ * stored in the clear is re-encrypted by the caller's writer. */
+static void test_enable_encryption(void)
+{
+    printf("\n── turning encryption back on ──\n");
+    reset_dir();
+
+    /* Start in the no-encryption state. */
+    if (!init_with_input(true, g_dir, "\n"))
+    {
+        printf("    (skipped: could not enter no-encryption mode)\n");
+        return;
+    }
+    CHECK(!file_exists(g_dir, ".key_hash"), "no record in no-encryption mode");
+
+    sds msg = NULL;
+    CHECK(enable_encryption_with_input(g_dir, "new passphrase\nnew passphrase\n", &msg, true),
+          "a passphrase turns encryption back on");
+    if (msg)
+        sdsfree(msg);
+    CHECK(file_exists(g_dir, ".key_hash"), "the key record is written");
+
+    /* The value that was passing through untouched is now encrypted. */
+    sds plain = sdsnew("sk-now-encrypted");
+    sds enc = edc_secret_encrypt(plain);
+    CHECK(enc && strncmp(enc, BC_SECRET_PREFIX, strlen(BC_SECRET_PREFIX)) == 0,
+          "encrypt now produces a ciphertext");
+    sds back = enc ? edc_secret_decrypt(enc) : NULL;
+    CHECK(back && strcmp(back, plain) == 0, "and it round-trips");
+    sdsfree(plain);
+    sdsfree(enc);
+    sdsfree(back);
+
+    /* The record is usable on the next start: same passphrase derives the same key. */
+    sds saved = NULL;
+    enc = edc_secret_encrypt(sdsnew("survives-restart"));
+    if (enc)
+        saved = sdsdup(enc);
+    sdsfree(enc);
+
+    edc_secret_cleanup();
+    unsetenv("EDGECLAW_MASTER_KEY");
+    if (tty_begin() == 0)
+    {
+        tty_feed("new passphrase\n");
+        const bool reopened = edc_secret_init(false, g_dir);
+        tty_end();
+        CHECK(reopened, "the stored passphrase is accepted on the next start");
+        sds rt = saved ? edc_secret_decrypt(saved) : NULL;
+        CHECK(rt && strcmp(rt, "survives-restart") == 0, "a value encrypted before the restart still decrypts");
+        if (rt)
+            sdsfree(rt);
+    }
+    sdsfree(saved);
+}
+
+/* ── 6e. /encrypt refuses what it cannot do ──────────────────────────────── */
+static void test_enable_encryption_refusals(void)
+{
+    printf("\n── /encrypt refusals ──\n");
+
+    /* Already encrypted: changing the passphrase is a different operation, and reporting
+     * success without doing it would be the worst outcome. */
+    reset_dir();
+    if (init_with_input(true, g_dir, "already\nalready\n"))
+    {
+        sds msg = NULL;
+        CHECK(!enable_encryption_with_input(g_dir, "different\ndifferent\n", &msg, false),
+              "it refuses when a key is already loaded");
+        printf("    msg: %s\n", msg ? msg : "(none)");
+        CHECK(msg && strstr(msg, "already encrypted") != NULL, "and says the install is already encrypted");
+        if (msg)
+            sdsfree(msg);
+    }
+
+    /* No home to store the record in. */
+    reset_dir();
+    edc_secret_cleanup();
+    sds msg2 = NULL;
+    CHECK(!edc_secret_enable_encryption(NULL, &msg2), "it refuses without an EdgeClaw home");
+    if (msg2)
+        sdsfree(msg2);
+}
+
 /* ── 7. encrypt / decrypt round trip, and a ciphertext from another key ───── */
 static void test_encrypt_decrypt(void)
 {
@@ -756,6 +866,8 @@ int main(void)
     test_empty_confirm_rejected();
     test_empty_passphrase_means_no_encryption();
     test_no_encryption_no_reprompt();
+    test_enable_encryption();
+    test_enable_encryption_refusals();
     test_encrypt_decrypt();
     test_env_var_mode();
     test_salt_is_per_install();

@@ -36,6 +36,16 @@
  * Returns true on success. */
 bool edc_secret_init(bool confirm_password, const char *edc_home);
 
+/* Turn encryption back on for an install that chose "no encryption" at setup (see
+ * edc_secret_init). Prompts for a new passphrase, mints a salt, and stores the record; the
+ * caller then re-encrypts the api_key (edc_config_update_llm) because that value lives in
+ * the running config, not here.
+ *
+ * Returns false when a key is already loaded (changing a passphrase is a different
+ * operation), when there is no terminal to prompt on, or when the prompt failed. |msg|
+ * receives a short reason the caller can show to the user. */
+bool edc_secret_enable_encryption(const char *edc_home, sds *msg);
+
 /* Clean up the secret module. Zeros master key from memory.
  *
  * THE MASTER KEY STAYS RESIDENT FOR THE WHOLE PROCESS, by design, and this is the only
