@@ -292,15 +292,81 @@ static void test_confirm_mismatch_rejected(void)
 }
 
 /* ── 6. an empty passphrase is refused ────────────────────────────────────── */
-static void test_empty_passphrase_rejected(void)
+/* ── 6. an empty CONFIRM answer is still a mistake ────────────────────────── */
+/* The first prompt accepts empty (that is the no-encryption choice); the confirmation
+ * does not, because by then the user has already typed a passphrase. */
+static void test_empty_confirm_rejected(void)
 {
-    printf("\n── empty passphrase ──\n");
+    printf("\n── empty confirmation ──\n");
     reset_dir();
 
     g_log[0] = '\0';
-    CHECK(!init_with_input(false, g_dir, "\n"), "init refuses an empty passphrase");
+    CHECK(!init_with_input(true, g_dir, "typed one\n\n"),
+          "a passphrase followed by an empty confirmation is refused");
     printf("    log: %s\n", g_log);
-    CHECK(strstr(g_log, "Empty passphrase") != NULL, "and says it was empty");
+    CHECK(strstr(g_log, "Empty passphrase") != NULL, "and says the confirmation was empty");
+    CHECK(!file_exists(g_dir, ".key_hash"), "nothing is recorded");
+}
+
+/* ── 6b. an empty answer on first run means "no encryption" ───────────────── */
+/* Not an error: the first-run prompt offers three routes (passphrase / Enter for plaintext
+ * / the environment variable), and Enter is the user picking the third from the bottom.
+ * What must hold is that the choice is recorded in the only place that matters -- a
+ * plaintext api_key -- and that no key material is written. */
+static void test_empty_passphrase_means_no_encryption(void)
+{
+    printf("\n── empty passphrase: no encryption ──\n");
+    reset_dir();
+
+    g_log[0] = '\0';
+    CHECK(init_with_input(true, g_dir, "\n"), "an empty answer is accepted as a choice, not rejected");
+    CHECK(!file_exists(g_dir, ".key_hash"), "no key record is written in no-encryption mode");
+
+    /* pass-through in both directions, so /connect stores plaintext instead of failing */
+    sds plain = sdsnew("sk-stored-in-the-clear");
+    sds enc = edc_secret_encrypt(plain);
+    CHECK(enc && strcmp(enc, plain) == 0, "encrypt returns the value unchanged");
+    sds back = enc ? edc_secret_decrypt(enc) : NULL;
+    CHECK(back && strcmp(back, plain) == 0, "decrypt returns it unchanged too");
+    sdsfree(plain);
+    sdsfree(enc);
+    sdsfree(back);
+
+    /* A ciphertext from an earlier encrypted run cannot be read in this mode -- and saying
+     * so beats handing a ciphertext to the provider as an API key. */
+    sds stale = edc_secret_decrypt(BC_SECRET_PREFIX "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    CHECK(stale == NULL, "an existing ciphertext is refused, not passed through");
+    if (stale)
+        sdsfree(stale);
+}
+
+/* ── 6c. the choice survives a restart, without prompting ─────────────────── */
+static void test_no_encryption_no_reprompt(void)
+{
+    printf("\n── no-encryption mode does not prompt again ──\n");
+    reset_dir();
+    edc_secret_cleanup();
+
+    /* The mode is recorded by the plaintext api_key itself, so write the one file the
+     * detection reads. No .key_hash: nothing to verify, nothing to forget. */
+    sds p = edc_path_join(g_dir, "config.json", NULL);
+    CHECK(edc_file_write(p, "{\"api_key\": \"sk-plaintext\", \"model\": \"m\"}\n", -1, NULL),
+          "a config holding a plaintext api_key can be planted");
+    sdsfree(p);
+
+    /* No pty here on purpose: if this prompted, isatty() would fail and init would report
+     * "No terminal", so a plain success is proof the prompt was skipped. */
+    unsetenv("EDGECLAW_MASTER_KEY");
+    g_log[0] = '\0';
+    CHECK(edc_secret_init(false, g_dir), "a no-encryption install starts without a terminal");
+    printf("    log: %s\n", g_log);
+    CHECK(strstr(g_log, "No terminal") == NULL, "and therefore did not try to prompt");
+
+    sds plain = sdsnew("sk-round-trip");
+    sds enc = edc_secret_encrypt(plain);
+    CHECK(enc && strcmp(enc, plain) == 0, "the mode is active without any input");
+    sdsfree(plain);
+    sdsfree(enc);
 }
 
 /* ── 7. encrypt / decrypt round trip, and a ciphertext from another key ───── */
@@ -686,7 +752,9 @@ int main(void)
     test_verify_rejects_wrong_passphrase();
     test_verify_without_hash();
     test_confirm_mismatch_rejected();
-    test_empty_passphrase_rejected();
+    test_empty_confirm_rejected();
+    test_empty_passphrase_means_no_encryption();
+    test_no_encryption_no_reprompt();
     test_encrypt_decrypt();
     test_env_var_mode();
     test_salt_is_per_install();

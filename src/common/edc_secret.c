@@ -48,6 +48,15 @@ static char g_master_key[BC_KEY_SIZE];
 static bool g_secret_ready = false;
 static bool g_key_mlocked = false;
 
+/* Third state, alongside "key loaded" (g_secret_ready) and "not initialized": the user
+ * chose NOT to encrypt, so there is no key to derive and api_key is stored in plaintext.
+ *
+ * It is a real choice, not a failure mode. The passphrase protects against a copied disk;
+ * an install that keeps no secrets in config.json (or accepts that risk) gains nothing from
+ * a prompt on every launch. What it must not do is silently pretend to encrypt, which is
+ * why encrypt/decrypt pass values straight through instead of returning NULL. */
+static bool g_encryption_disabled = false;
+
 /* The per-install salt and iteration count the current key was derived with. Loaded from
  * .key_hash before the key is derived -- the derivation cannot run without them, which is
  * why the file is read in edc_secret_init() and not alongside config.json (which is
@@ -139,8 +148,14 @@ static void secret_tty_echo_restore(int fd, struct secret_tty_state *saved)
     saved->valid = false;
 }
 
-static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
+/* |was_empty|, when not NULL, turns an empty answer into a SUCCESS with *was_empty set,
+ * instead of an error. The first-run prompt uses that to offer "press Enter for no
+ * encryption"; every other prompt passes NULL and keeps treating empty as a mistake. */
+static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size, bool *was_empty)
 {
+    if (was_empty)
+        *was_empty = false;
+
     fprintf(stdout, "%s", prompt);
     fflush(stdout);
 
@@ -168,6 +183,11 @@ static bool read_passphrase_tty(const char *prompt, char *buf, size_t buf_size)
 
     if (len == 0)
     {
+        if (was_empty)
+        {
+            *was_empty = true;
+            return true;
+        }
         log_error("Empty passphrase");
         return false;
     }
@@ -320,6 +340,78 @@ static bool kdf_file_exists(const char *edc_home)
     bool exists = edc_file_is_regular(path);
     sdsfree(path);
     return exists;
+}
+
+/* Is the api_key stored in <edc_home>/config.json non-empty and NOT encrypted?
+ *
+ * That is the whole persisted state of "this install chose no encryption" -- no marker
+ * file to keep in sync, and no way for the two to disagree. Read without cJSON because this
+ * module is a dependency-free leaf and the question is only about a prefix.
+ *
+ * Conservative: anything unreadable, absent or ambiguous answers NO, which sends the caller
+ * down the prompt path. Prompting an install that chose no encryption is annoying; silently
+ * skipping the prompt on an encrypted one means decrypt fails later with no explanation. */
+static bool stored_api_key_is_plaintext(const char *edc_home)
+{
+    if (!edc_home || !edc_home[0])
+        return false;
+
+    sds path = kdf_file_path(edc_home); /* "<edc_home>/.key_hash" */
+    sds dir = edc_path_dirname(path);
+    sds conf_path = edc_path_join(dir, "config.json", NULL);
+    sdsfree(dir);
+    sdsfree(path);
+
+    EdcError *error = NULL;
+    sds contents = edc_file_read(conf_path, &error);
+    sdsfree(conf_path);
+    if (error)
+        edc_error_free(error);
+    if (!contents)
+        return false;
+
+    bool plaintext = false;
+    const char *key = strstr(contents, "\"api_key\"");
+    if (key)
+    {
+        const char *p = key + strlen("\"api_key\"");
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+            p++;
+        if (*p == ':')
+        {
+            p++;
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+                p++;
+            if (*p == '"')
+            {
+                p++;
+                /* Non-empty, and not one of our ciphertexts. */
+                if (*p && *p != '"' && strncmp(p, BC_SECRET_PREFIX_FAMILY, strlen(BC_SECRET_PREFIX_FAMILY)) != 0)
+                    plaintext = true;
+            }
+        }
+    }
+
+    sdsfree(contents);
+    return plaintext;
+}
+
+/* Switch this process to "no encryption" and say why, once. */
+static bool secret_disable_encryption(const char *edc_home)
+{
+    g_encryption_disabled = true;
+    g_secret_ready = false;
+
+    log_warn("encryption is OFF: the API key is stored in PLAINTEXT in config.json. Anyone who can read "
+             "that file -- or the disk -- has the key");
+
+    if (edc_home && kdf_file_exists(edc_home))
+    {
+        /* Not deleted: the file is the user's, and this may be a deliberate re-run. It is
+         * simply ignored from now on, because the plaintext api_key decides the mode. */
+        log_warn("%s still exists and is now unused; remove it if that was not intended", BC_KEY_VERIFY_FILE);
+    }
+    return true;
 }
 
 /* Write the record for the CURRENT salt/iterations/key. Overwrites, so switching between
@@ -489,6 +581,9 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
 {
     if (g_secret_ready)
         return true;
+    /* Already decided this run: no prompt, no work. */
+    if (g_encryption_disabled)
+        return true;
 
     /* Priority 1: env var (scripts / Docker) */
     const char *env_val = getenv(BC_MASTER_KEY_ENV);
@@ -560,6 +655,11 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
         return true;
     }
 
+    /* A plaintext api_key already in config.json means this install chose no encryption.
+     * Checked before the terminal test so a no-encryption install also starts headless. */
+    if (stored_api_key_is_plaintext(edc_home))
+        return secret_disable_encryption(edc_home);
+
     /* Priority 2: stdin (interactive) */
     if (!isatty(STDIN_FILENO))
     {
@@ -573,24 +673,47 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
 
     if (confirm_password)
     {
-        /* First-time setup: prompt twice and confirm match.
+        /* First-time setup: the user is choosing a policy here, not just a password, and
+         * this is the only moment they see the trade-off. Three routes, all reachable from
+         * where they are standing:
          *
-         * The two lines before the prompt are the only explanation a new user gets for a
-         * password they are about to invent for a program they have not used yet. The
-         * prompt alone said nothing about what the passphrase is for, that losing it has
-         * a cost, or that this can be skipped -- and it is the FIRST thing a first run
-         * prints. */
+         *  - a passphrase (encrypts, nothing on disk, typed once per launch);
+         *  - Enter (no encryption: plaintext, nothing to type, the disk is the boundary);
+         *  - EDGECLAW_MASTER_KEY, which is answered before this prompt exists and is the
+         *    route for CI -- mentioned here because the alternative is that people discover
+         *    it afterwards and paste the passphrase into a shell rc file, which quietly
+         *    downgrades (1) to a disk copy.
+         *
+         * Losing the passphrase costs the API key, not the settings, and that is worth
+         * saying before they invent one. */
         fprintf(stderr,
-                "EdgeClaw encrypts the API key in config.json with this passphrase.\n"
-                "It is not stored anywhere, so it cannot be recovered: forget it and you\n"
-                "re-enter the key (settings and history are unaffected). Set %s to skip\n"
-                "this prompt.\n",
-                BC_MASTER_KEY_ENV);
-        if (!read_passphrase_tty("Enter new passphrase: ", buf, sizeof(buf)))
+                "EdgeClaw stores an API key in %s/config.json. Choose how it is protected:\n"
+                "\n"
+                "  * a passphrase below  Encrypt it. Type the passphrase once per launch;\n"
+                "                       nothing is written to disk, so it cannot be recovered\n"
+                "                       (forget it and you re-enter the API key; settings survive).\n"
+                "  * Enter (empty)      NO ENCRYPTION. The key is written in PLAINTEXT, and you\n"
+                "                       are never asked again. Anyone who can read that file, or\n"
+                "                       the disk, has the key.\n"
+                "  * set %s  The non-interactive route (CI / Docker): answer\n"
+                "                       this prompt from the environment instead. Keep that value\n"
+                "                       in a 0600 file you deny to the sandbox -- a passphrase kept\n"
+                "                       on disk no longer protects a stolen disk.\n"
+                "\n",
+                edc_home ? edc_home : "~/.edgeclaw", BC_MASTER_KEY_ENV);
+
+        bool empty = false;
+        if (!read_passphrase_tty("Enter new passphrase (or Enter for no encryption): ", buf, sizeof(buf), &empty))
             return false;
 
+        if (empty)
+        {
+            memset(buf, 0, sizeof(buf));
+            return secret_disable_encryption(edc_home);
+        }
+
         char confirm[MAX_PASSPHRASE];
-        if (!read_passphrase_tty("Confirm passphrase: ", confirm, sizeof(confirm)))
+        if (!read_passphrase_tty("Confirm passphrase: ", confirm, sizeof(confirm), NULL))
         {
             memset(buf, 0, sizeof(buf));
             return false;
@@ -607,7 +730,7 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
     }
     else
     {
-        if (!read_passphrase_tty("Enter passphrase: ", buf, sizeof(buf)))
+        if (!read_passphrase_tty("Enter passphrase: ", buf, sizeof(buf), NULL))
             return false;
     }
 
@@ -673,11 +796,18 @@ void edc_secret_cleanup(void)
     }
     memset(g_master_key, 0, BC_KEY_SIZE);
     g_secret_ready = false;
+    g_encryption_disabled = false;
 }
 
 sds edc_secret_encrypt(sds plaintext)
 {
-    if (!plaintext || !g_secret_ready)
+    if (!plaintext)
+        return NULL;
+    /* No encryption chosen: hand the value back unchanged so the caller stores plaintext.
+     * Returning NULL here would make /connect refuse to save at all. */
+    if (g_encryption_disabled)
+        return sdsdup(plaintext);
+    if (!g_secret_ready)
         return NULL;
 
     mbedtls_cipher_context_t cipher;
@@ -789,7 +919,23 @@ cleanup:
 
 sds edc_secret_decrypt(const char *input)
 {
-    if (!input || !g_secret_ready)
+    if (!input)
+        return NULL;
+    if (g_encryption_disabled)
+    {
+        /* Values pass through -- but a ciphertext cannot, and saying so beats handing the
+         * provider a config value that is not an API key. This is the path an install takes
+         * after switching from encrypted to no-encryption without re-entering the key. */
+        if (strncmp(input, BC_SECRET_PREFIX_FAMILY, strlen(BC_SECRET_PREFIX_FAMILY)) == 0)
+        {
+            log_error("config.json holds an encrypted api_key but encryption is off; re-enter the API key "
+                      "(/connect) or restore the passphrase -- remove %s to start over",
+                      BC_KEY_VERIFY_FILE);
+            return NULL;
+        }
+        return sdsnew(input);
+    }
+    if (!g_secret_ready)
         return NULL;
 
     size_t prefix_len = strlen(BC_SECRET_PREFIX);
