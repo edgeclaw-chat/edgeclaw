@@ -83,27 +83,30 @@ end = text.index("\n'@\n", start)
 open(script, "w", encoding="utf-8").write(text[:start] + hex_point + text[end:])
 PYEOF
 
-# Sign every archive in the fixture directory. Called after each fixture is created, so the
-# happy paths see a valid signature and the negative cases break exactly one thing.
+# Sign the archive in a tag's directory. The published layout is
+# <download-base>/<tag>/<asset> and <download-base>/<tag>/sha256sums.txt, so the fixture mirrors
+# it -- a flat directory answers 404 for the real path shape, which is what the first CI round
+# after the network fix showed.
 resign_release() {
-    ( cd "${WORK}/fixtures" && sha256sum ./*.tar.gz 2>/dev/null \
+    tag=$1
+    d="${WORK}/fixtures/${tag}"
+    ( cd "$d" && sha256sum ./*.tar.gz 2>/dev/null \
         | awk '{n=$2; sub(/.*\//,"",n); print $1"  "n}' | sort -k2 > sha256sums.txt ) \
-        || ( cd "${WORK}/fixtures" && shasum -a 256 ./*.tar.gz \
+        || ( cd "$d" && shasum -a 256 ./*.tar.gz \
         | awk '{n=$2; sub(/.*\//,"",n); print $1"  "n}' | sort -k2 > sha256sums.txt )
-    openssl dgst -sha256 -sign "$SIGNKEY" -out "${WORK}/s.bin" "${WORK}/fixtures/sha256sums.txt"
-    openssl base64 -A -in "${WORK}/s.bin" -out "${WORK}/fixtures/sha256sums.txt.sig"
-    printf '\n' >> "${WORK}/fixtures/sha256sums.txt.sig"
+    openssl dgst -sha256 -sign "$SIGNKEY" -out "${WORK}/s.bin" "${d}/sha256sums.txt"
+    openssl base64 -A -in "${WORK}/s.bin" -out "${d}/sha256sums.txt.sig"
+    printf '\n' >> "${d}/sha256sums.txt.sig"
 }
 
-# A published archive: one directory with the binary inside.
+# A published archive: one directory with the binary inside, served under its tag.
 mk_archive() {
     tag=$1
-    dir="${WORK}/payload/${tag}"
-    mkdir -p "$dir"
-    printf 'fake binary for %s\n' "$tag" > "$dir/edgeclaw.exe"
-    chmod +x "$dir/edgeclaw.exe"
-    ( cd "${WORK}/payload" && tar -czf "${WORK}/fixtures/edgeclaw_amd64_windows_${tag}.tar.gz" "${tag}" )
-    resign_release
+    mkdir -p "${WORK}/payload/${tag}" "${WORK}/fixtures/${tag}"
+    printf 'fake binary for %s\n' "$tag" > "${WORK}/payload/${tag}/edgeclaw.exe"
+    chmod +x "${WORK}/payload/${tag}/edgeclaw.exe"
+    ( cd "${WORK}/payload" && tar -czf "${WORK}/fixtures/${tag}/edgeclaw_amd64_windows_${tag}.tar.gz" "${tag}" )
+    resign_release "$tag"
 }
 
 # Run the script against the fixtures. A local HTTP server stands in for GitHub: the script
@@ -209,8 +212,8 @@ mk_archive v9.9.9
 # must be valid to openssl. If this passes and the script's verification fails, the problem is
 # in the script rather than in the fixture -- which is the only part of this chain this
 # machine can settle without pwsh.
-openssl base64 -d -A -in "${WORK}/fixtures/sha256sums.txt.sig" -out "${WORK}/verify.sig"
-if openssl dgst -sha256 -verify "$SIGNPUB" -signature "${WORK}/verify.sig" "${WORK}/fixtures/sha256sums.txt" >/dev/null 2>&1; then
+openssl base64 -d -A -in "${WORK}/fixtures/v9.9.9/sha256sums.txt.sig" -out "${WORK}/verify.sig"
+if openssl dgst -sha256 -verify "$SIGNPUB" -signature "${WORK}/verify.sig" "${WORK}/fixtures/v9.9.9/sha256sums.txt" >/dev/null 2>&1; then
     check "valid" "valid" "the fixture's signature is valid to openssl"
 else
     check "invalid" "valid" "the fixture's signature is valid to openssl"
@@ -229,52 +232,52 @@ check "$(ls "${WORK}/bin" | wc -l | tr -d ' ')" "1" "a second install leaves one
 # ── the signature chain: each case breaks exactly one link ───────────────────────────────
 
 # No checksums at all: the state every release before this feature was in.
-mv "${WORK}/fixtures/sha256sums.txt" "${WORK}/sums.bak"
+mv "${WORK}/fixtures/v9.9.9/sha256sums.txt" "${WORK}/sums.bak"
 if run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin" >/dev/null 2>&1; then
     check "installed an unverifiable release" "refused" "a release without checksums is refused"
 else
     check "refused" "refused" "a release without checksums is refused"
 fi
-mv "${WORK}/sums.bak" "${WORK}/fixtures/sha256sums.txt"
+mv "${WORK}/sums.bak" "${WORK}/fixtures/v9.9.9/sha256sums.txt"
 
 # Checksums present but unsigned: they could have been changed with the archive.
-mv "${WORK}/fixtures/sha256sums.txt.sig" "${WORK}/sig.bak"
+mv "${WORK}/fixtures/v9.9.9/sha256sums.txt.sig" "${WORK}/sig.bak"
 if run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin" >/dev/null 2>&1; then
     check "installed with an unsigned checksum file" "refused" "an unsigned checksum file is refused"
 else
     check "refused" "refused" "an unsigned checksum file is refused"
 fi
-mv "${WORK}/sig.bak" "${WORK}/fixtures/sha256sums.txt.sig"
+mv "${WORK}/sig.bak" "${WORK}/fixtures/v9.9.9/sha256sums.txt.sig"
 
 # Checksums edited after signing: the signature no longer covers what it says it covers.
-cp "${WORK}/fixtures/sha256sums.txt" "${WORK}/sums.bak"
-printf 'deadbeef  edgeclaw_amd64_windows_v9.9.9.tar.gz\n' > "${WORK}/fixtures/sha256sums.txt"
+cp "${WORK}/fixtures/v9.9.9/sha256sums.txt" "${WORK}/sums.bak"
+printf 'deadbeef  edgeclaw_amd64_windows_v9.9.9.tar.gz\n' > "${WORK}/fixtures/v9.9.9/sha256sums.txt"
 if run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin" >/dev/null 2>&1; then
     check "installed with a tampered checksum file" "refused" "a tampered checksum file is refused"
 else
     check "refused" "refused" "a tampered checksum file is refused"
 fi
-cp "${WORK}/sums.bak" "${WORK}/fixtures/sha256sums.txt"
+cp "${WORK}/sums.bak" "${WORK}/fixtures/v9.9.9/sha256sums.txt"
 
 # The archive replaced after signing: signed sums are fine, the bytes do not match. This is
 # the case a checksum alone catches and a signature alone does not.
-cp "${WORK}/fixtures/edgeclaw_amd64_windows_v9.9.9.tar.gz" "${WORK}/archive.bak"
-printf 'x' >> "${WORK}/fixtures/edgeclaw_amd64_windows_v9.9.9.tar.gz"
+cp "${WORK}/fixtures/v9.9.9/edgeclaw_amd64_windows_v9.9.9.tar.gz" "${WORK}/archive.bak"
+printf 'x' >> "${WORK}/fixtures/v9.9.9/edgeclaw_amd64_windows_v9.9.9.tar.gz"
 if run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin" >/dev/null 2>&1; then
     check "installed a mismatched archive" "refused" "an archive that does not match its checksum is refused"
 else
     check "refused" "refused" "an archive that does not match its checksum is refused"
 fi
-cp "${WORK}/archive.bak" "${WORK}/fixtures/edgeclaw_amd64_windows_v9.9.9.tar.gz"
+cp "${WORK}/archive.bak" "${WORK}/fixtures/v9.9.9/edgeclaw_amd64_windows_v9.9.9.tar.gz"
 
 # None of the failures replaced the working binary.
 check "$(cat "${WORK}/bin/edgeclaw.exe")" "fake binary for v9.9.9" "no failed verification replaced the binary"
 
 # ── a valid archive with no binary in it ─────────────────────────────────────────────────
-mkdir -p "${WORK}/payload/empty/lonely"
+mkdir -p "${WORK}/payload/empty/lonely" "${WORK}/fixtures/v9.9.7"
 printf 'x\n' > "${WORK}/payload/empty/lonely/README"
-( cd "${WORK}/payload/empty" && tar -czf "${WORK}/fixtures/edgeclaw_amd64_windows_v9.9.7.tar.gz" lonely )
-resign_release
+( cd "${WORK}/payload/empty" && tar -czf "${WORK}/fixtures/v9.9.7/edgeclaw_amd64_windows_v9.9.7.tar.gz" lonely )
+resign_release v9.9.7
 if run_ps1 -Tag v9.9.7 -Dir "${WORK}/bin" >/dev/null 2>&1; then
     check "installed from an archive with no binary" "refused" "an archive without the binary is refused"
 else
