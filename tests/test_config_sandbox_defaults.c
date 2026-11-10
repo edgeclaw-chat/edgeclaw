@@ -335,7 +335,47 @@ int main(void)
             sdsfree(msg);
 
         edc_config_free(cfg);
+        cfg = NULL;
     }
+
+    /* ── 4d. no manual /sandbox add-deny needed ───────────────────────────── */
+    /* Two files used to fall through and require the user to name them by hand:
+     *
+     *  - .key_hash, because it is created by edc_secret_init() and may not exist when the
+     *    list is written (the existence-filtered seed simply skipped it);
+     *  - a credential file that only appears later, e.g. ~/.netrc after installing a tool.
+     *
+     * Both are covered by the top-up that runs on every load, so this drives the same path
+     * the next launch would: drop .key_hash in place AFTER the config was written, re-run
+     * the loader, and expect the deny list to have grown on its own. */
+    edc_config_free(cfg);
+    cfg = NULL;
+
+    char kh[PATH_MAX];
+    snprintf(kh, sizeof(kh), "%s/.edgeclaw/.key_hash", home);
+    char khdir[PATH_MAX];
+    snprintf(khdir, sizeof(khdir), "%s/.edgeclaw", home);
+    test_mkdir(khdir);
+    FILE *kf = fopen(kh, "w");
+    if (kf)
+    {
+        fputs("v 2\nkdf pbkdf2-sha256\niter 600000\n", kf);
+        fclose(kf);
+    }
+
+    T_CHECK(edc_init_env(home, false), "edc_init_env tops up the existing config");
+    cfg = edc_config_load(home);
+    if (cfg)
+    {
+        if (!has_path(cfg->sandbox_deny_paths, kh))
+            dump_list("deny_paths after top-up", cfg->sandbox_deny_paths);
+        T_CHECK(has_path(cfg->sandbox_deny_paths, kh),
+                "the app's own .key_hash is denied without any manual step");
+        T_CHECK(list_is_canonical(cfg->sandbox_deny_paths), "the topped-up deny list is canonical");
+        edc_config_free(cfg);
+        cfg = NULL;
+    }
+    remove(kh);
 
     /* Best-effort cleanup (the other config tests leave their home behind too). */
     char conf_path[sizeof(home) + 16];

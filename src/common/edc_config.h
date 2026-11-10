@@ -72,6 +72,21 @@ const char *edc_sandbox_platform_ro_paths(void);
 const char *edc_sandbox_default_rw_paths(void);
 const char *edc_sandbox_default_ro_paths(void);
 
+/* A fresh, NULL-terminated array of the app's OWN secret files under |edc_home|, whether or
+ * not they exist yet, or NULL where the sandbox has no backend.
+ *
+ * Separate from edc_config_default_deny_paths() because existence must NOT be consulted
+ * here: .key_hash is created by edc_secret_init(), which can run after the deny list was
+ * written, and a list that only names files existing at seed time silently missed it. These
+ * two names are not a user preference -- they are the app's own secrets -- so they are
+ * denied unconditionally and the check is repeated on every load.
+ *
+ * No realpath(): a not-yet-created file cannot be resolved, and the entry still matches
+ * once it appears.
+ *
+ * Caller frees the array (sdsfree each + free). */
+sds *edc_config_own_secret_paths(const char *edc_home);
+
 /* A fresh, NULL-terminated array of the sensitive $HOME paths the deny list starts
  * with, or NULL where the sandbox has no backend.
  *

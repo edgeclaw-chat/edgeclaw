@@ -93,6 +93,31 @@ static sds *edc_config_default_rw_paths(const char *workspace)
     return out;
 }
 
+/* The app's own secret files (see the header). Names only -- existence is deliberately not
+ * consulted, so .key_hash is covered even on the run that has not created it yet. */
+sds *edc_config_own_secret_paths(const char *edc_home)
+{
+    if (!edc_platform_has_sandbox() || !edc_home || !edc_home[0])
+        return NULL;
+
+    static const char *const k_rel[] = {
+        ".edgeclaw/config.json",
+        ".edgeclaw/.key_hash",
+    };
+
+    const size_t count = sizeof(k_rel) / sizeof(k_rel[0]);
+    sds *out = g_new0(sds, count + 1);
+    sds home = edc_homedir();
+    /* The deny entry has to be spelled the way the tools will resolve it. Fall back to the
+     * edc_home given when $HOME is unusable, so the list is never silently empty. */
+    const char *base = (home && sdslen(home) > 0) ? home : edc_home;
+    for (size_t i = 0; i < count; i++)
+        out[i] = edc_path_join(base, k_rel[i], NULL);
+    out[count] = NULL;
+    sdsfree(home);
+    return out;
+}
+
 /* Default deny list: the credential and history files under $HOME (see the header).
  * Relative to $HOME so the same list works for every user; resolved before returning,
  * so what lands in config.json is the canonical spelling and an entry naming a path

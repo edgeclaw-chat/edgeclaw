@@ -497,6 +497,27 @@ static void drop_obsolete_keys(cJSON *conf, bool *changed)
 
 /* Make sure the sandbox object exists and carries both path arrays, and drop
  * the retired ~/.edgeclaw/sandbox root from existing files. */
+/* Is |s| already an element of the array? */
+static bool json_array_has_string(cJSON *arr, const char *s)
+{
+    for (int i = 0; arr && i < cJSON_GetArraySize(arr); i++)
+    {
+        cJSON *e = cJSON_GetArrayItem(arr, i);
+        if (e && cJSON_IsString(e) && strcmp(e->valuestring, s) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Append |s| unless present. Returns true when it was actually added. */
+static bool json_array_add_unique(cJSON *arr, const char *s)
+{
+    if (!arr || !s || !s[0] || json_array_has_string(arr, s))
+        return false;
+    cJSON_AddItemToArray(arr, cJSON_CreateString(s));
+    return true;
+}
+
 static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
 {
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
@@ -600,9 +621,8 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
      *
      * Filled when the key is ABSENT (fresh install, or an upgrade from a version that did
      * not write it) and when it is EMPTY (an install that never configured one -- the
-     * shape every config.json written by the previous release has). A list with entries is
-     * left alone, so a user who removed one default keeps it removed; the one rough edge is
-     * that clearing ALL of them brings the defaults back on the next launch.
+     * shape every config.json written by the previous release has). See the top-up below,
+     * which then keeps the list current on every load.
      *
      * Entries are masked out of the namespace by the sandbox helper (Landlock cannot
      * express deny) and rejected by the tool path check. */
@@ -626,6 +646,47 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
             free(defaults);
             if (cJSON_GetArraySize(deny) > 0)
                 *changed = true;
+        }
+
+        /* Top up on EVERY load, not just at seed time. Two things fall through a one-shot
+         * seed and used to need a manual `/sandbox add-deny`:
+         *
+         *  1. the app's own secrets -- .key_hash is written by edc_secret_init(), which can
+         *     run after this list was written, so a seed that only named existing files
+         *     missed it (this is exactly how it shipped in the previous commit);
+         *  2. a credential file the user creates later (~/.netrc, ~/.aws, ~/.config/gh
+         *     after installing the CLI).
+         *
+         * Re-checking costs one realpath per default per launch and removes the manual step
+         * entirely. The trade-off: a default the user deleted comes back on the next launch.
+         * That is deliberate -- an unprotected secret file fails silently and invisibly,
+         * while a re-added deny entry is visible in `/sandbox list` and can be removed
+         * again -- and each addition is logged so the file does not change under the user. */
+        if (cJSON_IsArray(deny))
+        {
+            sds *own = edc_config_own_secret_paths(edc_home);
+            for (int i = 0; own && own[i]; i++)
+            {
+                if (json_array_add_unique(deny, own[i]))
+                {
+                    log_info("config.json: denied the app's own secret '%s'", own[i]);
+                    *changed = true;
+                }
+                sdsfree(own[i]);
+            }
+            free(own);
+
+            sds *appeared = edc_config_default_deny_paths();
+            for (int i = 0; appeared && appeared[i]; i++)
+            {
+                if (json_array_add_unique(deny, appeared[i]))
+                {
+                    log_info("config.json: auto-denied credential path '%s'", appeared[i]);
+                    *changed = true;
+                }
+                sdsfree(appeared[i]);
+            }
+            free(appeared);
         }
     }
 
@@ -836,6 +897,16 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
             sdsfree(deny[i]);
         }
         free(deny);
+        /* The app's own secrets are named whether or not they exist yet: .key_hash is
+         * written by edc_secret_init() and a deny list that only named existing files
+         * would leave it exposed until the next top-up (see edc_config_own_secret_paths). */
+        sds *own = edc_config_own_secret_paths(edc_home);
+        for (int i = 0; own && own[i]; i++)
+        {
+            json_array_add_unique(deny_arr, own[i]);
+            sdsfree(own[i]);
+        }
+        free(own);
         cJSON_AddItemToObject(sandbox, "deny_paths", deny_arr);
     }
     cJSON_AddItemToObject(config, "sandbox", sandbox);
