@@ -166,6 +166,24 @@ run_ps1() {
     pwsh -NoProfile -NonInteractive -File "$RUN_PS1" "$@" 2>&1
 }
 
+# Run and fail loudly with the script's own output. Without this a failing check reported only
+# "got 1, want 0" in CI, where there is no way to reproduce by hand -- which is exactly how the
+# first two rounds of this test went. The output is what turns a red job into a diagnosis.
+run_ps1_expect_ok() {
+    local label=$1
+    shift
+    local out status
+    out=$(run_ps1 "$@")
+    status=$?
+    if [ "$status" != 0 ]; then
+        printf '\n--- %s: the installer failed (exit %s); its output follows ---\n%s\n--- end ---\n\n' \
+            "$label" "$status" "$out" >&2
+        return "$status"
+    fi
+    printf '%s' "$out"
+    return 0
+}
+
 # The installer reads the target architecture from PROCESSOR_ARCHITECTURE, which on Windows is
 # "AMD64" and on the Linux runner is unset. Setting it is not a hack around a check -- it is
 # what the test is doing: presenting the environment a Windows x64 machine would present, the
@@ -173,18 +191,35 @@ run_ps1() {
 export PROCESSOR_ARCHITECTURE=AMD64
 
 # ── --dry-run needs no network for the asset, only the tag is given ───────────────────────
-out=$(run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin" -DryRun)
+# Fields are read out of their own lines rather than counted: the asset name also appears in
+# the URL line, so a plain `grep -c` reports 2 and says nothing about which line carried it.
+out=$(run_ps1_expect_ok "dry run" -Tag v9.9.9 -Dir "${WORK}/bin" -DryRun)
 check "$?" "0" "a dry run succeeds"
-check "$(printf '%s\n' "$out" | grep -c 'edgeclaw_amd64_windows_v9.9.9.tar.gz')" "1" "the dry run names the asset"
-check "$(printf '%s\n' "$out" | grep -c 'edgeclaw_amd64_windows')" "1" "the dry run names the target"
+check "$(printf '%s\n' "$out" | awk '/^asset /{print $2}')" "edgeclaw_amd64_windows_v9.9.9.tar.gz" \
+    "the dry run names the asset"
+check "$(printf '%s\n' "$out" | awk '/^target /{print $2}')" "edgeclaw_amd64_windows" \
+    "the dry run names the target"
+check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.9" "the dry run names the tag"
 check "$(ls -A "${WORK}/bin" | wc -l | tr -d ' ')" "0" "a dry run installs nothing"
 
 # ── a correctly signed release installs ──────────────────────────────────────────────────
 mk_archive v9.9.9
-out=$(run_ps1 -Tag v9.9.9 -Dir "${WORK}/bin")
+
+# Local sanity check on the fixture, before PowerShell is asked to verify it: the signature
+# must be valid to openssl. If this passes and the script's verification fails, the problem is
+# in the script rather than in the fixture -- which is the only part of this chain this
+# machine can settle without pwsh.
+openssl base64 -d -A -in "${WORK}/fixtures/sha256sums.txt.sig" -out "${WORK}/verify.sig"
+if openssl dgst -sha256 -verify "$SIGNPUB" -signature "${WORK}/verify.sig" "${WORK}/fixtures/sha256sums.txt" >/dev/null 2>&1; then
+    check "valid" "valid" "the fixture's signature is valid to openssl"
+else
+    check "invalid" "valid" "the fixture's signature is valid to openssl"
+fi
+
+out=$(run_ps1_expect_ok "install" -Tag v9.9.9 -Dir "${WORK}/bin")
 check "$?" "0" "a correctly signed release installs"
-check "$(ls "${WORK}/bin")" "edgeclaw.exe" "installed as edgeclaw.exe"
-check "$(cat "${WORK}/bin/edgeclaw.exe")" "fake binary for v9.9.9" "the verified binary is the one in place"
+check "$(ls "${WORK}/bin" 2>/dev/null)" "edgeclaw.exe" "installed as edgeclaw.exe"
+check "$(cat "${WORK}/bin/edgeclaw.exe" 2>/dev/null)" "fake binary for v9.9.9" "the verified binary is the one in place"
 check "$(printf '%s\n' "$out" | grep -c 'Verified signature and checksum')" "1" "the run reports what it verified"
 
 # Installing twice must not accumulate files.

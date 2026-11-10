@@ -204,6 +204,18 @@ Refusing to install.
     if ($point[0] -ne 0x04) {
         Fail 'the embedded public key is malformed (not an uncompressed EC point)'
     }
+
+    # Every line here is the conservative spelling of the same thing, because the two
+    # PowerShells differ: CreateFromFriendlyName rather than the nested
+    # ECCurve+NamedCurves type (which resolves inconsistently), New-Object rather than ::new(),
+    # and explicit [byte[]] casts because the slice of a byte[] is an Object[] and the implicit
+    # conversion is not guaranteed across runtimes.
+    $ecParams = New-Object System.Security.Cryptography.ECParameters
+    $ecParams.Curve = [System.Security.Cryptography.ECCurve]::CreateFromFriendlyName('nistP256')
+    $q = New-Object System.Security.Cryptography.ECPoint
+    $q.X = [byte[]]$point[1..32]
+    $q.Y = [byte[]]$point[33..64]
+    $ecParams.Q = $q
     $ecParams = [System.Security.Cryptography.ECParameters]::new()
     $ecParams.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
     $q = [System.Security.Cryptography.ECPoint]::new()
@@ -214,6 +226,10 @@ Refusing to install.
     $ecdsa = [System.Security.Cryptography.ECDsa]::Create()
     try {
         $ecdsa.ImportParameters($ecParams)
+        # The signature is the ASN.1 DER form openssl produces (`openssl dgst -sha256 -sign`).
+        # This overload's default format is DER on both .NET Framework and .NET 5+; the
+        # DSASignatureFormat-taking overload does not exist on .NET Framework, so it cannot be
+        # spelled out here without dropping Windows PowerShell 5.1 support.
         if (-not $ecdsa.VerifyData($sumsBytes, $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {
             Fail @"
 the release signature does not verify
