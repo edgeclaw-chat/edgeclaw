@@ -101,20 +101,20 @@ sds *edc_config_own_secret_paths(const char *edc_home)
         return NULL;
 
     static const char *const k_rel[] = {
-        ".edgeclaw/config.json",
-        ".edgeclaw/.key_hash",
+        "config.json",
+        ".key_hash",
     };
 
+    /* Derived from |edc_home| itself, NOT from $HOME. The two are the same on a default
+     * install (edc_home is "$HOME/.edgeclaw"), which is exactly what hides the difference:
+     * with edc_home relocated -- EDGECLAW_HOME, a test scratch dir, a container mount -- a
+     * $HOME-relative spelling names a file that is not the one the app encrypts with, so the
+     * entry silently protects nothing. The caller passes the authoritative location; use it. */
     const size_t count = sizeof(k_rel) / sizeof(k_rel[0]);
     sds *out = g_new0(sds, count + 1);
-    sds home = edc_homedir();
-    /* The deny entry has to be spelled the way the tools will resolve it. Fall back to the
-     * edc_home given when $HOME is unusable, so the list is never silently empty. */
-    const char *base = (home && sdslen(home) > 0) ? home : edc_home;
     for (size_t i = 0; i < count; i++)
-        out[i] = edc_path_join(base, k_rel[i], NULL);
+        out[i] = edc_path_join(edc_home, k_rel[i], NULL);
     out[count] = NULL;
-    sdsfree(home);
     return out;
 }
 
@@ -165,8 +165,37 @@ sds *edc_config_default_deny_paths(void)
         ".edgeclaw/.key_hash",
     };
 
+    /* Absolute system paths, denied even though /etc stays readable.
+     *
+     * Narrowing the /etc whitelist to a hand-picked subset is the other way to do this and
+     * it is the wrong one: the tools that consult /etc (the dynamic loader, the resolver,
+     * fontconfig, the terminfo database, ...) each want a different corner of it, and a
+     * missing entry fails SILENTLY -- landlock_add_path skips a path it cannot open and the
+     * symptom is a tool behaving strangely, not an error. Meanwhile these files are already
+     * root-only on any normal system, so narrowing buys almost nothing for a non-root run.
+     *
+     * Deny entries buy the same thing with no functional risk, and they additionally cover
+     * a run as root, where the file permission bits protect nothing and the sandbox is the
+     * only layer left.
+     *
+     * ssh host keys are named FILE by FILE rather than as /etc/ssh: that directory also
+     * holds ssh_config, which the ssh client needs. */
+    static const char *const k_system[] = {
+        "/etc/shadow",
+        "/etc/gshadow",
+        "/etc/sudoers",
+        "/etc/sudoers.d",
+        "/etc/ssl/private",
+        "/etc/credstore",
+        "/etc/credstore.encrypted",
+        "/etc/ssh/ssh_host_rsa_key",
+        "/etc/ssh/ssh_host_ecdsa_key",
+        "/etc/ssh/ssh_host_ed25519_key",
+    };
+
     const size_t count = sizeof(k_rel) / sizeof(k_rel[0]);
-    sds *out = g_new0(sds, count + 1);
+    const size_t sys_count = sizeof(k_system) / sizeof(k_system[0]);
+    sds *out = g_new0(sds, count + sys_count + 1);
     int n = 0;
     for (size_t i = 0; i < count; i++)
     {
@@ -178,6 +207,16 @@ sds *edc_config_default_deny_paths(void)
             free(real);
         }
         sdsfree(cand);
+    }
+    /* Same "only if it resolves" rule: an entry that matches nothing is noise. */
+    for (size_t i = 0; i < sys_count; i++)
+    {
+        char *real = realpath(k_system[i], NULL);
+        if (real)
+        {
+            out[n++] = sdsnew(real);
+            free(real);
+        }
     }
     out[n] = NULL;
     sdsfree(home);

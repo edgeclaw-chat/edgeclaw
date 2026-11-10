@@ -59,6 +59,34 @@ Two constraints worth recording for whoever finishes it:
   can be *told*: `@file` reads go through the same checks, but a prompt can still describe
   anything the model already saw.
 
+#### It is a blast-radius limit, not a confidentiality boundary
+
+Worth stating plainly, because the two get conflated and the difference decides what you
+may safely put on the machine.
+
+- **What it does buy.** A tool or a shell command cannot reach a path the lists do not name,
+  cannot write outside the writable ones, and cannot read a denied one. That bounds what one
+  bad command, or one injected instruction, can touch.
+- **What it does not buy.** Anything the model *does* read goes into its context and is sent
+  to the API provider. The deny list stops a file from being read at all; it cannot stop
+  what was already read from travelling. Treat "the model can reach it" and "it has left
+  the machine" as the same statement.
+- **Root removes most of it.** Deny masks are applied inside a mount namespace created by a
+  helper that inherits the caller's privileges. Run as root and the whitelisted paths are
+  readable regardless of their permission bits — `~/.ssh`'s 0600, a `root:shadow` hash file.
+  A warning is logged at startup when this is the case; run as an unprivileged user if the
+  distinction matters.
+- **Deny is matched on paths.** A second name for the same inode is handled for the tool
+  read path, but the boundary is the path prefix, not the file's identity. Treat every list
+  as a guard rail against mistakes and accidents; if something must not be readable at all,
+  do not keep it where a process running as you can read it.
+
+Correspondingly, the built-in defaults deny the app's own key material
+(`config.json`, `.key_hash`), the conventional credential dotfiles, shell history,
+and — even though `/etc` stays readable so tools keep working — the system files whose
+permission bits already implied they were off limits (`/etc/shadow`, `/etc/sudoers`,
+`/etc/ssl/private`, the ssh host keys).
+
 ### Folding (long conversations)
 
 Compaction produces a summary plus a `<read-files>` / `<modified-files>` list. That list is

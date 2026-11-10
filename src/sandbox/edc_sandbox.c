@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <unistd.h> /* geteuid */
+#endif
 
 #ifdef __linux__
 #include <sys/prctl.h>
@@ -52,6 +55,24 @@ bool edc_sandbox_init(struct edc_config *conf)
 
     if (conf->enable_sandbox)
         edc_sandbox_report_unresolved_paths(conf);
+
+    /* Running as root, the sandbox stops being a boundary worth the name.
+     *
+     * The deny list is a path mask applied inside a mount namespace the helper creates --
+     * but the helper inherits root, so the paths it masks are the paths root could have
+     * unmasked. Everything the whitelist grants (/etc, /proc, /sys) is then readable, and a
+     * file whose permission bits would have stopped an ordinary user (a 0600 host key, a
+     * root:shadow hash file) stops nothing. Worth one warning at startup, because the
+     * config in front of the user claims a policy that is not being enforced as they think.
+     *
+     * Not an error: containers legitimately run as root, and refusing to start would break
+     * them. geteuid rather than getuid -- the effective id is what decides access. */
+#if !defined(_WIN32)
+    if (conf->enable_sandbox && geteuid() == 0)
+        log_warn("sandbox: running as root -- the filesystem sandbox is NOT a confidentiality boundary here "
+                 "(deny masks are applied with root's own privileges, and every whitelisted path's "
+                 "permission bits are bypassed); run as an unprivileged user if that matters");
+#endif
 
     log_info("edc_sandbox: initialized, root = %s", conf->sandbox_root_real);
     return true;

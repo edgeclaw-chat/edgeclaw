@@ -278,6 +278,26 @@ int main(void)
         T_CHECK(has_path(defs, planted_hist), "the defaults deny ~/.zsh_history");
         T_CHECK(!has_path(defs, absent), "a default naming a path that does not exist is dropped");
         T_CHECK(list_is_canonical(defs), "the default deny list is canonical");
+
+        /* System files whose permission bits already said "off limits". Denied instead of
+         * narrowing the /etc whitelist: tools reach into many corners of /etc and a missing
+         * entry fails silently, while these files gain nothing from being readable -- and
+         * the deny covers a run as root, where the bits stop mattering. Folded in only if
+         * the platform has them (macOS has no /etc/shadow, for instance). */
+        {
+            static const char *const k_sys_probe[] = {"/etc/shadow", "/etc/sudoers", "/etc/ssl/private"};
+            for (size_t s = 0; s < sizeof(k_sys_probe) / sizeof(k_sys_probe[0]); s++)
+            {
+                if (realpath(k_sys_probe[s], NULL) == NULL)
+                    continue; /* not on this platform */
+                char resolved[PATH_MAX];
+                if (!realpath(k_sys_probe[s], resolved))
+                    continue;
+                if (!has_path(defs, resolved))
+                    dump_list("default deny", defs);
+                T_CHECK(has_path(defs, resolved), "the defaults deny a system file the tools never need");
+            }
+        }
         for (int i = 0; defs && defs[i]; i++)
             sdsfree(defs[i]);
         free(defs);
@@ -360,10 +380,9 @@ int main(void)
     cfg = NULL;
 
     char kh[PATH_MAX];
-    snprintf(kh, sizeof(kh), "%s/.edgeclaw/.key_hash", home);
-    char khdir[PATH_MAX];
-    snprintf(khdir, sizeof(khdir), "%s/.edgeclaw", home);
-    test_mkdir(khdir);
+    /* |home| plays the role of ~/.edgeclaw in this test (it is what edc_init_env is given),
+     * so the record sits directly in it, not in a nested .edgeclaw. */
+    snprintf(kh, sizeof(kh), "%s/.key_hash", home);
     FILE *kf = fopen(kh, "w");
     if (kf)
     {
