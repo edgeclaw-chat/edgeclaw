@@ -73,9 +73,9 @@ struct edc_scheduler;
  *     chat.jsonl. Every table that references a session (groups, group_fold_files, tasks,
  *     messages, memo_entries, memo_events) follows.
  *
- *     The on-disk DIRECTORY still says "s<id>" (edc_session_dir_name): those directories
- *     hold live chat.jsonl transcripts, and renaming them would be a data migration for a
- *     formatting decision. */
+ *     The on-disk DIRECTORY is named with the bare id (edc_session_dir_name): those
+ *     directories hold live chat.jsonl transcripts, and renaming them would be a data
+ *     migration for a formatting decision. */
 /* v7: group_fold_files gained a `kind` column.
  *
  *     A group's tracked-file state is TWO lists (read, modified) and the table only had room
