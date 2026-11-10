@@ -827,7 +827,7 @@ bool edc_state_store_open(struct edc_config *cfg)
      * yet. Failing here would make every save into a fresh workspace impossible. */
     {
         EdcError *mk_err = NULL;
-        if (!edc_dir_create_with_parents(cfg->workspace, 0755, &mk_err))
+        if (!edc_dir_create_with_parents(cfg->workspace, 0700, &mk_err))
         {
             log_error("state_store: cannot create workspace %s: %s", cfg->workspace,
                       mk_err ? mk_err->message : "?");
@@ -837,6 +837,12 @@ bool edc_state_store_open(struct edc_config *cfg)
         }
         if (mk_err)
             edc_error_free(mk_err);
+        /* The database below is the session store: every conversation, every memory entry.
+         * Tighten the directory even when it already existed. */
+        if (!edc_file_restrict_owner(cfg->workspace))
+            log_warn("state_store: cannot restrict %s to its owner; the session database may be "
+                     "readable by other local users",
+                     cfg->workspace);
     }
 
     sds ws = resolve_dir(cfg->workspace);
@@ -889,6 +895,13 @@ bool edc_state_store_open(struct edc_config *cfg)
         goto fail;
     }
 
+    /* Restrict the database before anything is written to it. SQLite creates the file with
+     * the process umask (0644 under the common 022), and the directory being 0700 is the
+     * real boundary -- this is the second layer, for a database copied out of the workspace
+     * (backup, rsync, a support dump). */
+    if (!edc_file_restrict_owner(g_db_path))
+        log_warn("state_store: cannot restrict %s to its owner", g_db_path);
+
     /* One process per workspace, then a corruption probe -- one statement each, see
      * claim_exclusive(). */
     if (!claim_exclusive(g_db, g_db_path))
@@ -896,6 +909,17 @@ bool edc_state_store_open(struct edc_config *cfg)
 
     if (!apply_pragmas(g_db))
         goto fail;
+
+    /* -wal and -shm come into existence when WAL mode first writes, so they are tightened
+     * here rather than above; a missing file is not an error. */
+    {
+        sds wal = sdscatprintf(sdsempty(), "%s-wal", g_db_path);
+        sds shm = sdscatprintf(sdsempty(), "%s-shm", g_db_path);
+        edc_file_restrict_owner(wal);
+        edc_file_restrict_owner(shm);
+        sdsfree(wal);
+        sdsfree(shm);
+    }
 
     if (!check_or_create_schema(g_db))
         goto fail;

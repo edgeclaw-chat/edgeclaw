@@ -249,12 +249,17 @@ static bool edc_init_env_workspace(const char *dest_workspace)
 {
     if (edc_file_is_dir(dest_workspace))
     {
+        /* Already released: only tighten it. The workspace holds the session transcripts and
+         * the state database, so 0700 is what keeps them to their owner -- an install made
+         * when this was 0755 keeps that mode otherwise. */
+        if (!edc_file_restrict_owner(dest_workspace))
+            log_warn("cannot restrict the workspace %s to its owner", dest_workspace);
         return true;
     }
 
     log_info("Releasing bundled workspace (%zu files) to %s", edc_bundled_workspace_count, dest_workspace);
 
-    if (!edc_dir_create_with_parents(dest_workspace, 0755, NULL))
+    if (!edc_dir_create_with_parents(dest_workspace, 0700, NULL))
     {
         log_error("Failed to create workspace directory %s", dest_workspace);
         return false;
@@ -959,12 +964,20 @@ bool edc_init_env(const char *edc_home, bool setup)
     bool ret = true;
     if (!edc_file_is_dir(edc_home))
     {
-        if (!edc_dir_create_with_parents(edc_home, 0755, NULL))
+        if (!edc_dir_create_with_parents(edc_home, 0700, NULL))
         {
             log_error("Failed to create directory %s", edc_home);
             ret = false;
             goto exit_;
         }
+    }
+    else if (!edc_file_restrict_owner(edc_home))
+    {
+        /* An install made before this was 0700. Traversal needs the x bit, so tightening
+         * the directory also hides the 0644 config.json and everything in the workspace. */
+        log_warn("cannot restrict %s to its owner; other local users may be able to read the "
+                 "config and the conversation history stored below it",
+                 edc_home);
     }
 
     if (setup || !edc_file_is_regular(conf_file))

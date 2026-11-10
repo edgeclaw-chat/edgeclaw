@@ -150,6 +150,24 @@ static void test_open_creates_schema(void)
     /* Idempotent: a second open must not fail or leak a connection. */
     CHECK(edc_state_store_open(cfg), "second open is idempotent");
 
+    /* The database holds every conversation and every memory entry. SQLite creates it with
+     * the process umask, so without this it is 0644. The workspace directory being 0700 is
+     * the real boundary; this is the layer that survives a database copied out of it. */
+    {
+        struct stat st;
+        const bool got = path && stat(path, &st) == 0;
+        if (!got || (st.st_mode & 0777) != 0600)
+            printf("    db mode is %04o, expected 0600\n", got ? (unsigned)(st.st_mode & 0777) : 0);
+        CHECK(got && (st.st_mode & 0777) == 0600, "the database is 0600");
+    }
+    {
+        struct stat st;
+        const bool got = cfg->workspace && stat(cfg->workspace, &st) == 0;
+        if (!got || (st.st_mode & 0777) != 0700)
+            printf("    workspace mode is %04o, expected 0700\n", got ? (unsigned)(st.st_mode & 0777) : 0);
+        CHECK(got && (st.st_mode & 0777) == 0700, "the workspace is 0700");
+    }
+
     free_config(cfg);
 }
 

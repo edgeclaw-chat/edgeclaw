@@ -423,6 +423,14 @@ struct edc_config *edc_config_load(const char *edc_home)
         goto exit_free_path;
     }
 
+    /* Tighten the file here rather than in each writer: config.json is written from several
+     * places (first run, the /sandbox and /connect paths, the silent top-up), and doing it
+     * on load also upgrades an install that was created before this. It holds the api_key
+     * ciphertext and the path lists -- 0600 is the right mode even though the containing
+     * directory is already 0700. */
+    if (!edc_file_restrict_owner(path))
+        log_warn("cannot restrict %s to its owner", path);
+
     cJSON *conf = cJSON_Parse(content);
     if (!conf)
     {

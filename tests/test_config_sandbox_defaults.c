@@ -111,6 +111,14 @@ static void dump_list(const char *label, sds *arr)
     fprintf(stderr, "]\n");
 }
 
+/* Mode bits of |path|, or 0 when it does not exist. POSIX-only: the Windows runs of this
+ * test do not reach the assertions that use it. */
+static int mode_of(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? (int)(st.st_mode & 0777) : -1;
+}
+
 int main(void)
 {
     /* The secret module (api_key encryption) refuses to run without a key when
@@ -153,6 +161,18 @@ int main(void)
         dump_list("rw_paths", cfg->sandbox_rw_paths);
     T_CHECK(list_is_canonical(cfg->sandbox_ro_paths), "ro is canonical: no trailing slash, no duplicates");
     T_CHECK(list_is_canonical(cfg->sandbox_rw_paths), "rw is canonical: no trailing slash, no duplicates");
+
+    /* ── 1b. the install's own directories and files are owner-only ────────── */
+    /* The workspace holds the session transcripts and the state database; config.json holds
+     * the api_key ciphertext. Traversal needs the x bit, so 0700 on the containing
+     * directories is what actually keeps them to their owner -- an install created when
+     * these were 0755/0644 is upgraded on load. */
+    T_CHECK(mode_of(home) == 0700, "edc_home is 0700");
+    {
+        char conf[PATH_MAX];
+        snprintf(conf, sizeof(conf), "%s/config.json", home);
+        T_CHECK(mode_of(conf) == 0600, "config.json is 0600");
+    }
 
     /* ── 2. the platform-specific part ───────────────────────────────────── */
 #if defined(__APPLE__)
