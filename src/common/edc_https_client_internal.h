@@ -16,6 +16,17 @@
 /* 301/302/303/307/308. 304 is not a redirect: it validates the request already made. */
 bool edc_https_status_is_redirect(int status);
 
+/* What a 3xx means for the caller. See the definition for why a 3xx without a Location is
+ * delivered rather than failed. */
+typedef enum
+{
+    EDC_HTTPS_REDIRECT_NONE = 0,
+    EDC_HTTPS_REDIRECT_FOLLOW,
+    EDC_HTTPS_REDIRECT_FAIL
+} edc_https_redirect_action;
+
+edc_https_redirect_action edc_https_redirect_decide(int status, bool has_location, int redirects_left);
+
 /* Resolve a Location header against the URL that produced it. Returns NULL when the target
  * is not https (a downgrade is refused) or the base is unparseable. Caller frees. */
 sds edc_https_resolve_redirect(const char *base_url, const char *location);

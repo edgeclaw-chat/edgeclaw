@@ -49,6 +49,61 @@ static void expect(const char *base, const char *location, const char *want, con
         sdsfree(got);
 }
 
+/* ── the follow/fail decision, exhaustively ──────────────────────────────── */
+/* Every combination of (is-redirect, has-Location, budget) is enumerated, because each one
+ * has a distinct consequence and three of them are easy to get subtly wrong:
+ *
+ *   - a redirect WITH budget but WITHOUT Location would, if "followed", re-request the same
+ *     URL forever;
+ *   - a redirect with NO budget must fail, not silently deliver a redirect page as content;
+ *   - a non-redirect must ignore the budget entirely.
+ */
+static void test_redirect_decide(void)
+{
+    printf("\n-- the follow/fail decision --\n");
+
+    /* Non-redirect statuses: never a redirect, whatever else is true. */
+    const int non_redirect[] = {200, 201, 204, 304, 400, 404, 500, 0};
+    for (size_t i = 0; i < sizeof(non_redirect) / sizeof(non_redirect[0]); i++)
+    {
+        for (int has_loc = 0; has_loc <= 1; has_loc++)
+        {
+            for (int budget = 0; budget <= 1; budget++)
+            {
+                char label[128];
+                snprintf(label, sizeof(label), "status %d (loc=%d, budget=%d) is delivered as-is", non_redirect[i],
+                         has_loc, budget);
+                CHECK(edc_https_redirect_decide(non_redirect[i], has_loc != 0, budget) == EDC_HTTPS_REDIRECT_NONE,
+                      label);
+            }
+        }
+    }
+
+    /* Redirect statuses, with a Location and budget: followed. */
+    const int redirects[] = {301, 302, 303, 307, 308};
+    for (size_t i = 0; i < sizeof(redirects) / sizeof(redirects[0]); i++)
+    {
+        char label[128];
+        snprintf(label, sizeof(label), "status %d with a Location and budget is followed", redirects[i]);
+        CHECK(edc_https_redirect_decide(redirects[i], true, 1) == EDC_HTTPS_REDIRECT_FOLLOW, label);
+        snprintf(label, sizeof(label), "status %d with a Location and budget 5 is followed", redirects[i]);
+        CHECK(edc_https_redirect_decide(redirects[i], true, 5) == EDC_HTTPS_REDIRECT_FOLLOW, label);
+
+        /* Budget exhausted: fail rather than deliver the redirect page as the resource. */
+        snprintf(label, sizeof(label), "status %d with a Location and NO budget fails", redirects[i]);
+        CHECK(edc_https_redirect_decide(redirects[i], true, 0) == EDC_HTTPS_REDIRECT_FAIL, label);
+        snprintf(label, sizeof(label), "status %d with a Location and negative budget fails", redirects[i]);
+        CHECK(edc_https_redirect_decide(redirects[i], true, -1) == EDC_HTTPS_REDIRECT_FAIL, label);
+
+        /* No Location: cannot be followed, so it is delivered and the caller sees the 3xx.
+         * Following it would re-request the same URL with no progress. */
+        snprintf(label, sizeof(label), "status %d without a Location is delivered, not followed", redirects[i]);
+        CHECK(edc_https_redirect_decide(redirects[i], false, 5) == EDC_HTTPS_REDIRECT_NONE, label);
+        snprintf(label, sizeof(label), "status %d without a Location ignores the budget", redirects[i]);
+        CHECK(edc_https_redirect_decide(redirects[i], false, 0) == EDC_HTTPS_REDIRECT_NONE, label);
+    }
+}
+
 int main(void)
 {
     /* ── which statuses are redirects ─────────────────────────────────────── */
@@ -99,6 +154,8 @@ int main(void)
     /* ── refusals ────────────────────────────────────────────────────────── */
     expect("https://example.com/a", "", NULL, "an empty Location is refused");
     expect("https://example.com/a", NULL, NULL, "a missing Location is refused");
+
+    test_redirect_decide();
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;

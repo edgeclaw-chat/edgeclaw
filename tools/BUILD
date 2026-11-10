@@ -51,3 +51,38 @@ py_binary(
     srcs = ["gen_version.py"],
     visibility = ["//visibility:public"],
 )
+
+# ── the release-signature pipeline ──────────────────────────────────────────
+#
+# Three copies of one public key must stay in step: this PEM, the C array compiled into
+# the binary, and the copy embedded in install.sh (which runs as `curl | sh` and has no
+# checkout). Drift does not crash anything -- every update is simply rejected -- so the two
+# tools that move the key between those copies are tested rather than trusted.
+
+# PEM -> C array. Run by hand when rotating, and its output is committed.
+py_binary(
+    name = "gen_pubkey_c",
+    srcs = ["gen_pubkey_c.py"],
+    visibility = ["//visibility:public"],
+)
+
+# The PEM -> install.sh direction. `--check` reports whether the copies agree.
+py_binary(
+    name = "embed_pubkey_install",
+    srcs = ["embed_pubkey_install.py"],
+    visibility = ["//visibility:public"],
+)
+
+# Key generation and rotation, with the steps to update every copy printed at the end.
+sh_binary(
+    name = "update_keygen",
+    srcs = ["update_keygen.sh"],
+    visibility = ["//visibility:public"],
+)
+
+# The committed trust anchor. A plain file rule so //tests:test_update_keygen can read it
+# from its runfiles.
+exports_files(
+    ["update_signing.pub.pem"],
+    visibility = ["//visibility:public"],
+)

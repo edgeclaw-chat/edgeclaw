@@ -246,6 +246,27 @@ static void edc_https_enqueue_work(struct edc_https_client *client, const char *
     uv_async_send(&client->work_async);
 }
 
+/* What to do with a response, decided from (status, has Location, budget left).
+ *
+ * Pulled out of on_headers_complete so every combination is testable without a socket: the
+ * three inputs are all the decision needs, and the callback that uses it is then a thin
+ * assignment plus the deferred close.
+ */
+edc_https_redirect_action edc_https_redirect_decide(int status, bool has_location, int redirects_left)
+{
+    /* A 3xx with no Location cannot be followed and cannot be interpreted as the resource
+     * either -- but it is also not a redirect loop. It is delivered as a normal response, so
+     * the caller sees the status and can decide (the update path treats any non-2xx as "no
+     * update available"). Failing it here would turn a server quirk into a visible error. */
+    if (!edc_https_status_is_redirect(status))
+        return EDC_HTTPS_REDIRECT_NONE;
+    if (!has_location)
+        return EDC_HTTPS_REDIRECT_NONE;
+    if (redirects_left > 0)
+        return EDC_HTTPS_REDIRECT_FOLLOW;
+    return EDC_HTTPS_REDIRECT_FAIL;
+}
+
 static int edc_https_on_headers_complete(llhttp_t *http)
 {
     struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
@@ -276,23 +297,26 @@ static int edc_https_on_headers_complete(llhttp_t *http)
     /* Decide about a 3xx here, where the status and Location are both known. The close is
      * deferred to on_message_complete: closing the socket from inside the parser callback
      * pulls the buffer out from under llhttp_execute. */
-    if (edc_https_status_is_redirect(req->status_code) && req->location)
+    switch (edc_https_redirect_decide(req->status_code, req->location != NULL, req->redirects_left))
     {
-        if (req->redirects_left > 0)
+    case EDC_HTTPS_REDIRECT_FOLLOW:
+        req->redirecting = true;
+        break;
+    case EDC_HTTPS_REDIRECT_FAIL:
+        log_error("edc_https_client: too many redirects, last was %d to %s", req->status_code,
+                  req->location);
         {
-            req->redirecting = true;
-        }
-        else
-        {
-            log_error("edc_https_client: too many redirects, last was %d to %s", req->status_code,
-                      req->location);
             sds message = sdscatprintf(sdsempty(), "too many redirects (last %d to %s)", req->status_code,
                                        req->location);
             req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
             sdsfree(message);
-            req->redirecting = true; /* discard the body, but report the failure */
-            req->redirect_failed = true;
         }
+        req->redirecting = true; /* discard the body, but report the failure */
+        req->redirect_failed = true;
+        break;
+    case EDC_HTTPS_REDIRECT_NONE:
+    default:
+        break;
     }
 
     return 0;

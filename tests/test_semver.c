@@ -83,6 +83,33 @@ int main(void)
     check("1.0.0", "", false, "an empty current version is refused");
     check("1.0.0-dirty", "1.0.0", false, "a dirty suffix is a pre-release, not newer than the release");
 
+    /* ── numeric edges ───────────────────────────────────────────────────── */
+    /* Component values are compared as numbers, so a lexical compare would make 1.10.0 look
+     * older than 1.9.0 -- and then nobody using 1.9.0 would ever be told about 1.10.0. */
+    check("1.10.0", "1.9.0", true, "1.10.0 is newer than 1.9.0 (numeric, not lexical)");
+    check("1.0.10", "1.0.9", true, "1.0.10 is newer than 1.0.9");
+    check("1.9.0", "1.10.0", false, "1.9.0 is not newer than 1.10.0");
+
+    /* A component too long to be a real version is refused rather than silently wrapped by
+     * the accumulator -- a wrapped value could make an absurd version look newer. Nine
+     * digits is the ceiling; 999999999 is a legitimate (if silly) version. */
+    check("1.0.1000000000", "1.0.0", false, "a 10-digit patch is refused");
+    check("9999999990.0.0", "1.0.0", false, "a 10-digit major is refused");
+    check("999999999.0.0", "1.0.0", true, "nine digits is still a valid version");
+
+    /* Pre-release numeric identifiers may be long but still compare by value. */
+    check("1.0.0-rc.0000000001", "1.0.0-rc.1", false, "leading zeros do not make an identifier bigger");
+    check("1.0.0-rc.2", "1.0.0-rc.0000000001", true, "rc.2 is newer than rc.0000000001");
+
+    /* ── a pre-release with build metadata ───────────────────────────────── */
+    check("1.0.0-rc.1+build.7", "1.0.0-rc.1", false, "metadata on a pre-release does not change precedence");
+    check("1.0.0-rc.2+build.7", "1.0.0-rc.1", true, "the pre-release part still counts with metadata");
+
+    /* A bare "v" and a lone major are not versions. */
+    check("v", "1.0.0", false, "a bare v is refused");
+    check("v1", "1.0.0", false, "a lone major is refused");
+    check("1.0.0", "v", false, "a bare v as the current version is refused");
+
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;
 }

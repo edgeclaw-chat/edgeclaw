@@ -163,6 +163,65 @@ int main(void)
     expect("[]", "1.0.0", false, NULL, "an empty release list offers nothing");
     expect(NULL, "1.0.0", false, NULL, "a missing body offers nothing");
 
+    /* ── malformed entries inside a valid array ───────────────────────────── */
+    /* GitHub has shipped every one of these shapes at some point: a null in the array, a
+     * string where an object belongs, a release with no tag_name. None may produce an offer,
+     * and none may crash -- this runs at startup, before the UI exists. */
+    {
+        char one[1024];
+        snprintf(one, sizeof(one), RELEASE_TPL, "v1.0.1", "false", "false", asset);
+        snprintf(buf, sizeof(buf), "[null,%s]", one);
+        expect(buf, "1.0.0", false, "v1.0.1", "a null entry is skipped, the rest still counts");
+
+        snprintf(buf, sizeof(buf), "[\"nonsense\",%s]", one);
+        expect(buf, "1.0.0", false, "v1.0.1", "a string entry is skipped");
+
+        snprintf(buf, sizeof(buf), "[{\"draft\":false,\"prerelease\":false},%s]", one);
+        expect(buf, "1.0.0", false, "v1.0.1", "a release with no tag_name is skipped");
+
+        /* tag_name present but not a string. */
+        snprintf(buf, sizeof(buf), "[{\"tag_name\":123},%s]", one);
+        expect(buf, "1.0.0", false, "v1.0.1", "a non-string tag_name is skipped");
+
+        /* Empty tag. */
+        snprintf(buf, sizeof(buf), "[{\"tag_name\":\"\"},%s]", one);
+        expect(buf, "1.0.0", false, "v1.0.1", "an empty tag_name is skipped");
+
+        /* assets not an array: the release cannot be verified to carry our archive. */
+        snprintf(buf, sizeof(buf),
+                 "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"assets\":\"oops\"},%s]", one);
+        expect(buf, "1.0.0", false, "v1.0.1", "a non-array assets field is skipped");
+
+        /* An asset entry of the wrong shape inside an otherwise fine array. */
+        snprintf(buf, sizeof(buf),
+                 "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,"
+                 "\"assets\":[null,{\"name\":7}]},%s]",
+                 one);
+        expect(buf, "1.0.0", false, "v1.0.1", "malformed asset entries are skipped");
+    }
+
+    /* ── an asset for a DIFFERENT platform does not qualify ───────────────── */
+    /* The failure this prevents: a release whose only archive is another OS's would be
+     * offered, then 404 or install the wrong binary. */
+    {
+        char one[1024];
+        snprintf(one, sizeof(one), RELEASE_TPL, "v9.9.9", "false", "false",
+                 "{\"name\":\"edgeclaw_someotherarch_plan9_v9.9.9.tar.gz\"}");
+        snprintf(buf, sizeof(buf), "[%s]", one);
+        expect(buf, "1.0.0", false, NULL, "an asset for another platform does not qualify");
+    }
+
+    /* ── a tag without the leading v ──────────────────────────────────────── */
+    /* The project tags with v, but the picker must not depend on that: a release tagged
+     * "1.0.1" still names its asset with the same string. */
+    {
+        char one[1024];
+        char bare[512];
+        snprintf(one, sizeof(one), RELEASE_TPL, "1.0.1", "false", "false", asset_for(bare, sizeof(bare), "1.0.1"));
+        snprintf(buf, sizeof(buf), "[%s]", one);
+        expect(buf, "1.0.0", false, "1.0.1", "an unprefixed tag is accepted");
+    }
+
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;
 }
