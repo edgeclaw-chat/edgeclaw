@@ -258,6 +258,7 @@ cc_library(
         "edc_compat.h",
         "edc_config.h",
         "edc_containers.h",
+        "edc_https_client_internal.h",
         "edc_redact.h",
         "edc_update_pubkey.h",
         "edc_crontab_jobs.h",

@@ -194,6 +194,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_https_redirect",
+    srcs = ["test_https_redirect.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_https_client_get",
     srcs = ["test_https_client_get.c", "test_ws.h"],
     deps = [

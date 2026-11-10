@@ -155,6 +155,9 @@ openssl ec -in edgeclaw-signing.key -pubout -out edgeclaw-signing.pub.pem
 
 **端点**：`GET https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases`（不用 `/releases/latest`——它会跳过 prerelease，而当前所有 tag 都是 prerelease）。
 
+**传输**：同 §6.0，复用 `edc_https_client`。这个端点不重定向，所以即使 §6.0 的重定向支持
+还没落地，检查功能也能先跑通——这也是阶段 1 可以独立于阶段 2 发布的原因。
+
 **一次一个进程**：检查在启动后**延迟若干秒**跑一次，然后这个进程再也不查。没有周期服务、
 没有 `last_check` 持久化、没有 ETag 缓存——因为决定就是"等用户下次启动再查"。
 
@@ -191,16 +194,85 @@ openssl ec -in edgeclaw-signing.key -pubout -out edgeclaw-signing.pub.pem
 
 ## 6. 下载与校验
 
+### 6.0 传输层：复用 `edc_https_client`（含一个必须先补的缺口）
+
+下载**不调用 `curl`、不用系统 HTTP 库**，而是复用仓库里已有的
+`src/common/edc_https_client` —— 基于 mbedtls + libuv 的 TLS 客户端，与 LLM 请求、
+`edc_endpoint_probe` 用的是同一套。理由：它已经处理了证书校验、连接超时、分块解析，
+并且不引入任何新依赖。
+
+它的模型是事件回调：
+
 ```
-1. GET <asset>.tar.gz，流式写入 ~/.edgeclaw/updates/<tag>.tar.gz.part
-   每次 write 同步更新 sha256 上下文（边下边算，省一次全文件读）
-   带 Content-Length 校验；有硬上限（比如 64 MB）防异常大包
-2. GET sha256sums.txt（已缓存则不重复请求）
-3. 比对；不匹配 → 删除 .part，报错，状态 FAILED
-4. rename .part → <tag>.tar.gz
+EDC_HTTPS_EVENT_HS       TLS 握手完成
+EDC_HTTPS_EVENT_HEADER   每个响应头（data = struct edc_https_header*）
+EDC_HTTPS_EVENT_MSG      响应体分块（data = uv_buf_t*，调用方负责 free）
+EDC_HTTPS_EVENT_ERROR
+EDC_HTTPS_EVENT_CLOSE
 ```
 
-**下载目录** `~/.edgeclaw/updates/`：故意**不**在 `rw_paths` 里（只有 `.edgeclaw/workspace` 是 rw），所以**模型和 shell 工具写不进去**，staged 二进制不会被篡改。这一点值得写进注释，因为它依赖的是已有的沙箱布局，不是新加的规则。
+客户端**自身没有落盘能力**（`edc_https_client.c` 里没有 `fopen`/`O_CREAT`），响应体分块交给
+调用方——这正好适合"边下边算 hash"。
+
+**⚠ 必须先修的缺口：客户端不跟随重定向。**
+
+全仓库没有任何 3xx 处理。而 GitHub 的两条路径行为不同：
+
+| 请求 | 实际响应 |
+|---|---|
+| `api.github.com/repos/.../releases` | 200，直接返回 JSON |
+| `github.com/.../releases/download/<tag>/<asset>` | **302 → `objects.githubusercontent.com/...`** |
+
+所以**查版本可用，下载归档会拿到 302 而不是文件**。不补这一步，阶段 2 的下载根本跑不通。
+
+**改法（在 `edc_https_client` 内实现，不放上层）**：
+
+- 在 `edc_https_client` 里识别 `301/302/303/307/308`，读 `Location` 头
+- 同一 client 发起新请求，最多 **5 跳**；超过即 `EDC_HTTPS_EVENT_ERROR`
+- **只允许 `https://` → `https://`**：降到 `http` 一律拒绝（否则签名校验的意义被中间人抵消，
+  虽然签名还在，但泄露了请求模式）
+- 跨主机跳转时**不携带任何请求头**（当前不发送认证头，但显式禁止，避免以后加头时出问题）
+- `Location` 为相对路径时按 RFC 3986 相对当前 URL 解析
+
+放在客户端而不是 update 模块：HTTP 语义属于客户端，否则将来别处再用到重定向又要重复一遍。
+
+### 6.1 下载与校验流程
+
+```
+1. GET <asset>.tar.gz            → 流式写入 ~/.edgeclaw/updates/<tag>.tar.gz.part
+   每个 MSG 块：
+     a. 写入 .part
+     b. 同步更新 SHA-256 上下文（边下边算，不落盘回读）
+     c. 累计字节数超过 min(Content-Length, 64 MiB) → 立即中止
+2. GET sha256sums.txt            → 内存（有硬上限，例如 64 KiB）
+3. GET sha256sums.txt.sig        → 内存（有硬上限，例如 4 KiB）
+4. 用内嵌公钥验签 sums.txt        → 失败即中止，删除已下载内容
+5. 从(已验证的) sums.txt 取本平台期望 sha256
+6. 比对第 1 步算出的摘要
+7. 通过 → rename .part → <tag>.tar.gz；不通过 → 删除并报错
+```
+
+**注意顺序**：先验签、后比校验和。反过来的话，攻击者同时改产物和校验和即可通过。
+
+**长度护栏**（每个都需要，否则恶意/异常响应能写满磁盘）：
+
+- `Content-Length` 存在且 > 上限 → 请求未开始就放弃
+- 实际收到的字节数 ≠ `Content-Length` → 失败（截断）
+- 没有 `Content-Length` → 用全局上限（64 MiB）兜底
+
+**证书**：`edc_https_client_new(cacert_path)` 需要 CA 包，用仓库自带的
+`workspace/ssl/cacert.pem`（发布时会释放到 `~/.edgeclaw/ssl/`）。
+
+**不支持、且明确记录**：
+
+- **不走 `HTTPS_PROXY`**。企业代理环境下更新会失败；失败是静默的（不打扰用户），
+  但要写进 `limitations.md`。
+- **不做断点续传**。中断即重下；归档约 8 MB，`Range` 支持不划算。
+
+**下载目录** `~/.edgeclaw/updates/`：故意**不**在 `rw_paths` 里（只有 `.edgeclaw/workspace` 是
+rw），所以**模型和 shell 工具写不进去**，staged 二进制不会被篡改。这依赖已有沙箱布局，
+不是新规则——但值得写进注释，否则以后有人"顺手"把它加进 rw_paths 就破了这层。
+
 
 ## 7. 解包
 
@@ -345,12 +417,14 @@ fsync   <dir>
 
 | 阶段 | 内容 | 可独立发布 |
 |---|---|---|
-| **0** | `sha256sums.txt` + `sha256sums.txt.sig` 产物 + `install.sh` 校验收紧 | ✅ 立刻可发，且是后续前置 |
+| **0** ✅ | `sha256sums.txt` + `sha256sums.txt.sig` 产物 + `install.sh` 验签 | 已提交 |
+| **0.5** | `edc_https_client` 重定向支持（§6.0 的缺口） | ✅ 独立小改动，先补 |
 | **1** | `edc_semver` + `edc_update`（检查 + 下载 + 双校验）+ 启动时一次性检查 + 横幅（**不替换**） | ✅ 纯增益，零风险 |
 | **2** | `edc_targz` + `edc_selfreplace`（POSIX + Windows）+ 确认框 + 一键更新 | ✅ C 档本体 |
 | **3** | 文档、`limitations.md`、密钥轮换说明 | ✅ |
 
-阶段 0 单独一个 PR：它同时提升了现有 `install.sh` 的安全性，完全不碰自更新逻辑。
+阶段 0 已单独提交：它同时提升了现有 `install.sh` 的安全性，完全不碰自更新逻辑。
+阶段 0.5 也必须先行：没有重定向，阶段 2 的下载拿不到归档。
 
 ## 15. 已定与仍待确认
 
