@@ -488,10 +488,10 @@ static void test_serialization_tristate_and_v7(void)
     edc_scheduler_free(sched2);
 
     /* The v7-archive case is gone with the format it described: there is no JSON snapshot to
-     * hand-edit any more, and an old DATABASE is handled by tools/migrate_edgeclaw_db_*.py,
-     * not by the loader. What the old test checked here -- "memo_compact reads as COMPACT",
+     * hand-edit any more, and an old DATABASE is handled by edc_state_migrate.c, not by the
+     * loader. What the old test checked here -- "memo_compact reads as COMPACT",
      * "a turn without memo_prefix normalizes it up to folded_prefix" -- is now a property of
-     * those migrations. */
+     * that migration step. */
 
     edc_config_free(cfg);
 }

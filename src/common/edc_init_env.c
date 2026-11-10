@@ -249,12 +249,16 @@ static bool edc_init_env_workspace(const char *dest_workspace)
 {
     if (edc_file_is_dir(dest_workspace))
     {
+        /* Already released: only re-assert the mode. The workspace holds the session
+         * transcripts and the state database, so 0700 is what keeps them to their owner. */
+        if (!edc_file_restrict_owner(dest_workspace))
+            log_warn("cannot restrict the workspace %s to its owner", dest_workspace);
         return true;
     }
 
     log_info("Releasing bundled workspace (%zu files) to %s", edc_bundled_workspace_count, dest_workspace);
 
-    if (!edc_dir_create_with_parents(dest_workspace, 0755, NULL))
+    if (!edc_dir_create_with_parents(dest_workspace, 0700, NULL))
     {
         log_error("Failed to create workspace directory %s", dest_workspace);
         return false;
@@ -497,6 +501,27 @@ static void drop_obsolete_keys(cJSON *conf, bool *changed)
 
 /* Make sure the sandbox object exists and carries both path arrays, and drop
  * the retired ~/.edgeclaw/sandbox root from existing files. */
+/* Is |s| already an element of the array? */
+static bool json_array_has_string(cJSON *arr, const char *s)
+{
+    for (int i = 0; arr && i < cJSON_GetArraySize(arr); i++)
+    {
+        cJSON *e = cJSON_GetArrayItem(arr, i);
+        if (e && cJSON_IsString(e) && strcmp(e->valuestring, s) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Append |s| unless present. Returns true when it was actually added. */
+static bool json_array_add_unique(cJSON *arr, const char *s)
+{
+    if (!arr || !s || !s[0] || json_array_has_string(arr, s))
+        return false;
+    cJSON_AddItemToArray(arr, cJSON_CreateString(s));
+    return true;
+}
+
 static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
 {
     cJSON *sandbox = cJSON_GetObjectItem(conf, "sandbox");
@@ -594,13 +619,78 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
         *changed = true;
     }
 
-    /* Materialize the deny list (empty by default) so the knob is visible and
-     * editable. Entries are masked out of the namespace by the sandbox helper
-     * (Landlock cannot express deny) and rejected by the tool path check. */
-    if (!cJSON_GetObjectItem(sandbox, "deny_paths"))
+    /* Materialize the deny list so the knob is visible and editable, and seed it with the
+     * sensitive $HOME paths (see edc_config_default_deny_paths): an empty list is the
+     * default that protects nothing, while the home directory stays readable.
+     *
+     * Filled when the key is ABSENT and when it is EMPTY -- an install whose list the user
+     * cleared is one that would otherwise run with no mask at all. See the top-up below,
+     * which then keeps the list current on every load.
+     *
+     * Entries are masked out of the namespace by the sandbox helper (Landlock cannot
+     * express deny) and rejected by the tool path check. */
     {
-        cJSON_AddItemToObject(sandbox, "deny_paths", cJSON_CreateArray());
-        *changed = true;
+        cJSON *deny = cJSON_GetObjectItem(sandbox, "deny_paths");
+        const bool seed = !deny || (cJSON_IsArray(deny) && cJSON_GetArraySize(deny) == 0);
+        if (!deny)
+        {
+            cJSON_AddItemToObject(sandbox, "deny_paths", cJSON_CreateArray());
+            deny = cJSON_GetObjectItem(sandbox, "deny_paths");
+            *changed = true;
+        }
+        if (seed && cJSON_IsArray(deny))
+        {
+            sds *defaults = edc_config_default_deny_paths();
+            for (int i = 0; defaults && defaults[i]; i++)
+            {
+                cJSON_AddItemToArray(deny, cJSON_CreateString(defaults[i]));
+                sdsfree(defaults[i]);
+            }
+            free(defaults);
+            if (cJSON_GetArraySize(deny) > 0)
+                *changed = true;
+        }
+
+        /* Top up on EVERY load, not just at seed time. Two things fall through a one-shot
+         * seed and used to need a manual `/sandbox add-deny`:
+         *
+         *  1. the app's own secrets -- .key_hash is written by edc_secret_init(), which can
+         *     run after this list was written, so a seed that only named existing files
+         *     missed it (this is exactly how it shipped in the previous commit);
+         *  2. a credential file the user creates later (~/.netrc, ~/.aws, ~/.config/gh
+         *     after installing the CLI).
+         *
+         * Re-checking costs one realpath per default per launch and removes the manual step
+         * entirely. The trade-off: a default the user deleted comes back on the next launch.
+         * That is deliberate -- an unprotected secret file fails silently and invisibly,
+         * while a re-added deny entry is visible in `/sandbox list` and can be removed
+         * again -- and each addition is logged so the file does not change under the user. */
+        if (cJSON_IsArray(deny))
+        {
+            sds *own = edc_config_own_secret_paths(edc_home);
+            for (int i = 0; own && own[i]; i++)
+            {
+                if (json_array_add_unique(deny, own[i]))
+                {
+                    log_info("config.json: denied the app's own secret '%s'", own[i]);
+                    *changed = true;
+                }
+                sdsfree(own[i]);
+            }
+            free(own);
+
+            sds *appeared = edc_config_default_deny_paths();
+            for (int i = 0; appeared && appeared[i]; i++)
+            {
+                if (json_array_add_unique(deny, appeared[i]))
+                {
+                    log_info("config.json: auto-denied credential path '%s'", appeared[i]);
+                    *changed = true;
+                }
+                sdsfree(appeared[i]);
+            }
+            free(appeared);
+        }
     }
 
     /* The dedicated sandbox directory is gone: the launch directory is the
@@ -796,6 +886,32 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
         }
         cJSON_AddItemToObject(sandbox, "ro_paths", ro_arr);
     }
+    /* The deny list is part of the written panorama like the two arrays above, and it is
+     * the one that protects something: leaving it out meant a fresh install ran with no
+     * mask at all until the NEXT launch's top-up added an empty array. Seeded here, so the
+     * first run already has the sensitive $HOME paths denied (see
+     * edc_config_default_deny_paths). */
+    {
+        cJSON *deny_arr = cJSON_CreateArray();
+        sds *deny = edc_config_default_deny_paths();
+        for (int i = 0; deny && deny[i]; i++)
+        {
+            cJSON_AddItemToArray(deny_arr, cJSON_CreateString(deny[i]));
+            sdsfree(deny[i]);
+        }
+        free(deny);
+        /* The app's own secrets are named whether or not they exist yet: .key_hash is
+         * written by edc_secret_init() and a deny list that only named existing files
+         * would leave it exposed until the next top-up (see edc_config_own_secret_paths). */
+        sds *own = edc_config_own_secret_paths(edc_home);
+        for (int i = 0; own && own[i]; i++)
+        {
+            json_array_add_unique(deny_arr, own[i]);
+            sdsfree(own[i]);
+        }
+        free(own);
+        cJSON_AddItemToObject(sandbox, "deny_paths", deny_arr);
+    }
     cJSON_AddItemToObject(config, "sandbox", sandbox);
 
     cJSON *channel = cJSON_CreateObject();
@@ -846,12 +962,22 @@ bool edc_init_env(const char *edc_home, bool setup)
     bool ret = true;
     if (!edc_file_is_dir(edc_home))
     {
-        if (!edc_dir_create_with_parents(edc_home, 0755, NULL))
+        if (!edc_dir_create_with_parents(edc_home, 0700, NULL))
         {
             log_error("Failed to create directory %s", edc_home);
             ret = false;
             goto exit_;
         }
+    }
+    else if (!edc_file_restrict_owner(edc_home))
+    {
+        /* Re-asserted on every start, not just at creation: a mode widened by hand (or by a
+         * restore that did not preserve it) would otherwise stay that way. Traversal needs
+         * the x bit, so 0700 on the directory is what hides config.json and the workspace
+         * contents from other local users, whatever each file's own mode says. */
+        log_warn("cannot restrict %s to its owner; other local users may be able to read the "
+                 "config and the conversation history stored below it",
+                 edc_home);
     }
 
     if (setup || !edc_file_is_regular(conf_file))

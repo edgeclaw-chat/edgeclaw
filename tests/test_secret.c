@@ -176,30 +176,72 @@ static sds read_hash_file(const char *dir)
     return out;
 }
 
-/* ── 1. first-time setup writes a verification hash ────────────────────────── */
+/* Pull one "key value" line out of the key record. Returns a fresh sds or NULL. */
+static sds record_field(const char *record, const char *key)
+{
+    if (!record)
+        return NULL;
+    const size_t klen = strlen(key);
+    const char *cur = record;
+    while (cur && *cur)
+    {
+        const char *nl = strchr(cur, '\n');
+        const size_t len = nl ? (size_t)(nl - cur) : strlen(cur);
+        if (len > klen && strncmp(cur, key, klen) == 0 && cur[klen] == ' ')
+            return sdsnewlen(cur + klen + 1, len - klen - 1);
+        cur = nl ? nl + 1 : NULL;
+    }
+    return NULL;
+}
+
+static bool is_lower_hex(const sds s, size_t n)
+{
+    if (!s || sdslen(s) != n)
+        return false;
+    for (size_t i = 0; i < n; i++)
+    {
+        const char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            return false;
+    }
+    return true;
+}
+
+/* ── 1. first-time setup writes the key record ─────────────────────────────── */
 static void test_setup_writes_hash(void)
 {
-    printf("\n── first-time setup ──\n");
+    printf("\n── first-time setup writes the key record ──\n");
     reset_dir();
 
     CHECK(init_with_input(true, g_dir, "correct horse\ncorrect horse\n"),
           "init(confirm) accepts a passphrase typed twice");
     CHECK(file_exists(g_dir, ".key_hash"), ".key_hash was written");
 
-    sds h = read_hash_file(g_dir);
-    CHECK(h && sdslen(h) == 64, "the hash is 64 hex characters (sha256)");
-    if (h && sdslen(h) == 64)
-    {
-        bool hex = true;
-        for (size_t i = 0; i < sdslen(h); i++)
-        {
-            const char c = h[i];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-                hex = false;
-        }
-        CHECK(hex, "and it is lowercase hex");
-    }
-    sdsfree(h);
+    sds rec = read_hash_file(g_dir);
+    sds v = record_field(rec, "v");
+    sds kdf = record_field(rec, "kdf");
+    sds iter = record_field(rec, "iter");
+    sds salt = record_field(rec, "salt");
+    sds verify = record_field(rec, "verify");
+
+    CHECK(v && strcmp(v, "1") == 0, "the record is version 1");
+    CHECK(kdf && strcmp(kdf, "pbkdf2-sha256") == 0, "the record names PBKDF2-HMAC-SHA256");
+    /* 600k is the floor the code ships with; the check is >= so raising the constant does
+     * not silently weaken it. */
+    CHECK(iter && atol(iter) >= 600000, "the iteration count is the hardened 600k");
+    CHECK(is_lower_hex(salt, 32), "the salt is 16 bytes of lowercase hex");
+    CHECK(is_lower_hex(verify, 64), "the verifier is a 32-byte HMAC in lowercase hex");
+    /* The file used to BE one bare digest. That shape had no salt, which made one
+     * precomputed table serve every install -- the reason for this rewrite. */
+    CHECK(rec && sdslen(rec) != 64 && strchr(rec, '\n') != NULL,
+          "the file is a record, not one bare digest");
+
+    sdsfree(v);
+    sdsfree(kdf);
+    sdsfree(iter);
+    sdsfree(salt);
+    sdsfree(verify);
+    sdsfree(rec);
 }
 
 /* ── 2. the same passphrase verifies ──────────────────────────────────────── */
@@ -221,7 +263,7 @@ static void test_verify_rejects_wrong_passphrase(void)
     CHECK(strstr(g_log, "Invalid passphrase") != NULL, "and names the passphrase as the problem");
 }
 
-/* ── 4. no hash at all: the message points at setup, not at the passphrase ── */
+/* ── 4. no record at all: the message points at setup, not at the passphrase ── */
 static void test_verify_without_hash(void)
 {
     printf("\n── verifying when setup never ran ──\n");
@@ -230,7 +272,7 @@ static void test_verify_without_hash(void)
     g_log[0] = '\0';
     CHECK(!init_with_input(false, g_dir, "anything\n"), "init(verify) fails without a .key_hash");
     printf("    log: %s\n", g_log);
-    CHECK(strstr(g_log, "verification file not found") != NULL,
+    CHECK(strstr(g_log, "run setup first") != NULL,
           "and says setup has not run, instead of blaming the passphrase");
     CHECK(strstr(g_log, "Invalid passphrase") == NULL, "it does not claim the passphrase was wrong");
 }
@@ -250,15 +292,191 @@ static void test_confirm_mismatch_rejected(void)
 }
 
 /* ── 6. an empty passphrase is refused ────────────────────────────────────── */
-static void test_empty_passphrase_rejected(void)
+/* ── 6. an empty CONFIRM answer is still a mistake ────────────────────────── */
+/* The first prompt accepts empty (that is the no-encryption choice); the confirmation
+ * does not, because by then the user has already typed a passphrase. */
+static void test_empty_confirm_rejected(void)
 {
-    printf("\n── empty passphrase ──\n");
+    printf("\n── empty confirmation ──\n");
     reset_dir();
 
     g_log[0] = '\0';
-    CHECK(!init_with_input(false, g_dir, "\n"), "init refuses an empty passphrase");
+    CHECK(!init_with_input(true, g_dir, "typed one\n\n"),
+          "a passphrase followed by an empty confirmation is refused");
     printf("    log: %s\n", g_log);
-    CHECK(strstr(g_log, "Empty passphrase") != NULL, "and says it was empty");
+    CHECK(strstr(g_log, "Empty passphrase") != NULL, "and says the confirmation was empty");
+    CHECK(!file_exists(g_dir, ".key_hash"), "nothing is recorded");
+}
+
+/* ── 6b. an empty answer on first run means "no encryption" ───────────────── */
+/* Not an error: the first-run prompt offers three routes (passphrase / Enter for plaintext
+ * / the environment variable), and Enter is the user picking the third from the bottom.
+ * What must hold is that the choice is recorded in the only place that matters -- a
+ * plaintext api_key -- and that no key material is written. */
+static void test_empty_passphrase_means_no_encryption(void)
+{
+    printf("\n── empty passphrase: no encryption ──\n");
+    reset_dir();
+
+    g_log[0] = '\0';
+    CHECK(init_with_input(true, g_dir, "\n"), "an empty answer is accepted as a choice, not rejected");
+    CHECK(!file_exists(g_dir, ".key_hash"), "no key record is written in no-encryption mode");
+
+    /* pass-through in both directions, so /connect stores plaintext instead of failing */
+    sds plain = sdsnew("sk-stored-in-the-clear");
+    sds enc = edc_secret_encrypt(plain);
+    CHECK(enc && strcmp(enc, plain) == 0, "encrypt returns the value unchanged");
+    sds back = enc ? edc_secret_decrypt(enc) : NULL;
+    CHECK(back && strcmp(back, plain) == 0, "decrypt returns it unchanged too");
+    sdsfree(plain);
+    sdsfree(enc);
+    sdsfree(back);
+
+    /* A ciphertext from an earlier encrypted run cannot be read in this mode -- and saying
+     * so beats handing a ciphertext to the provider as an API key. */
+    sds stale = edc_secret_decrypt(BC_SECRET_PREFIX "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    CHECK(stale == NULL, "an existing ciphertext is refused, not passed through");
+    if (stale)
+        sdsfree(stale);
+}
+
+/* ── 6c. the choice survives a restart, without prompting ─────────────────── */
+static void test_no_encryption_no_reprompt(void)
+{
+    printf("\n── no-encryption mode does not prompt again ──\n");
+    reset_dir();
+    edc_secret_cleanup();
+
+    /* The mode is recorded by the plaintext api_key itself, so write the one file the
+     * detection reads. No .key_hash: nothing to verify, nothing to forget. */
+    sds p = edc_path_join(g_dir, "config.json", NULL);
+    CHECK(edc_file_write(p, "{\"api_key\": \"sk-plaintext\", \"model\": \"m\"}\n", -1, NULL),
+          "a config holding a plaintext api_key can be planted");
+    sdsfree(p);
+
+    /* No pty here on purpose: if this prompted, isatty() would fail and init would report
+     * "No terminal", so a plain success is proof the prompt was skipped. */
+    unsetenv("EDGECLAW_MASTER_KEY");
+    g_log[0] = '\0';
+    CHECK(edc_secret_init(false, g_dir), "a no-encryption install starts without a terminal");
+    printf("    log: %s\n", g_log);
+    CHECK(strstr(g_log, "No terminal") == NULL, "and therefore did not try to prompt");
+
+    sds plain = sdsnew("sk-round-trip");
+    sds enc = edc_secret_encrypt(plain);
+    CHECK(enc && strcmp(enc, plain) == 0, "the mode is active without any input");
+    sdsfree(plain);
+    sdsfree(enc);
+}
+
+/* Run edc_secret_enable_encryption() against a pty carrying |input|. |reset| clears the
+ * loaded key first -- the refusal cases need it NOT to, or "already encrypted" is wiped
+ * before the call can report it. */
+static bool enable_encryption_with_input(const char *edc_home, const char *input, sds *msg_out, bool reset)
+{
+    if (reset)
+    {
+        edc_secret_cleanup();
+        unsetenv("EDGECLAW_MASTER_KEY");
+    }
+    if (msg_out)
+        *msg_out = NULL;
+
+    if (tty_begin() != 0)
+    {
+        printf("    (skipped: cannot open a pty)\n");
+        return false;
+    }
+    tty_feed(input);
+    const bool ok = edc_secret_enable_encryption(edc_home, msg_out);
+    tty_end();
+    return ok;
+}
+
+/* ── 6d. /encrypt: back out of "no encryption" ────────────────────────────── */
+/* Pressing Enter at the first prompt is otherwise one-way short of re-running setup. What
+ * must hold: a passphrase becomes required again, the record is written, and an api_key
+ * stored in the clear is re-encrypted by the caller's writer. */
+static void test_enable_encryption(void)
+{
+    printf("\n── turning encryption back on ──\n");
+    reset_dir();
+
+    /* Start in the no-encryption state. */
+    if (!init_with_input(true, g_dir, "\n"))
+    {
+        printf("    (skipped: could not enter no-encryption mode)\n");
+        return;
+    }
+    CHECK(!file_exists(g_dir, ".key_hash"), "no record in no-encryption mode");
+
+    sds msg = NULL;
+    CHECK(enable_encryption_with_input(g_dir, "new passphrase\nnew passphrase\n", &msg, true),
+          "a passphrase turns encryption back on");
+    if (msg)
+        sdsfree(msg);
+    CHECK(file_exists(g_dir, ".key_hash"), "the key record is written");
+
+    /* The value that was passing through untouched is now encrypted. */
+    sds plain = sdsnew("sk-now-encrypted");
+    sds enc = edc_secret_encrypt(plain);
+    CHECK(enc && strncmp(enc, BC_SECRET_PREFIX, strlen(BC_SECRET_PREFIX)) == 0,
+          "encrypt now produces a ciphertext");
+    sds back = enc ? edc_secret_decrypt(enc) : NULL;
+    CHECK(back && strcmp(back, plain) == 0, "and it round-trips");
+    sdsfree(plain);
+    sdsfree(enc);
+    sdsfree(back);
+
+    /* The record is usable on the next start: same passphrase derives the same key. */
+    sds saved = NULL;
+    enc = edc_secret_encrypt(sdsnew("survives-restart"));
+    if (enc)
+        saved = sdsdup(enc);
+    sdsfree(enc);
+
+    edc_secret_cleanup();
+    unsetenv("EDGECLAW_MASTER_KEY");
+    if (tty_begin() == 0)
+    {
+        tty_feed("new passphrase\n");
+        const bool reopened = edc_secret_init(false, g_dir);
+        tty_end();
+        CHECK(reopened, "the stored passphrase is accepted on the next start");
+        sds rt = saved ? edc_secret_decrypt(saved) : NULL;
+        CHECK(rt && strcmp(rt, "survives-restart") == 0, "a value encrypted before the restart still decrypts");
+        if (rt)
+            sdsfree(rt);
+    }
+    sdsfree(saved);
+}
+
+/* ── 6e. /encrypt refuses what it cannot do ──────────────────────────────── */
+static void test_enable_encryption_refusals(void)
+{
+    printf("\n── /encrypt refusals ──\n");
+
+    /* Already encrypted: changing the passphrase is a different operation, and reporting
+     * success without doing it would be the worst outcome. */
+    reset_dir();
+    if (init_with_input(true, g_dir, "already\nalready\n"))
+    {
+        sds msg = NULL;
+        CHECK(!enable_encryption_with_input(g_dir, "different\ndifferent\n", &msg, false),
+              "it refuses when a key is already loaded");
+        printf("    msg: %s\n", msg ? msg : "(none)");
+        CHECK(msg && strstr(msg, "already encrypted") != NULL, "and says the install is already encrypted");
+        if (msg)
+            sdsfree(msg);
+    }
+
+    /* No home to store the record in. */
+    reset_dir();
+    edc_secret_cleanup();
+    sds msg2 = NULL;
+    CHECK(!edc_secret_enable_encryption(NULL, &msg2), "it refuses without an EdgeClaw home");
+    if (msg2)
+        sdsfree(msg2);
 }
 
 /* ── 7. encrypt / decrypt round trip, and a ciphertext from another key ───── */
@@ -317,18 +535,139 @@ static void test_env_var_mode(void)
     reset_dir();
     edc_secret_cleanup();
 
-    /* This is the non-interactive path: no terminal at all, no .key_hash written (there is
-     * no passphrase to re-verify later). It consumes the variable by unsetting it. */
+    /* The non-interactive path. No passphrase prompt, but the SALT still has to be kept:
+     * it is an input to the key, so a fresh salt on the next launch would derive a
+     * different key and nothing encrypted before could ever be read again. */
     setenv("EDGECLAW_MASTER_KEY", "from-the-environment", 1);
-    const bool ok = edc_secret_init(false, g_dir);
-    CHECK(ok, "init succeeds from EDGECLAW_MASTER_KEY without a terminal");
+    CHECK(edc_secret_init(false, g_dir), "init succeeds from EDGECLAW_MASTER_KEY without a terminal");
     CHECK(getenv("EDGECLAW_MASTER_KEY") == NULL, "the variable is unset once the key is loaded");
-    CHECK(!file_exists(g_dir, ".key_hash"), "env-var mode writes no verification hash");
+    CHECK(file_exists(g_dir, ".key_hash"), "env-var mode records the salt it derived with");
+
+    sds rec = read_hash_file(g_dir);
+    sds salt_first = record_field(rec, "salt");
+    sdsfree(rec);
 
     /* And the process can use the key it loaded. */
-    sds enc = edc_secret_encrypt(sdsnew("sk-from-env"));
+    sds plain = sdsnew("sk-from-env");
+    sds enc = edc_secret_encrypt(plain);
     CHECK(enc != NULL, "the key loaded from the environment works for encryption");
+    sdsfree(plain);
+
+    /* A second launch with the same env key must land on the same salt -- that is the
+     * whole point of persisting it in this mode. */
+    edc_secret_cleanup();
+    setenv("EDGECLAW_MASTER_KEY", "from-the-environment", 1);
+    CHECK(edc_secret_init(false, g_dir), "a second env-var init succeeds");
+    rec = read_hash_file(g_dir);
+    sds salt_second = record_field(rec, "salt");
+    sdsfree(rec);
+    CHECK(salt_first && salt_second && strcmp(salt_first, salt_second) == 0,
+          "the salt is reused, not re-minted on every launch");
+
+    sds back = enc ? edc_secret_decrypt(enc) : NULL;
+    CHECK(back && strcmp(back, "sk-from-env") == 0,
+          "a value encrypted on the first launch still decrypts on the second");
+    if (back)
+        sdsfree(back);
+
+    sdsfree(salt_first);
+    sdsfree(salt_second);
     sdsfree(enc);
+}
+
+/* ── 8b. the salt is per install ─────────────────────────────────────────── */
+/* Two installs that pick the SAME passphrase must still get different keys. That is what
+ * the salt buys, and what the old empty-salt derivation gave away: one precomputed
+ * passphrase->key table served every install, and the verifier in .key_hash was the same
+ * bytes everywhere. */
+static void test_salt_is_per_install(void)
+{
+    printf("\n── the salt is per install ──\n");
+
+    reset_dir();
+    edc_secret_cleanup();
+    if (!init_with_input(true, g_dir, "same passphrase\nsame passphrase\n"))
+    {
+        printf("    (skipped: first setup failed)\n");
+        return;
+    }
+    sds rec = read_hash_file(g_dir);
+    sds salt_a = record_field(rec, "salt");
+    sds verify_a = record_field(rec, "verify");
+    sdsfree(rec);
+
+    reset_dir();
+    edc_secret_cleanup();
+    if (!init_with_input(true, g_dir, "same passphrase\nsame passphrase\n"))
+    {
+        printf("    (skipped: second setup failed)\n");
+        sdsfree(salt_a);
+        sdsfree(verify_a);
+        return;
+    }
+    rec = read_hash_file(g_dir);
+    sds salt_b = record_field(rec, "salt");
+    sds verify_b = record_field(rec, "verify");
+    sdsfree(rec);
+
+    CHECK(salt_a && salt_b && strcmp(salt_a, salt_b) != 0,
+          "two installs with one passphrase get different salts");
+    CHECK(verify_a && verify_b && strcmp(verify_a, verify_b) != 0,
+          "and therefore different verifiers (no shared passphrase->hash table)");
+
+    sdsfree(salt_a);
+    sdsfree(verify_a);
+    sdsfree(salt_b);
+    sdsfree(verify_b);
+}
+
+/* ── 8c. a version this build does not implement is refused ──────────────── */
+static void test_unknown_prefix_refused(void)
+{
+    printf("\n── a format version this build does not implement ──\n");
+    reset_dir();
+    edc_secret_cleanup();
+    if (!init_with_input(true, g_dir, "key four\nkey four\n"))
+    {
+        printf("    (skipped: setup failed)\n");
+        return;
+    }
+
+    /* Carries the family tag but an unknown version. Treating it as "not encrypted" would
+     * hand a ciphertext to the provider as the API key, and /connect could then re-encrypt
+     * over the real one. */
+    sds out = edc_secret_decrypt("EDGECLAW_ENC:v9:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    CHECK(out == NULL, "a value from another format version is refused, not passed through");
+    if (out)
+        sdsfree(out);
+
+    /* No tag at all is still a plaintext key: hand-edited config.json files rely on it. */
+    out = edc_secret_decrypt("sk-plain-text-key");
+    CHECK(out && strcmp(out, "sk-plain-text-key") == 0, "a value with no tag is still plaintext");
+    if (out)
+        sdsfree(out);
+}
+
+/* ── 8d. a record this build cannot use is refused, not guessed at ───────── */
+/* Nothing in the wild predates the current format (this is the first release), so the only
+ * interesting case is a record that is damaged or was written by a build with a different
+ * version -- the same branch either way. */
+static void test_foreign_record_refused(void)
+{
+    printf("\n── a key record this build cannot use ──\n");
+    reset_dir();
+    edc_secret_cleanup();
+
+    sds p = edc_path_join(g_dir, ".key_hash", NULL);
+    CHECK(edc_file_write(p, "v 7\nkdf pbkdf2-sha256\niter 600000\nsalt 00\n", -1, NULL),
+          "a record from an unknown version can be planted");
+    sdsfree(p);
+
+    g_log[0] = '\0';
+    CHECK(!init_with_input(false, g_dir, "anything\n"), "init(verify) refuses it");
+    printf("    log: %s\n", g_log);
+    CHECK(strstr(g_log, "unsupported record version") != NULL || strstr(g_log, "no usable") != NULL,
+          "and says the version is not one it understands");
 }
 
 /* ── 9. using the module without a key ───────────────────────────────────── */
@@ -524,9 +863,16 @@ int main(void)
     test_verify_rejects_wrong_passphrase();
     test_verify_without_hash();
     test_confirm_mismatch_rejected();
-    test_empty_passphrase_rejected();
+    test_empty_confirm_rejected();
+    test_empty_passphrase_means_no_encryption();
+    test_no_encryption_no_reprompt();
+    test_enable_encryption();
+    test_enable_encryption_refusals();
     test_encrypt_decrypt();
     test_env_var_mode();
+    test_salt_is_per_install();
+    test_unknown_prefix_refused();
+    test_foreign_record_refused();
     test_without_key();
     test_corrupt_ciphertext();
     test_prompt_eof();

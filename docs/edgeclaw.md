@@ -587,14 +587,15 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
+| `/encrypt` | Turn encryption back on after choosing "no encryption" at setup: prompts for a passphrase and re-encrypts the stored API key. Refuses when a key is already loaded |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
 | `/sandbox list` | Show the sandbox allow/deny path lists |
 | `/sandbox add-ro <dir>` | Make a path read-only (it leaves the rw/deny lists) |
 | `/sandbox rm-ro <dir>` | Drop a read-only path |
 | `/sandbox add-rw <dir>` | Make a path read-write (it leaves the ro/deny lists) |
 | `/sandbox rm-rw <dir>` | Drop a read-write path |
-| `/sandbox add-deny <dir>` | Mask a dir (wins over ro/rw; e.g. `~/.ssh`) |
-| `/sandbox rm-deny <dir>` | Unmask a dir |
+| `/sandbox add-deny <dir\|file>` | Mask a directory or a single file (wins over ro/rw; e.g. `~/.ssh`, `~/.secrets.env`) |
+| `/sandbox rm-deny <dir\|file>` | Unmask a directory or file |
 | `/shell [on\|off]` | Turn the shell-like input syntax on or off (on by default; persisted; `/shell` alone reports the state) |
 
 ### Session
@@ -906,6 +907,46 @@ inheriting the parent's memory and conversation context up to the fork point.
 
 ---
 
+## The API key: three ways to protect it
+
+`config.json` holds a provider API key. On first run EdgeClaw asks how to protect it, and
+the three answers are a policy choice, not a formality — they differ in what protects the
+key and in what it costs to start the program.
+
+| Choice | Where the key lives | Each launch | Protects against a copied disk? |
+|---|---|---|---|
+| **A passphrase** (type one) | AES-256-GCM ciphertext in `config.json`; the wrapping key is derived from the passphrase at startup and never written | type it once | **yes** — nothing on disk can decrypt it |
+| **Enter**, no passphrase | plaintext in `config.json` | nothing to type | **no** |
+| **`EDGECLAW_MASTER_KEY`** | same ciphertext; the passphrase comes from the environment | nothing to type | **only if that variable is not itself on disk** |
+
+The passphrase is hardened with PBKDF2-HMAC-SHA256 over 600,000 iterations and a
+per-install random salt, so guessing it offline is expensive. What it is *not* is
+recoverable: losing it costs the API key (re-enter it with `/connect`), not your settings
+or history.
+
+Choosing no encryption is a real option, not a degraded mode — an install that keeps
+nothing sensitive in `config.json` gains little from a prompt on every launch. What it
+cannot do is protect the key, and that is stated plainly at the prompt.
+
+**The environment variable is the CI/Docker route, and the easy one to get wrong.** It is
+read before the interactive prompt exists, which is what makes a headless start work. If
+you keep it in a file so a shell can source it — the common move — then the passphrase is
+on disk, and the first row's advantage quietly disappears: whoever can read that file (or
+the disk) has both halves. If you take that route, keep the file `0600` and deny it to the
+sandbox with `/sandbox add-deny <path>`.
+
+The mode is recorded by the shape of the value itself — a ciphertext carries the
+`EDGECLAW_ENC:v1:` tag, a plaintext key does not — so there is no separate flag that could
+disagree with reality, and a no-encryption install starts without a terminal.
+
+```
+/sandbox add-deny /home/you/.secrets.env    # after moving the key into a dotfile
+```
+
+Arguments to `/sandbox` are not shell-expanded: no `~`, no `$VAR`, no globs. That is why
+the example spells the path out — `~/.secrets.env` would be taken literally and match
+nothing.
+
 ## Files
 
 | Path | Description |
@@ -914,7 +955,7 @@ inheriting the parent's memory and conversation context up to the fork point.
 | `~/.edgeclaw/config.json` | Configuration (API key, model) |
 | `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
-| `~/.edgeclaw/workspace/<sid>/history.jsonl` | Session history |
+| `~/.edgeclaw/workspace/<sid>/chat.jsonl` | Session transcript (one bubble per line) |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from

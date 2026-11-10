@@ -109,6 +109,14 @@ jobs:
       - name: Verify third-party notices are current
         run: python3 tools/gen_notices.py --check
 
+      # Catching a POSIX-only libc call (strcasecmp and friends) here rather than on the
+      # Windows runner: such a file links fine on every Unix and fails ONLY for MSVC, which is
+      # a failure the author cannot reproduce locally. //tests:test_portability proves the
+      # checker works; this runs it against the real tree, which the test's runfiles do not
+      # contain.
+      - name: Verify no POSIX-only calls lack the compatibility shim
+        run: python3 tools/check_portability.py
+
       # The lexer/parser are generated and the output is committed, so the build no longer
       # needs flex/bison. What that trades away is the guarantee that the committed output
       # matches the grammar -- see tools/regen_grammar.sh.

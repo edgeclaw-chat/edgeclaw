@@ -1,5 +1,19 @@
 #include "edc_https_client.h"
+#include "edc_https_client_internal.h"
+
+/* strcasecmp/strncasecmp are POSIX; MSVC has only _stricmp/_strnicmp. edc_compat.h is where
+ * this repository maps them, and it is what every other file using them includes -- omitting
+ * it built fine on Linux and failed to LINK on Windows with "unresolved external symbol
+ * strcasecmp", which is a CI-only failure by construction. tools/check_portability.py exists
+ * so the next file that forgets is caught before the push. */
+#include "edc_compat.h"
+
 #include "llhttp.h"
+
+/* How many 3xx hops a single logical request may follow. GitHub's release download is one
+ * hop (github.com -> objects.githubusercontent.com); five leaves room for a CDN re-shuffle
+ * while still making a redirect loop terminate. */
+#define EDC_HTTPS_MAX_REDIRECTS 5
 #include "log.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
@@ -36,6 +50,7 @@ struct edc_work
     char *url;
     edc_https_event_fn fn;
     void *priv;
+    int redirects_left; /* how many more 3xx hops this request may follow */
     struct edc_work *next;
 };
 
@@ -94,6 +109,15 @@ struct edc_https_request
      * final uv__queue_remove(&handle->handle_queue)) -- so free() must wait for both, see
      * edc_https_request_release. */
     int pending_closes;
+
+    /* Redirect following (301/302/303/307/308). |location| is the raw Location header of a
+     * 3xx response; |redirecting| means this response is being discarded in favour of a new
+     * request, so no body or CLOSE is delivered to the caller. |redirects_left| is the budget
+     * left, counted down hop by hop -- a redirect loop must end in an error, not spin. */
+    sds location;
+    int redirects_left;
+    bool redirecting;
+    bool redirect_failed; /* the chain was abandoned (loop/limit/plaintext); ERROR was emitted */
 };
 
 static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
@@ -104,6 +128,15 @@ static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
     {
         req->header.field = req->current_header_field;
         req->header.value = req->current_header_value;
+
+        /* Keep the Location of a 3xx before the event is emitted: the redirect decision is
+         * taken in on_headers_complete, by which time these buffers are already gone. */
+        if (req->current_header_field && strcasecmp(req->current_header_field, "location") == 0)
+        {
+            sdsfree(req->location);
+            req->location = sdsdup(req->current_header_value);
+        }
+
         req->fn(req, EDC_HTTPS_EVENT_HEADER, &req->header);
         sdsfree(req->current_header_field);
         sdsfree(req->current_header_value);
@@ -125,6 +158,123 @@ static int edc_https_on_header_value(llhttp_t *http, const char *at, size_t len)
     return 0;
 }
 
+/* The statuses that mean "ask somewhere else". 304 is deliberately NOT here: it is a cache
+ * validator for the request we already made, not a new location. */
+bool edc_https_status_is_redirect(int status)
+{
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
+/* Resolve |location| against the URL that produced it.
+ *
+ * Covers the three forms a release redirect actually uses: an absolute URL, a
+ * protocol-relative one ("//host/path"), and an absolute path ("/path"). A relative path is
+ * also handled, against the base path's directory, though GitHub does not emit one.
+ *
+ * Returns NULL when the target is not https. A redirect that downgrades to plaintext is
+ * refused outright: the signature check would still catch a tampered archive, but the
+ * request pattern -- and, for other callers of this client, possibly more -- would be on the
+ * wire in the clear for no reason.
+ */
+sds edc_https_resolve_redirect(const char *base_url, const char *location)
+{
+    if (!location || !location[0])
+        return NULL;
+
+    if (strncasecmp(location, "https://", 8) == 0)
+        return sdsnew(location);
+    if (strncasecmp(location, "http://", 7) == 0)
+    {
+        log_error("edc_https_client: refusing a redirect to plaintext http: %s", location);
+        return NULL;
+    }
+
+    /* Everything below needs the base's scheme and authority. */
+    sds base = sdsnew(base_url);
+    struct yuarel parsed;
+    if (yuarel_parse(&parsed, base) < 0)
+    {
+        sdsfree(base);
+        return NULL;
+    }
+    const int port = parsed.port;
+
+    sds out;
+    if (location[0] == '/' && location[1] == '/')
+    {
+        out = sdscatprintf(sdsempty(), "https:%s", location);
+    }
+    else
+    {
+        sds origin = port > 0 && port != 443 ? sdscatprintf(sdsempty(), "https://%s:%d", parsed.host, port)
+                                             : sdscatprintf(sdsempty(), "https://%s", parsed.host);
+        if (location[0] == '/')
+        {
+            out = sdscatprintf(origin, "%s", location);
+        }
+        else
+        {
+            /* Relative to the base path's directory. yuarel_parse leaves `path` WITHOUT a
+             * leading '/' (its callers prepend one when building the request line), so the
+             * slash is added here -- omitting it produced "https://hostdir/file". */
+            const char *path = parsed.path ? parsed.path : "";
+            const char *slash = strrchr(path, '/');
+            const size_t dir_len = slash ? (size_t)(slash - path) + 1 : 0;
+            out = sdscatprintf(origin, "/%.*s%s", (int)dir_len, path, location);
+        }
+    }
+
+    sdsfree(base);
+    return out;
+}
+
+/* Hand a follow-up request to the client's work queue. Mirrors
+ * edc_https_client_connect()'s enqueue, minus the URL validation it already did once. */
+static void edc_https_enqueue_work(struct edc_https_client *client, const char *url, edc_https_event_fn fn,
+                                   void *priv, int redirects_left)
+{
+    struct edc_work *work = malloc(sizeof(struct edc_work));
+    if (!work)
+        return;
+    work->url = strdup(url);
+    if (!work->url)
+    {
+        free(work);
+        return;
+    }
+    work->fn = fn;
+    work->priv = priv;
+    work->redirects_left = redirects_left;
+    work->next = NULL;
+
+    uv_mutex_lock(&client->work_mutex);
+    EDC_LL_APPEND(struct edc_work, client->work_queue, work);
+    uv_mutex_unlock(&client->work_mutex);
+
+    uv_async_send(&client->work_async);
+}
+
+/* What to do with a response, decided from (status, has Location, budget left).
+ *
+ * Pulled out of on_headers_complete so every combination is testable without a socket: the
+ * three inputs are all the decision needs, and the callback that uses it is then a thin
+ * assignment plus the deferred close.
+ */
+edc_https_redirect_action edc_https_redirect_decide(int status, bool has_location, int redirects_left)
+{
+    /* A 3xx with no Location cannot be followed and cannot be interpreted as the resource
+     * either -- but it is also not a redirect loop. It is delivered as a normal response, so
+     * the caller sees the status and can decide (the update path treats any non-2xx as "no
+     * update available"). Failing it here would turn a server quirk into a visible error. */
+    if (!edc_https_status_is_redirect(status))
+        return EDC_HTTPS_REDIRECT_NONE;
+    if (!has_location)
+        return EDC_HTTPS_REDIRECT_NONE;
+    if (redirects_left > 0)
+        return EDC_HTTPS_REDIRECT_FOLLOW;
+    return EDC_HTTPS_REDIRECT_FAIL;
+}
+
 static int edc_https_on_headers_complete(llhttp_t *http)
 {
     struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
@@ -135,6 +285,11 @@ static int edc_https_on_headers_complete(llhttp_t *http)
     {
         req->header.field = req->current_header_field;
         req->header.value = req->current_header_value;
+        if (req->current_header_field && strcasecmp(req->current_header_field, "location") == 0)
+        {
+            sdsfree(req->location);
+            req->location = sdsdup(req->current_header_value);
+        }
         req->fn(req, EDC_HTTPS_EVENT_HEADER, &req->header);
         sdsfree(req->current_header_field);
         req->current_header_field = NULL;
@@ -147,12 +302,42 @@ static int edc_https_on_headers_complete(llhttp_t *http)
         req->current_header_field = NULL;
     }
 
+    /* Decide about a 3xx here, where the status and Location are both known. The close is
+     * deferred to on_message_complete: closing the socket from inside the parser callback
+     * pulls the buffer out from under llhttp_execute. */
+    switch (edc_https_redirect_decide(req->status_code, req->location != NULL, req->redirects_left))
+    {
+    case EDC_HTTPS_REDIRECT_FOLLOW:
+        req->redirecting = true;
+        break;
+    case EDC_HTTPS_REDIRECT_FAIL:
+        log_error("edc_https_client: too many redirects, last was %d to %s", req->status_code,
+                  req->location);
+        {
+            sds message = sdscatprintf(sdsempty(), "too many redirects (last %d to %s)", req->status_code,
+                                       req->location);
+            req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
+            sdsfree(message);
+        }
+        req->redirecting = true; /* discard the body, but report the failure */
+        req->redirect_failed = true;
+        break;
+    case EDC_HTTPS_REDIRECT_NONE:
+    default:
+        break;
+    }
+
     return 0;
 }
 
 static int edc_https_on_body(llhttp_t *http, const char *at, size_t length)
 {
     struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    /* The body of a response we are about to discard. Handing it to the caller would make it
+     * parse a redirect page as if it were the resource it asked for. */
+    if (req->redirecting)
+        return 0;
 
     char *data = malloc(length);
     memcpy(data, at, length);
@@ -162,8 +347,17 @@ static int edc_https_on_body(llhttp_t *http, const char *at, size_t length)
     return 0;
 }
 
+static void edc_https_on_tcp_close(uv_handle_t *handle);
+
 static int edc_https_on_message_complete(llhttp_t *http)
 {
+    struct edc_https_request *req = EDC_CONTAINER_OF(http, struct edc_https_request, parser);
+
+    /* A redirect is fully read: stop listening. The close path below is where the follow-up
+     * request is queued (or, when the chain failed, where the caller is told it is over). */
+    if (req->redirecting && !uv_is_closing((uv_handle_t *)req))
+        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+
     return 0;
 }
 
@@ -196,7 +390,7 @@ static int edc_https_timeout_ms(void)
 static void edc_https_on_timeout(uv_timer_t *timer);
 
 static struct edc_https_request *edc_https_request_new(struct edc_https_client *client, const char *url,
-                                                       edc_https_event_fn fn, void *priv)
+                                                       edc_https_event_fn fn, void *priv, int redirects_left)
 {
     struct edc_https_request *req = malloc(sizeof(struct edc_https_request));
     req->client = client;
@@ -210,6 +404,9 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
     req->current_header_field = NULL;
     req->current_header_value = NULL;
     req->header_in_field = true;
+    req->location = NULL;
+    req->redirects_left = redirects_left;
+    req->redirecting = false;
 
     llhttp_settings_init(&req->parser_settings);
     req->parser_settings.on_body = edc_https_on_body;
@@ -288,6 +485,7 @@ static void edc_https_request_dispose(struct edc_https_request *req)
 
     mbedtls_ssl_free(&req->ssl);
     sdsfree(req->url);
+    sdsfree(req->location);
     sdsfree(req->current_header_field);
     sdsfree(req->current_header_value);
     free(req);
@@ -355,6 +553,7 @@ int edc_https_client_connect(struct edc_https_client *client, const char *url, e
     }
     work->fn = fn;
     work->priv = priv;
+    work->redirects_left = EDC_HTTPS_MAX_REDIRECTS;
     work->next = NULL;
 
     uv_mutex_lock(&client->work_mutex);
@@ -414,6 +613,40 @@ int edc_https_request_write(struct edc_https_request *req, const unsigned char *
 static void edc_https_on_tcp_close(uv_handle_t *handle)
 {
     struct edc_https_request *req = (struct edc_https_request *)handle;
+
+    /* A followed redirect: this hop is not the caller's answer, so no CLOSE is delivered --
+     * from the caller's point of view one request was made and one answer arrived. The
+     * follow-up is queued here rather than at header time so the socket is already gone. */
+    if (req->redirecting && !req->redirect_failed)
+    {
+        /* Resolve BEFORE releasing: the failure path has to report through |req|, and the
+         * callbacks dereference it (a NULL request is explicitly not allowed here). */
+        sds next = edc_https_resolve_redirect(req->url, req->location);
+
+        if (!next)
+        {
+            /* Refused (plaintext downgrade, or an unparseable Location). Same ERROR+CLOSE
+             * pair as any other transport failure, so the caller needs no new branch. */
+            req->fn(req, EDC_HTTPS_EVENT_ERROR, (void *)"redirect target rejected");
+            req->fn(req, EDC_HTTPS_EVENT_CLOSE, NULL);
+            edc_https_request_close_timer(req);
+            edc_https_request_release(req);
+            return;
+        }
+
+        edc_https_event_fn fn = req->fn;
+        void *priv = req->priv;
+        struct edc_https_client *client = req->client;
+        const int left = req->redirects_left - 1;
+
+        edc_https_request_close_timer(req);
+        edc_https_request_release(req);
+
+        edc_https_enqueue_work(client, next, fn, priv, left);
+        sdsfree(next);
+        return;
+    }
+
     req->fn(req, EDC_HTTPS_EVENT_CLOSE, NULL);
     /* The socket side has arrived; the deadline side's close callback follows -- free only when both are in. */
     edc_https_request_close_timer(req);
@@ -750,7 +983,8 @@ static void on_work_async(uv_async_t *handle)
         if (!work)
             break;
 
-        struct edc_https_request *http_req = edc_https_request_new(client, work->url, work->fn, work->priv);
+        struct edc_https_request *http_req = edc_https_request_new(client, work->url, work->fn, work->priv,
+                                                                  work->redirects_left);
         if (!http_req)
         {
             /* The URL was already validated in edc_https_client_connect(), so this

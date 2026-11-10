@@ -184,6 +184,66 @@ cc_test(
 )
 
 cc_test(
+    name = "test_redact",
+    srcs = ["test_redact.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_update",
+    srcs = ["test_update.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
+    name = "test_portability",
+    srcs = ["test_portability.sh"],
+    data = ["//tools:check_portability"],
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
+    name = "test_update_keygen",
+    srcs = ["test_update_keygen.sh"],
+    data = [
+        "//tools:embed_pubkey_install",
+        "//tools:gen_pubkey_c",
+        "//tools:install",
+        "//tools:update_keygen",
+        "//tools:update_signing.pub.pem",
+    ],
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_semver",
+    srcs = ["test_semver.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_https_redirect",
+    srcs = ["test_https_redirect.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_https_client_get",
     srcs = ["test_https_client_get.c", "test_ws.h"],
     deps = [
@@ -877,7 +937,7 @@ cc_test(
 )
 cc_test(
     name = "test_sandbox_verify_path",
-    srcs = ["test_sandbox_verify_path.c", "test_ws.h"],
+    srcs = ["test_sandbox_verify_path.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/sandbox:sandbox",
@@ -1260,6 +1320,7 @@ cc_test(
     srcs = ["test_config_sandbox_defaults.c", "test_ws.h", "test_fs_util.h"],
     deps = [
         "//src/common:common",
+        "//src/sandbox:sandbox",
     ],
     linkopts = LINK_OPTS,
     target_compatible_with = POSIX_ONLY,

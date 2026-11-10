@@ -256,6 +256,27 @@ bool edc_file_is_regular(const char *path)
     return S_ISREG(edc_file_test_flags(path));
 }
 
+bool edc_file_restrict_owner(const char *path)
+{
+#ifdef _WIN32
+    /* Mode bits are not the mechanism here, and fabricating an ACL is out of scope. */
+    (void)path;
+    return true;
+#else
+    if (!path || !path[0])
+        return false;
+
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false;
+
+    const mode_t want = S_ISDIR(st.st_mode) ? 0700 : 0600;
+    if ((st.st_mode & 0777) == want)
+        return true;
+    return chmod(path, want) == 0;
+#endif
+}
+
 bool edc_dir_create_with_parents(const char *path, int mode, EdcError **error)
 {
     if (!path || !path[0])

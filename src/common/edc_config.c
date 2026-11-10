@@ -93,6 +93,136 @@ static sds *edc_config_default_rw_paths(const char *workspace)
     return out;
 }
 
+/* The app's own secret files (see the header). Names only -- existence is deliberately not
+ * consulted, so .key_hash is covered even on the run that has not created it yet. */
+sds *edc_config_own_secret_paths(const char *edc_home)
+{
+    if (!edc_platform_has_sandbox() || !edc_home || !edc_home[0])
+        return NULL;
+
+    static const char *const k_rel[] = {
+        "config.json",
+        ".key_hash",
+    };
+
+    /* Derived from |edc_home| itself, NOT from $HOME. The two are the same on a default
+     * install (edc_home is "$HOME/.edgeclaw"), which is exactly what hides the difference:
+     * with edc_home relocated -- EDGECLAW_HOME, a test scratch dir, a container mount -- a
+     * $HOME-relative spelling names a file that is not the one the app encrypts with, so the
+     * entry silently protects nothing. The caller passes the authoritative location; use it. */
+    const size_t count = sizeof(k_rel) / sizeof(k_rel[0]);
+    sds *out = g_new0(sds, count + 1);
+    for (size_t i = 0; i < count; i++)
+        out[i] = edc_path_join(edc_home, k_rel[i], NULL);
+    out[count] = NULL;
+    return out;
+}
+
+/* Default deny list: the credential and history files under $HOME (see the header).
+ * Relative to $HOME so the same list works for every user; resolved before returning,
+ * so what lands in config.json is the canonical spelling and an entry naming a path
+ * this install does not have is simply absent. */
+sds *edc_config_default_deny_paths(void)
+{
+    if (!edc_platform_has_sandbox())
+        return NULL;
+
+    sds home = edc_homedir();
+    if (!home || sdslen(home) == 0)
+    {
+        sdsfree(home);
+        return NULL;
+    }
+
+    static const char *const k_rel[] = {
+        /* keys and credentials */
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".netrc",
+        ".npmrc",
+        ".git-credentials",
+        ".docker/config.json",
+        ".config/gh",
+        ".config/gcloud",
+        ".password-store",
+        /* shell history: what is typed on the command line lands here, tokens included */
+        ".zsh_history",
+        ".bash_history",
+        ".zsh_history.save",
+        /* the "keep secrets in a dotfile and source it" convention, which is what the
+         * README-adjacent advice amounts to. Without these the user has to name their own
+         * file by hand -- the app cannot guess an arbitrary name, but it can cover the
+         * names this pattern conventionally uses. */
+        ".secrets.env",
+        ".secrets",
+        ".envrc",
+        ".env.local",
+        /* the app's own secrets: the EDGECLAW_ENC ciphertext is readable by design, and
+         * .key_hash is a passphrase verifier -- together they are an offline oracle */
+        ".edgeclaw/config.json",
+        ".edgeclaw/.key_hash",
+    };
+
+    /* Absolute system paths, denied even though /etc stays readable.
+     *
+     * Narrowing the /etc whitelist to a hand-picked subset is the other way to do this and
+     * it is the wrong one: the tools that consult /etc (the dynamic loader, the resolver,
+     * fontconfig, the terminfo database, ...) each want a different corner of it, and a
+     * missing entry fails SILENTLY -- landlock_add_path skips a path it cannot open and the
+     * symptom is a tool behaving strangely, not an error. Meanwhile these files are already
+     * root-only on any normal system, so narrowing buys almost nothing for a non-root run.
+     *
+     * Deny entries buy the same thing with no functional risk, and they additionally cover
+     * a run as root, where the file permission bits protect nothing and the sandbox is the
+     * only layer left.
+     *
+     * ssh host keys are named FILE by FILE rather than as /etc/ssh: that directory also
+     * holds ssh_config, which the ssh client needs. */
+    static const char *const k_system[] = {
+        "/etc/shadow",
+        "/etc/gshadow",
+        "/etc/sudoers",
+        "/etc/sudoers.d",
+        "/etc/ssl/private",
+        "/etc/credstore",
+        "/etc/credstore.encrypted",
+        "/etc/ssh/ssh_host_rsa_key",
+        "/etc/ssh/ssh_host_ecdsa_key",
+        "/etc/ssh/ssh_host_ed25519_key",
+    };
+
+    const size_t count = sizeof(k_rel) / sizeof(k_rel[0]);
+    const size_t sys_count = sizeof(k_system) / sizeof(k_system[0]);
+    sds *out = g_new0(sds, count + sys_count + 1);
+    int n = 0;
+    for (size_t i = 0; i < count; i++)
+    {
+        sds cand = edc_path_join(home, k_rel[i], NULL);
+        char *real = realpath(cand, NULL);
+        if (real)
+        {
+            out[n++] = sdsnew(real);
+            free(real);
+        }
+        sdsfree(cand);
+    }
+    /* Same "only if it resolves" rule: an entry that matches nothing is noise. */
+    for (size_t i = 0; i < sys_count; i++)
+    {
+        char *real = realpath(k_system[i], NULL);
+        if (real)
+        {
+            out[n++] = sdsnew(real);
+            free(real);
+        }
+    }
+    out[n] = NULL;
+    sdsfree(home);
+    return out;
+}
+
 static bool sds_array_contains(sds *arr, const char *s)
 {
     if (!arr)
@@ -292,6 +422,14 @@ struct edc_config *edc_config_load(const char *edc_home)
         edc_error_free(error);
         goto exit_free_path;
     }
+
+    /* Tighten the file here rather than in each writer: config.json is written from several
+     * places (first run, the /sandbox and /connect paths, the silent top-up), and doing it
+     * on load also upgrades an install that was created before this. It holds the api_key
+     * ciphertext and the path lists -- 0600 is the right mode even though the containing
+     * directory is already 0700. */
+    if (!edc_file_restrict_owner(path))
+        log_warn("cannot restrict %s to its owner", path);
 
     cJSON *conf = cJSON_Parse(content);
     if (!conf)
@@ -610,20 +748,13 @@ struct edc_config *edc_config_load(const char *edc_home)
         sds home = edc_homedir();
         if (home && sdslen(home) > 0)
         {
-            int ro_count = 0;
-            if (config->sandbox_ro_paths)
-            {
-                while (config->sandbox_ro_paths[ro_count])
-                    ro_count++;
-            }
-            config->sandbox_ro_paths = realloc(config->sandbox_ro_paths, (ro_count + 2) * sizeof(sds));
-            config->sandbox_ro_paths[ro_count] = home;
-            config->sandbox_ro_paths[ro_count + 1] = NULL;
+            /* add_unique rather than a blind append. sds_array_canonicalize() below already
+             * collapses the duplicate, so this was never an unbounded-growth bug -- but
+             * appending a second copy only to have the next pass remove it is wasted work,
+             * and it makes the intent ("home is read-only") read as an accumulation. */
+            sds_array_add_unique(&config->sandbox_ro_paths, home);
         }
-        else
-        {
-            sdsfree(home);
-        }
+        sdsfree(home);
     }
 
     /* Migrate the legacy "whole filesystem readable" default: older config.json
@@ -726,6 +857,32 @@ struct edc_config *edc_config_load(const char *edc_home)
     sds_array_canonicalize(&config->sandbox_ro_paths);
     sds_array_canonicalize(&config->sandbox_rw_paths);
     sds_array_canonicalize(&config->sandbox_deny_paths);
+
+    /* path_allowed() resolves a tie between an rw and an ro entry to READ-ONLY. So adding
+     * a directory to rw_paths while the same directory sits in ro_paths -- which the built-in
+     * read-only home does for `~` itself -- leaves it read-only, and `/sandbox add-rw`
+     * reports success while changing nothing. The symptom ("I configured it and it is still
+     * denied") looks like a bug elsewhere, so name it here. */
+    for (int i = 0; config->sandbox_rw_paths && config->sandbox_rw_paths[i]; i++)
+    {
+        char *rw_real = realpath(config->sandbox_rw_paths[i], NULL);
+        if (!rw_real)
+            continue;
+        for (int j = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[j]; j++)
+        {
+            char *ro_real = realpath(config->sandbox_ro_paths[j], NULL);
+            if (ro_real && strcmp(rw_real, ro_real) == 0)
+            {
+                log_warn("sandbox: '%s' appears in both rw_paths and ro_paths; a tie resolves to read-only, "
+                         "so writes there stay DENIED -- remove the ro entry (`/sandbox rm-ro %s`) or name a "
+                         "more specific subdirectory",
+                         config->sandbox_rw_paths[i], config->sandbox_ro_paths[j]);
+            }
+            if (ro_real)
+                free(ro_real);
+        }
+        free(rw_real);
+    }
 
     if (config->sandbox_rw_paths && config->sandbox_rw_paths[0])
     {
@@ -1319,11 +1476,40 @@ bool edc_config_set_sandbox_path(struct edc_config *cfg, const char *path, edc_s
     if (!resolved)
     {
         if (msg)
-            *msg = sdscatprintf(sdsempty(), "no such directory: %s", path);
+            *msg = sdscatprintf(sdsempty(), "no such path: %s", path);
         return false;
     }
+
+    /* A deny entry may name a single FILE, and that is the case it exists for: the
+     * secrets worth masking are files (.zshrc, .zsh_history, ~/.netrc), and they sit in
+     * directories the model is meant to keep reading. The backends already handle it --
+     * edc_ns_sandbox masks a directory with a tmpfs and a file with a dead device node --
+     * but this check used to refuse anything that was not a directory, so the only way to
+     * deny a file was to hand-edit config.json.
+     *
+     * ro/rw stay directory-only: they describe subtrees, and a writable single file is
+     * better expressed by the deny list's neighbour entries anyway. */
     struct stat st;
-    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode))
+    if (stat(resolved, &st) != 0)
+    {
+        if (msg)
+            *msg = sdscatprintf(sdsempty(), "cannot stat: %s", resolved);
+        free(resolved);
+        return false;
+    }
+    if (kind == EDC_SANDBOX_PATH_DENY)
+    {
+        /* Directories and regular files both make sense; something else (a socket, a
+         * device node) is not a secret and cannot be masked meaningfully. */
+        if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode))
+        {
+            if (msg)
+                *msg = sdscatprintf(sdsempty(), "not a file or directory: %s", resolved);
+            free(resolved);
+            return false;
+        }
+    }
+    else if (!S_ISDIR(st.st_mode))
     {
         if (msg)
             *msg = sdscatprintf(sdsempty(), "not a directory: %s", resolved);

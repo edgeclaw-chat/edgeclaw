@@ -5,8 +5,8 @@
  *
  * Upgrading a workspace database in place, one version at a time, without ever asking the
  * user to delete a file. The discipline this module implements is not invented here: it is
- * the one the `tools/migrate_edgeclaw_db_v*_to_v*.py` scripts established on real
- * databases (462 MB, 9 sessions, 54k messages), moved into the binary so a user upgrading
+ * the one worked out on real databases (462 MB, 9 sessions, 54k messages) before the
+ * binary could do it, moved into the binary so a user upgrading
  * EdgeClaw gets it by starting EdgeClaw.
  *
  * THE INVARIANTS, in the order they must hold:

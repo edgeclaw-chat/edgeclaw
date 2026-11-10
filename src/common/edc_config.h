@@ -25,6 +25,18 @@
  * /Applications/Xcode-*.app/.../libxcrun.dylib). /opt and /usr/local cover
  * Homebrew on Apple Silicon and Intel respectively.
  *
+ * Linux names /opt for the same reason macOS does -- it is where software installed
+ * outside the distribution's package manager lives. Here that is a toolchain: the musl
+ * cross compilers this repo builds its static release binaries with are unpacked under
+ * /opt (see toolchain/musl_toolchain_repo.bzl, which searches /opt/<triple>/bin/ and
+ * friends), and Landlock covers exec as well as read, so without the entry the very build
+ * that toolchain exists for dies on its first compile with
+ *
+ *     execvp(/opt/aarch64-linux-musl/bin/aarch64-linux-musl-gcc, ...): Permission denied
+ *
+ * which says nothing about the sandbox being the reason. Read-only is the right grant: the
+ * compilers, the sysroot headers and the libraries are all this list ever needs.
+ *
  * Windows has no fixed layout to name here: %SystemRoot% is C:\Windows on almost every
  * machine, and "almost" is exactly the assumption that leaves a whitelist pointing at a
  * directory which does not exist (granting nothing, silently). Its list is therefore built
@@ -35,7 +47,7 @@
 #elif defined(__APPLE__)
 #define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/System,/Library,/Applications,/bin,/sbin,/etc,/dev,/opt,/usr/local"
 #else
-#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run"
+#define EDC_SANDBOX_DEFAULT_RO_PATHS "/usr,/lib,/lib32,/lib64,/libx32,/bin,/sbin,/etc,/proc,/sys,/run,/opt"
 #endif
 
 /* Default writable set, minus the two entries that depend on runtime values
@@ -71,6 +83,42 @@ const char *edc_sandbox_platform_ro_paths(void);
  * belongs with the backend, not with a compile-time constant. */
 const char *edc_sandbox_default_rw_paths(void);
 const char *edc_sandbox_default_ro_paths(void);
+
+/* A fresh, NULL-terminated array of the app's OWN secret files under |edc_home|, whether or
+ * not they exist yet, or NULL where the sandbox has no backend.
+ *
+ * Separate from edc_config_default_deny_paths() because existence must NOT be consulted
+ * here: .key_hash is created by edc_secret_init(), which can run after the deny list was
+ * written, and a list that only names files existing at seed time silently missed it. These
+ * two names are not a user preference -- they are the app's own secrets -- so they are
+ * denied unconditionally and the check is repeated on every load.
+ *
+ * No realpath(): a not-yet-created file cannot be resolved, and the entry still matches
+ * once it appears.
+ *
+ * Caller frees the array (sdsfree each + free). */
+sds *edc_config_own_secret_paths(const char *edc_home);
+
+/* A fresh, NULL-terminated array of the sensitive $HOME paths the deny list starts
+ * with, or NULL where the sandbox has no backend.
+ *
+ * The home directory is the one subtree the sandbox makes READABLE but not writable
+ * (the model may read the user's files, must not modify them), so every dotfile in it
+ * is model-visible: shell history and rc files carry tokens in plain text, ~/.ssh a
+ * private key. Deny is the only list that masks a path out of an allowed parent --
+ * edc_path_guard for the tool reads, a namespace mount for shell commands -- so these
+ * names are the ones that are pure liability.
+ *
+ * Only paths that resolve are returned: an unresolvable deny entry matches nothing and
+ * earns a startup warning (edc_sandbox_report_unresolved_paths), so naming a path this
+ * install does not have would be noise rather than policy.
+ *
+ * Deliberately NOT blanket "~/.edgeclaw" or "~/.config": the workspace and the skills
+ * live under the former, and deny wins over rw, so a blanket entry would mask the app's
+ * own state. Only the secret files themselves are named.
+ *
+ * Caller frees the array (sdsfree each + free). */
+sds *edc_config_default_deny_paths(void);
 
 struct llm_api_conf
 {

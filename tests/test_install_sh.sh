@@ -39,6 +39,54 @@ WWW="${WORK}/www"
 BINDIR="${WORK}/bin"
 mkdir -p "$SHIM" "$WWW" "$BINDIR"
 
+# ------------------------------------------------------- the release signing key
+#
+# install.sh verifies the release signature against a public key embedded in itself (it runs
+# as `curl | sh`, so it has no checkout to read one from). The committed key is the real one,
+# and its private half is not in this repository -- which is the point, but it also means the
+# fixtures below cannot be signed with it.
+#
+# So the script under test is a COPY whose embedded key has been swapped for a throwaway pair
+# generated here. The verification path therefore runs for real: a suite that stubbed it out
+# would still pass against a script that verified nothing.
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "openssl is required by this test (it signs the fixtures)" >&2
+    exit 1
+fi
+RUN_SH="${WORK}/install-under-test.sh"
+SIGNKEY="${WORK}/test-signing.key"
+SIGNPUB="${WORK}/test-signing.pub.pem"
+openssl ecparam -name prime256v1 -genkey -noout -out "$SIGNKEY" 2>/dev/null
+openssl ec -in "$SIGNKEY" -pubout -out "$SIGNPUB" 2>/dev/null
+cp "$INSTALL_SH" "$RUN_SH"
+python3 - "$RUN_SH" "$SIGNPUB" <<'PYEOF'
+import sys
+script, pub = sys.argv[1], sys.argv[2]
+text = open(script, encoding="utf-8").read()
+pem = open(pub, encoding="utf-8").read().strip()
+marker = "<<'EDGECLAW_UPDATE_PUBKEY'\n"
+start = text.index(marker) + len(marker)
+end = text.index("\nEDGECLAW_UPDATE_PUBKEY\n", start)
+open(script, "w", encoding="utf-8").write(text[:start] + pem + text[end:])
+PYEOF
+chmod +x "$RUN_SH"
+
+# Sign every archive currently in $WWW. Called after each fixture archive is created, so the
+# happy paths see a valid signature and the negative cases can break exactly one thing.
+resign_release() {
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        # macOS/Git-Bash have shasum only. The script under test handles both; so must this.
+        ( cd "$WWW" && shasum -a 256 *.tar.gz \
+            | awk '{n=$2; sub(/.*\//,"",n); print $1"  "n}' | sort -k2 > sha256sums.txt )
+    else
+        ( cd "$WWW" && sha256sum *.tar.gz \
+            | awk '{n=$2; sub(/.*\//,"",n); print $1"  "n}' | sort -k2 > sha256sums.txt )
+    fi
+    openssl dgst -sha256 -sign "$SIGNKEY" -out "${WORK}/sums.sig.bin" "${WWW}/sha256sums.txt"
+    openssl base64 -A -in "${WORK}/sums.sig.bin" -out "${WWW}/sha256sums.txt.sig"
+    printf '\n' >> "${WWW}/sha256sums.txt.sig"
+}
+
 # ---------------------------------------------------------------------------- the shims
 
 cat > "${SHIM}/uname" <<'EOF'
@@ -92,7 +140,7 @@ EOF
 
 run_install() {
     # $1..: extra args
-    PATH="${SHIM}:${PATH}" FAKE_WWW="$WWW" sh "$INSTALL_SH" "$@" 2>&1
+    PATH="${SHIM}:${PATH}" FAKE_WWW="$WWW" sh "$RUN_SH" "$@" 2>&1
 }
 
 # -------------------------------------------------------------------- platform table
@@ -210,6 +258,7 @@ printf '#!/bin/sh\necho "edgeclaw v9.9.9 (fake)"\n' > "${WORK}/payload/edgeclaw_
 printf 'MIT\n' > "${WORK}/payload/edgeclaw_amd64_windows/LICENSE"
 printf 'MIT\n' > "$PAYLOAD/LICENSE"
 ( cd "${WORK}/payload" && tar -czf "${WWW}/edgeclaw_amd64_windows_v9.9.9.tar.gz" edgeclaw_amd64_windows )
+resign_release
 
 out=$(FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag v9.9.9 --dir "$BINDIR")
 check "$?" "0" "install succeeds"
@@ -230,7 +279,10 @@ check "$(ls "$BINDIR" | wc -l | tr -d ' ')" "1" "a second install leaves one fil
 # ------------------------------------------------------------- what a bad download does
 
 # Truncated: right name, broken gzip. Must be refused before it can replace a good binary.
+# It is signed like everything else, so the failure is specifically the tarball check rather
+# than a checksum mismatch -- the two are different guards and both need exercising.
 printf 'not a tarball\n' > "${WWW}/edgeclaw_amd64_windows_v9.9.8.tar.gz"
+resign_release
 if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag v9.9.8 --dir "$BINDIR" >/dev/null 2>&1; then
     check "installed a corrupt archive" "refused" "a corrupt archive is refused"
 else
@@ -243,6 +295,7 @@ check "$(sh "${BINDIR}/edgeclaw.exe" 2>/dev/null)" "edgeclaw v9.9.9 (fake)" \
 mkdir -p "${WORK}/payload2/lonely"
 printf 'x\n' > "${WORK}/payload2/lonely/README"
 ( cd "${WORK}/payload2" && tar -czf "${WWW}/edgeclaw_amd64_windows_v9.9.7.tar.gz" lonely )
+resign_release
 if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag v9.9.7 --dir "$BINDIR" >/dev/null 2>&1; then
     check "installed from an archive with no binary" "refused" "an archive without the binary is refused"
 else
@@ -255,6 +308,67 @@ if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag v0.0.1 --dir "$BIN
 else
     check "refused" "refused" "a tag with no asset is refused"
 fi
+
+# --------------------------------------------------------------- the signature itself
+#
+# These are the cases the whole feature exists for. Each breaks exactly one link of the
+# chain and asserts the install is refused, because the failure mode that matters is not
+# "the download was rejected" but "a binary nobody verified got installed".
+
+# A valid archive, correctly signed, to compare the negative cases against.
+GOODTAG=v9.9.6
+mkdir -p "${WORK}/payload3/edgeclaw_amd64_windows"
+printf '#!/bin/sh\necho "edgeclaw v9.9.6 (fake)"\n' > "${WORK}/payload3/edgeclaw_amd64_windows/edgeclaw.exe"
+( cd "${WORK}/payload3" && tar -czf "${WWW}/edgeclaw_amd64_windows_${GOODTAG}.tar.gz" edgeclaw_amd64_windows )
+resign_release
+
+out=$(FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag "$GOODTAG" --dir "$BINDIR")
+check "$?" "0" "a correctly signed release installs"
+check "$(sh "${BINDIR}/edgeclaw.exe" 2>/dev/null)" "edgeclaw v9.9.6 (fake)" \
+      "and the verified binary is the one that runs"
+
+# (a) no checksums at all -- the state every release before this feature was in.
+mv "${WWW}/sha256sums.txt" "${WORK}/sums.bak"
+if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag "$GOODTAG" --dir "$BINDIR" >/dev/null 2>&1; then
+    check "installed an unverifiable release" "refused" "a release without checksums is refused"
+else
+    check "refused" "refused" "a release without checksums is refused"
+fi
+mv "${WORK}/sums.bak" "${WWW}/sha256sums.txt"
+
+# (b) checksums present but unsigned: they could have been changed with the archive.
+mv "${WWW}/sha256sums.txt.sig" "${WORK}/sig.bak"
+if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag "$GOODTAG" --dir "$BINDIR" >/dev/null 2>&1; then
+    check "installed with an unsigned checksum file" "refused" "an unsigned checksum file is refused"
+else
+    check "refused" "refused" "an unsigned checksum file is refused"
+fi
+mv "${WORK}/sig.bak" "${WWW}/sha256sums.txt.sig"
+
+# (c) checksums edited after signing: the signature no longer covers what it says it covers.
+cp "${WWW}/sha256sums.txt" "${WORK}/sums.bak"
+printf 'deadbeef  edgeclaw_amd64_windows_%s.tar.gz\n' "$GOODTAG" > "${WWW}/sha256sums.txt"
+if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag "$GOODTAG" --dir "$BINDIR" >/dev/null 2>&1; then
+    check "installed with a tampered checksum file" "refused" "a tampered checksum file is refused"
+else
+    check "refused" "refused" "a tampered checksum file is refused"
+fi
+cp "${WORK}/sums.bak" "${WWW}/sha256sums.txt"
+
+# (d) the archive replaced after signing: signed sums are fine, the bytes do not match.
+# This is the case a checksum alone catches and a signature alone does not.
+cp "${WWW}/edgeclaw_amd64_windows_${GOODTAG}.tar.gz" "${WORK}/archive.bak"
+printf 'x' >> "${WWW}/edgeclaw_amd64_windows_${GOODTAG}.tar.gz"
+if FAKE_OS=MINGW64_NT-10.0 FAKE_ARCH=x86_64 run_install --tag "$GOODTAG" --dir "$BINDIR" >/dev/null 2>&1; then
+    check "installed a mismatched archive" "refused" "an archive that does not match its checksum is refused"
+else
+    check "refused" "refused" "an archive that does not match its checksum is refused"
+fi
+cp "${WORK}/archive.bak" "${WWW}/edgeclaw_amd64_windows_${GOODTAG}.tar.gz"
+
+# After all of that, the good binary from before is still what is installed.
+check "$(sh "${BINDIR}/edgeclaw.exe" 2>/dev/null)" "edgeclaw v9.9.6 (fake)" \
+      "no failed verification replaced the working binary"
 
 printf '\n%d checks, %d failed\n' "$checks" "$fails"
 [ "$fails" -eq 0 ]

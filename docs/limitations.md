@@ -59,6 +59,34 @@ Two constraints worth recording for whoever finishes it:
   can be *told*: `@file` reads go through the same checks, but a prompt can still describe
   anything the model already saw.
 
+#### It is a blast-radius limit, not a confidentiality boundary
+
+Worth stating plainly, because the two get conflated and the difference decides what you
+may safely put on the machine.
+
+- **What it does buy.** A tool or a shell command cannot reach a path the lists do not name,
+  cannot write outside the writable ones, and cannot read a denied one. That bounds what one
+  bad command, or one injected instruction, can touch.
+- **What it does not buy.** Anything the model *does* read goes into its context and is sent
+  to the API provider. The deny list stops a file from being read at all; it cannot stop
+  what was already read from travelling. Treat "the model can reach it" and "it has left
+  the machine" as the same statement.
+- **Root removes most of it.** Deny masks are applied inside a mount namespace created by a
+  helper that inherits the caller's privileges. Run as root and the whitelisted paths are
+  readable regardless of their permission bits — `~/.ssh`'s 0600, a `root:shadow` hash file.
+  A warning is logged at startup when this is the case; run as an unprivileged user if the
+  distinction matters.
+- **Deny is matched on paths.** A second name for the same inode is handled for the tool
+  read path, but the boundary is the path prefix, not the file's identity. Treat every list
+  as a guard rail against mistakes and accidents; if something must not be readable at all,
+  do not keep it where a process running as you can read it.
+
+Correspondingly, the built-in defaults deny the app's own key material
+(`config.json`, `.key_hash`), the conventional credential dotfiles, shell history,
+and — even though `/etc` stays readable so tools keep working — the system files whose
+permission bits already implied they were off limits (`/etc/shadow`, `/etc/sudoers`,
+`/etc/ssl/private`, the ssh host keys).
+
 ### Folding (long conversations)
 
 Compaction produces a summary plus a `<read-files>` / `<modified-files>` list. That list is
@@ -109,14 +137,37 @@ Stated plainly, because "it compiles" is not evidence:
 | Area | State |
 |---|---|
 | Line coverage | **63%** — what [Codecov](https://app.codecov.io/github/edgeclaw-chat/edgeclaw) reports for `master`, over 25933 lines across 133 files. It counts a line whose branches were not all taken as **not** covered, which is why it reads lower than the ~81% an lcov `LH/LF` total gives for the same run (80.9%); the difference is the partially-executed lines. The exact counts move by a line or two between runs, because a few paths are timing-dependent — the percentage does not. For reference, the lcov report also measures functions 92.1% and branches 59.8%; Codecov reports neither. The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are covered, so are the first-run wizard, the frontend's C surface, `exec_shell`'s timeout/abort paths and the store's id-collision / measured-flush paths. |
-| Windows | Builds in CI. The PPPoS transport and the kernel sandbox do not exist there. Not exercised by hand on real hardware for this release. |
+| Windows | Builds in CI. The PPPoS transport and the kernel sandbox do not exist there. Not exercised by hand on real hardware for this release. The owner-only protections (`~/.edgeclaw` and the workspace at `0700`, `config.json` and the database at `0600`) are **not implemented on Windows**: `edc_file_restrict_owner()` is a documented no-op there rather than a fabricated ACL, so those files keep the inherited ACL. |
 | armv7 | Built locally (cross) and **run under `qemu-arm`**: the released shape of the binary starts and reports `platform linux/arm`. Not run on real armv7 hardware, and the Android device agent is compiled only. |
 | Real-model behaviour | The suite drives a fake LLM. Prompt and tool-choice quality is not asserted anywhere. |
-| macOS | Builds in CI (aarch64). Seatbelt sandbox paths are compiled, not exercised. |
+| macOS | Builds in CI (aarch64). Seatbelt sandbox paths are compiled, not exercised. The owner-only modes and the credential deny list added for this release are POSIX-guarded and were verified on Linux only; whether Seatbelt honours the same deny masks is not asserted. |
 
 ## Known sharp edges
 
 Not "unverified" — verified, and wrong in a narrow case:
+
+- **The workspace is `0700`, so a second uid cannot read it.** The transcripts and the
+  session database are the user's private data, and the directory mode is what keeps them
+  private. The cost is that an install shared between accounts — `sudo` as another user, a
+  bind mount whose owner does not match, a container running as a different uid — fails to
+  read or write it. Tighten the ownership to the running uid rather than widening the mode.
+
+- **The built-in deny list comes back.** Entries it seeds (the app's own key material, the
+  conventional credential dotfiles, `/etc/shadow` and friends) are re-checked on every
+  launch, so one the user deleted is added again. That is the deliberate direction: an
+  unprotected secret file fails silently, while a re-added deny entry shows up in
+  `/sandbox list` and can be removed again. To keep something readable on purpose, name a
+  more specific path or turn the sandbox off.
+
+- **`/encrypt` needs a terminal.** It prompts for the passphrase, so it cannot be used from
+  a script or over a non-tty stdin — the same reason the first-run prompt needs one. Both
+  have the `EDGECLAW_MASTER_KEY` route as the headless alternative, which does not need
+  `/encrypt` at all.
+
+- **Tool-output redaction is a backstop, not a boundary.** It recognises PEM private-key
+  blocks, well-known token prefixes and credential-shaped assignments. A secret in a shape
+  it does not know passes through untouched. The deny list is the mechanism that keeps a
+  file from being read at all; this only limits what a read that already happened can leak.
 
 - **A local incremental build can report a stale `--version`.** The version string is
   generated by a rule that runs `git describe`, and Bazel cannot see git, so the rule's

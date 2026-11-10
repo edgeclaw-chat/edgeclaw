@@ -19,6 +19,24 @@ sds edc_file_read(const char *path, EdcError **error);
 sds edc_file_read_capped(const char *path, size_t max_bytes, size_t *out_size, EdcError **error);
 bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError **error);
 
+/* Restrict |path| to its owner: 0700 for a directory, 0600 for a regular file.
+ *
+ * Used for the app's own state -- the workspace it keeps (which holds the transcripts and
+ * the session database), the home it lives in, and the files that name or hold secrets.
+ * A directory's mode is the cheap half of that: traversal needs the x bit, so 0700 on the
+ * workspace makes everything inside unreachable to another local user no matter what each
+ * file's own mode says.
+ *
+ * Applies to an EXISTING path too -- that is the point. edc_dir_create_with_parents() only
+ * sets a mode on the directories it creates, so a directory whose mode was widened (by
+ * hand, or by a restore that did not preserve it) has to be re-asserted on each start.
+ *
+ * Returns true when the path is already tight or was tightened; false when chmod failed
+ * (the caller decides whether that is worth a warning). Always true on Windows, where the
+ * mode bits are not the mechanism -- there are no ACLs to set here, and pretending to have
+ * restricted something would be worse than doing nothing. */
+bool edc_file_restrict_owner(const char *path);
+
 /* Replace |dst| with |src| (both paths), atomically where the platform allows it.
  *
  * POSIX rename() replaces an existing destination; the Windows CRT rename() does

@@ -73,9 +73,9 @@ struct edc_scheduler;
  *     chat.jsonl. Every table that references a session (groups, group_fold_files, tasks,
  *     messages, memo_entries, memo_events) follows.
  *
- *     The on-disk DIRECTORY still says "s<id>" (edc_session_dir_name): those directories
- *     hold live chat.jsonl transcripts, and renaming them would be a data migration for a
- *     formatting decision. */
+ *     The on-disk DIRECTORY is named with the bare id (edc_session_dir_name): those
+ *     directories hold live chat.jsonl transcripts, and renaming them would be a data
+ *     migration for a formatting decision. */
 /* v7: group_fold_files gained a `kind` column.
  *
  *     A group's tracked-file state is TWO lists (read, modified) and the table only had room
@@ -95,9 +95,7 @@ struct edc_scheduler;
  *     - memo_events.changed: which fields a change touched (EDC_MEMO_F_*). It was
  *       in-memory only, so a restart silently turned every past change into "unknown"
  *       and the notices fell back to re-printing summaries.
- *     Migration: built in since v1.0 (edc_state_migrate.c step_v7_to_v8); the python
- *     script tools/migrate_edgeclaw_db_v7_to_v8.py stays for databases that stopped at
- *     v7 before the binary could upgrade them. It backfills
+ *     Migration: built in since v1.0 (edc_state_migrate.c step_v7_to_v8). It backfills
  *     memo_baseline_done = (memo_seen_seq > 0) -- a task that had already consumed
  *     events has necessarily been through the index -- and leaves changed = 0, which is
  *     the documented "unknown, render the content" value, not a guess. */

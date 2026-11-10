@@ -231,6 +231,76 @@ download "$url" "${tmp}/${asset}" || die "download failed: ${url}
 The tag exists but has no ${target} asset, or the network is unavailable. Check the assets
 at https://github.com/${REPO}/releases/tag/${tag}"
 
+# ── what was actually downloaded ────────────────────────────────────────────────────────
+# The binary this script installs runs with the user's privileges and holds their
+# conversations and API key. Until now nothing here could tell a release archive from
+# whatever else arrived over the same TLS connection, and the script said as much: "TLS to
+# GitHub is the whole boundary".
+#
+# So every archive is checked twice, and the ORDER matters:
+#
+#   1. verify the signature over sha256sums.txt   -- this is what makes the file trustworthy
+#   2. compare the archive against the checksum it lists
+#
+# Comparing before verifying would accept an attacker who changed both the archive and the
+# sums file. Verifying first means the checksum we compare against is one we trust.
+#
+# Both failures are fatal. A release that cannot be verified is not installed, and there is
+# deliberately no flag to skip it: an installer that has an "ignore the signature" switch is
+# one where that switch gets used.
+verify_archive() {
+    _sums="${tmp}/sha256sums.txt"
+    _sig="${tmp}/sha256sums.txt.sig"
+    _sums_url="${DL}/${tag}/sha256sums.txt"
+    _sig_url="${DL}/${tag}/sha256sums.txt.sig"
+
+    download "$_sums_url" "$_sums" || die "could not download ${_sums_url}
+This release was published without checksums, so it cannot be verified and will not be
+installed. Use a release that includes sha256sums.txt, or build from source."
+    download "$_sig_url" "$_sig" || die "could not download ${_sig_url}
+The checksums are not signed, so they could have been changed together with the archive.
+Refusing to install."
+
+    command -v openssl >/dev/null 2>&1 || die "openssl is required to verify the release signature
+Install openssl (usually part of the base system) and run this script again. There is no
+supported way to skip this check."
+
+    cat > "${tmp}/pubkey.pem" <<'EDGECLAW_UPDATE_PUBKEY'
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEUpTD9xJjm+ZfICQraLvCruln6hbY
+DU6ZgAlq/8hcrdOd/fF0L28GFF4rkCzwf3VkPUhu5ozsA7OzLw1mJvsptQ==
+-----END PUBLIC KEY-----
+EDGECLAW_UPDATE_PUBKEY
+
+    openssl base64 -d -A -in "$_sig" -out "${tmp}/sums.sig" 2>/dev/null \
+        || die "the signature file is not valid base64"
+    openssl dgst -sha256 -verify "${tmp}/pubkey.pem" -signature "${tmp}/sums.sig" "$_sums" \
+        >/dev/null 2>&1 \
+        || die "the release signature does not verify
+Either this release was not signed with the EdgeClaw release key, or sha256sums.txt was
+modified after signing. Neither is safe to install. Do not continue; report it at
+https://github.com/${REPO}/issues"
+
+    _want=$(awk -v a="$asset" '$2 == a { print $1 }' "$_sums")
+    [ -n "$_want" ] || die "${asset} is not listed in sha256sums.txt
+The release is signed but does not cover this platform's archive, so it cannot be verified."
+
+    # macOS ships `shasum`, most Linux and Git-Bash ship `sha256sum`; this script runs on
+    # all of them and has no other hashing option.
+    if command -v sha256sum >/dev/null 2>&1; then
+        _have=$(sha256sum "${tmp}/${asset}" | cut -d' ' -f1)
+    else
+        _have=$(shasum -a 256 "${tmp}/${asset}" | cut -d' ' -f1)
+    fi
+    [ "$_have" = "$_want" ] || die "the downloaded archive does not match its checksum
+  expected $_want
+  got      $_have
+The download is corrupt or was replaced in transit. Delete it and run the script again."
+
+    printf 'Verified signature and checksum\n'
+}
+verify_archive
+
 # Checks the gzip stream end to end before anything is unpacked or installed: a truncated
 # download fails here rather than as a corrupt binary later.
 tar -tzf "${tmp}/${asset}" >/dev/null 2>&1 || die "the downloaded archive is not a valid tarball"

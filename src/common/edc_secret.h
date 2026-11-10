@@ -4,18 +4,47 @@
 #include "sds.h"
 #include <stdbool.h>
 
-#define BC_SECRET_PREFIX "EDGECLAW_ENC:"
+/* The ciphertext tag. It names the format so a later change can migrate instead of
+ * guessing: the reader dispatches on it. This is v1 -- the first format to ship.
+ *
+ * The version is part of the prefix from the start rather than added when first needed.
+ * Retrofitting it means a release whose reader cannot tell an old ciphertext from a new
+ * one, which is exactly the migration that cannot be done without it. */
+#define BC_SECRET_PREFIX "EDGECLAW_ENC:v1:"
+
+/* Every tag that means "this is ciphertext", so a value carrying a version this build does
+ * not implement is refused instead of being mistaken for a plaintext api_key. */
+#define BC_SECRET_PREFIX_FAMILY "EDGECLAW_ENC:"
 
 /* Initialize the secret module. Loads the master key from the
  * EDGECLAW_MASTER_KEY environment variable or stdin.
- * If confirm_password is true (first-time setup), prompts for the
- * passphrase twice to confirm the user's input and stores a
- * verification hash in edc_home/.key_hash.
- * Otherwise prompts once and verifies against the stored hash.
- * edc_home may be NULL to skip storage/verification (env var mode).
+ *
+ * The key is derived with PBKDF2-HMAC-SHA256 over a per-install random salt, and the salt
+ * and iteration count live in edc_home/.key_hash together with a verifier:
+ *
+ *   {"v":2,"kdf":"pbkdf2-sha256","iter":600000,"salt":"<32 hex>","verify":"<64 hex>"}
+ *
+ * That file has to be read HERE rather than from config.json, because config.json is
+ * encrypted with the key that comes out of this derivation -- the salt is an input to the
+ * key, not something found alongside the ciphertext.
+ *
+ * If confirm_password is true (first-time setup), prompts twice, mints a new salt and
+ * writes the record. Otherwise it prompts once and verifies against the stored verifier.
+ * When edc_home is NULL no record can be kept, so the salt is ephemeral; the key still
+ * works for this process, but encrypted values will not survive a restart.
  * Must be called once at startup, before edc_config_load().
  * Returns true on success. */
 bool edc_secret_init(bool confirm_password, const char *edc_home);
+
+/* Turn encryption back on for an install that chose "no encryption" at setup (see
+ * edc_secret_init). Prompts for a new passphrase, mints a salt, and stores the record; the
+ * caller then re-encrypts the api_key (edc_config_update_llm) because that value lives in
+ * the running config, not here.
+ *
+ * Returns false when a key is already loaded (changing a passphrase is a different
+ * operation), when there is no terminal to prompt on, or when the prompt failed. |msg|
+ * receives a short reason the caller can show to the user. */
+bool edc_secret_enable_encryption(const char *edc_home, sds *msg);
 
 /* Clean up the secret module. Zeros master key from memory.
  *

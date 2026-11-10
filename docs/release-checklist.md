@@ -126,8 +126,12 @@ The one thing that can silently destroy a user's history.
   redistributed component.
 - [ ] `docs/limitations.md` is current. Anything fixed in this release that appears there
       should move to its "fixed before v1.0.0" section in the same commit.
-- [ ] The sanitizer gate is what this checklist says it is (hard or
-      report-only right now?).
+- [ ] The sanitizer gate is HARD, not report-only. This is the state as of 2026-11-10 and it
+      is enforced by the workflows rather than by a flag: the `asan` job
+      (`AddressSanitizer + UBSan`) has no `continue-on-error` in any of `tests.yml`,
+      `pr-check.yml` or `release.yml`, and `release` declares it as a dependency. So a
+      sanitizer failure blocks the PR and the release. Re-read this line if that ever
+      changes — a gate nobody checks is how "report-only" creeps back in.
 - [ ] The coverage number quoted in `docs/limitations.md` matches what Codecov shows for
       `master`. It is re-measured, not remembered: the document once quoted a baseline two
       months and 585 lines out of date, which made it wrong in a way no test would catch.
