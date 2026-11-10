@@ -90,6 +90,10 @@ genrule(
     srcs = ["edc_lex.l"],
     outs = ["edc_lex.regen.c"],
     cmd = "flex -o $@ $(location edc_lex.l)",
+    # flex is not part of a Windows toolchain and this rule is manual-only (the generated
+    # output is committed), so cmd_bat exists to keep the shape uniform, not because a Windows
+    # build is expected to run it.
+    cmd_bat = "flex -o $@ $(location edc_lex.l)",
     tags = ["manual"],
 )
 
@@ -121,6 +125,11 @@ genrule(
     cmd = "bison --defines=$(location edc_parse.regen.tab.h) " +
           "-o $(location edc_parse.regen.tab.c) " +
           "-Werror=conflicts-sr -Werror=conflicts-rr $(location edc_parse.y)",
+    # Same note as lex_c: bison is not on a Windows toolchain, and the output is committed, so
+    # this is shape rather than a Windows path anyone should expect to work.
+    cmd_bat = "bison --defines=$(location edc_parse.regen.tab.h) " +
+              "-o $(location edc_parse.regen.tab.c) " +
+              "-Werror=conflicts-sr -Werror=conflicts-rr $(location edc_parse.y)",
     tags = ["manual"],
 )
 

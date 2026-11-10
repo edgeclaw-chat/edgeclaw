@@ -43,12 +43,28 @@ def c_string_literal(data, max_width=110):
 
 
 def strip_prefix(path, prefix):
+    """The embedded name for |path|, with |prefix| removed.
+
+    Separators are normalised BEFORE the comparison, and that is load-bearing rather than
+    cosmetic: a genrule's `cmd_bat` on Windows hands over `docs\\edgeclaw.md`, while the POSIX
+    `cmd` hands over `docs/edgeclaw.md`. Comparing the raw string let the Windows spelling pass
+    through unstripped, so every entry was named `docs/...` instead of `...` and every lookup
+    missed -- a bundle that was present but unreachable by name.
+
+    |path| itself is still what gets opened; only the derived name is normalised.
+    """
+    name = path.replace('\\', '/')
     if not prefix:
-        return path
-    prefix = prefix.rstrip('/') + '/'
-    if path.startswith(prefix):
-        return path[len(prefix):]
-    return path
+        return name
+    pre = prefix.replace('\\', '/').rstrip('/') + '/'
+    if name.startswith(pre):
+        return name[len(pre):]
+    # A rooted spelling (an absolute execroot path) still contains the prefix as a path
+    # component, so cut at it rather than embedding the whole path as the name.
+    idx = name.find('/' + pre)
+    if idx >= 0:
+        return name[idx + len(pre) + 1:]
+    return name
 
 
 def main():
@@ -65,7 +81,7 @@ def main():
 
     entries = []
     for path in args.files:
-        rel = strip_prefix(path, args.prefix).replace('\\', '/')
+        rel = strip_prefix(path, args.prefix)
         with open(path, 'rb') as handle:
             data = handle.read()
         entries.append((rel, data))

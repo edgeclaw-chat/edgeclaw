@@ -8,18 +8,20 @@
     Two things on Windows are environment-dependent, and this script fixes both
     for the current user (HKCU only). Neither fix contains a hardcoded location:
 
-      1. WHICH SHELL. Several genrules on the default build path are bash
-         commands (//:models_catalog_json, the embed/version generators), so
-         Bazel picks a bash -- and on Windows it picks one from the environment.
-         Windows Terminal ends up with C:\Windows\System32\bash.exe (WSL, which
-         only works if that distro is installed); Git Bash ends up with Git's own
-         bash. Fix: set BAZEL_SH to the bash of the git that is on PATH here. The
-         value is discovered on this machine, never assumed.
+      1. WHICH SHELL, for anything that still wants one. The genrules no longer
+         do: every one of them carries a cmd_bat, so the default build runs them
+         through cmd.exe and needs no bash at all. What remains is everything
+         ELSE that might consult BAZEL_SH -- and on Windows it is taken from the
+         environment, so Windows Terminal can end up with
+         C:\Windows\System32\bash.exe (WSL, which only works if that distro is
+         installed) while Git Bash ends up with Git's own. Fix: set BAZEL_SH to
+         the bash of the git that is on PATH here. The value is discovered on
+         this machine, never assumed.
 
-         This used to matter more: the flex/bison generators were also on the
-         default path, so a build needed both tools as well. Their output is
-         committed now and those rules are tagged manual, so a build needs only
-         the shell.
+         This used to matter much more: the genrules were bash commands, and the
+         flex/bison generators were on the default path as well. The generators
+         are committed output and tagged manual now, and the genrules carry
+         cmd_bat, so a plain build needs neither this script nor a shell.
 
       2. FLEX / BISON, for regenerating the grammar only. Not a build
          prerequisite -- src/shell/edc_lex.c and edc_parse.tab.c are committed.

@@ -214,6 +214,20 @@ cc_test(
 )
 
 sh_test(
+    name = "test_embed_workspace",
+    srcs = ["test_embed_workspace.sh"],
+    data = ["//tools:embed_workspace"],
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
+    name = "test_genrule_portability",
+    srcs = ["test_genrule_portability.sh"],
+    data = ["//tools:check_genrule_portability"],
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
     name = "test_portability",
     srcs = ["test_portability.sh"],
     data = ["//tools:check_portability"],

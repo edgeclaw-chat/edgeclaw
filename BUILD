@@ -339,6 +339,7 @@ genrule(
     srcs = [":docs_files"],
     outs = ["docs_embedded.c"],
     cmd = "$(execpath //tools:embed_workspace) --out $@ --prefix docs --name edc_bundled_docs --header edc_bundled_docs.h $(SRCS)",
+    cmd_bat = "$(execpath //tools:embed_workspace) --out $@ --prefix docs --name edc_bundled_docs --header edc_bundled_docs.h $(SRCS)",
     tools = ["//tools:embed_workspace"],
     visibility = ["//visibility:public"],
 )
@@ -366,8 +367,12 @@ genrule(
     name = "models_catalog_json",
     srcs = glob(["models_catalog.json"], allow_empty = True),
     outs = ["models_catalog.generated.json"],
-    cmd = "if [ -n '$(SRCS)' ]; then cp $(SRCS) $@; " +
-          "else $(execpath //tools:gen_models) --no-test --out $@; fi",
+    # One tool invocation, no shell constructs: a checked-in models_catalog.json wins, otherwise
+    # the tool fetches. The "if the override is there" decision used to be `[ -f ... ] && cp` in
+    # the command, which is the one thing that cannot be mirrored into cmd_bat without writing
+    # the same logic twice. It lives in the tool now, so both platforms run identical code.
+    cmd = "$(execpath //tools:gen_models) --no-test --out $@ --copy-if-present models_catalog.json",
+    cmd_bat = "$(execpath //tools:gen_models) --no-test --out $@ --copy-if-present models_catalog.json",
     tools = ["//tools:gen_models"],
     tags = ["no-sandbox", "requires-network"],
     local = 1,
@@ -382,6 +387,7 @@ genrule(
     srcs = [":models_catalog_json"],
     outs = ["models_catalog_embedded.c"],
     cmd = "$(execpath //tools:embed_models) --out $@ --name edc_bundled_models_catalog --header edc_bundled_models_catalog.h $(SRCS)",
+    cmd_bat = "$(execpath //tools:embed_models) --out $@ --name edc_bundled_models_catalog --header edc_bundled_models_catalog.h $(SRCS)",
     tools = ["//tools:embed_models"],
     visibility = ["//visibility:public"],
 )

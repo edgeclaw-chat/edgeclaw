@@ -69,6 +69,15 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+# Static portability lint for BUILD files: rejects a genrule with no `cmd_bat`, which would
+# make Windows run its command through bash -- a shell a stock Windows machine does not have.
+# See //tests:test_genrule_portability.
+py_binary(
+    name = "check_genrule_portability",
+    srcs = ["check_genrule_portability.py"],
+    visibility = ["//visibility:public"],
+)
+
 # ── the release-signature pipeline ──────────────────────────────────────────
 #
 # Three copies of one public key must stay in step: this PEM, the C array compiled into

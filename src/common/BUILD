@@ -20,6 +20,7 @@ genrule(
     srcs = ["//:BUILD"],
     outs = ["edc_version_gen.h"],
     cmd = "$(execpath //tools:gen_version) --out $@ --repo $(location //:BUILD)",
+    cmd_bat = "$(execpath //tools:gen_version) --out $@ --repo $(location //:BUILD)",
     tools = ["//tools:gen_version"],
     # stamp = 1 makes this action ALWAYS re-run, and that is load-bearing rather than
     # cosmetic. The facts come from git, which Bazel cannot see: with the default inputs the
@@ -226,6 +227,7 @@ genrule(
     srcs = ["//:workspace_files"],
     outs = ["workspace_embedded.c"],
     cmd = "$(execpath //tools:embed_workspace) --out $@ --prefix workspace --name edc_bundled_workspace $(SRCS)",
+    cmd_bat = "$(execpath //tools:embed_workspace) --out $@ --prefix workspace --name edc_bundled_workspace $(SRCS)",
     tools = ["//tools:embed_workspace"],
     visibility = ["//visibility:public"],
 )
