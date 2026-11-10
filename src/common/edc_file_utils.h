@@ -28,8 +28,8 @@ bool edc_file_write(const char *path, const char *content, ssize_t len, EdcError
  * file's own mode says.
  *
  * Applies to an EXISTING path too -- that is the point. edc_dir_create_with_parents() only
- * sets a mode on the directories it creates, so an install made before this existed would
- * otherwise keep 0755 forever.
+ * sets a mode on the directories it creates, so a directory whose mode was widened (by
+ * hand, or by a restore that did not preserve it) has to be re-asserted on each start.
  *
  * Returns true when the path is already tight or was tightened; false when chmod failed
  * (the caller decides whether that is worth a warning). Always true on Windows, where the

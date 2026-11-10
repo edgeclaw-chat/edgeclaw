@@ -4,15 +4,13 @@
 #include "sds.h"
 #include <stdbool.h>
 
-/* The ciphertext tag. It names the KDF and parameters the value was produced with, so a
- * later change can migrate instead of guessing: the reader dispatches on it.
+/* The ciphertext tag. It names the format so a later change can migrate instead of
+ * guessing: the reader dispatches on it. This is v1 -- the first format to ship.
  *
- * ":v2:" is deliberately a SUPERSET of the bare "EDGECLAW_ENC:" this used to write. A
- * build that only knows the older tag still matches the prefix, then fails base64 (':' is
- * not in the alphabet) and reports an error -- rather than treating the ciphertext as a
- * plaintext key and sending it upstream. A tag that did NOT start with the old prefix
- * would be read as "not encrypted" and passed straight through. */
-#define BC_SECRET_PREFIX "EDGECLAW_ENC:v2:"
+ * The version is part of the prefix from the start rather than added when first needed.
+ * Retrofitting it means a release whose reader cannot tell an old ciphertext from a new
+ * one, which is exactly the migration that cannot be done without it. */
+#define BC_SECRET_PREFIX "EDGECLAW_ENC:v1:"
 
 /* Every tag that means "this is ciphertext", so a value carrying a version this build does
  * not implement is refused instead of being mistaken for a plaintext api_key. */

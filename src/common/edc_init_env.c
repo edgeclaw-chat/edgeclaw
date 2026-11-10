@@ -249,9 +249,8 @@ static bool edc_init_env_workspace(const char *dest_workspace)
 {
     if (edc_file_is_dir(dest_workspace))
     {
-        /* Already released: only tighten it. The workspace holds the session transcripts and
-         * the state database, so 0700 is what keeps them to their owner -- an install made
-         * when this was 0755 keeps that mode otherwise. */
+        /* Already released: only re-assert the mode. The workspace holds the session
+         * transcripts and the state database, so 0700 is what keeps them to their owner. */
         if (!edc_file_restrict_owner(dest_workspace))
             log_warn("cannot restrict the workspace %s to its owner", dest_workspace);
         return true;
@@ -624,9 +623,8 @@ static void ensure_sandbox(cJSON *conf, const char *edc_home, bool *changed)
      * sensitive $HOME paths (see edc_config_default_deny_paths): an empty list is the
      * default that protects nothing, while the home directory stays readable.
      *
-     * Filled when the key is ABSENT (fresh install, or an upgrade from a version that did
-     * not write it) and when it is EMPTY (an install that never configured one -- the
-     * shape every config.json written by the previous release has). See the top-up below,
+     * Filled when the key is ABSENT and when it is EMPTY -- an install whose list the user
+     * cleared is one that would otherwise run with no mask at all. See the top-up below,
      * which then keeps the list current on every load.
      *
      * Entries are masked out of the namespace by the sandbox helper (Landlock cannot
@@ -973,8 +971,10 @@ bool edc_init_env(const char *edc_home, bool setup)
     }
     else if (!edc_file_restrict_owner(edc_home))
     {
-        /* An install made before this was 0700. Traversal needs the x bit, so tightening
-         * the directory also hides the 0644 config.json and everything in the workspace. */
+        /* Re-asserted on every start, not just at creation: a mode widened by hand (or by a
+         * restore that did not preserve it) would otherwise stay that way. Traversal needs
+         * the x bit, so 0700 on the directory is what hides config.json and the workspace
+         * contents from other local users, whatever each file's own mode says. */
         log_warn("cannot restrict %s to its owner; other local users may be able to read the "
                  "config and the conversation history stored below it",
                  edc_home);

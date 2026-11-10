@@ -224,7 +224,7 @@ static void test_setup_writes_hash(void)
     sds salt = record_field(rec, "salt");
     sds verify = record_field(rec, "verify");
 
-    CHECK(v && strcmp(v, "2") == 0, "the record is version 2");
+    CHECK(v && strcmp(v, "1") == 0, "the record is version 1");
     CHECK(kdf && strcmp(kdf, "pbkdf2-sha256") == 0, "the record names PBKDF2-HMAC-SHA256");
     /* 600k is the floor the code ships with; the check is >= so raising the constant does
      * not silently weaken it. */
@@ -526,7 +526,7 @@ static void test_unknown_prefix_refused(void)
     /* Carries the family tag but an unknown version. Treating it as "not encrypted" would
      * hand a ciphertext to the provider as the API key, and /connect could then re-encrypt
      * over the real one. */
-    sds out = edc_secret_decrypt("EDGECLAW_ENC:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    sds out = edc_secret_decrypt("EDGECLAW_ENC:v9:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
     CHECK(out == NULL, "a value from another format version is refused, not passed through");
     if (out)
         sdsfree(out);
@@ -538,25 +538,26 @@ static void test_unknown_prefix_refused(void)
         sdsfree(out);
 }
 
-/* ── 8d. a pre-v2 record cannot be reused ────────────────────────────────── */
-static void test_pre_v2_record_refused(void)
+/* ── 8d. a record this build cannot use is refused, not guessed at ───────── */
+/* Nothing in the wild predates the current format (this is the first release), so the only
+ * interesting case is a record that is damaged or was written by a build with a different
+ * version -- the same branch either way. */
+static void test_foreign_record_refused(void)
 {
-    printf("\n── the pre-v2 verification hash ──\n");
+    printf("\n── a key record this build cannot use ──\n");
     reset_dir();
     edc_secret_cleanup();
 
-    /* What the previous release wrote: one bare digest, no salt. There is no way to derive
-     * the same key from it, so it has to be reported rather than guessed at. */
     sds p = edc_path_join(g_dir, ".key_hash", NULL);
-    const char *legacy = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    CHECK(edc_file_write(p, legacy, -1, NULL), "a legacy record can be planted");
+    CHECK(edc_file_write(p, "v 7\nkdf pbkdf2-sha256\niter 600000\nsalt 00\n", -1, NULL),
+          "a record from an unknown version can be planted");
     sdsfree(p);
 
     g_log[0] = '\0';
-    CHECK(!init_with_input(false, g_dir, "anything\n"), "init(verify) refuses a pre-v2 record");
+    CHECK(!init_with_input(false, g_dir, "anything\n"), "init(verify) refuses it");
     printf("    log: %s\n", g_log);
-    CHECK(strstr(g_log, "no salt") != NULL || strstr(g_log, "pre-v2") != NULL,
-          "and explains that the old hash carries no salt");
+    CHECK(strstr(g_log, "unsupported record version") != NULL || strstr(g_log, "no usable") != NULL,
+          "and says the version is not one it understands");
 }
 
 /* ── 9. using the module without a key ───────────────────────────────────── */
@@ -759,7 +760,7 @@ int main(void)
     test_env_var_mode();
     test_salt_is_per_install();
     test_unknown_prefix_refused();
-    test_pre_v2_record_refused();
+    test_foreign_record_refused();
     test_without_key();
     test_corrupt_ciphertext();
     test_prompt_eof();

@@ -41,7 +41,7 @@
  * stored value is what decrypts, the constant is only what new installs get. */
 #define BC_PBKDF2_ITERATIONS 600000u
 #define BC_SALT_SIZE 16
-#define BC_KDF_FILE_VERSION 2
+#define BC_KDF_FILE_VERSION 1
 #define BC_KDF_NAME "pbkdf2-sha256"
 
 static char g_master_key[BC_KEY_SIZE];
@@ -477,20 +477,6 @@ static bool kdf_load(const char *edc_home, char verify_hex[65], bool *have_verif
     }
     sdsfree(path);
 
-    /* A pre-v2 install left 64 bare hex characters here: no salt and no version, so it
-     * cannot be reused. Say that instead of "unknown record version -1". */
-    const char *probe = contents;
-    while (*probe == ' ' || *probe == '\t' || *probe == '\n' || *probe == '\r')
-        probe++;
-    if (*probe != 'v')
-    {
-        log_error("%s is not a v%d key record -- it looks like the pre-v2 verification hash, "
-                  "which has no salt and cannot be reused; remove it and run setup again",
-                  BC_KEY_VERIFY_FILE, BC_KDF_FILE_VERSION);
-        sdsfree(contents);
-        return false;
-    }
-
     int version = -1;
     unsigned int iterations = 0;
     bool kdf_ok = false;
@@ -616,8 +602,8 @@ bool edc_secret_init(bool confirm_password, const char *edc_home)
             if (edc_home && kdf_file_exists(edc_home))
             {
                 /* A record is there but unusable -- kdf_load has already said why (unknown
-                 * version, no salt, pre-v2 hash). Overwriting it would throw away the salt
-                 * the stored ciphertext was made with, so stop instead. */
+                 * version, no salt). Overwriting it would throw away the salt the stored
+                 * ciphertext was made with, so stop instead. */
                 log_error("refusing to continue with an unusable key record; fix or remove %s",
                           BC_KEY_VERIFY_FILE);
                 memset(g_master_key, 0, BC_KEY_SIZE);
