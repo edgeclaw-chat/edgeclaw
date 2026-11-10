@@ -74,6 +74,59 @@ function Get-Sha256Hex {
     (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+# Convert an ASN.1 DER ECDSA signature (SEQUENCE { INTEGER r, INTEGER s }) into the IEEE P1363
+# fixed-field form (r || s, each right-aligned in 32 bytes).
+#
+# This exists because the two PowerShells disagree about what VerifyData's default overload
+# takes: .NET Framework (Windows PowerShell 5.1) expects DER, .NET 5+ (pwsh) expects P1363.
+# Neither offers a format argument on every version, so the signature is normalised here and
+# the comparison is explicit rather than relying on a default that differs per runtime.
+function ConvertFrom-DerEcdsaSignature {
+    param([byte[]]$Der, [int]$FieldLength = 32)
+
+    if ($Der.Length -lt 8 -or $Der[0] -ne 0x30) {
+        throw 'signature is not a DER SEQUENCE'
+    }
+
+    $pos = 1
+    # The SEQUENCE length: short form, or a long form whose byte count is in the low 7 bits.
+    $first = [int]$Der[$pos]
+    if (($first -band 0x80) -ne 0) {
+        $n = $first -band 0x7F
+        $pos++
+        $pos += $n
+    }
+    else {
+        $pos++
+    }
+
+    $out = New-Object byte[] ($FieldLength * 2)
+    foreach ($target in @(0, $FieldLength)) {
+        if ([int]$Der[$pos] -ne 0x02) { throw 'expected a DER INTEGER' }
+        $pos++
+        $len = [int]$Der[$pos]
+        $pos++
+        if (($len -band 0x80) -ne 0) {
+            $n = $len -band 0x7F
+            $len = 0
+            for ($k = 0; $k -lt $n; $k++) {
+                $len = ($len -shl 8) -bor [int]$Der[$pos]
+                $pos++
+            }
+        }
+        # DER prefixes a zero byte when the high bit of the next byte is set; that is a sign
+        # marker, not part of the value.
+        while ($len -gt 0 -and [int]$Der[$pos] -eq 0) { $pos++; $len-- }
+        if ($len -gt $FieldLength) {
+            throw "signature integer is wider than $FieldLength bytes"
+        }
+        # Right-align, so a short r keeps its value instead of shifting the pair.
+        [Array]::Copy($Der, $pos, $out, $target + ($FieldLength - $len), $len)
+        $pos += $len
+    }
+    return $out
+}
+
 # The archive for this machine. Only an amd64 Windows build is published.
 #
 # The architecture comes from the environment, which is right on Windows and absent
@@ -226,11 +279,23 @@ Refusing to install.
     $ecdsa = [System.Security.Cryptography.ECDsa]::Create()
     try {
         $ecdsa.ImportParameters($ecParams)
+
         # The signature is the ASN.1 DER form openssl produces (`openssl dgst -sha256 -sign`).
-        # This overload's default format is DER on both .NET Framework and .NET 5+; the
-        # DSASignatureFormat-taking overload does not exist on .NET Framework, so it cannot be
-        # spelled out here without dropping Windows PowerShell 5.1 support.
-        if (-not $ecdsa.VerifyData($sumsBytes, $sig, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {
+        # VerifyData's default overload does NOT mean the same thing on the two runtimes:
+        # .NET Framework (Windows PowerShell 5.1) takes DER, .NET 5+ (pwsh 7) takes IEEE P1363.
+        # PSEdition is the reliable discriminator, and it is checked rather than guessed so the
+        # failure mode of a wrong guess is not "every release is rejected".
+        $signature = $sig
+        if ($PSVersionTable.PSEdition -ne 'Desktop') {
+            try {
+                $signature = ConvertFrom-DerEcdsaSignature -Der $sig
+            }
+            catch {
+                Fail "the signature file is not a DER ECDSA signature: $($_.Exception.Message)"
+            }
+        }
+
+        if (-not $ecdsa.VerifyData($sumsBytes, $signature, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {
             Fail @"
 the release signature does not verify
 Either this release was not signed with the EdgeClaw release key, or sha256sums.txt was
