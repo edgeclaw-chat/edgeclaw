@@ -194,12 +194,36 @@ cc_test(
 )
 
 cc_test(
+    name = "test_upgrade",
+    srcs = ["test_upgrade.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_update",
     srcs = ["test_update.c"],
     deps = [
         "//src/common:common",
     ],
     linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
+    name = "test_embed_workspace",
+    srcs = ["test_embed_workspace.sh"],
+    data = ["//tools:embed_workspace"],
+    target_compatible_with = POSIX_ONLY,
+)
+
+sh_test(
+    name = "test_genrule_portability",
+    srcs = ["test_genrule_portability.sh"],
+    data = ["//tools:check_genrule_portability"],
     target_compatible_with = POSIX_ONLY,
 )
 
@@ -418,6 +442,21 @@ cc_test(
 # download is allowed to leave behind. Offline -- `curl` and `uname` are shimmed -- because
 # the interesting cases are the refusals, and a test that needs GitHub to answer is a test
 # that fails for reasons that have nothing to do with this script.
+# test_install_ps1 serves its fixtures over loopback and drives pwsh, so it cannot run inside
+# the network namespace the sandbox creates -- loopback is unreachable there, which showed up
+# as "download failed" with a perfectly correct URL. `local = True` runs it outside the
+# sandbox; nothing it touches is shared with the other tests (private temp dir, a port it
+# picks itself).
+sh_test(
+    name = "test_install_ps1",
+    srcs = ["test_install_ps1.sh"],
+    data = ["//tools:install.ps1"],
+    local = True,
+    target_compatible_with = POSIX_ONLY,
+)
+
+# Runs test_install_ps1 only where pwsh exists: the script skips itself otherwise, and a
+# local run without pwsh proves nothing about the PowerShell installer.
 sh_test(
     name = "test_install_sh",
     srcs = ["test_install_sh.sh"],

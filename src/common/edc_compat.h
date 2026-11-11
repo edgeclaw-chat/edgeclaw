@@ -211,6 +211,27 @@ static inline wchar_t *edc_utf8_to_wide(const char *utf8)
     }
     return wide;
 }
+
+/* The mirror of edc_utf8_to_wide: UTF-16 back to UTF-8, for reporting a wide-API result
+ * (such as GetModuleFileNameW) as a path the rest of the program can use.
+ * Caller must free() the returned buffer. */
+static inline char *edc_wide_to_utf8_alloc(const wchar_t *wide)
+{
+    if (!wide)
+        return NULL;
+    int len = WideCharToMultiByte(CP_UTF8, 0, wide, -1, NULL, 0, NULL, NULL);
+    if (len <= 0)
+        return NULL;
+    char *utf8 = (char *)malloc((size_t)len);
+    if (!utf8)
+        return NULL;
+    if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8, len, NULL, NULL) <= 0)
+    {
+        free(utf8);
+        return NULL;
+    }
+    return utf8;
+}
 #endif /* _WIN32 */
 
 /* mode_t: <sys/types.h> has _mode_t, not mode_t. Shared guard with src/common/win_compat's

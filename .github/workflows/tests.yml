@@ -49,6 +49,12 @@ jobs:
       - name: Verify no POSIX-only calls lack the compatibility shim
         run: python3 tools/check_portability.py
 
+      # A genrule with no cmd_bat runs through bash on Windows, which a stock machine does not
+      # have -- so the build would silently require Git for Windows again. Paired with the lint
+      # above: that one guards the C, this one guards the BUILD files.
+      - name: Verify every genrule has a Windows form
+        run: python3 tools/check_genrule_portability.py
+
       - name: Test
         run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
         env:

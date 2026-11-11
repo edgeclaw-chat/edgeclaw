@@ -93,6 +93,10 @@ fi
 
 # One fetcher, chosen once. curl's -f turns a 404 into an error rather than a page of HTML
 # being written to the archive; wget -q does the same by failing on HTTP errors.
+#
+# Neither present is not a dead end, so it does not read like one: macOS and every mainstream
+# Linux ship curl, but a minimal container may have neither, and the archive can still be
+# fetched by anything else. Say how, rather than only saying no.
 if command -v curl >/dev/null 2>&1; then
     fetch() { curl -fsSL "$1"; }
     download() { curl -fsSL -o "$2" "$1"; }
@@ -100,7 +104,14 @@ elif command -v wget >/dev/null 2>&1; then
     fetch() { wget -qO- "$1"; }
     download() { wget -qO "$2" "$1"; }
 else
-    die "neither curl nor wget is installed"
+    die "neither curl nor wget is available, so this script cannot download anything
+Install one of them (for example: apt-get install -y curl), or download the release archive
+directly with whatever the machine does have and unpack it:
+
+  https://github.com/${REPO}/releases/latest
+
+Each archive holds one self-contained binary; unpack it and run it. There is nothing to
+configure."
 fi
 
 # ------------------------------------------------------------------- resolving the tag

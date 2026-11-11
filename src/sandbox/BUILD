@@ -107,6 +107,8 @@ genrule(
     outs = ["sandbox_helper_embedded.c"],
     cmd = "$(execpath //tools:embed_blob) --in $(location :sandbox_helper) --out $@ " +
           "--name edc_sandbox_helper_blob --header edc_sandbox_helper_blob.h",
+    cmd_bat = "$(execpath //tools:embed_blob) --in $(location :sandbox_helper) --out $@ " +
+              "--name edc_sandbox_helper_blob --header edc_sandbox_helper_blob.h",
     tools = ["//tools:embed_blob"],
     visibility = ["//visibility:public"],
 )

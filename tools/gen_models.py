@@ -32,6 +32,8 @@ base URL.
 import argparse
 import datetime
 import json
+import os
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -354,7 +356,22 @@ def main():
     ap.add_argument("--check", action="store_true", help="exit 1 if --out is stale (does not write)")
     ap.add_argument("--probe", action="store_true", help="only print the per-provider endpoint test")
     ap.add_argument("--smoke", action="store_true", help="real 1-token call using each provider's env key")
+    ap.add_argument(
+        "--copy-if-present",
+        metavar="NAME",
+        help="if NAME exists in the working directory, copy it to --out and stop. This is the "
+             "checked-in override the build prefers over fetching; it lives here rather than in "
+             "the genrule so the rule needs no shell: a `[ -f ... ] && cp` guard is the one "
+             "construct that does not survive `cmd_bat` without duplicating the logic per platform.",
+    )
     args = ap.parse_args()
+
+    if args.copy_if_present:
+        if os.path.exists(args.copy_if_present):
+            shutil.copyfile(args.copy_if_present, args.out)
+            print(f"copied {args.copy_if_present} to {args.out} (checked-in override)")
+            return 0
+        print(f"{args.copy_if_present} is not present; generating from models.dev")
 
     api = json.load(open(args.from_api, encoding="utf-8")) if args.from_api else fetch(args.api_url)
     canonical = json.load(open(args.from_models, encoding="utf-8")) if args.from_models else fetch(args.models_url)

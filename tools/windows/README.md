@@ -1,7 +1,14 @@
 # Building on Windows
 
 Goal: `bazel build` works from **Windows Terminal (PowerShell)** and from **Git Bash**,
-on any machine, and never depends on WSL. One command does the setup:
+on any machine, and never depends on WSL.
+
+**No bash is required to build.** Every `genrule` in the tree carries a `cmd_bat`, so on
+Windows Bazel runs those with `cmd.exe` rather than routing them through a POSIX shell.
+`tools/check_genrule_portability.py` enforces that (a rule without one would silently bring
+the dependency back), and it runs in CI.
+
+One command does the remaining setup, which is now optional:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\windows\setup-build-env.ps1
@@ -16,36 +23,51 @@ for the optional part.
 
 ## Why any setup is needed
 
-Bazel runs `genrule` commands through a `bash`, and on Windows it picks one **from the
-environment**. Several rules in the default build path are genrules — `//:models_catalog_json`
-(it begins `if [ -n '$(SRCS)' ]`), the three embed/version generators — so the build depends
-on which terminal it was started from. Measured with `bazel aquery`:
+Not for the genrules any more — those have `cmd_bat`. What remains is a Git Bash trap and
+the value of a deterministic environment.
 
-| Started from | genrule shell Bazel picks |
+The trap: the MSYS runtime rewrites arguments that look like paths, and it eats one slash
+off single-component Bazel labels (`//tests:all` -> `/tests:all`, `//...` -> `/...`), which
+Bazel then rejects with `invalid package name '/tests:all': package names may not start
+with '/'`. Labels with two or more components (`//src/tui:edgeclaw`) are left alone, which
+is why it fails selectively and looks random. Setting `MSYS2_ARG_CONV_EXCL='//'` stops it.
+
+The environment: pinning `BAZEL_SH` also settles which `bash` anything else that wants one
+would get, instead of depending on which terminal you opened.
+
+<details>
+<summary>History: this used to be a build prerequisite</summary>
+
+Bazel ran every `genrule` command through `bash`, and on Windows it picked one **from the
+environment**. Measured with `bazel aquery` before `cmd_bat` existed:
+
+| Started from | genrule shell Bazel picked |
 |---|---|
 | Windows Terminal (PowerShell) | `C:\Windows\System32\bash.exe` — **WSL** |
 | Git Bash | `<Git>\usr\bin\bash.exe` — Git for Windows |
 
-Neither is reliably present: the first depends on a WSL distro being installed, the second
-on which terminal you opened. Pinning `BAZEL_SH` makes the answer the same everywhere.
+Neither was reliably present, so the build depended on the terminal it was started from.
+One rule made it worse: `//:models_catalog_json` began `if [ -n '$(SRCS)' ]`, and a shell
+conditional is the one construct that cannot be mirrored into `cmd_bat` without writing the
+same logic twice — so that decision moved into `tools/gen_models.py`
+(`--copy-if-present`), leaving a single tool invocation.
 
-This used to be worse, and the reason the script exists at all: the flex/bison generator
-rules were on the default build path, so a build also needed flex and bison on `PATH`. They
-are not any more — their output is committed and the rules are tagged `manual` — so what a
-build needs from the environment is now just a bash.
+</details>
 
-There is a second, independent Git Bash trap: the MSYS runtime rewrites arguments that
-look like paths, and it eats one slash off single-component Bazel labels
-(`//tests:all` -> `/tests:all`, `//...` -> `/...`), which Bazel then rejects with
-`invalid package name '/tests:all': package names may not start with '/'`. Labels with
-two or more components (`//src/tui:edgeclaw`) are left alone, which is why it fails
-selectively and looks random.
+<details>
+<summary>History: flex and bison were in the build path</summary>
+
+The generator rules used to be on the default build path, so a build also needed flex and
+bison on `PATH`. They are not any more — their output is committed and the rules are tagged
+`manual` — see [flex and bison](#flex-and-bison-only-for-changing-the-grammar) below.
+
+</details>
 
 ## What the script sets (user scope, HKCU only)
 
 | Setting | Value | Why |
 |---|---|---|
-| `BAZEL_SH` | the `bash.exe` of the `git` found on PATH | Pins the genrule shell in *every* terminal, so WSL is never consulted. Discovered per machine, never assumed. |
+| `BAZEL_SH` | the `bash.exe` of the `git` found on PATH | Settles which bash anything outside a `cmd_bat` would get, so it never depends on which terminal opened. Genrules themselves no longer use it. Discovered per machine, never assumed. |
 | `PATH` (user) | `-ToolsDir`, **only if** flex/bison are not already reachable | Optional, and only for regenerating the grammar (see below). There is no default directory: if they are already on PATH, nothing is added. |
 | `~/.bashrc` | `export MSYS2_ARG_CONV_EXCL='//'` | Stops the label rewriting; scoped to `//` so ordinary path arguments still convert. |
 

@@ -80,6 +80,33 @@ without it the script stops and says so), `--tag <tag>` to pin an exact release,
 Read it first if you prefer: `tools/install.sh` — it is POSIX `sh` with no dependencies
 beyond `curl` or `wget`.
 
+#### Windows
+
+Windows has its own installer, and it needs nothing beyond what the OS ships with
+(`Invoke-WebRequest`, `tar`, `Get-FileHash` and .NET's ECDsa) — **no curl, no bash, no
+Git for Windows**:
+
+```powershell
+iwr -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 `
+    -OutFile "$env:TEMP\edgeclaw-install.ps1"
+& "$env:TEMP\edgeclaw-install.ps1"
+```
+
+It installs to `%USERPROFILE%\.local\bin` and takes the same `-Tag`, `-Pre`, `-Dir` and
+`-DryRun` options. Two steps rather than one pipe because the script takes arguments, and
+piping it into `Invoke-Expression` would lose them.
+
+#### No curl, no wget, or a hand-installed binary
+
+Each archive is one self-contained binary — there is nothing to configure and no runtime to
+install. Download the one for this machine from the
+[Releases](https://github.com/edgeclaw-chat/edgeclaw/releases) page, unpack it with any tool
+the machine has, and run it.
+
+That is also the answer for an air-gapped machine, and for a copy that was installed without
+the installer: a program that cannot tell how it got there will not try to upgrade itself —
+it prints this same instruction rather than guessing.
+
 Every archive carries the tag in its name — `edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz` —
 so a file kept for months still says what it is without being run. There is deliberately
 no version-less name, which is why `releases/latest/download/<name>` does not work and a
@@ -114,24 +141,32 @@ bazel run   //src/tui:edgeclaw          # build and start
 
 Requires Bazel plus a C/C++17 toolchain.
 
-#### Windows
+#### Windows (building from source)
 
 Visual Studio's C++ workload (MSVC) plus Bazel — that is the compiler toolchain; there is
-no MinGW involved. Bazel also needs a `bash` for its `genrule` commands, and on Windows it
-picks one **from the environment**: `C:\Windows\System32\bash.exe` (WSL) shadows Git's one,
-so the build depended on whichever terminal it was started from. Run once, then open a new
-terminal:
+no MinGW involved, and **no bash**: every `genrule` carries a `cmd_bat`, so Bazel runs those
+with `cmd.exe` instead of routing them through a POSIX shell.
+[tools/check_genrule_portability.py](tools/check_genrule_portability.py) enforces that, and
+runs in CI.
+
+```powershell
+bazel build //src/tui:edgeclaw
+```
+
+One optional step, for a different reason: Git Bash's MSYS runtime rewrites arguments that
+look like Unix paths, so `//tests:all` can reach Bazel as `/tests:all` when a build is
+started from that terminal. Pinning the environment removes the ambiguity — and also stops
+Bazel picking the WSL `bash` out of `System32` for anything that still wants one:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\windows\setup-build-env.ps1
 bazel shutdown
 ```
 
-This pins `BAZEL_SH` to the bash of the git on PATH and stops Git Bash from rewriting
-Bazel labels (`//tests:all` → `/tests:all`). Afterwards `bazel build` behaves the same in
-Windows Terminal and in Git Bash, and WSL is not involved. No path is hardcoded: everything
-is discovered on the machine that runs the script. See
-[tools/windows/README.md](tools/windows/README.md) for what it changes.
+That script is no longer a prerequisite for building; it is there for the label-rewriting
+trap and for a deterministic environment. It sets `BAZEL_SH` to the bash of the git on PATH
+and `MSYS2_ARG_CONV_EXCL='//'`; no path is hardcoded, everything is discovered on the machine
+that runs it. See [tools/windows/README.md](tools/windows/README.md).
 
 **flex and bison are not build prerequisites.** Their output is committed
 (`src/shell/edc_lex.c`, `edc_parse.tab.c`), so a plain build never runs them; the two
