@@ -189,19 +189,39 @@ const char *edc_upgrade_unavailable_reason(edc_upgrade_method method)
 sds edc_upgrade_manual_hint(const char *tag)
 {
     const char *t = (tag && tag[0]) ? tag : "<version>";
+
+    /* Two routes, because the first one needs nothing installed.
+     *
+     * The release page is always there: a user who has neither curl nor a shell can open it
+     * and unpack the archive by hand. That is not a worse experience for them -- it is the
+     * only one that works -- and it is also how they installed the program in the first place
+     * if it lives somewhere this module cannot recognise.
+     *
+     * The command is the shortcut for everyone else. */
 #if defined(_WIN32)
-    /* Pinned to the tag for the same reason the automated path is: the script and the archive
-     * it verifies must come from the same release. */
-    return sdscatprintf(
-        sdsempty(),
-        "powershell -NoProfile -ExecutionPolicy Bypass -File "
-        "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.ps1 -Tag %s",
-        t, t);
+    /* NOT `powershell -File <url>`: -File takes a local script path, so a URL there fails
+     * with "The argument ... does not exist". Download first, then run the local copy --
+     * which is also what makes the -Tag argument possible at all. Two statements on separate
+     * lines rather than one -Command string, because quoting three levels deep is how the
+     * broken version got written. */
+    return sdscatprintf(sdsempty(),
+                        "download %s from\n"
+                        "  https://github.com/edgeclaw-chat/edgeclaw/releases/tag/%s\n"
+                        "or, in PowerShell:\n"
+                        "  iwr -UseBasicParsing "
+                        "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.ps1 "
+                        "-OutFile \"$env:TEMP\\edgeclaw-install.ps1\"\n"
+                        "  & \"$env:TEMP\\edgeclaw-install.ps1\" -Tag %s",
+                        t, t, t, t);
 #else
     return sdscatprintf(sdsempty(),
-                        "curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.sh "
+                        "download %s from\n"
+                        "  https://github.com/edgeclaw-chat/edgeclaw/releases/tag/%s\n"
+                        "or run:\n"
+                        "  curl -fsSL "
+                        "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.sh "
                         "| sh -s -- --tag %s",
-                        t, t);
+                        t, t, t, t);
 #endif
 }
 

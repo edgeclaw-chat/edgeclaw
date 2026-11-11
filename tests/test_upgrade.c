@@ -211,6 +211,23 @@ int main(void)
         /* It must be pinned to the tag, not a moving branch -- the same rule the automated
          * path follows. */
         CHECK(hint && strstr(hint, "/v1.2.3/tools/") != NULL, "the manual hint is pinned to the tag");
+
+        /* The release page is the route that needs nothing installed -- no curl, no shell.
+         * It is the only one available to a user who installed by unpacking an archive, and
+         * that user is exactly who needs a manual hint. */
+        CHECK(hint && strstr(hint, "releases/tag/v1.2.3") != NULL,
+              "the manual hint points at the release page, which needs no tools");
+
+#if defined(_WIN32)
+        /* `powershell -File <url>` fails: -File takes a local path. This assertion exists
+         * because that is what the hint used to say, and nothing else would have caught it. */
+        CHECK(hint && strstr(hint, "-File http") == NULL, "the Windows hint does not pass a URL to -File");
+        CHECK(hint && strstr(hint, "-OutFile") != NULL, "the Windows hint downloads to a local file first");
+#else
+        /* curl may be absent; the release page above is the fallback, and install.sh says so
+         * itself when neither curl nor wget is present. */
+        CHECK(hint && strstr(hint, "curl") != NULL, "the POSIX hint offers the curl shortcut");
+#endif
         sdsfree(hint);
     }
     {
