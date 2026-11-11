@@ -5,9 +5,9 @@
  * runs an installer against a directory nobody meant it to touch -- so they are pinned by
  * table rather than checked by hand.
  *
- * The rules exist because the installer is the only thing that knows how to fetch, verify a
- * signature and replace the binary atomically. This module's whole job is to hand it the work
- * and to say "no" when that is not safe.
+ * The rules exist because the installer is the only thing that knows how to fetch a release,
+ * check its checksum and replace the binary atomically. This module's whole job is to hand it
+ * the work and to say "no" when that is not safe.
  */
 
 #include "edc_upgrade.h"

@@ -128,9 +128,9 @@ int main(void)
            "an absolute https Location is taken as-is");
 
     /* ── downgrade refusal ────────────────────────────────────────────────── */
-    /* The archive is signature-checked, so a plaintext hop would not by itself let a false
-     * archive through -- but the request would be readable on the wire for no reason, and
-     * the client is shared with callers that send more than a URL. */
+    /* The archive's checksum is checked over the same TLS channel, so a plaintext hop would not
+     * by itself let a false archive through -- but the request would be readable on the wire for
+     * no reason, and the client is shared with callers that send more than a URL. */
     expect("https://example.com/a", "http://example.com/b", NULL, "a downgrade to http is refused");
     expect("https://example.com/a", "HTTP://example.com/b", NULL, "the downgrade check is case-insensitive");
 

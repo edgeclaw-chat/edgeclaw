@@ -3,15 +3,15 @@
     Install or upgrade a released EdgeClaw binary on Windows.
 
 .DESCRIPTION
-    Resolves the newest release, downloads the archive for this machine, verifies the release
-    signature and the archive checksum, and puts the binary in place.
+    Resolves the newest release, downloads the archive for this machine, checks it against
+    the sha256 the release publishes, and puts the binary in place.
 
-    Nothing here is an optional check. The binary this script installs runs with the user's
-    privileges and holds their conversations and API key, so an archive that cannot be
-    verified is not installed, and there is deliberately no switch to skip it.
+    An archive whose checksum does not match is not installed, and there is deliberately no
+    switch to skip the check. What the check does and does not prove is written out in
+    Test-Archive below.
 
     No dependency beyond what Windows 10 already carries: Invoke-WebRequest for the download,
-    tar for the archive, Get-FileHash for the checksum, and .NET's ECDsa for the signature.
+    tar for the archive, and Get-FileHash for the checksum.
 
 .PARAMETER Tag
     Install this exact release instead of resolving the newest one. Also what the in-app
@@ -49,20 +49,6 @@ $Repo = 'edgeclaw-chat/edgeclaw'
 $Api = "https://api.github.com/repos/$Repo/releases"
 $Dl = "https://github.com/$Repo/releases/download"
 
-# The release signing public key, as the raw uncompressed P-256 point (0x04 || X || Y), hex.
-#
-# This form rather than PEM on purpose: "powershell" on a stock Windows 10/11 is Windows
-# PowerShell 5.1, which runs on .NET Framework -- and .NET Framework has no
-# ECDsa.ImportFromPem(). ECParameters/ImportParameters does exist there, and it takes the
-# point. The same 65 bytes are compiled into the binary (src/common/edc_update_pubkey.c), so
-# the two verifiers agree by construction rather than by both parsing ASN.1.
-#
-# The key is here rather than read from a file because this script is fetched standalone,
-# with no checkout beside it.
-$SigningPublicKeyHex = @'
-045294c3f712639be65f20242b68bbc2aee967ea16d80d4e9980096affc85cadd39dfdf1742f6f06145e2b902cf07f75643d486ee68cec03b3b32f0d6626fb29b5
-'@
-
 function Fail {
     param([string]$Message)
     Write-Error $Message -ErrorAction Continue
@@ -72,59 +58,6 @@ function Fail {
 function Get-Sha256Hex {
     param([string]$Path)
     (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
-# Convert an ASN.1 DER ECDSA signature (SEQUENCE { INTEGER r, INTEGER s }) into the IEEE P1363
-# fixed-field form (r || s, each right-aligned in 32 bytes).
-#
-# This exists because the two PowerShells disagree about what VerifyData's default overload
-# takes: .NET Framework (Windows PowerShell 5.1) expects DER, .NET 5+ (pwsh) expects P1363.
-# Neither offers a format argument on every version, so the signature is normalised here and
-# the comparison is explicit rather than relying on a default that differs per runtime.
-function ConvertFrom-DerEcdsaSignature {
-    param([byte[]]$Der, [int]$FieldLength = 32)
-
-    if ($Der.Length -lt 8 -or $Der[0] -ne 0x30) {
-        throw 'signature is not a DER SEQUENCE'
-    }
-
-    $pos = 1
-    # The SEQUENCE length: short form, or a long form whose byte count is in the low 7 bits.
-    $first = [int]$Der[$pos]
-    if (($first -band 0x80) -ne 0) {
-        $n = $first -band 0x7F
-        $pos++
-        $pos += $n
-    }
-    else {
-        $pos++
-    }
-
-    $out = New-Object byte[] ($FieldLength * 2)
-    foreach ($target in @(0, $FieldLength)) {
-        if ([int]$Der[$pos] -ne 0x02) { throw 'expected a DER INTEGER' }
-        $pos++
-        $len = [int]$Der[$pos]
-        $pos++
-        if (($len -band 0x80) -ne 0) {
-            $n = $len -band 0x7F
-            $len = 0
-            for ($k = 0; $k -lt $n; $k++) {
-                $len = ($len -shl 8) -bor [int]$Der[$pos]
-                $pos++
-            }
-        }
-        # DER prefixes a zero byte when the high bit of the next byte is set; that is a sign
-        # marker, not part of the value.
-        while ($len -gt 0 -and [int]$Der[$pos] -eq 0) { $pos++; $len-- }
-        if ($len -gt $FieldLength) {
-            throw "signature integer is wider than $FieldLength bytes"
-        }
-        # Right-align, so a short r keeps its value instead of shifting the pair.
-        [Array]::Copy($Der, $pos, $out, $target + ($FieldLength - $len), $len)
-        $pos += $len
-    }
-    return $out
 }
 
 # The archive for this machine. Only an amd64 Windows build is published.
@@ -184,15 +117,21 @@ $list
 }
 
 <#
-Verify sha256sums.txt against the embedded public key, then compare the archive against the
-checksum it lists.
+Compare the archive against the sha256 the release publishes next to it.
 
-The ORDER is the point. Verifying the checksum first would accept an attacker who changed
-both the archive and the sums file; verifying the signature first means the checksum being
-compared against is one we trust.
+That catches a truncated body, a wrong-platform asset, a stale CDN copy, and an archive
+swapped by anything that is not GitHub itself.
 
-ECDSA P-256 with SHA-256, matching what the release workflow signs with (openssl dgst -sha256
--sign). The signature file is base64 of the ASN.1 DER signature.
+What it does NOT do is prove authorship. `sha256sums.txt` is served from the same place as
+the archive, so whoever can replace one can replace the other and this check would then agree
+with itself. The remaining boundary is TLS to GitHub plus GitHub's access control over the
+repository and its releases -- the same boundary Homebrew formulae and crates.io rely on.
+Signing the release would move that boundary to "whoever holds the key"; it was built,
+weighed, and dropped as more key management than this project's threat model justifies. See
+the trust-boundary section of docs/auto-update.zh.md.
+
+A missing checksum is fatal rather than a warning: an archive nobody can check is the case
+where the comparison silently does nothing.
 #>
 function Test-Archive {
     param(
@@ -203,9 +142,7 @@ function Test-Archive {
     )
 
     $sumsUrl = "$Dl/$ReleaseTag/sha256sums.txt"
-    $sigUrl = "$Dl/$ReleaseTag/sha256sums.txt.sig"
     $sumsPath = Join-Path $WorkDir 'sha256sums.txt'
-    $sigPath = Join-Path $WorkDir 'sha256sums.txt.sig'
 
     try {
         Invoke-WebRequest -Uri $sumsUrl -OutFile $sumsPath -UseBasicParsing
@@ -213,102 +150,11 @@ function Test-Archive {
     catch {
         Fail @"
 could not download $sumsUrl
-This release was published without checksums, so it cannot be verified and will not be
-installed. Use a release that includes sha256sums.txt, or build from source.
+This release was published without checksums, so the archive cannot be checked and will not
+be installed. Use a release that includes sha256sums.txt, or build from source.
 "@
     }
 
-    try {
-        Invoke-WebRequest -Uri $sigUrl -OutFile $sigPath -UseBasicParsing
-    }
-    catch {
-        Fail @"
-could not download $sigUrl
-The checksums are not signed, so they could have been changed together with the archive.
-Refusing to install.
-"@
-    }
-
-    $sigB64 = (Get-Content -Path $sigPath -Raw).Trim()
-    try {
-        $sig = [Convert]::FromBase64String($sigB64)
-    }
-    catch {
-        Fail 'the signature file is not valid base64'
-    }
-
-    $sumsBytes = [IO.File]::ReadAllBytes($sumsPath)
-
-    # Build the P-256 public key from the raw point. ECParameters/ImportParameters works on
-    # .NET Framework 4.6.2+ (Windows PowerShell 5.1) as well as .NET 5+ (pwsh 7), which is why
-    # the key is stored as a point rather than as PEM.
-    #
-    # Converted byte by byte rather than with a cast or a regex split: `[byte[]] @('0x04', ...)`
-    # does not parse a hex prefix, and the versions that tolerate it differ between Windows
-    # PowerShell and pwsh. ToByte(base 16) is the same everywhere.
-    $hex = $SigningPublicKeyHex.Trim()
-    if ($hex.Length -ne 130) {
-        Fail "the embedded public key is malformed (expected 130 hex characters, found $($hex.Length))"
-    }
-    $point = New-Object byte[] 65
-    for ($i = 0; $i -lt 65; $i++) {
-        $point[$i] = [Convert]::ToByte($hex.Substring($i * 2, 2), 16)
-    }
-    if ($point[0] -ne 0x04) {
-        Fail 'the embedded public key is malformed (not an uncompressed EC point)'
-    }
-
-    # Every line here is the conservative spelling of the same thing, because the two
-    # PowerShells differ: CreateFromFriendlyName rather than the nested
-    # ECCurve+NamedCurves type (which resolves inconsistently), New-Object rather than ::new(),
-    # and explicit [byte[]] casts because the slice of a byte[] is an Object[] and the implicit
-    # conversion is not guaranteed across runtimes.
-    $ecParams = New-Object System.Security.Cryptography.ECParameters
-    $ecParams.Curve = [System.Security.Cryptography.ECCurve]::CreateFromFriendlyName('nistP256')
-    $q = New-Object System.Security.Cryptography.ECPoint
-    $q.X = [byte[]]$point[1..32]
-    $q.Y = [byte[]]$point[33..64]
-    $ecParams.Q = $q
-    $ecParams = [System.Security.Cryptography.ECParameters]::new()
-    $ecParams.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
-    $q = [System.Security.Cryptography.ECPoint]::new()
-    $q.X = $point[1..32]
-    $q.Y = $point[33..64]
-    $ecParams.Q = $q
-
-    $ecdsa = [System.Security.Cryptography.ECDsa]::Create()
-    try {
-        $ecdsa.ImportParameters($ecParams)
-
-        # The signature is the ASN.1 DER form openssl produces (`openssl dgst -sha256 -sign`).
-        # VerifyData's default overload does NOT mean the same thing on the two runtimes:
-        # .NET Framework (Windows PowerShell 5.1) takes DER, .NET 5+ (pwsh 7) takes IEEE P1363.
-        # PSEdition is the reliable discriminator, and it is checked rather than guessed so the
-        # failure mode of a wrong guess is not "every release is rejected".
-        $signature = $sig
-        if ($PSVersionTable.PSEdition -ne 'Desktop') {
-            try {
-                $signature = ConvertFrom-DerEcdsaSignature -Der $sig
-            }
-            catch {
-                Fail "the signature file is not a DER ECDSA signature: $($_.Exception.Message)"
-            }
-        }
-
-        if (-not $ecdsa.VerifyData($sumsBytes, $signature, [System.Security.Cryptography.HashAlgorithmName]::SHA256)) {
-            Fail @"
-the release signature does not verify
-Either this release was not signed with the EdgeClaw release key, or sha256sums.txt was
-modified after signing. Neither is safe to install. Do not continue; report it at
-https://github.com/$Repo/issues
-"@
-        }
-    }
-    finally {
-        $ecdsa.Dispose()
-    }
-
-    # Only now is the sums file trustworthy enough to read a checksum from it.
     $want = $null
     foreach ($line in (Get-Content -Path $sumsPath)) {
         $fields = $line.Trim() -split '\s+', 2
@@ -317,7 +163,7 @@ https://github.com/$Repo/issues
     if (-not $want) {
         Fail @"
 $AssetName is not listed in sha256sums.txt
-The release is signed but does not cover this platform's archive, so it cannot be verified.
+The release does not cover this platform's archive, so it cannot be checked.
 "@
     }
 
@@ -331,7 +177,7 @@ The download is corrupt or was replaced in transit. Delete it and run this again
 "@
     }
 
-    Write-Host 'Verified signature and checksum'
+    Write-Host 'Verified checksum'
 }
 
 function Install-Binary {

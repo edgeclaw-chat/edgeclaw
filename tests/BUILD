@@ -233,20 +233,6 @@ sh_test(
     data = ["//tools:check_portability"],
     target_compatible_with = POSIX_ONLY,
 )
-
-sh_test(
-    name = "test_update_keygen",
-    srcs = ["test_update_keygen.sh"],
-    data = [
-        "//tools:embed_pubkey_install",
-        "//tools:gen_pubkey_c",
-        "//tools:install",
-        "//tools:update_keygen",
-        "//tools:update_signing.pub.pem",
-    ],
-    target_compatible_with = POSIX_ONLY,
-)
-
 cc_test(
     name = "test_semver",
     srcs = ["test_semver.c"],

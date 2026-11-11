@@ -146,6 +146,18 @@ Stated plainly, because "it compiles" is not evidence:
 
 Not "unverified" — verified, and wrong in a narrow case:
 
+- **An update proves the bytes arrived intact, not who sent them.** The installer compares
+  each archive against the `sha256sums.txt` published next to it, which catches a truncated
+  download, a wrong-platform asset, a stale mirror and an archive swapped on the wire. Both
+  files come from the same place, so it does not prove authorship: whoever can replace one can
+  replace the other. The boundary is TLS to GitHub plus GitHub's access control over the
+  repository and its releases — the same boundary Homebrew formulae and crates.io rely on.
+  Release signing was implemented, weighed and removed: it defends against a replaced archive
+  rather than against the likelier failure (a poisoned dependency or a compromised maintainer
+  account), and it would put the key on the same pipeline it is meant to protect. See
+  `docs/auto-update.zh.md` §3.2. Treat "it came from the release page over TLS" as the claim,
+  not "the author definitely built this".
+
 - **The workspace is `0700`, so a second uid cannot read it.** The transcripts and the
   session database are the user's private data, and the directory mode is what keeps them
   private. The cost is that an install shared between accounts — `sudo` as another user, a
