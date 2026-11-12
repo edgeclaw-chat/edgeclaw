@@ -45,6 +45,39 @@ struct edc_config;
  * /sandbox command writes config.json. */
 extern struct edc_app *edc_app_new(bool setup, int sandbox_override);
 
+/* ── the release check ───────────────────────────────────────────────────────
+ *
+ * A newer release was found. |tag| is only valid for the duration of the call. Runs on the
+ * actor-loop thread, so an observer that touches UI state must marshal it onto its own
+ * thread (the TUI posts through its dispatcher) -- and must not block: it is called from the
+ * loop that runs every actor.
+ *
+ * A function-pointer hook rather than a channel message, because this is not conversation
+ * traffic: it has no session, no group and no task, and inventing one of those to carry it
+ * would put a "system" bubble in the transcript for something that belongs outside it. */
+typedef void (*edc_update_found_observer)(const char *tag, void *ud);
+extern void edc_app_set_update_observer(struct edc_app *app, edc_update_found_observer fn, void *ud);
+
+/* Whether this copy can replace itself: the installer put it there, and the platform has one
+ * (see edc_upgrade_detect / edc_upgrade_supported). False means "tell the user to do it by
+ * hand", never "try anyway". */
+extern bool edc_app_update_can_self_upgrade(const struct edc_app *app);
+
+/* Start the upgrade to |tag|. Returns false when nothing was started (already running, not
+ * upgradable, no thread); the dialog then shows the manual command instead.
+ *
+ * |on_done| runs on the loop thread exactly once with the outcome. `edc_app_update_cancel`
+ * abandons an upgrade in flight -- the process is killed if still running, and |on_done| may
+ * or may not have fired by then, which is why the confirmation tells the user what abandoning
+ * means before they start. */
+typedef void (*edc_upgrade_done_observer)(bool ok, const char *detail, void *ud);
+extern bool edc_app_update_start(struct edc_app *app, const char *tag, edc_upgrade_done_observer on_done, void *ud);
+extern void edc_app_update_cancel(struct edc_app *app);
+
+/* The command a user would type to upgrade by hand, written into |buf|. Always succeeds with
+ * a non-empty string (a placeholder version is better than an empty hint). */
+extern void edc_app_update_manual_hint(const struct edc_app *app, char *buf, size_t cap);
+
 /* Shut the process down (idempotent): stop actor/runner -> persist every session
  * as-is -> drop in-flight turns. It DOES write to disk, which is why it is not
  * called "free": destroying an app is more than free(). Exposed separately so

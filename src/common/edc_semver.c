@@ -183,3 +183,9 @@ bool edc_semver_is_newer(const char *candidate, const char *current)
         return false;
     return compare_parsed(&a, &b) > 0;
 }
+
+bool edc_semver_is_valid(const char *version)
+{
+    struct parsed p;
+    return parse_version(version, &p);
+}

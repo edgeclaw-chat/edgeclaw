@@ -204,6 +204,18 @@ cc_test(
 )
 
 cc_test(
+    name = "test_update_check",
+    srcs = ["test_update_check.c", "tls_stub.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "@mbedtls//:mbedtls",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_update",
     srcs = ["test_update.c"],
     deps = [
@@ -233,20 +245,6 @@ sh_test(
     data = ["//tools:check_portability"],
     target_compatible_with = POSIX_ONLY,
 )
-
-sh_test(
-    name = "test_update_keygen",
-    srcs = ["test_update_keygen.sh"],
-    data = [
-        "//tools:embed_pubkey_install",
-        "//tools:gen_pubkey_c",
-        "//tools:install",
-        "//tools:update_keygen",
-        "//tools:update_signing.pub.pem",
-    ],
-    target_compatible_with = POSIX_ONLY,
-)
-
 cc_test(
     name = "test_semver",
     srcs = ["test_semver.c"],
@@ -1565,7 +1563,10 @@ cc_test(
         "@ftxui//:dom",
         "@ftxui//:screen",
         "@sds//:sds",
-    ],
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": [":fake_release"],
+    }),
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,
     # 这个 harness 会真起一个 app（临时 HOME + 最小 config），比纯渲染测试慢。
@@ -1640,6 +1641,88 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_update_cli",
+    srcs = ["test_update_cli.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:update_cli",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_update_service",
+    srcs = ["test_update_service.c", "tls_stub.h", "test_fs_util.h"],
+    deps = [
+        "//src/kernel:kernel",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_upgrade_run",
+    srcs = ["test_upgrade_run.c", "tls_stub.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:update_run",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_update_dialog",
+    srcs = ["test_update_dialog.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+    target_compatible_with = POSIX_ONLY,
+)
+
+# Shared test helper: a one-shot local TLS server that answers the release endpoint with a
+# given JSON. A cc_library rather than a header, so the .c is compiled as C for the C++ tests
+# too (tls_stub.h is header-only C and does not survive a C++ include).
+cc_library(
+    name = "fake_release",
+    testonly = True,
+    srcs = ["fake_release.c"],
+    hdrs = [
+        "fake_release.h",
+        "test_fs_util.h",
+        "tls_stub.h",
+    ],
+    # Static on purpose: linking this as a shared library makes the TEST BINARIES dynamic,
+    # and test_app_boundary's bootstrap copies its own executable into ~/.local/bin -- a copy
+    # of a dynamic binary cannot resolve $ORIGIN-relative libraries from its new location.
+    linkstatic = True,
+    # POSIX only: it drives tls_stub.h, which includes <arpa/inet.h>. The tests that use it
+    # guard their fake-release cases with #ifndef _WIN32 and depend on it through select().
+    target_compatible_with = POSIX_ONLY,
+    includes = ["."],
+    deps = [
+        "//src/common:common",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+)
+
+cc_test(
     name = "test_setup_dialog",
     srcs = ["test_setup_dialog.cpp"],
     deps = [
@@ -1667,7 +1750,11 @@ cc_test(
         "//src/kernel:kernel",
         "@log.c//:log.c",
         "@sds//:sds",
-    ],
+    ] + select({
+        # POSIX only: it drives tls_stub.h. The fake-release cases are guarded by _WIN32.
+        "//:windows": [],
+        "//conditions:default": [":fake_release"],
+    }),
     linkopts = LINK_OPTS,
     # 真起 app（scheduler + sqlite + 3 个 actor 线程）+ 一次 endpoint 探测。
     timeout = "moderate",

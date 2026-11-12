@@ -2,6 +2,7 @@
 #include "edc_theme.hpp"
 #include "edc_tui_window.hpp"
 #include "edc_state_store.h"
+#include "edc_update_cli.h"
 #include "edc_version.h"
 #include "ftxui/component/loop.hpp"
 #include "ftxui/component/screen_interactive.hpp"
@@ -103,6 +104,27 @@ int main(int argc, char **argv)
         {
             edc_usage_print(argc > 0 ? argv[0] : "edgeclaw", stdout);
             return 0;
+        }
+        if (strcmp(argv[i], "--update-check") == 0)
+        {
+            /* Answered before the terminal, the config and the passphrase, for the same reason
+             * --version is: it is a diagnostic, and a diagnostic that needs a working setup to
+             * run cannot diagnose a setup that does not work. The channel is the only option it
+             * takes, because everything else it needs comes from the environment, not the
+             * user's config. */
+            bool allow_pre = false;
+            const char *current_override = nullptr;
+            for (int k = 1; k < argc; k++)
+            {
+                if (strcmp(argv[k], "--pre") == 0 || strcmp(argv[k], "-Pre") == 0)
+                    allow_pre = true;
+                /* --current <ver>: compare against this instead of the build's own version.
+                 * The only way to exercise the network path on a development build, whose
+                 * version is a commit hash and therefore skipped. */
+                else if ((strcmp(argv[k], "--current") == 0 || strcmp(argv[k], "-Current") == 0) && k + 1 < argc)
+                    current_override = argv[k + 1];
+            }
+            return edc_update_check_cli(allow_pre, current_override);
         }
     }
 

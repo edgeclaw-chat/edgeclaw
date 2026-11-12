@@ -46,6 +46,37 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# The `--update-check` command. Its own target rather than part of :common because it needs
+# :version (which :common deliberately does not depend on), and a separate one keeps the
+# dependency direction readable: the diagnostic sits on top of the check, not beside it.
+# Runs the installer. Separate from :common because it needs :version's sibling -- the argv
+# it spawns comes from edc_upgrade, and it is only ever used by the app, never by a core path.
+cc_library(
+    name = "update_run",
+    srcs = ["edc_upgrade_run.c"],
+    hdrs = ["edc_upgrade_run.h"],
+    includes = ["."],
+    deps = [
+        ":common",
+        "@libuv",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "update_cli",
+    srcs = ["edc_update_cli.c"],
+    hdrs = ["edc_update_cli.h"],
+    includes = ["."],
+    deps = [
+        ":common",
+        ":version",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
 # Compile-time attribute shims (EDC_PRINTF). Header-only and dependency-free on purpose:
 # edc_error.h and edc_string_utils.h both use it, and neither should pull in edc_compat.h
 # (which includes <windows.h>) merely to declare a function.
@@ -253,7 +284,6 @@ cc_library(
         "edc_state_probe.c",
         "edc_update.c",
         "edc_upgrade.c",
-        "edc_update_pubkey.c",
     ],
     hdrs = [
         "edc_bundled_docs.h",
@@ -268,7 +298,6 @@ cc_library(
         "edc_semver.h",
         "edc_update.h",
         "edc_upgrade.h",
-        "edc_update_pubkey.h",
         "edc_crontab_jobs.h",
         "edc_endpoint_probe.h",
         "edc_https_client.h",

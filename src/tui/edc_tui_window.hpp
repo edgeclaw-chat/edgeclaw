@@ -5,6 +5,7 @@
 #include "edc_clipboard.hpp"
 #include "edc_ports.hpp"
 #include "edc_setup_dialog.hpp"
+#include "edc_update_dialog.hpp"
 #include "edc_task_snapshot.hpp"
 #include "edc_transcript_store.hpp"
 #include "edc_working_indicator_view.hpp"
@@ -149,6 +150,14 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void TickInterruptHint(std::chrono::steady_clock::time_point now);
     // Seed + open the setup wizard (reads the persisted config).
     void OpenConnect();
+
+    /* Show the update dialog for whatever the check found (or the "cannot upgrade" page when
+     * this copy cannot). Backs the /update command and the banner's click; a no-op when there
+     * is nothing to offer. */
+    void OpenUpdate();
+    /* The banner element: one line, shown while a release is on offer and the modal is
+     * closed. Empty element otherwise. */
+    ::ftxui::Element UpdateBannerElement();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
     void LoadInputHistory();
     void SaveInputHistory();
@@ -319,6 +328,17 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
 
     /* The /connect setup wizard: a modal shown on first run (and by /connect). */
     std::shared_ptr<ui::SetupDialog> setup_dialog_;
+
+    /* The update dialog: confirm -> running -> done/failed, and the "cannot upgrade here"
+     * page. Modal, same as the wizard. */
+    std::shared_ptr<ui::UpdateDialog> update_dialog_;
+
+    /* The release the check found, empty when there is nothing to offer. This is the banner's
+     * whole state: it appears when this is non-empty and the dialog is closed. */
+    std::string update_tag_;
+    /* The version whose dialog the user already dismissed or acted on, so re-opening the
+     * banner does not re-pop the modal on every frame. */
+    std::string update_acknowledged_;
 
     // True while the foreground group's active task runs. Owned exclusively by
     // SyncWorkingFromSnapshot(), never toggled by channel messages.

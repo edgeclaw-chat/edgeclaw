@@ -489,4 +489,82 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
     dispatcher_->Post([sink, event]() { sink->OnChatMessage(event); });
 }
 
+void AppFacade::SetUpdateObserver(std::function<void(std::string tag)> observer)
+{
+    update_observer_ = std::move(observer);
+    if (app_)
+        edc_app_set_update_observer(app_, &AppFacade::UpdateFoundTrampoline, this);
+}
+
+void AppFacade::UpdateFoundTrampoline(const char *tag, void *ud)
+{
+    AppFacade *self = static_cast<AppFacade *>(ud);
+    if (!self || !self->update_observer_)
+        return;
+    /* Called on the actor-loop thread. The string is copied here, on that thread, because the
+     * C pointer is only valid for the duration of the call; popping through the dispatcher is
+     * what makes it safe to touch UI state. */
+    std::string copy = tag ? tag : "";
+    std::function<void(std::string)> observer = self->update_observer_;
+    IUiDispatcher *dispatcher = self->dispatcher_;
+    if (!dispatcher)
+        return;
+    dispatcher->Post([observer, copy]() {
+        observer(copy);
+        /* The banner appearing is a state change nothing else will repaint for: the screen is
+         * idle by the time the check lands, so without this the user sees it only after
+         * their next keystroke. */
+    });
+    dispatcher->RequestFrame();
+}
+
+bool AppFacade::UpdateCanSelfUpgrade() const
+{
+    return app_ && edc_app_update_can_self_upgrade(app_);
+}
+
+bool AppFacade::UpdateStart(const std::string &tag, std::function<void(bool ok, std::string detail)> on_done)
+{
+    if (!app_)
+        return false;
+    upgrade_done_ = std::move(on_done);
+    if (!edc_app_update_start(app_, tag.c_str(), &AppFacade::UpgradeDoneTrampoline, this))
+    {
+        upgrade_done_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void AppFacade::UpgradeDoneTrampoline(bool ok, const char *detail, void *ud)
+{
+    AppFacade *self = static_cast<AppFacade *>(ud);
+    if (!self || !self->upgrade_done_)
+        return;
+    std::string copy = detail ? detail : "";
+    std::function<void(bool, std::string)> cb = self->upgrade_done_;
+    self->upgrade_done_ = nullptr;
+    IUiDispatcher *dispatcher = self->dispatcher_;
+    if (!dispatcher)
+        return;
+    dispatcher->Post([cb, ok, copy]() { cb(ok, copy); });
+    dispatcher->RequestFrame();
+}
+
+void AppFacade::UpdateCancel()
+{
+    if (app_)
+        edc_app_update_cancel(app_);
+    upgrade_done_ = nullptr;
+}
+
+std::string AppFacade::UpdateManualHint() const
+{
+    char buf[512];
+    buf[0] = '\0';
+    if (app_)
+        edc_app_update_manual_hint(app_, buf, sizeof(buf));
+    return std::string(buf);
+}
+
 } // namespace edc::port

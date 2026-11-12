@@ -54,6 +54,28 @@ build:dbg --strip=never
 build:linux --conlyopt=-std=gnu99
 build:macos --conlyopt=-std=gnu99
 
+# ── C++ exceptions are off ───────────────────────────────────────────────────
+# Nothing in this tree throws or catches: `grep -rn 'throw \|catch *(' src/` returns only
+# comments. The C parts are compiled as C, and the C++ is a handful of TUI files plus ftxui,
+# which does not throw either.
+#
+# Turning them off is not a micro-optimisation, it is what makes coverage instrumentation
+# honest. With -fexceptions, gcc emits a branch for the unwind path of every temporary with a
+# non-trivial destructor, and marks it `(throw)` in the profile. Those branches cannot be
+# taken -- there is no throw to reach them -- so every C++ line using a temporary reports as
+# partially covered forever. Measured on this tree: edc_setup_dialog.cpp is 99.6% covered by
+# line and still has 73 of its 115 branch-carrying lines scored as partial, and the diff
+# coverage of an ordinary C++ change loses ~30 points to it (74.2% by line, 42.6% as
+# Codecov scores it).
+#
+# The cost is that an unforeseen exception -- a bad_alloc, or a std::filesystem call without
+# an error_code -- aborts instead of unwinding. That is a real behaviour change, so the code
+# that could do it uses the non-throwing overloads; see the note in tests/test_tui_dispatch.cpp.
+build:linux --cxxopt=-fno-exceptions
+build:macos --cxxopt=-fno-exceptions
+build:linux --host_cxxopt=-fno-exceptions
+build:macos --host_cxxopt=-fno-exceptions
+
 # ── Windows: MSVC ────────────────────────────────────────────────────────────
 # MinGW is not supported. The `@mingw_toolchain` extension and its
 # `--extra_toolchains` line used to live here; both are gone, so Bazel falls back to its
@@ -62,6 +84,11 @@ build:macos --conlyopt=-std=gnu99
 # find gcc on PATH, and it has no meaning for MSVC.
 build:windows --copt=/utf-8
 build:windows --host_copt=/utf-8
+# C++ exceptions off, MSVC spelling. See the -fno-exceptions block above for why: nothing here
+# throws, and the unwind branches a compiler emits for them can never be covered. /EH- also
+# stops cl from assuming it may unwind, which is what removes the same instrumentation.
+build:windows --cxxopt=/EH-
+build:windows --host_cxxopt=/EH-
 # Static CRT, for the same reason the MinGW build passed `-static`: the release archive ships
 # only edgeclaw.exe, so anything it imports besides Windows itself would be a missing
 # dependency on a clean machine. cl links VCRUNTIME140.dll by default; /MT (Bazel's

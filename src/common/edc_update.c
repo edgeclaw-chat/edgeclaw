@@ -1,9 +1,12 @@
 #include "edc_update.h"
 
 #include "cJSON.h"
+#include "edc_https_client.h"
 #include "edc_semver.h"
 
+#include <stdlib.h>
 #include <string.h>
+#include <uv.h>
 
 /* The asset target for this build. Mirrors tools/install.sh's platform table -- those two
  * must agree, because one downloads what the other would have.
@@ -57,6 +60,133 @@ static bool release_has_asset(cJSON *assets, const char *want)
             return true;
     }
     return false;
+}
+
+/* ── the network half ───────────────────────────────────────────────────────
+ * Everything above is pure; this is the one part that talks to the world. It is kept in its
+ * own translation unit's worth of code (but the same file, so the selection rules and the
+ * fetch stay in step) because the tests drive it through a local HTTP server instead of
+ * GitHub.
+ *
+ * The blocking shape is copied deliberately from edc_endpoint_probe: the HTTPS client runs on
+ * its own uv loop, so the caller waits on a condvar with a deadline. Sharing that shape means
+ * one fewer thing that behaves differently from the rest of the codebase.
+ */
+
+struct update_state
+{
+    uv_mutex_t m;
+    uv_cond_t c;
+    int done;
+    int status;  /* the status line, 0 when none arrived */
+    int err;     /* an ERROR event fired (DNS/TLS/timeout) */
+    sds body;    /* accumulated response body */
+    size_t max;  /* stop accumulating past this */
+    int over;    /* the body exceeded |max| */
+};
+
+static void update_on_event(struct edc_https_request *req, int ev, void *data)
+{
+    (void)data;
+    struct update_state *st = edc_https_request_get_priv(req);
+    if (!st)
+        return;
+
+    switch (ev)
+    {
+    case EDC_HTTPS_EVENT_HS: {
+        /* No Authorization header: the releases endpoint is public, and sending a token to
+         * it would be both unnecessary and a leak. */
+        const char *path = edc_https_request_get_path(req);
+        const char *host = edc_https_request_get_host(req);
+        sds hdr = sdscatprintf(sdsempty(),
+                               "GET %s HTTP/1.1\r\nHost: %s\r\n"
+                               "User-Agent: edgeclaw-update-check\r\n"
+                               "Accept: application/vnd.github+json\r\n"
+                               "Connection: close\r\n\r\n",
+                               path && path[0] ? path : "/", host ? host : "");
+        edc_https_request_write(req, (const unsigned char *)hdr, (size_t)sdslen(hdr));
+        sdsfree(hdr);
+        break;
+    }
+    case EDC_HTTPS_EVENT_HEADER:
+        st->status = edc_https_request_get_status(req);
+        break;
+    case EDC_HTTPS_EVENT_MSG: {
+        /* data is a uv_buf_t* owned by the caller -- it must be freed here either way. */
+        uv_buf_t *buf = data;
+        if (buf && buf->base)
+        {
+            if (!st->over && st->body && sdslen(st->body) + buf->len > st->max)
+            {
+                /* Stop keeping bytes, but let the transfer finish so the socket closes
+                 * normally rather than through a teardown race. */
+                st->over = 1;
+            }
+            if (!st->over && st->body)
+                st->body = sdscatlen(st->body, buf->base, buf->len);
+            free(buf->base);
+        }
+        break;
+    }
+    case EDC_HTTPS_EVENT_ERROR:
+        st->err = 1;
+        break;
+    case EDC_HTTPS_EVENT_CLOSE:
+        uv_mutex_lock(&st->m);
+        st->done = 1;
+        uv_cond_signal(&st->c);
+        uv_mutex_unlock(&st->m);
+        break;
+    default:
+        break;
+    }
+}
+
+bool edc_update_check(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
+                      size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset)
+{
+    if (out_tag)
+        *out_tag = NULL;
+    if (out_asset)
+        *out_asset = NULL;
+    if (!api_url || !api_url[0] || !current_version)
+        return false;
+
+    struct edc_https_client *client = edc_https_client_new(cacert_path);
+    if (!client)
+        return false;
+
+    struct update_state st;
+    memset(&st, 0, sizeof(st));
+    uv_mutex_init(&st.m);
+    uv_cond_init(&st.c);
+    st.body = sdsempty();
+    st.max = max_bytes > 0 ? max_bytes : 1u << 20; /* 1 MiB: the release list is far smaller */
+
+    bool ok = false;
+    if (edc_https_client_connect(client, api_url, update_on_event, &st) == 0)
+    {
+        uv_mutex_lock(&st.m);
+        while (!st.done)
+        {
+            if (uv_cond_timedwait(&st.c, &st.m, (uint64_t)(timeout_ms > 0 ? timeout_ms : 1) * 1000000ULL) != 0)
+                break; /* deadline: treat exactly like a failed check */
+        }
+        const int done = st.done, status = st.status, err = st.err, over = st.over;
+        uv_mutex_unlock(&st.m);
+
+        /* 200 only. A 403 here is the unauthenticated rate limit (60/hour/IP) and is expected
+         * on a shared address -- silent, like every other failure. */
+        if (done && !err && !over && status == 200)
+            ok = edc_update_pick(st.body, current_version, allow_pre, out_tag, out_asset);
+    }
+
+    sdsfree(st.body);
+    uv_cond_destroy(&st.c);
+    uv_mutex_destroy(&st.m);
+    edc_https_client_free(client);
+    return ok;
 }
 
 bool edc_update_pick(const char *releases_json, const char *current_version, bool allow_pre, sds *out_tag,

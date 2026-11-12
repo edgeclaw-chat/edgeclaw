@@ -435,6 +435,12 @@ COMMAND REFERENCE
                                    edited on disk takes effect; config.json
                                    still needs a restart).
      /connect                      Guided setup (provider, API key, model).
+     /update                       Install a newer release, if one is available.
+                                   Shows the version and what updating costs,
+                                   then runs the installer.  Only a copy the
+                                   installer put there can update itself; anything
+                                   else gets the command to run by hand.  The app
+                                   never restarts itself.
      /encrypt                      Turn encryption back on after choosing "no
                                    encryption" at setup: prompts for a
                                    passphrase and re-encrypts the stored API

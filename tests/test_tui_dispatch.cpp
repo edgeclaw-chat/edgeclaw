@@ -23,6 +23,9 @@
 
 #include "edc_tui_window.hpp"
 #include "edc_compat.h"
+#ifndef _WIN32
+#include "fake_release.h"
+#endif
 #include "tui_dispatch_msgs.h"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -65,7 +68,11 @@ constexpr const char *kOther = "harness-other";
 // 首帧采纳那条用例用的 session：窗口启动时还没身份，由第一帧快照占位。
 constexpr const char *kFirst = "harness-first";
 
-// ── 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app ──────────────
+// 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app
+//
+// 注意：本项目用 -fno-exceptions 编译（见 .bazelrc）。所以这里的文件系统调用一律用带
+// error_code 的重载 —— 不带的那版失败时抛异常，而异常被关掉后它直接 abort，测试会死在
+// 没有任何信息的地方。带 error_code 的版本返回错误码，下面统一用 Fail() 报出来。
 bool SetupHome(std::string *out_home)
 {
     const char *tmp = getenv("TEST_TMPDIR");
@@ -74,7 +81,14 @@ bool SetupHome(std::string *out_home)
 
     const std::string home = std::string(tmp) + "/home";
     const std::string dir = home + "/.edgeclaw";
-    std::filesystem::create_directories(dir);
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        std::cout << "  FAIL 建不出 " << dir << "：" << ec.message() << "\n";
+        return false;
+    }
 
     std::ofstream conf(dir + "/config.json");
     if (!conf)
@@ -87,7 +101,12 @@ bool SetupHome(std::string *out_home)
 
     // 一个 prompt 模板：给补全弹层的 `/prompt <name>` 词表用（否则那份词表是空的）。
     const std::string prompts = dir + "/workspace/prompts";
-    std::filesystem::create_directories(prompts);
+    std::filesystem::create_directories(prompts, ec);
+    if (ec)
+    {
+        std::cout << "  FAIL 建不出 " << prompts << "：" << ec.message() << "\n";
+        return false;
+    }
     std::ofstream pf(prompts + "/review.md");
     if (!pf)
         return false;
@@ -96,7 +115,12 @@ bool SetupHome(std::string *out_home)
 
     // 一个 skill：给 `/skill <name>` 的词表用（与上面的模板同一套路）。
     const std::string skill = dir + "/workspace/skills/demo";
-    std::filesystem::create_directories(skill);
+    std::filesystem::create_directories(skill, ec);
+    if (ec)
+    {
+        std::cout << "  FAIL 建不出 " << skill << "：" << ec.message() << "\n";
+        return false;
+    }
     std::ofstream sf(skill + "/SKILL.md");
     if (!sf)
         return false;
@@ -900,6 +924,91 @@ void TestInterruptKeys(edc::TUIWindow &win)
 
 } // namespace
 
+/* Set by main() when the local release server came up; the banner case needs it. */
+static bool g_fake_release_up = false;
+
+void TestUpdateSurface(edc::TUIWindow &win)
+{
+    std::cout << "更新入口（横幅 / /update / 升级协调）\n";
+
+    auto *app = win.App();
+
+    /* 这份二进制在 bazel-bin 里，不在 ~/.local/bin —— 正是"不是安装器装的"那种情况。
+     * 它必须说自己不能升级，而不是给一个必然失败的按钮。 */
+    Check(!app->UpdateCanSelfUpgrade(), "构建树里的二进制报告自己不能自升级");
+
+    /* 不能升级就不该开始：既不取脚本，也不起子进程。 */
+    bool done_called = false;
+    Check(!app->UpdateStart("v9.9.9", [&](bool, std::string) { done_called = true; }),
+          "不能自升级时 update_start 直接拒绝");
+    Check(!done_called, "被拒绝时完成回调不会被调用");
+
+    /* 什么都没跑的时候取消是空操作，不是崩溃：Esc 在任何状态都能到达这里。 */
+    app->UpdateCancel();
+    Check(true, "没有升级在跑时取消是空操作");
+
+    /* 手动命令是不能自升级时的兜底，所以它永远不能是空的。 */
+    const std::string hint = app->UpdateManualHint();
+    Check(!hint.empty(), "手动升级命令非空");
+    Check(hint.find("releases") != std::string::npos || hint.find("install.") != std::string::npos,
+          "手动命令指向 release 页或安装器");
+
+    /* 构造之后再注册观察者是允许的（前端就是构造完才注册）。 */
+    app->SetUpdateObserver([](std::string) {});
+    Check(true, "构造后可以再注册更新观察者");
+}
+
+/* 横幅 / `/update` 弹框：只有"检查真的找到了版本"才走得到。
+ *
+ * 靠 main() 在构造窗口之前起的那个本地假发布服务器 —— 检查在 edc_app_new 里跑一次，
+ * 所以这里断言的是它跑过之后的状态：facade 的 UpdateFoundTrampoline 把 tag 送进
+ * TUIWindow，update_tag_ 因此非空，横幅出现，`/update` 打开对话框。
+ *
+ * 这同时是唯一能走到 AppFacade::UpdateFoundTrampoline 的路径 —— 它是 static C 回调，
+ * 除了"检查找到版本"没有别的入口。 */
+void TestUpdateBanner(edc::TUIWindow &win)
+{
+    std::cout << "更新横幅（检查找到版本之后）\n";
+
+    if (!g_fake_release_up)
+    {
+        std::cout << "  (跳过：本地假发布服务器没起来)\n";
+        return;
+    }
+
+    /* 检查在窗口构造时就跑了，结果经 facade 的 trampoline 投递到 UI 线程，并在那一帧
+     * 请求重绘。等它落地再读屏幕。 */
+    std::string frame;
+    for (int i = 0; i < 200; i++)
+    {
+        frame = FrameOf(win);
+        if (Has(frame, "v9.9.9"))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    Check(Has(frame, "v9.9.9"), "横幅上屏：检查找到的版本号出现了");
+    Check(Has(frame, "is available"), "横幅说明了有新版本可用");
+    Check(Has(frame, "/update"), "横幅提示用 /update 安装");
+
+    /* `/update` 打开模态对话框。这份二进制在 bazel-bin 里（不是安装器的副本），所以它走的是
+     * "无法自升级"那一页 —— 而不是"确认更新"那一页。这正是要断言的分支：能给的手动命令
+     * 才是它该说的话，而不是一个必然失败的按钮。
+     *
+     * （"确认更新"那一页由 test_update_dialog 直接驱动，不需要这里再走一遍。） */
+    TypeAndSubmit(win, "/update");
+    const std::string modal = FrameOf(win);
+    Check(Has(modal, "cannot update itself"), "/update 打开了对话框，并说明这份副本不能自升级");
+    Check(Has(modal, "To update by hand"), "并把该手敲的命令给出来");
+    Check(Has(modal, "Close"), "对话框有关闭按钮");
+
+    /* Esc 关掉它。 */
+    Check(win.OnEvent(::ftxui::Event::Escape), "Esc 被吃掉");
+    const std::string after = FrameOf(win);
+    Check(!Has(after, "cannot update itself"), "Esc 把对话框关掉了");
+    Check(Has(after, "v9.9.9"), "横幅还在（它是个常驻事实，不是一次提示）");
+}
+
 int main()
 {
     // ftxui 的测试进程没有 tty：先声明颜色支持，断言前再看文本（见 test_theme.cpp）。
@@ -912,6 +1021,31 @@ int main()
         return 1;
     }
 
+#ifndef _WIN32
+    /* 更新检查在 edc_app_new 里跑一次，所以服务器、endpoint 和 CA 包都必须在构造 TUIWindow
+     * 之前就位。CA 包放 <workspace>/ssl/cacert.pem —— app 读的就是那个路径。
+     *
+     * 这三条环境变量是 edc_app.c 里的注入点（同 EDGECLAW_MODELS_CATALOG 那一类）：URL 指到
+     * 本地假服务器、版本给一个可解析的值（dev 构建报的是 commit hash，检查会直接跳过）、
+     * 延迟设 0 以免为了等那十秒而拖慢测试。 */
+    {
+        char url[256] = {0};
+        char cert[600] = {0};
+        if (fake_release_start_newer("v9.9.9", url, sizeof(url), cert, sizeof(cert)) == 0)
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(home + "/.edgeclaw/workspace/ssl", ec);
+            if (!ec)
+                std::filesystem::copy_file(cert, home + "/.edgeclaw/workspace/ssl/cacert.pem",
+                                          std::filesystem::copy_options::overwrite_existing, ec);
+            g_fake_release_up = !ec;
+            setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
+            setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
+            setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
+        }
+    }
+
+#endif
     edc::TUIWindow win(/*sandbox_override=*/0);
     if (!win.Ready())
     {
@@ -940,6 +1074,13 @@ int main()
     TestInputModeTag(win);
     TestInterruptKeys(win);
     TestInterruptedStartupHint(win);
+    TestUpdateSurface(win);
+    TestUpdateBanner(win);
+
+#ifndef _WIN32
+    /* The fake release server served its one connection; release the port and its files. */
+    fake_release_stop();
+#endif
 
     if (g_failures)
     {

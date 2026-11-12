@@ -192,6 +192,32 @@ class IAppFacade
     // tests -- they can feed a real `struct edc_channel_message`; with no
     // SetScreen() the event runs synchronously, so the assertion follows at once.
     virtual void HandleChannelMessage(struct edc_channel_message *message) = 0;
+
+    /* ── the release check and the upgrade ──────────────────────────────────
+     *
+     * The UI owns the dialog; the app owns the check and the installer process. These are the
+     * four things the two need to say to each other. Every one of them is a no-op on an app
+     * that failed to start, so the dialog can be built unconditionally. */
+
+    /* Register where "a newer release was found" is delivered. Called on the actor-loop
+     * thread, so the implementation must marshal onto the UI thread before touching state
+     * (the facade's trampoline pops through the dispatcher and requests a frame). */
+    virtual void SetUpdateObserver(std::function<void(std::string tag)> observer) = 0;
+
+    /* Whether this copy can replace itself: the installer put it there and the platform has
+     * one. False means the dialog shows the manual command instead of a button that would
+     * fail. */
+    virtual bool UpdateCanSelfUpgrade() const = 0;
+
+    /* Start the upgrade. |on_done| runs on the UI thread with the outcome. False means
+     * nothing started (already running, not upgradable). */
+    virtual bool UpdateStart(const std::string &tag, std::function<void(bool ok, std::string detail)> on_done) = 0;
+
+    /* Abandon an upgrade in flight. */
+    virtual void UpdateCancel() = 0;
+
+    /* The command a user would type to upgrade by hand. */
+    virtual std::string UpdateManualHint() const = 0;
 };
 
 // Production edc_app_* implementation: owns the app lifetime and translates C
@@ -250,9 +276,20 @@ class AppFacade : public IAppFacade
 
     void HandleChannelMessage(struct edc_channel_message *message) override;
 
+    void SetUpdateObserver(std::function<void(std::string tag)> observer) override;
+    bool UpdateCanSelfUpgrade() const override;
+    bool UpdateStart(const std::string &tag, std::function<void(bool ok, std::string detail)> on_done) override;
+    void UpdateCancel() override;
+    std::string UpdateManualHint() const override;
+
   private:
     // C callback trampoline: instance is this AppFacade.
     static void ChannelTrampoline(void *instance, struct edc_channel_message *message);
+    // The update observer trampoline: the app calls it on the actor-loop thread, so it
+    // marshals onto the UI thread before running |update_observer_|.
+    static void UpdateFoundTrampoline(const char *tag, void *ud);
+    // The upgrade completion trampoline, same marshalling rule.
+    static void UpgradeDoneTrampoline(bool ok, const char *detail, void *ud);
     // Read the C message -> build the typed event -> Post to the UI thread. Fields
     // must be read while the C message is alive.
     void TranslateAndDispatch(struct edc_channel_message *message);
@@ -260,6 +297,11 @@ class AppFacade : public IAppFacade
     struct edc_app *app_ = nullptr;
     IUiDispatcher *dispatcher_ = nullptr;
     IChannelSink *sink_ = nullptr;
+
+    // Held here rather than captured by the C callback: the app stores a plain function
+    // pointer plus void*, and this object is that void*.
+    std::function<void(std::string)> update_observer_;
+    std::function<void(bool, std::string)> upgrade_done_;
 };
 
 } // namespace edc::port

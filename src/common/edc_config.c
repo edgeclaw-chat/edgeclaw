@@ -610,6 +610,20 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (svc_enabled && cJSON_IsBool(svc_enabled))
         config->services_enabled = cJSON_IsTrue(svc_enabled);
 
+    /* Update check, top-level "update_check" (bool, defaults on) and "update_channel"
+     * ("stable" | "pre", defaults stable). Anything unrecognised falls back to the default
+     * rather than failing the load: a config typo must not keep the app from starting, and
+     * the safe reading of both values is the quieter one. */
+    config->update_check = true;
+    cJSON *update_check = cJSON_GetObjectItem(conf, "update_check");
+    if (update_check && cJSON_IsBool(update_check))
+        config->update_check = cJSON_IsTrue(update_check);
+
+    config->update_allow_pre = false;
+    cJSON *update_channel = cJSON_GetObjectItem(conf, "update_channel");
+    if (update_channel && cJSON_IsString(update_channel) && update_channel->valuestring)
+        config->update_allow_pre = (strcmp(update_channel->valuestring, "pre") == 0);
+
     /* First-run wizard flag, top-level "onboarded". Absent/false => it has not run. */
     config->onboarded = false;
     cJSON *onboarded = cJSON_GetObjectItem(conf, "onboarded");

@@ -587,6 +587,7 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
 | `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard) |
+| `/update` | Install a newer release, if one is available: shows the version and what updating costs, then runs the installer. Only a copy the installer put there can update itself; anything else gets the command to run by hand. The app never restarts itself |
 | `/encrypt` | Turn encryption back on after choosing "no encryption" at setup: prompts for a passphrase and re-encrypts the stored API key. Refuses when a key is already loaded |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
 | `/sandbox list` | Show the sandbox allow/deny path lists |

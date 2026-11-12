@@ -24,6 +24,23 @@
  * after spending the bandwidth. */
 const char *edc_update_target(void);
 
+/* Ask the release list whether a newer version exists.
+ *
+ * Runs off the UI thread (it blocks on a condition variable, the same shape as
+ * edc_endpoint_probe). Fills |out_tag| / |out_asset| and returns true only when a newer
+ * release for THIS platform is available and |allow_pre| admits it.
+ *
+ * |api_url| is parameterised rather than hardcoded so the tests can point it at a local
+ * server; production passes the GitHub releases endpoint.
+ *
+ * Every failure -- DNS, TLS, a timeout, a non-200, a body that is not the JSON we expect, a
+ * body larger than |max_bytes| -- returns false and says nothing. A background check must
+ * never produce a user-visible error: there is nothing the user could do about it, and the
+ * next launch tries again.
+ */
+bool edc_update_check(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
+                      size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset);
+
 /* Pick the release to offer, from the JSON returned by
  * `GET /repos/<owner>/<repo>/releases`.
  *

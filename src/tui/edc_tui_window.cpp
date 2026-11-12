@@ -303,6 +303,43 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         setup_dialog_->Open(seed);
     }
 
+    /* The update dialog. The two callbacks are the whole of its coupling to the app: it asks
+     * for an upgrade and it asks for the manual command. Everything else -- fetching, spawning,
+     * timing out -- stays behind the facade. */
+    update_dialog_ = std::make_shared<ui::UpdateDialog>(
+        [this](const std::string &tag) {
+            /* Start the upgrade; the dialog is already in RUNNING, so a failure here means
+             * the work never began and has to be reported as such. */
+            const bool started = app_->UpdateStart(tag, [this](bool ok, std::string detail) {
+                update_dialog_->OnResult(ok, detail);
+                if (screen_)
+                    screen_->RequestAnimationFrame();
+            });
+            if (!started)
+            {
+                update_dialog_->OnResult(false, "could not start the installer");
+                if (screen_)
+                    screen_->RequestAnimationFrame();
+            }
+        },
+        [this]() { return app_->UpdateManualHint(); },
+        /* Esc while the installer runs: kill it. This is the difference between "abandoned"
+         * and "hidden but still replacing your binary". A cancel during the download stage
+         * waits for that fetch to return (it has no cancellation hook), which is at most its
+         * own timeout. */
+        [this]() { app_->UpdateCancel(); });
+
+    /* The check reports here, on the UI thread (the facade marshals it). Record the tag and
+     * ask for a frame: the screen is idle by the time the check lands, so without the request
+     * the banner would only appear at the user's next keystroke. */
+    app_->SetUpdateObserver([this](std::string tag) {
+        if (tag.empty())
+            return;
+        update_tag_ = std::move(tag);
+        if (screen_)
+            screen_->RequestAnimationFrame();
+    });
+
     // The transcript store owns the chat-log file I/O (path, append, replay); it
     // needs the app port for the workspace path and the symlink-safe writes.
     transcript_ = std::make_unique<port::TranscriptStore>(*app_);
@@ -365,6 +402,23 @@ void TUIWindow::Submit()
         input_->Reset();
         RecomputeCommandPalette();
         OpenConnect();
+        return;
+    }
+
+    // "/update" is local for the same reason, and for one more: the dialog is the only place
+    // that can say what the update costs, so the command must not become a chat message that
+    // scrolls away. With nothing on offer it says so instead of opening an empty dialog.
+    if (message == "/update")
+    {
+        input_text_.clear();
+        input_->Reset();
+        RecomputeCommandPalette();
+        if (update_tag_.empty())
+            RaisePasteHint(" No update available ");
+        else
+            OpenUpdate();
+        if (screen_)
+            screen_->RequestAnimationFrame();
         return;
     }
 
@@ -1084,7 +1138,14 @@ void TUIWindow::TickAnimations()
     // ABOVE the input's top rule. The popup therefore grows into the chat's bottom, and the
     // input block (rule / input / rule) keeps its exact place and height: the list never
     // looks like part of the input box.
-    ::ftxui::Elements children = {chat | ::ftxui::flex};
+    ::ftxui::Elements children;
+    /* The banner sits above the chat, not floating over it: it is a standing fact ("a newer
+     * release exists") rather than an event, and a chip that fades would hide it before the
+     * user has read it. Hidden while the dialog is open -- the dialog says the same thing with
+     * more detail. */
+    if (!update_tag_.empty() && !update_dialog_->IsOpen())
+        children.push_back(UpdateBannerElement());
+    children.push_back(chat | ::ftxui::flex);
     if (!history_view_ && command_palette_.open() && !setup_dialog_->IsOpen())
         children.push_back(ui::CommandPaletteElement(command_palette_));
     children.push_back(InputSeparatorElement());
@@ -1128,6 +1189,29 @@ void TUIWindow::TickAnimations()
     return ::ftxui::vbox(std::move(children));
 }
 
+::ftxui::Element TUIWindow::UpdateBannerElement()
+{
+    const auto &pal = style::palette();
+    /* One line, no border: it sits between the chat and the top edge and should read as a
+     * notice, not as another pane. */
+    return ::ftxui::hbox({
+        ::ftxui::text("  EdgeClaw ") | ::ftxui::color(pal.accent),
+        ::ftxui::text(update_tag_) | ::ftxui::bold | ::ftxui::color(pal.accent),
+        ::ftxui::text(" is available  ·  /update to install ") | ::ftxui::color(pal.text_dim),
+        ::ftxui::filler(),
+    });
+}
+
+void TUIWindow::OpenUpdate()
+{
+    if (update_tag_.empty())
+        return;
+    const bool can = app_ && app_->UpdateCanSelfUpgrade();
+    update_dialog_->Open(update_tag_, can);
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
 ::ftxui::Element TUIWindow::OnRender()
 {
     // The drag that just ended copies on this frame, not on the release itself:
@@ -1148,6 +1232,11 @@ void TUIWindow::TickAnimations()
     // The /connect setup wizard is a modal, centered -- its natural place. The backdrop is
     // dimmed while it is open; clear_under is load-bearing: ftxui's `dim` is a per-cell flag
     // the backdrop stamps over its box, which an overlaid element does not clear.
+    //
+    // The update dialog is checked first: it appears while the app is in use, the wizard only
+    // on first run, and if both were somehow open the newer question is the update.
+    if (update_dialog_ && update_dialog_->IsOpen())
+        return ::ftxui::dbox({base | ::ftxui::dim, update_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
     if (!setup_dialog_->IsOpen())
         return base;
     return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
@@ -1175,6 +1264,12 @@ bool TUIWindow::OnEvent(::ftxui::Event event)
                 screen_->RequestAnimationFrame();
         }
     }
+
+    // The update dialog, like the setup wizard, is a modal: while it is open it owns every
+    // event. It comes first because it can appear while the wizard's state is irrelevant, and
+    // because Esc on it must abandon the upgrade rather than fall through to the input box.
+    if (update_dialog_ && update_dialog_->IsOpen())
+        return update_dialog_->OnEvent(event);
 
     // The /connect setup wizard is a modal: while open it owns every event (Esc exits,
     // Enter advances, arrows move, the rest goes to its current field).

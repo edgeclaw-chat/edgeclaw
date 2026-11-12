@@ -22,6 +22,12 @@
 #include "edc_toolbox.h"
 #include "edc_toolset.h"
 #include "edc_turn.h"
+#include "edc_semver.h"
+#include "edc_update.h"
+#include "edc_update_service.h"
+#include "edc_upgrade.h"
+#include "edc_upgrade_run.h"
+#include "edc_version.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -85,10 +91,196 @@ struct edc_app
 
     edc_actor_runner_t *runner;
 
+    /* The once-per-launch release check. NULL when it was not started (disabled in
+     * config.json, or the thread/handles could not be created) -- and a NULL here is not an
+     * error anywhere, it just means no check happened this run. */
+    struct edc_update_service *update_service;
+
+    /* An upgrade in flight, if any. Only one at a time: a second run would have two
+     * installers racing over the same binary. */
+    struct edc_upgrade_run *upgrade;
+
+    /* Who to tell when a newer release is found. Set from the frontend after construction,
+     * because the app is built before the UI exists. */
+    edc_update_found_observer update_observer;
+    void *update_observer_ud;
+
+    /* The outcome callback for the running upgrade, so a cancel can still report. */
+    edc_upgrade_done_observer upgrade_done;
+    void *upgrade_done_ud;
+
     /* shutdown() idempotence gate (see edc_app_shutdown): persisting may happen
      * only once. */
     bool shutdown_done;
 };
+
+/* The public release list. Not /releases/latest: that endpoint skips pre-releases, and every
+ * tag this project has published carries a suffix. */
+#define EDC_UPDATE_RELEASES_URL "https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases"
+
+/* Delay before the request. Not politeness: at that instant the first model request is in
+ * flight, and a check competing with it would delay the first thing the user sees. */
+#define EDC_UPDATE_CHECK_DELAY_MS 10000
+
+/* Three environment overrides, in the same spirit as EDGECLAW_MODELS_CATALOG and
+ * EDGECLAW_TUI_NO_PULL (see their call sites): values a test can pin, and an operator can
+ * point somewhere else.
+ *
+ * `EDGECLAW_UPDATE_RELEASES_URL` is how the whole chain -- service, fetch, selection, the
+ * observer, the banner -- is exercised against a local server instead of GitHub. Without it
+ * the check could only be tested in pieces, because the endpoint was a literal inside the
+ * constructor.
+ *
+ * `EDGECLAW_UPDATE_CURRENT_VERSION` is the same idea for the version compared against. A
+ * development build reports its commit hash, which is not a version, so the check is skipped
+ * outright; there is no release tag to test against until one is published. This is the
+ * environment equivalent of `--update-check --current`, which exists for the same reason.
+ *
+ * `EDGECLAW_UPDATE_CHECK_DELAY_MS` lets a test skip the ten seconds that exist to keep the
+ * launch path clear -- a test asserting what happens AFTER the delay should not sleep through
+ * it.
+ *
+ * Read from the environment rather than config.json on purpose: config.json travels with a
+ * workspace, and reading these from it would let a shared workspace redirect its own updates
+ * or lie about its version. The environment is the one the process was started in. */
+static sds app_update_url(void)
+{
+    const char *env = getenv("EDGECLAW_UPDATE_RELEASES_URL");
+    return sdsnew((env && *env) ? env : EDC_UPDATE_RELEASES_URL);
+}
+
+static const char *app_update_current_version(void)
+{
+    const char *env = getenv("EDGECLAW_UPDATE_CURRENT_VERSION");
+    return (env && *env) ? env : edc_version();
+}
+
+static uint64_t app_update_delay_ms(void)
+{
+    const char *env = getenv("EDGECLAW_UPDATE_CHECK_DELAY_MS");
+    if (env && *env)
+    {
+        const long v = strtol(env, NULL, 10);
+        if (v >= 0)
+            return (uint64_t)v;
+    }
+    return EDC_UPDATE_CHECK_DELAY_MS;
+}
+
+/* A newer release exists. Runs on the loop thread, once.
+ *
+ * For now this only logs: the banner and the /update confirmation are the next step, and
+ * wiring a user-visible prompt is a UI change that deserves its own commit rather than being
+ * smuggled in behind a network call. Logging it means the whole path -- thread, delay, fetch,
+ * selection -- is exercised end to end from a normal launch. */
+static void app_update_found(const char *tag, const char *asset, void *ud)
+{
+    (void)asset;
+    struct edc_app *app = ud;
+    log_info("update: %s is available", tag ? tag : "(unknown)");
+    if (app && app->update_observer)
+        app->update_observer(tag, app->update_observer_ud);
+}
+
+void edc_app_set_update_observer(struct edc_app *app, edc_update_found_observer fn, void *ud)
+{
+    if (!app)
+        return;
+    app->update_observer = fn;
+    app->update_observer_ud = ud;
+}
+
+bool edc_app_update_can_self_upgrade(const struct edc_app *app)
+{
+    if (!app || !edc_upgrade_supported())
+        return false;
+    sds exe = edc_platform_exe_path();
+    sds home = edc_homedir();
+    const bool ok = exe && home && edc_upgrade_detect(exe, home) == EDC_UPGRADE_METHOD_INSTALLER;
+    sdsfree(exe);
+    sdsfree(home);
+    return ok;
+}
+
+/* The upgrade finished. Runs on the loop thread, from edc_upgrade_run. */
+static void app_upgrade_done(bool ok, const char *detail, void *ud)
+{
+    struct edc_app *app = ud;
+    if (!app)
+        return;
+    /* Clear the slot BEFORE reporting: the observer may immediately start another upgrade,
+     * and the "one at a time" guard must already be free by then. */
+    edc_upgrade_done_observer cb = app->upgrade_done;
+    void *cb_ud = app->upgrade_done_ud;
+    app->upgrade_done = NULL;
+    app->upgrade_done_ud = NULL;
+    app->upgrade = NULL;
+    if (cb)
+        cb(ok, detail, cb_ud);
+}
+
+bool edc_app_update_start(struct edc_app *app, const char *tag, edc_upgrade_done_observer on_done, void *ud)
+{
+    if (!app || !app->runner || !tag || !tag[0] || !on_done)
+        return false;
+    if (app->upgrade)
+        return false; /* one at a time */
+    if (!edc_app_update_can_self_upgrade(app))
+        return false;
+
+    sds exe = edc_platform_exe_path();
+    sds home = edc_homedir();
+    sds dir = exe ? edc_path_dirname(exe) : NULL;
+    sds cacert =
+        app->config && app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+    /* Pinned to the tag, never a moving branch: the script and the archive it verifies then
+     * come from the same release. */
+    sds script_url = sdscatprintf(sdsempty(),
+                                  "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/%s", tag,
+                                  edc_upgrade_installer_filename());
+    struct edc_upgrade_run *run =
+        exe ? edc_upgrade_run_start(&app->runner->loop, cacert, script_url, tag, dir, /* timeout */ 120000,
+                                    app_upgrade_done, app)
+            : NULL;
+
+    sdsfree(script_url);
+    sdsfree(exe);
+    sdsfree(home);
+    sdsfree(dir);
+    sdsfree(cacert);
+    if (!run)
+        return false;
+
+    app->upgrade = run;
+    app->upgrade_done = on_done;
+    app->upgrade_done_ud = ud;
+    return true;
+}
+
+void edc_app_update_cancel(struct edc_app *app)
+{
+    if (!app || !app->upgrade)
+        return;
+    /* The run struct frees itself once its handles have closed; dropping the pointer is all
+     * this side has to do. The done callback is cleared first so a late exit does not report
+     * into a dialog that has already closed. */
+    app->upgrade_done = NULL;
+    app->upgrade_done_ud = NULL;
+    edc_upgrade_run_stop(app->upgrade);
+    app->upgrade = NULL;
+}
+
+void edc_app_update_manual_hint(const struct edc_app *app, char *buf, size_t cap)
+{
+    (void)app;
+    if (!buf || cap == 0)
+        return;
+    /* The version the hint names: whatever the check offered is not stored here, so the
+       placeholder form is used -- it still tells the user where to look. */
+    sds hint = edc_upgrade_manual_hint(NULL);
+    snprintf(buf, cap, "%s", hint ? hint : "see https://github.com/edgeclaw-chat/edgeclaw/releases");
+    sdsfree(hint);
+}
 
 /* Session store / cross-session resolution / persistence -> edc_scheduler_open/close:
  * the store is the scheduler's private property; the root only builds the object
@@ -221,6 +413,41 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
 
     edc_actor_runner_start(app->runner);
 
+    /* The release check, after everything above is running: one check per launch, off the UI
+     * thread and off the actor loop, reported once if a newer release exists.
+     *
+     * A build whose version is not a release (a dev build reports the commit hash) has
+     * nothing to compare against, so the feature is off for it -- and that is said at INFO
+     * rather than debug. Silence here is not "nothing to report", it is "this build cannot
+     * check", and a user wondering why they are never told about updates deserves the
+     * difference. Every other reason for no result stays silent.
+     *
+     * The 10s delay is not politeness: at this instant the first model request is in flight,
+     * and a check competing with it would delay the first thing the user sees. */
+    if (app->config->update_check)
+    {
+        const char *current = app_update_current_version();
+        if (!edc_semver_is_valid(current))
+        {
+            log_info("update check: off for this build (version '%s' is not a release)", current);
+        }
+        else
+        {
+            sds cacert =
+                app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+            sds url = app_update_url();
+            app->update_service = edc_update_service_start(&app->runner->loop, cacert, url, current,
+                                                           app->config->update_allow_pre, app_update_delay_ms(),
+                                                           app_update_found, app);
+            sdsfree(url);
+            sdsfree(cacert);
+        }
+    }
+    else
+    {
+        log_info("update check: disabled in config.json (update_check=false)");
+    }
+
     sdsfree(edc_home);
     return app;
 }
@@ -351,6 +578,15 @@ void edc_app_free(struct edc_app *app)
 {
     if (!app)
         return;
+
+    /* Stop the release check before anything it holds: its worker is blocked on a network
+     * round trip and its handles live on the runner's loop, which the shutdown below tears
+     * down. Joining here also guarantees on_found cannot fire after the app is gone. */
+    edc_update_service_stop(app->update_service);
+    app->update_service = NULL;
+
+    /* Same for an upgrade in flight: its child process and pipes are on that loop too. */
+    edc_app_update_cancel(app);
 
     /* Run the shutdown work first (stop actors + persist + drop turns), keeping
      * the old "destroy = persist" behaviour; callers wanting two steps call

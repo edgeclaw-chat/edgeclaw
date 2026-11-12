@@ -83,8 +83,7 @@ beyond `curl` or `wget`.
 #### Windows
 
 Windows has its own installer, and it needs nothing beyond what the OS ships with
-(`Invoke-WebRequest`, `tar`, `Get-FileHash` and .NET's ECDsa) — **no curl, no bash, no
-Git for Windows**:
+(`Invoke-WebRequest`, `tar`, `Get-FileHash`) — **no curl, no bash, no Git for Windows**:
 
 ```powershell
 iwr -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 `
