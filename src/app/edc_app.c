@@ -22,6 +22,9 @@
 #include "edc_toolbox.h"
 #include "edc_toolset.h"
 #include "edc_turn.h"
+#include "edc_update.h"
+#include "edc_update_service.h"
+#include "edc_version.h"
 #include "log.h"
 #include "sds.h"
 #include <stdio.h>
@@ -85,10 +88,32 @@ struct edc_app
 
     edc_actor_runner_t *runner;
 
+    /* The once-per-launch release check. NULL when it was not started (disabled in
+     * config.json, or the thread/handles could not be created) -- and a NULL here is not an
+     * error anywhere, it just means no check happened this run. */
+    struct edc_update_service *update_service;
+
     /* shutdown() idempotence gate (see edc_app_shutdown): persisting may happen
      * only once. */
     bool shutdown_done;
 };
+
+/* The public release list. Not /releases/latest: that endpoint skips pre-releases, and every
+ * tag this project has published carries a suffix. */
+#define EDC_UPDATE_RELEASES_URL "https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases"
+
+/* A newer release exists. Runs on the loop thread, once.
+ *
+ * For now this only logs: the banner and the /update confirmation are the next step, and
+ * wiring a user-visible prompt is a UI change that deserves its own commit rather than being
+ * smuggled in behind a network call. Logging it means the whole path -- thread, delay, fetch,
+ * selection -- is exercised end to end from a normal launch. */
+static void app_update_found(const char *tag, const char *asset, void *ud)
+{
+    (void)asset;
+    (void)ud;
+    log_info("update: %s is available (run tools/install.sh to upgrade)", tag ? tag : "(unknown)");
+}
 
 /* Session store / cross-session resolution / persistence -> edc_scheduler_open/close:
  * the store is the scheduler's private property; the root only builds the object
@@ -221,6 +246,22 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
 
     edc_actor_runner_start(app->runner);
 
+    /* The release check, after everything above is running: one check per launch, off the UI
+     * thread and off the actor loop, reported once if a newer release exists and silent
+     * otherwise. Failure to start it is not a startup problem.
+     *
+     * The 10s delay is not politeness: at this instant the first model request is in flight,
+     * and a check competing with it would delay the first thing the user sees. */
+    if (app->config->update_check)
+    {
+        sds cacert =
+            app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+        app->update_service = edc_update_service_start(
+            &app->runner->loop, cacert, EDC_UPDATE_RELEASES_URL, edc_version(), app->config->update_allow_pre,
+            /* delay_ms */ 10000, app_update_found, app);
+        sdsfree(cacert);
+    }
+
     sdsfree(edc_home);
     return app;
 }
@@ -351,6 +392,12 @@ void edc_app_free(struct edc_app *app)
 {
     if (!app)
         return;
+
+    /* Stop the release check before anything it holds: its worker is blocked on a network
+     * round trip and its handles live on the runner's loop, which the shutdown below tears
+     * down. Joining here also guarantees on_found cannot fire after the app is gone. */
+    edc_update_service_stop(app->update_service);
+    app->update_service = NULL;
 
     /* Run the shutdown work first (stop actors + persist + drop turns), keeping
      * the old "destroy = persist" behaviour; callers wanting two steps call

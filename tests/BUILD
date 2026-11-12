@@ -204,6 +204,18 @@ cc_test(
 )
 
 cc_test(
+    name = "test_update_check",
+    srcs = ["test_update_check.c", "tls_stub.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "@mbedtls//:mbedtls",
+        "@libuv",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_update",
     srcs = ["test_update.c"],
     deps = [

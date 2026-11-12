@@ -189,6 +189,14 @@ struct edc_config
      * edc_service.h). Defaults to on; config.json's top-level key `services_enabled`
      * may turn it off (then the timer never arms; manual pumps still work). */
     bool services_enabled;
+    /* Ask GitHub once per launch whether a newer release exists. Defaults to on; config.json's
+     * top-level key `update_check` turns it off, which means no network at all rather than a
+     * quieter check. Separate from `services_enabled`: that is the master switch for every
+     * background timer, this is the one check that talks to the internet. */
+    bool update_check;
+    /* Offer pre-releases as well. Default false: a stable build should not be walked onto a
+     * release candidate. config.json's top-level key `update_channel` ("stable" / "pre"). */
+    bool update_allow_pre;
     /* First-run wizard state: false until the user finishes or skips the setup page.
      * Persisted (config.json top-level "onboarded"); the TUI opens the setup page once
      * when it is false. A stored flag, not "is anything configured": clearing the key
