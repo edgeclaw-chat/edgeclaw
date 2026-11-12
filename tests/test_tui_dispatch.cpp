@@ -68,7 +68,11 @@ constexpr const char *kOther = "harness-other";
 // 首帧采纳那条用例用的 session：窗口启动时还没身份，由第一帧快照占位。
 constexpr const char *kFirst = "harness-first";
 
-// ── 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app ──────────────
+// 临时 HOME + 最小 config：TUIWindow 的构造会真起一个 app
+//
+// 注意：本项目用 -fno-exceptions 编译（见 .bazelrc）。所以这里的文件系统调用一律用带
+// error_code 的重载 —— 不带的那版失败时抛异常，而异常被关掉后它直接 abort，测试会死在
+// 没有任何信息的地方。带 error_code 的版本返回错误码，下面统一用 Fail() 报出来。
 bool SetupHome(std::string *out_home)
 {
     const char *tmp = getenv("TEST_TMPDIR");
@@ -77,7 +81,14 @@ bool SetupHome(std::string *out_home)
 
     const std::string home = std::string(tmp) + "/home";
     const std::string dir = home + "/.edgeclaw";
-    std::filesystem::create_directories(dir);
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        std::cout << "  FAIL 建不出 " << dir << "：" << ec.message() << "\n";
+        return false;
+    }
 
     std::ofstream conf(dir + "/config.json");
     if (!conf)
@@ -90,7 +101,12 @@ bool SetupHome(std::string *out_home)
 
     // 一个 prompt 模板：给补全弹层的 `/prompt <name>` 词表用（否则那份词表是空的）。
     const std::string prompts = dir + "/workspace/prompts";
-    std::filesystem::create_directories(prompts);
+    std::filesystem::create_directories(prompts, ec);
+    if (ec)
+    {
+        std::cout << "  FAIL 建不出 " << prompts << "：" << ec.message() << "\n";
+        return false;
+    }
     std::ofstream pf(prompts + "/review.md");
     if (!pf)
         return false;
@@ -99,7 +115,12 @@ bool SetupHome(std::string *out_home)
 
     // 一个 skill：给 `/skill <name>` 的词表用（与上面的模板同一套路）。
     const std::string skill = dir + "/workspace/skills/demo";
-    std::filesystem::create_directories(skill);
+    std::filesystem::create_directories(skill, ec);
+    if (ec)
+    {
+        std::cout << "  FAIL 建不出 " << skill << "：" << ec.message() << "\n";
+        return false;
+    }
     std::ofstream sf(skill + "/SKILL.md");
     if (!sf)
         return false;
@@ -1012,10 +1033,11 @@ int main()
         char cert[600] = {0};
         if (fake_release_start_newer("v9.9.9", url, sizeof(url), cert, sizeof(cert)) == 0)
         {
-            std::filesystem::create_directories(home + "/.edgeclaw/workspace/ssl");
             std::error_code ec;
-            std::filesystem::copy_file(cert, home + "/.edgeclaw/workspace/ssl/cacert.pem",
-                                       std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::create_directories(home + "/.edgeclaw/workspace/ssl", ec);
+            if (!ec)
+                std::filesystem::copy_file(cert, home + "/.edgeclaw/workspace/ssl/cacert.pem",
+                                          std::filesystem::copy_options::overwrite_existing, ec);
             g_fake_release_up = !ec;
             setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
             setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
