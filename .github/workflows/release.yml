@@ -2,10 +2,23 @@ name: Release
 
 on:
   push:
-    branches:
-      - master
     tags:
       - 'v*'
+
+# Triggers on the tag only. A push to `master` used to run this file too, which built the
+# eight-target matrix and then re-ran `bazel test //tests:all` -- the same suite tests.yml
+# runs, with a different disk-cache prefix so the two shared nothing -- for a commit that had
+# already passed PR Check before it was merged. Master's correctness is established before
+# the merge, not by running the suite a third time after it.
+#
+# What replaced those repeated jobs is the `gate` job below: a tag is accepted only if the
+# commit it points at is on master, i.e. only if it went through the PR gate at all.
+#
+# Never cancel a release in progress. Two tags pushed in a row (a typo, then the fix) must
+# not abort the first one while it is uploading assets and leave a half-populated release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 # Which musl-cross release the toolchains are downloaded from. Pinned together with the
 # per-target sha256 in the matrix: the tag says where, the checksum says exactly what.
@@ -441,54 +454,48 @@ jobs:
           path: ${{ matrix.target }}*.tar.gz
 
   # Shipping a tarball from a commit whose tests never ran is how a release becomes a
-  # regression. These two jobs are what makes the tag meaningful; `release` waits for them.
-  test:
-    name: Test
+  # regression -- but re-running the suite here was the wrong way to prevent it: the tests
+  # that ran on every push to master were the same ones tests.yml had already run on dev, for
+  # a tree that PR Check had already verified before the merge. This asserts the property
+  # that actually matters at tag time: that the tag points at a commit the PR gate accepted.
+  #
+  # A tag can be created on ANY commit -- an unreviewed branch tip, a detached hotfix, a
+  # commit that never had a PR at all -- and nothing else in the pipeline would notice.
+  # `merge-base --is-ancestor` is the check for that, and it costs seconds instead of the
+  # fifteen minutes the two removed jobs took.
+  #
+  # It is a separate job because the `release` job below has no checkout at all (it only
+  # downloads artifacts), so there is no working tree there to run git in.
+  gate:
+    name: Refuse to release an untested commit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.14.0
         with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-test
-          repository-cache: true
+          # Full history: establishing ancestry against origin/master needs the commits
+          # between this tag and the branch, which a shallow clone does not have.
+          fetch-depth: 0
 
-      # `manual`-tagged targets are skipped by `bazel test`, so they compile only here --
-      # otherwise they rot unnoticed (see the same step in pr-check.yml).
-      - name: Build every test target (including manual)
-        run: bazel build //tests:all --action_env=TMPDIR="$RUNNER_TEMP"
-        env:
-          TMPDIR: ${{ runner.temp }}
-
-      - name: Test
-        run: bazel test //tests:all --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
-        env:
-          TMPDIR: ${{ runner.temp }}
-
-  asan:
-    name: AddressSanitizer + UBSan
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.14.0
-        with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-asan
-          repository-cache: true
-
-      - name: Test with sanitizers
-        run: bazel test //tests:all --config=asan --test_output=errors --action_env=TMPDIR="$RUNNER_TEMP"
-        env:
-          TMPDIR: ${{ runner.temp }}
+      - name: The tag must point at a commit on master
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin master
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "ok: $GITHUB_SHA is on master, so it passed PR Check before being merged"
+            exit 0
+          fi
+          echo "::error::tag ${GITHUB_REF_NAME} points at $GITHUB_SHA, which is not on master."
+          echo "::error::Commits reach master only through a PR that passed PR Check; a tag"
+          echo "::error::anywhere else has no such guarantee, so it cannot become a release."
+          echo "::error::Merge the commit to master first, then tag it."
+          exit 1
 
   release:
     name: Create Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, test, asan]
+    needs: [gate, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

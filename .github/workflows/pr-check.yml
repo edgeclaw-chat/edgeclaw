@@ -5,6 +5,14 @@ on:
     branches:
       - master
 
+# Keyed on the PR number rather than on `github.ref`: within one PR only the newest push is
+# worth building, so older runs are superseded. The number is the stable identity of "this
+# PR"; `github.ref` on a pull_request event is the merge ref, which is a derived name and is
+# not what a reader expects a cancellation group to be keyed on.
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -75,6 +83,33 @@ jobs:
           CROSS_COMPILE: ${{ matrix.cross_compile && format('/usr/bin/{0}-', matrix.cross_compile) || '' }}
         run: |
           bazel build --compilation_mode=opt --verbose_failures --platforms=${{ matrix.platform }} ${{ matrix.bazel_target }} ${{ matrix.package_target }}
+
+      # The archive is built with -static and this asserts that the artifact users download
+      # actually needs nothing at run time -- the Windows leg checks its import table, and
+      # until this step existed the Linux ones asserted nothing.
+      #
+      # Only the native linux target: the cross-built ones cannot be inspected with the host's
+      # readelf/objdump, and the other runners do not have tools/check_static.sh's dependencies.
+      #
+      # The flags MUST be the same as the Build step above, --compilation_mode=opt and
+      # --platforms included. `bazel cquery` resolves its own configuration; asking it for the
+      # default one would name `bazel-out/k8-fastbuild/...`, a path that was never built, and
+      # the step would fail with "no release tarball was produced". That mismatch is exactly
+      # how this gate was born broken in build.yml, whose Build step runs in fastbuild -- so it
+      # queries in fastbuild too. release.yml checks the opt archives at release time; this is
+      # the same check moved to the moment a change is reviewable, since the release workflow
+      # no longer runs on every push to master.
+      - name: Verify the shipped binaries need no shared libraries
+        if: matrix.target == 'edgeclaw_amd64_linux'
+        run: |
+          set -euo pipefail
+          tarball=$(bazel cquery --output=files //:edgeclaw \
+                      --compilation_mode=opt --platforms=${{ matrix.platform }} \
+                      --action_env=TMPDIR="$RUNNER_TEMP" | head -1)
+          [ -n "$tarball" ] && [ -f "$tarball" ] || { echo "no release tarball was produced"; exit 1; }
+          tools/check_static.sh "$tarball"
+        env:
+          TMPDIR: ${{ runner.temp }}
 
   # The build matrix above proves the code COMPILES on ten targets. It was, until this job
   # existed, the only thing CI did -- which meant no test had ever run in CI and a tag

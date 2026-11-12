@@ -15,6 +15,19 @@ on:
       - dev
       - master
 
+# Pushing five times in a row used to queue five full runs, each finishing AFTER the next
+# commit had landed, so the only run whose result still described the branch tip was the
+# last one -- and the other four kept occupying runners and the checks list in the meantime.
+# Superseding them is free and changes nothing that is reported: a cancelled run is not a red
+# check, and the tip of the branch still gets exactly one complete run.
+#
+# `github.ref` (not `github.sha`) in the group: that is what makes consecutive pushes to the
+# same branch cancel each other instead of all running. A different branch is a different
+# group and is never cancelled by this one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     name: Build (linux/amd64)
