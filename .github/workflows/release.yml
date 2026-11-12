@@ -169,7 +169,9 @@ jobs:
         uses: bazel-contrib/setup-bazel@0.14.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.target }}
+          # Windows gets no disk cache: see build.yml. Unbounded MSVC .obj/.pdb files plus a
+          # key that hashes every BUILD file meant re-uploading 8 GB on most pushes.
+          disk-cache: ${{ matrix.target == 'edgeclaw_amd64_windows' && 'false' || format('{0}-{1}', github.workflow, matrix.target) }}
           repository-cache: true
 
       - name: Refresh the model catalog
