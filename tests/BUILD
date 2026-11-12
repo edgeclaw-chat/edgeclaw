@@ -1559,12 +1559,14 @@ cc_test(
         "tui_dispatch_msgs.h",
     ],
     deps = [
-        ":fake_release",
         "//src/tui:tui",
         "@ftxui//:dom",
         "@ftxui//:screen",
         "@sds//:sds",
-    ],
+    ] + select({
+        "//:windows": [],
+        "//conditions:default": [":fake_release"],
+    }),
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,
     # 这个 harness 会真起一个 app（临时 HOME + 最小 config），比纯渲染测试慢。
@@ -1708,6 +1710,9 @@ cc_library(
     # and test_app_boundary's bootstrap copies its own executable into ~/.local/bin -- a copy
     # of a dynamic binary cannot resolve $ORIGIN-relative libraries from its new location.
     linkstatic = True,
+    # POSIX only: it drives tls_stub.h, which includes <arpa/inet.h>. The tests that use it
+    # guard their fake-release cases with #ifndef _WIN32 and depend on it through select().
+    target_compatible_with = POSIX_ONLY,
     includes = ["."],
     deps = [
         "//src/common:common",
@@ -1739,14 +1744,17 @@ cc_test(
     name = "test_app_boundary",
     srcs = ["test_app_boundary.c", "test_fs_util.h"],
     deps = [
-        ":fake_release",
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",
         "//src/kernel:kernel",
         "@log.c//:log.c",
         "@sds//:sds",
-    ],
+    ] + select({
+        # POSIX only: it drives tls_stub.h. The fake-release cases are guarded by _WIN32.
+        "//:windows": [],
+        "//conditions:default": [":fake_release"],
+    }),
     linkopts = LINK_OPTS,
     # 真起 app（scheduler + sqlite + 3 个 actor 线程）+ 一次 endpoint 探测。
     timeout = "moderate",

@@ -23,7 +23,9 @@
 
 #include "edc_tui_window.hpp"
 #include "edc_compat.h"
+#ifndef _WIN32
 #include "fake_release.h"
+#endif
 #include "tui_dispatch_msgs.h"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -998,6 +1000,7 @@ int main()
         return 1;
     }
 
+#ifndef _WIN32
     /* 更新检查在 edc_app_new 里跑一次，所以服务器、endpoint 和 CA 包都必须在构造 TUIWindow
      * 之前就位。CA 包放 <workspace>/ssl/cacert.pem —— app 读的就是那个路径。
      *
@@ -1020,6 +1023,7 @@ int main()
         }
     }
 
+#endif
     edc::TUIWindow win(/*sandbox_override=*/0);
     if (!win.Ready())
     {
@@ -1050,6 +1054,11 @@ int main()
     TestInterruptedStartupHint(win);
     TestUpdateSurface(win);
     TestUpdateBanner(win);
+
+#ifndef _WIN32
+    /* The fake release server served its one connection; release the port and its files. */
+    fake_release_stop();
+#endif
 
     if (g_failures)
     {

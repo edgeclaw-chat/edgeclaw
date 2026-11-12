@@ -50,9 +50,13 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <unistd.h>
+#ifndef _WIN32
 #include "fake_release.h"
+#endif
 #include "test_fs_util.h"
 
 static int g_passed = 0;
@@ -1221,6 +1225,7 @@ static void on_update_found_recording(const char *tag, void *ud)
     g_found_fired = 1;
 }
 
+#ifndef _WIN32
 /* The JSON a release list would carry for this platform, one version up. */
 static sds release_json_for_this_platform(void)
 {
@@ -1230,6 +1235,8 @@ static sds release_json_for_this_platform(void)
                         "[{\"name\":\"%s_v9.9.9.tar.gz\"}]}]",
                         target);
 }
+
+#endif
 
 int main(int argc, char **argv)
 {
@@ -1242,53 +1249,63 @@ int main(int argc, char **argv)
 
     prepare_home();
 
+    /* Whether the local release server came up. On Windows the fake-release cases do not
+     * exist at all (the stub it needs is POSIX), so this stays false and the assertions below
+     * report themselves as skipped rather than disappearing silently. */
+    bool fake_release_up = false;
+
+#ifndef _WIN32
     /* The check runs once, inside edc_app_new, so everything it reads has to be in place
      * first: the server, the endpoint it answers on, and the CA bundle the app will verify it
      * with (the app reads <workspace>/ssl/cacert.pem). */
-    sds json = release_json_for_this_platform();
-    char url[256] = {0};
-    char cert[600] = {0};
-    bool fake_release_up = false;
-
-    if (fake_release_start(json, url, sizeof(url), cert, sizeof(cert)) == 0)
     {
-        char ssl_dir[700], cacert[800];
-        snprintf(ssl_dir, sizeof(ssl_dir), "%s/ssl", g_workspace);
-        test_mkdir_p(ssl_dir);
-        snprintf(cacert, sizeof(cacert), "%s/cacert.pem", ssl_dir);
+        sds json = release_json_for_this_platform();
+        char url[256] = {0};
+        char cert[600] = {0};
 
-        FILE *in = fopen(cert, "rb");
-        FILE *out = in ? fopen(cacert, "wb") : NULL;
-        if (out)
+        if (fake_release_start(json, url, sizeof(url), cert, sizeof(cert)) == 0)
         {
-            char buf[8192];
-            size_t n;
-            while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
-                fwrite(buf, 1, n, out);
-            fclose(out);
-            fake_release_up = true;
-        }
-        if (in)
-            fclose(in);
+            char ssl_dir[700], cacert[800];
+            snprintf(ssl_dir, sizeof(ssl_dir), "%s/ssl", g_workspace);
+            test_mkdir_p(ssl_dir);
+            snprintf(cacert, sizeof(cacert), "%s/cacert.pem", ssl_dir);
 
-        setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
-        setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
-        setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
+            FILE *in = fopen(cert, "rb");
+            FILE *out = in ? fopen(cacert, "wb") : NULL;
+            if (out)
+            {
+                char buf[8192];
+                size_t n;
+                while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+                    fwrite(buf, 1, n, out);
+                fclose(out);
+                fake_release_up = true;
+            }
+            if (in)
+                fclose(in);
+
+            setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
+            setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
+            setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
+        }
+        sdsfree(json);
     }
-    sdsfree(json);
+#endif
 
     start_app();
     if (!g_app)
     {
         fprintf(stderr, "could not start the app; nothing else can run\n");
+#ifndef _WIN32
         fake_release_stop();
+#endif
         return 2;
     }
 
     printf("\n── the release check, end to end ──\n");
     if (!fake_release_up)
     {
-        printf("    (skipped: could not start the local release server)\n");
+        printf("    (skipped: no local release server on this platform, or it would not start)\n");
     }
     else
     {
@@ -1303,11 +1320,13 @@ int main(int argc, char **argv)
         CHECK(strcmp(g_found_tag, "v9.9.9") == 0, "and handed over the offered tag");
     }
 
+#ifndef _WIN32
     /* The server answered its one connection; nothing else will use it. */
     fake_release_stop();
     unsetenv("EDGECLAW_UPDATE_RELEASES_URL");
     unsetenv("EDGECLAW_UPDATE_CURRENT_VERSION");
     unsetenv("EDGECLAW_UPDATE_CHECK_DELAY_MS");
+#endif
 
     /* Pure projections first: they need no app, and running them before the app-touching
      * cases keeps a failure here unambiguous. */
