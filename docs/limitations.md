@@ -7,7 +7,7 @@ a limitation nobody wrote down becomes a bug report, and a limitation written do
 If something here is wrong — a feature listed as missing that now exists — that is a bug in
 this file. Fix the file in the same commit that adds the feature.
 
-Last reviewed: 2026-11-06 (v1.0.0 release preparation).
+Last reviewed: 2026-11-12 (v1.0.0 release preparation).
 
 ---
 
@@ -130,29 +130,86 @@ Memory entries are curated per session and injected into requests. Two things to
   **newer** schema is refused, and the message says to update EdgeClaw — never to delete
   anything. Downgrading the binary is not supported and cannot be.
 
+## Updating
+
+The check, the banner and `/update` ship in this release, so what they do *not* cover belongs
+here rather than in an issue tracker.
+
+**Only the installer's own copies can update themselves.** `edc_upgrade_detect()` recognises
+exactly `$HOME/.local/bin` and `$HOME/bin` (after path normalisation), which is where
+`tools/install.sh` puts the binary by default. Anything else — a container image, an install
+with `--dir` somewhere else, a binary copied by hand, a build tree — gets the manual command
+instead of a button. That narrowing is deliberate: matching more eagerly means running an
+installer against a directory nobody put the binary in.
+
+**A build that is not a release does not check at all.** `edc_version()` returns the commit
+hash for a development build, `edc_semver_is_valid()` rejects it, and the check is skipped with
+a log line saying so. Only a tagged build can tell whether a release is newer. This is why the
+banner cannot be observed during development without `--update-check --current <ver>`.
+
+**The check is silent on every failure.** Offline, DNS, a TLS error, a response body over
+1 MiB, malformed JSON, and the unauthenticated API's **60 requests/hour/IP** limit (a 403) all
+produce the same thing: no banner, no message, one `log_debug` line that never reaches the log
+file. That is the intended behaviour — a background check has nothing to tell a user that they
+could act on — but it means "no banner" is not evidence that the check ran.
+
+**Turning the check off also disables `/update`.** With `update_check: false` no check runs, so
+no version is ever on offer, so `/update` always answers "No update available". The network is
+completely quiet, which is what the setting promises, at the cost of the manual path through the
+command. To update with the check off, use the command the installer prints.
+
+**Once per launch, not once per session.** Roughly 10s after startup, with a 10s timeout. A
+session left open for days never looks again.
+
+**No automatic restart.** The new binary is in place; quitting and starting again is the user's
+step. An automatic restart would interrupt whatever task is running.
+
+**No downgrade, ever.** The database migrates forward on the first start of the new build, and
+an older binary refuses it afterwards. The confirmation page says this before the button, and it
+is the reason an update is not something to click casually.
+
+**Abandoning mid-upgrade can leave the install half-done.** Esc while it runs kills the
+installer; whether the binary was replaced depends on how far it had got. The confirmation page
+says so before the user starts, not after. One rough edge: Esc during the *download* stage
+cannot interrupt the fetch (it has no cancellation hook), so the interface waits for it to
+return — up to its 15s timeout — before the process is torn down. During the install itself the
+kill is immediate.
+
+**One upgrade at a time**, and each platform needs its own shell: `sh` plus `curl` or `wget` on
+POSIX (the installer's own requirement), `powershell` on Windows (`install.ps1` then uses
+`Invoke-WebRequest`, `tar` and `Get-FileHash`, all built in).
+
+**Two platforms have no build at all**, and both installers refuse them explicitly rather than
+installing something that will not run:
+
+| Platform | Why |
+|---|---|
+| macOS x86_64 (Intel) | No target in the release matrix — only `edgeclaw_aarch64_macos` is built and published. |
+| Windows arm64 | Same: only `edgeclaw_amd64_windows`. `PROCESSOR_ARCHITECTURE` must be `AMD64`. |
+
 ## Not verified
 
 Stated plainly, because "it compiles" is not evidence:
 
 | Area | State |
 |---|---|
-| Line coverage | **63%** — what [Codecov](https://app.codecov.io/github/edgeclaw-chat/edgeclaw) reports for `master`, over 25933 lines across 133 files. It counts a line whose branches were not all taken as **not** covered, which is why it reads lower than the ~81% an lcov `LH/LF` total gives for the same run (80.9%); the difference is the partially-executed lines. The exact counts move by a line or two between runs, because a few paths are timing-dependent — the percentage does not. For reference, the lcov report also measures functions 92.1% and branches 59.8%; Codecov reports neither. The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are covered, so are the first-run wizard, the frontend's C surface, `exec_shell`'s timeout/abort paths and the store's id-collision / measured-flush paths. |
-| Windows | Builds in CI. The PPPoS transport and the kernel sandbox do not exist there. Not exercised by hand on real hardware for this release. The owner-only protections (`~/.edgeclaw` and the workspace at `0700`, `config.json` and the database at `0600`) are **not implemented on Windows**: `edc_file_restrict_owner()` is a documented no-op there rather than a fabricated ACL, so those files keep the inherited ACL. |
+| Line coverage | **63.3%** — what [Codecov](https://app.codecov.io/github/edgeclaw-chat/edgeclaw) reports for `dev` at `e9a7fbf`, over 26348 instrumented lines across 137 files, re-measured 2026-11-12. It counts a line whose branches were not all taken as **not** covered, which is why it reads lower than the ~81% an lcov `LH/LF` total gives for the same run (81.2%, 21849/26899); the difference is the partially-executed lines. For reference, the lcov report from that run also measures functions 91.0% (1888/2074) and branches 58.3% (15475/26524); Codecov reports neither. All of these are measured with the three device tests excluded, the same way CI measures them. The counts move by a line or two between runs, because a few paths are timing-dependent — the percentage does not. The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are covered, so are the first-run wizard, the frontend's C surface, `exec_shell`'s timeout/abort paths and the store's id-collision / measured-flush paths. |
+| Windows | Builds in CI, and needs **no bash** to build: every `genrule` carries a `cmd_bat`, so Bazel runs those through `cmd.exe` (`tools/check_genrule_portability.py` enforces it). The PPPoS transport and the kernel sandbox do not exist there. The installer (`tools/install.ps1`) is exercised in CI under `pwsh` on Linux against a local TLS fixture server, and **not on real Windows hardware** for this release — so its `Invoke-WebRequest`/`tar`/`Get-FileHash` path is asserted, not observed. The owner-only protections (`~/.edgeclaw` and the workspace at `0700`, `config.json` and the database at `0600`) are **not implemented on Windows**: `edc_file_restrict_owner()` is a documented no-op there rather than a fabricated ACL, so those files keep the inherited ACL. |
 | armv7 | Built locally (cross) and **run under `qemu-arm`**: the released shape of the binary starts and reports `platform linux/arm`. Not run on real armv7 hardware, and the Android device agent is compiled only. |
 | Real-model behaviour | The suite drives a fake LLM. Prompt and tool-choice quality is not asserted anywhere. |
 | macOS | Builds in CI (aarch64). Seatbelt sandbox paths are compiled, not exercised. The owner-only modes and the credential deny list added for this release are POSIX-guarded and were verified on Linux only; whether Seatbelt honours the same deny masks is not asserted. |
+| Updating | The check and the installer are driven end to end against a local TLS server (`tests/test_update_check.c`), and the real endpoint was exercised once by hand. What is **not** asserted anywhere: that a real release archive upgrades a real installation, that the installer succeeds on a real user's machine, and that the banner/dialog path is reached in a live session (it needs a published release and a version that parses — neither exists during development). |
 
 ## Known sharp edges
 
 Not "unverified" — verified, and wrong in a narrow case:
 
 - **`--update-check` answers a question the app cannot otherwise be observed asking.** The
-  release check runs once per launch, silently: it reports nothing when offline, rate limited,
-  or when no release is newer, and a build whose version is not a release (a development
-  build reports its commit hash) skips it entirely. `edgeclaw --update-check [--pre]
-  [--current <ver>]` runs it synchronously and prints the answer, which is the only way to
-  exercise the network path without publishing a release. `--current` exists because a dev
-  build has no version to compare; it affects that diagnostic only.
+  release check is silent by design (see "Updating" above), so "no banner" never distinguishes
+  "nothing newer" from "the check never ran". `edgeclaw --update-check [--pre] [--current <ver>]`
+  runs it synchronously and prints the answer, which is the only way to exercise the network
+  path without publishing a release. `--current` exists because a development build has no
+  version to compare; it affects that diagnostic only.
 
 - **An update proves the bytes arrived intact, not who sent them.** The installer compares
   each archive against the `sha256sums.txt` published next to it, which catches a truncated

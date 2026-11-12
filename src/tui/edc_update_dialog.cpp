@@ -27,8 +27,8 @@ constexpr int kMaxDetailLines = 10;
 
 } // namespace
 
-UpdateDialog::UpdateDialog(StartFn on_start, HintFn on_hint)
-    : on_start_(std::move(on_start)), on_hint_(std::move(on_hint))
+UpdateDialog::UpdateDialog(StartFn on_start, HintFn on_hint, CancelFn on_cancel)
+    : on_start_(std::move(on_start)), on_hint_(std::move(on_hint)), on_cancel_(std::move(on_cancel))
 {
 }
 
@@ -79,8 +79,11 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
 
     if (event == Event::Escape)
     {
-        /* Every state closes on Esc, including RUNNING: abandoning an upgrade has to be
-         * possible, and the confirmation page already said what that costs. */
+        /* Every state closes on Esc. While RUNNING, closing also has to CANCEL: hiding the
+         * dialog and letting the installer run on would leave the user believing they
+         * abandoned an upgrade that is still replacing their binary. */
+        if (state_ == State::RUNNING && on_cancel_)
+            on_cancel_();
         Close();
         return true;
     }

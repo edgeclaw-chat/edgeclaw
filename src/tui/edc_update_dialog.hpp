@@ -48,8 +48,11 @@ class UpdateDialog : public Widget
     using StartFn = std::function<void(const std::string &tag)>;
     /* Ask for the manual command to show (the host knows the version and the platform). */
     using HintFn = std::function<std::string()>;
+    /* Abandon an upgrade in flight. Without this, Esc would only hide the dialog and the
+     * installer would keep running with nobody watching -- the worst of both. */
+    using CancelFn = std::function<void()>;
 
-    UpdateDialog(StartFn on_start, HintFn on_hint);
+    UpdateDialog(StartFn on_start, HintFn on_hint, CancelFn on_cancel);
 
     /* Show the confirmation for |tag|, or the "cannot upgrade here" page when |can_upgrade| is
      * false (a copy the installer did not put there, or a platform without one). */
@@ -69,9 +72,9 @@ class UpdateDialog : public Widget
      * abandoned upgrade cannot overwrite a newer dialog. */
     void OnResult(bool ok, const std::string &detail);
 
-    /* Esc: available in every state. While RUNNING it means "abandon" -- the host cancels the
-     * process and the dialog closes; the install may or may not have completed, which is why
-     * the confirmation text warns before the user starts. */
+    /* Esc: available in every state. While RUNNING it means "abandon": the host is told to
+     * cancel, which kills the installer if it is still running. It cannot undo an install that
+     * already completed, which is why the confirmation warns before the user starts. */
     bool OnEvent(::ftxui::Event event) override;
 
   protected:
@@ -83,6 +86,7 @@ class UpdateDialog : public Widget
 
     StartFn on_start_;
     HintFn on_hint_;
+    CancelFn on_cancel_;
 
     bool open_ = false;
     State state_ = State::CONFIRM;

@@ -322,7 +322,12 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
                     screen_->RequestAnimationFrame();
             }
         },
-        [this]() { return app_->UpdateManualHint(); });
+        [this]() { return app_->UpdateManualHint(); },
+        /* Esc while the installer runs: kill it. This is the difference between "abandoned"
+         * and "hidden but still replacing your binary". A cancel during the download stage
+         * waits for that fetch to return (it has no cancellation hook), which is at most its
+         * own timeout. */
+        [this]() { app_->UpdateCancel(); });
 
     /* The check reports here, on the UI thread (the facade marshals it). Record the tag and
      * ask for a frame: the screen is idle by the time the check lands, so without the request
