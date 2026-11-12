@@ -7,8 +7,12 @@ untested commit, or an archive that redistributes a library without its licence.
 **Branch model.** `dev` is the trunk — all work lands there. `master` is the release branch:
 it is only ever a merge of `dev` (the history is literally `Merge pull request #NN from
 edgeclaw-chat/dev`), never committed to directly. A version is a tag on `master`.
-`.github/workflows/release.yml` builds on every push to `master` (an early warning that the
-release builds still work) and publishes only for `v*` tags.
+`.github/workflows/release.yml` publishes only for `v*` tags. It no longer builds on every
+push to `master`: that built the whole matrix and re-ran the test suite for a commit the
+`dev → master` PR had already verified, so `master` correctness is established before the
+merge. What a tag has to prove instead is that it points at a commit on `master` at all —
+the `gate` job asserts that with `git merge-base --is-ancestor` and fails the release
+otherwise.
 
 ---
 
@@ -19,9 +23,14 @@ release builds still work) and publishes only for `v*` tags.
 so trunk was the one branch CI never touched. If a badge on the README reads "no status",
 this is the first thing to check: the workflow may simply not have run yet.
 
+Both of those workflows supersede their own older runs (`concurrency` + `cancel-in-progress`),
+so pushing three times in a row leaves one run per workflow, for the newest commit. That is
+the one to look at; the cancelled ones are not failures.
+
 - [ ] The latest `dev` push is green: `Build`, and both `Tests` jobs that gate a release
-      (`Test`, `AddressSanitizer + UBSan`). `release` will not start until `build`/`test`/
-      `asan` pass on the `dev → master` PR.
+      (`Test`, `AddressSanitizer + UBSan`). `release` will not start until its `gate` job
+      agrees that the tagged commit is on `master`, and until `build` succeeds.
+
 - [ ] The `dev → master` PR is green: the ten-platform `build` matrix, `test`, `asan`, the
       licence check and the archive check.
 - [ ] `bazel build //tests:all` passes. It is a separate check from `bazel test` because
@@ -126,12 +135,15 @@ The one thing that can silently destroy a user's history.
   redistributed component.
 - [ ] `docs/limitations.md` is current. Anything fixed in this release that appears there
       should move to its "fixed before v1.0.0" section in the same commit.
-- [ ] The sanitizer gate is HARD, not report-only. This is the state as of 2026-11-10 and it
+- [ ] The sanitizer gate is HARD, not report-only. This is the state as of 2026-11-13 and it
       is enforced by the workflows rather than by a flag: the `asan` job
-      (`AddressSanitizer + UBSan`) has no `continue-on-error` in any of `tests.yml`,
-      `pr-check.yml` or `release.yml`, and `release` declares it as a dependency. So a
-      sanitizer failure blocks the PR and the release. Re-read this line if that ever
-      changes — a gate nobody checks is how "report-only" creeps back in.
+      (`AddressSanitizer + UBSan`) has no `continue-on-error` in either `tests.yml` (every
+      push to `dev`) or `pr-check.yml` (every PR to `master`), so a sanitizer failure blocks
+      the PR. `release.yml` no longer runs it at all — it used to, and `release` used to
+      declare it as a dependency; now the guarantee comes from `gate`, which refuses to
+      release a tag that is not on `master`, and nothing reaches `master` with a red `asan`.
+      Re-read this line if that ever changes — a gate nobody checks is how "report-only"
+      creeps back in.
 - [ ] The coverage number quoted in `docs/limitations.md` matches what Codecov shows for
       `master`. It is re-measured, not remembered: the document once quoted a baseline two
       months and 585 lines out of date, which made it wrong in a way no test would catch.

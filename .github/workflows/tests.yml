@@ -20,6 +20,13 @@ on:
       - dev
       - master
 
+# Same reason as build.yml: consecutive pushes to one branch describe the same question, and
+# only the newest answer is worth waiting for. The Windows leg below takes 15-20 minutes, so
+# a superseded one is also the most expensive thing to leave running.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test
