@@ -40,6 +40,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_models.h"
+#include "edc_update.h"
 #include "sds.h"
 
 #include <stdio.h>
@@ -49,6 +50,7 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "fake_release.h"
 #include "test_fs_util.h"
 
 static int g_passed = 0;
@@ -215,7 +217,7 @@ static void reexec_as_installed(int argc, char **argv)
 #endif
 }
 
-static void setup(void)
+static void prepare_home(void)
 {
     const char *tmp = getenv("TEST_TMPDIR");
     if (!tmp || !*tmp)
@@ -275,7 +277,13 @@ static void setup(void)
     setenv("EDGECLAW_MASTER_KEY", "app-boundary-master-key", 1);
     setenv("EDGECLAW_MODELS_CATALOG", catalog, 1);
     edc_models_reset(); /* the loader is a process-wide cache; start from our file */
+}
 
+/* Split from prepare_home() so a caller can put things in place that edc_app_new() reads at
+ * construction -- the release endpoint and the CA bundle it is reached with. The update check
+ * runs ONCE, inside the constructor, so there is no later hook to set them from. */
+static void start_app(void)
+{
     /* setup=false: config.json exists, so this is the normal startup path. */
     g_app = edc_app_new(false, /*sandbox_override=*/-1);
 }
@@ -1134,16 +1142,113 @@ static void test_ensure_parent_dir_refuses_what_is_not_a_path()
     CHECK(access("/tmp/edgeclaw-outside-the-workspace", F_OK) != 0, "and was not created");
 }
 
+/* ── the check, end to end, against a local release server ──────────────────
+ *
+ * This is the case that makes the rest testable: it starts a real TLS server answering the
+ * releases endpoint, points the app at it, and lets the app's OWN one-shot check run. What it
+ * proves is the whole chain -- service, fetch, JSON, selection, the C observer -- rather than
+ * each piece against a stub.
+ *
+ * Three environment values make it reachable, all read in edc_app_new:
+ *   EDGECLAW_UPDATE_RELEASES_URL      where the check goes
+ *   EDGECLAW_UPDATE_CURRENT_VERSION   what it compares against (a dev build's commit hash is
+ *                                     not a version, so the check would skip itself)
+ *   EDGECLAW_UPDATE_CHECK_DELAY_MS    skip the ten seconds meant to keep the launch path clear
+ *
+ * The app is created AFTER these are set, because the check runs inside edc_app_new.
+ */
+static volatile int g_found_fired = 0;
+static char g_found_tag[64];
+
+static void on_update_found_recording(const char *tag, void *ud)
+{
+    (void)ud;
+    snprintf(g_found_tag, sizeof(g_found_tag), "%s", tag ? tag : "");
+    g_found_fired = 1;
+}
+
+/* The JSON a release list would carry for this platform, one version up. */
+static sds release_json_for_this_platform(void)
+{
+    const char *target = edc_update_target();
+    return sdscatprintf(sdsempty(),
+                        "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"assets\":"
+                        "[{\"name\":\"%s_v9.9.9.tar.gz\"}]}]",
+                        target);
+}
+
 int main(int argc, char **argv)
 {
     reexec_as_installed(argc, argv);
 
-    setup();
+    prepare_home();
+
+    /* The check runs once, inside edc_app_new, so everything it reads has to be in place
+     * first: the server, the endpoint it answers on, and the CA bundle the app will verify it
+     * with (the app reads <workspace>/ssl/cacert.pem). */
+    sds json = release_json_for_this_platform();
+    char url[256] = {0};
+    char cert[600] = {0};
+    bool fake_release_up = false;
+
+    if (fake_release_start(json, url, sizeof(url), cert, sizeof(cert)) == 0)
+    {
+        char ssl_dir[700], cacert[800];
+        snprintf(ssl_dir, sizeof(ssl_dir), "%s/ssl", g_workspace);
+        test_mkdir_p(ssl_dir);
+        snprintf(cacert, sizeof(cacert), "%s/cacert.pem", ssl_dir);
+
+        FILE *in = fopen(cert, "rb");
+        FILE *out = in ? fopen(cacert, "wb") : NULL;
+        if (out)
+        {
+            char buf[8192];
+            size_t n;
+            while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+                fwrite(buf, 1, n, out);
+            fclose(out);
+            fake_release_up = true;
+        }
+        if (in)
+            fclose(in);
+
+        setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
+        setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
+        setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
+    }
+    sdsfree(json);
+
+    start_app();
     if (!g_app)
     {
         fprintf(stderr, "could not start the app; nothing else can run\n");
+        fake_release_stop();
         return 2;
     }
+
+    printf("\n── the release check, end to end ──\n");
+    if (!fake_release_up)
+    {
+        printf("    (skipped: could not start the local release server)\n");
+    }
+    else
+    {
+        edc_app_set_update_observer(g_app, on_update_found_recording, NULL);
+
+        /* The check runs on a worker thread and posts back through the loop, so this waits for
+         * the loop to deliver it. Bounded well above the fetch's own timeout. */
+        for (int i = 0; i < 400 && !g_found_fired; i++)
+            usleep(25 * 1000);
+
+        CHECK(g_found_fired == 1, "the app's own check found the release and called the observer");
+        CHECK(strcmp(g_found_tag, "v9.9.9") == 0, "and handed over the offered tag");
+    }
+
+    /* The server answered its one connection; nothing else will use it. */
+    fake_release_stop();
+    unsetenv("EDGECLAW_UPDATE_RELEASES_URL");
+    unsetenv("EDGECLAW_UPDATE_CURRENT_VERSION");
+    unsetenv("EDGECLAW_UPDATE_CHECK_DELAY_MS");
 
     /* Pure projections first: they need no app, and running them before the app-touching
      * cases keeps a failure here unambiguous. */

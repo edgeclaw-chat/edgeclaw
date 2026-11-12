@@ -1559,6 +1559,7 @@ cc_test(
         "tui_dispatch_msgs.h",
     ],
     deps = [
+        ":fake_release",
         "//src/tui:tui",
         "@ftxui//:dom",
         "@ftxui//:screen",
@@ -1691,6 +1692,27 @@ cc_test(
     target_compatible_with = POSIX_ONLY,
 )
 
+# Shared test helper: a one-shot local TLS server that answers the release endpoint with a
+# given JSON. A cc_library rather than a header, so the .c is compiled as C for the C++ tests
+# too (tls_stub.h is header-only C and does not survive a C++ include).
+cc_library(
+    name = "fake_release",
+    testonly = True,
+    srcs = ["fake_release.c"],
+    hdrs = [
+        "fake_release.h",
+        "test_fs_util.h",
+        "tls_stub.h",
+    ],
+    includes = ["."],
+    deps = [
+        "//src/common:common",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+)
+
 cc_test(
     name = "test_setup_dialog",
     srcs = ["test_setup_dialog.cpp"],
@@ -1713,6 +1735,7 @@ cc_test(
     name = "test_app_boundary",
     srcs = ["test_app_boundary.c", "test_fs_util.h"],
     deps = [
+        ":fake_release",
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",

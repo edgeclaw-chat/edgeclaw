@@ -23,6 +23,7 @@
 
 #include "edc_tui_window.hpp"
 #include "edc_compat.h"
+#include "fake_release.h"
 #include "tui_dispatch_msgs.h"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -900,6 +901,9 @@ void TestInterruptKeys(edc::TUIWindow &win)
 
 } // namespace
 
+/* Set by main() when the local release server came up; the banner case needs it. */
+static bool g_fake_release_up = false;
+
 void TestUpdateSurface(edc::TUIWindow &win)
 {
     std::cout << "更新入口（横幅 / /update / 升级协调）\n";
@@ -910,8 +914,7 @@ void TestUpdateSurface(edc::TUIWindow &win)
      * 它必须说自己不能升级，而不是给一个必然失败的按钮。 */
     Check(!app->UpdateCanSelfUpgrade(), "构建树里的二进制报告自己不能自升级");
 
-    /* 不能升级就不该开始：既不取脚本，也不起子进程 —— 所以这条用例没有网络和孤儿进程
-     * 需要清理。 */
+    /* 不能升级就不该开始：既不取脚本，也不起子进程。 */
     bool done_called = false;
     Check(!app->UpdateStart("v9.9.9", [&](bool, std::string) { done_called = true; }),
           "不能自升级时 update_start 直接拒绝");
@@ -930,13 +933,57 @@ void TestUpdateSurface(edc::TUIWindow &win)
     /* 构造之后再注册观察者是允许的（前端就是构造完才注册）。 */
     app->SetUpdateObserver([](std::string) {});
     Check(true, "构造后可以再注册更新观察者");
+}
 
-    /* 没有任何版本在兜里时 `/update` 走的是真实输入路径：清空输入、提示无可更新，
-     * 而不是打开一个空对话框。 */
+/* 横幅 / `/update` 弹框：只有"检查真的找到了版本"才走得到。
+ *
+ * 靠 main() 在构造窗口之前起的那个本地假发布服务器 —— 检查在 edc_app_new 里跑一次，
+ * 所以这里断言的是它跑过之后的状态：facade 的 UpdateFoundTrampoline 把 tag 送进
+ * TUIWindow，update_tag_ 因此非空，横幅出现，`/update` 打开对话框。
+ *
+ * 这同时是唯一能走到 AppFacade::UpdateFoundTrampoline 的路径 —— 它是 static C 回调，
+ * 除了"检查找到版本"没有别的入口。 */
+void TestUpdateBanner(edc::TUIWindow &win)
+{
+    std::cout << "更新横幅（检查找到版本之后）\n";
+
+    if (!g_fake_release_up)
+    {
+        std::cout << "  (跳过：本地假发布服务器没起来)\n";
+        return;
+    }
+
+    /* 检查在窗口构造时就跑了，结果经 facade 的 trampoline 投递到 UI 线程，并在那一帧
+     * 请求重绘。等它落地再读屏幕。 */
+    std::string frame;
+    for (int i = 0; i < 200; i++)
+    {
+        frame = FrameOf(win);
+        if (Has(frame, "v9.9.9"))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+
+    Check(Has(frame, "v9.9.9"), "横幅上屏：检查找到的版本号出现了");
+    Check(Has(frame, "is available"), "横幅说明了有新版本可用");
+    Check(Has(frame, "/update"), "横幅提示用 /update 安装");
+
+    /* `/update` 打开模态对话框。这份二进制在 bazel-bin 里（不是安装器的副本），所以它走的是
+     * "无法自升级"那一页 —— 而不是"确认更新"那一页。这正是要断言的分支：能给的手动命令
+     * 才是它该说的话，而不是一个必然失败的按钮。
+     *
+     * （"确认更新"那一页由 test_update_dialog 直接驱动，不需要这里再走一遍。） */
     TypeAndSubmit(win, "/update");
-    const std::string frame = FrameOf(win);
-    Check(Has(frame, "No update available"), "没有可更新版本时 /update 会明说");
-    Check(!Has(frame, "cannot update itself"), "而不是弹出无法自升级的对话框");
+    const std::string modal = FrameOf(win);
+    Check(Has(modal, "cannot update itself"), "/update 打开了对话框，并说明这份副本不能自升级");
+    Check(Has(modal, "To update by hand"), "并把该手敲的命令给出来");
+    Check(Has(modal, "Close"), "对话框有关闭按钮");
+
+    /* Esc 关掉它。 */
+    Check(win.OnEvent(::ftxui::Event::Escape), "Esc 被吃掉");
+    const std::string after = FrameOf(win);
+    Check(!Has(after, "cannot update itself"), "Esc 把对话框关掉了");
+    Check(Has(after, "v9.9.9"), "横幅还在（它是个常驻事实，不是一次提示）");
 }
 
 int main()
@@ -949,6 +996,28 @@ int main()
     {
         std::cout << "  FAIL 准备临时 HOME 失败（没有 TEST_TMPDIR？）\n";
         return 1;
+    }
+
+    /* 更新检查在 edc_app_new 里跑一次，所以服务器、endpoint 和 CA 包都必须在构造 TUIWindow
+     * 之前就位。CA 包放 <workspace>/ssl/cacert.pem —— app 读的就是那个路径。
+     *
+     * 这三条环境变量是 edc_app.c 里的注入点（同 EDGECLAW_MODELS_CATALOG 那一类）：URL 指到
+     * 本地假服务器、版本给一个可解析的值（dev 构建报的是 commit hash，检查会直接跳过）、
+     * 延迟设 0 以免为了等那十秒而拖慢测试。 */
+    {
+        char url[256] = {0};
+        char cert[600] = {0};
+        if (fake_release_start_newer("v9.9.9", url, sizeof(url), cert, sizeof(cert)) == 0)
+        {
+            std::filesystem::create_directories(home + "/.edgeclaw/workspace/ssl");
+            std::error_code ec;
+            std::filesystem::copy_file(cert, home + "/.edgeclaw/workspace/ssl/cacert.pem",
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            g_fake_release_up = !ec;
+            setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
+            setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
+            setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
+        }
     }
 
     edc::TUIWindow win(/*sandbox_override=*/0);
@@ -980,6 +1049,7 @@ int main()
     TestInterruptKeys(win);
     TestInterruptedStartupHint(win);
     TestUpdateSurface(win);
+    TestUpdateBanner(win);
 
     if (g_failures)
     {
