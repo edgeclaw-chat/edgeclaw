@@ -120,11 +120,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No disk cache on Windows, deliberately. Bazel's disk cache never evicts, and MSVC's
+      # .obj/.pdb files took D:/_bazel-disk to 7.3 GB in a day (zstd barely compresses them).
+      # setup-bazel keys that cache on a hash of every BUILD file, so each commit that touches
+      # one produces a NEW key and the action's post step tars + zstd-compresses the whole
+      # directory to upload it: measured 8.16 GB, 16m24s inside `tar` alone, 17m08s for the
+      # step -- against a 3-minute build. An ~8 GB entry also pushes the repository past its
+      # 10 GB cache quota next to everything else, so it is evicted right after being written
+      # and the next run misses again: the loop never becomes a hit. Keep the 52 MB bazelisk
+      # and 80 MB repository caches, which are what actually make `Setup Bazel` fast; drop
+      # this one. The build recompiles, but no step takes longer than the job.
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@0.14.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-build-windows
+          disk-cache: false
           repository-cache: true
 
       # No toolchain stanzas and no compiler installation: MSVC comes from the runner's

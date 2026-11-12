@@ -82,11 +82,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same reason as the Windows job in build.yml: the disk cache is unbounded, MSVC made it
+      # 7.3 GB, and the post step's tar+zstd of it cost 3 to 17 minutes depending on how much
+      # had accumulated. Measured on run 43197992345: `Post Setup Bazel` 17m08s, Build+Test
+      # 3m29s. The bazelisk and repository caches are small and are kept.
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@0.14.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-test-windows
+          disk-cache: false
           repository-cache: true
 
       # No toolchain stanza: MSVC comes from the runner's Visual Studio Build Tools and Bazel

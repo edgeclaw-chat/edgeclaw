@@ -64,7 +64,10 @@ jobs:
         uses: bazel-contrib/setup-bazel@0.14.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.target }}
+          # No disk cache for the Windows leg, for the reason spelled out in build.yml: the
+          # cache is unbounded (7.3 GB of MSVC .obj/.pdb), the action keys it on a hash of the
+          # BUILD files, and the post step then spends 3-17 minutes tarring and uploading it.
+          disk-cache: ${{ matrix.target == 'edgeclaw_amd64_windows' && 'false' || format('{0}-{1}', github.workflow, matrix.target) }}
           repository-cache: true
 
       - name: Build
