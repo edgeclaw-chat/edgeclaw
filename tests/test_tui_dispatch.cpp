@@ -900,6 +900,45 @@ void TestInterruptKeys(edc::TUIWindow &win)
 
 } // namespace
 
+void TestUpdateSurface(edc::TUIWindow &win)
+{
+    std::cout << "更新入口（横幅 / /update / 升级协调）\n";
+
+    auto *app = win.App();
+
+    /* 这份二进制在 bazel-bin 里，不在 ~/.local/bin —— 正是"不是安装器装的"那种情况。
+     * 它必须说自己不能升级，而不是给一个必然失败的按钮。 */
+    Check(!app->UpdateCanSelfUpgrade(), "构建树里的二进制报告自己不能自升级");
+
+    /* 不能升级就不该开始：既不取脚本，也不起子进程 —— 所以这条用例没有网络和孤儿进程
+     * 需要清理。 */
+    bool done_called = false;
+    Check(!app->UpdateStart("v9.9.9", [&](bool, std::string) { done_called = true; }),
+          "不能自升级时 update_start 直接拒绝");
+    Check(!done_called, "被拒绝时完成回调不会被调用");
+
+    /* 什么都没跑的时候取消是空操作，不是崩溃：Esc 在任何状态都能到达这里。 */
+    app->UpdateCancel();
+    Check(true, "没有升级在跑时取消是空操作");
+
+    /* 手动命令是不能自升级时的兜底，所以它永远不能是空的。 */
+    const std::string hint = app->UpdateManualHint();
+    Check(!hint.empty(), "手动升级命令非空");
+    Check(hint.find("releases") != std::string::npos || hint.find("install.") != std::string::npos,
+          "手动命令指向 release 页或安装器");
+
+    /* 构造之后再注册观察者是允许的（前端就是构造完才注册）。 */
+    app->SetUpdateObserver([](std::string) {});
+    Check(true, "构造后可以再注册更新观察者");
+
+    /* 没有任何版本在兜里时 `/update` 走的是真实输入路径：清空输入、提示无可更新，
+     * 而不是打开一个空对话框。 */
+    TypeAndSubmit(win, "/update");
+    const std::string frame = FrameOf(win);
+    Check(Has(frame, "No update available"), "没有可更新版本时 /update 会明说");
+    Check(!Has(frame, "cannot update itself"), "而不是弹出无法自升级的对话框");
+}
+
 int main()
 {
     // ftxui 的测试进程没有 tty：先声明颜色支持，断言前再看文本（见 test_theme.cpp）。
@@ -940,6 +979,7 @@ int main()
     TestInputModeTag(win);
     TestInterruptKeys(win);
     TestInterruptedStartupHint(win);
+    TestUpdateSurface(win);
 
     if (g_failures)
     {

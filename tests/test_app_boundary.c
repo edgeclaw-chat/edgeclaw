@@ -781,6 +781,85 @@ static void test_lifecycle_entry_points_tolerate_null()
     CHECK(edc_app_channel_actor(NULL) == NULL, "channel_actor(NULL) is NULL");
 }
 
+/* ── The release check / upgrade surface ────────────────────────────────── */
+
+/* A callback the app would call when a newer release is found. It cannot be invoked from
+ * here (that needs the background check to have run and found one), but registering it is
+ * what the frontend does at startup, and the null-app paths are what a failed startup hits. */
+static void on_update_found(const char *tag, void *ud)
+{
+    (void)tag;
+    (void)ud;
+}
+
+static void on_upgrade_done(bool ok, const char *detail, void *ud)
+{
+    (void)ok;
+    (void)detail;
+    (void)ud;
+}
+
+static void test_update_surface_on_a_real_app()
+{
+    TEST("the update surface answers on a real app");
+
+    /* Registering the observer is what TUIWindow does right after construction. Nothing
+     * observable happens until the check fires, so the contract here is "it does not crash and
+     * the app keeps working". */
+    edc_app_set_update_observer(g_app, on_update_found, g_app);
+    CHECK(1, "an observer can be registered");
+
+    /* This binary lives in bazel-bin, not in ~/.local/bin, so it is exactly the "installed by
+     * something else" case: it must say it cannot upgrade itself rather than offering a button
+     * that would fail. */
+    CHECK(!edc_app_update_can_self_upgrade(g_app),
+          "a build-tree binary reports that it cannot upgrade itself");
+
+    /* With no usable installer, starting is refused before anything is fetched or spawned --
+     * which is also why this test has no network or child process to clean up. */
+    CHECK(!edc_app_update_start(g_app, "v9.9.9", on_upgrade_done, g_app),
+          "update_start refuses when the copy cannot upgrade itself");
+
+    /* Cancelling when nothing runs is a no-op, not a crash: Esc reaches it from every state. */
+    edc_app_update_cancel(g_app);
+    CHECK(1, "cancelling with nothing in flight is a no-op");
+
+    /* The manual hint is the fallback for exactly the case above, so it must never be empty
+     * and must point at where the release actually is. */
+    char buf[512];
+    memset(buf, 0, sizeof(buf));
+    edc_app_update_manual_hint(g_app, buf, sizeof(buf));
+    CHECK(buf[0] != '\0', "the manual hint is never empty");
+    CHECK(strstr(buf, "releases") != NULL || strstr(buf, "install.") != NULL,
+          "and points at the release page or the installer");
+
+    /* A buffer too small must be handled, not overflowed. */
+    char tiny[8];
+    memset(tiny, 0, sizeof(tiny));
+    edc_app_update_manual_hint(g_app, tiny, sizeof(tiny));
+    CHECK(strlen(tiny) < sizeof(tiny), "a short buffer truncates instead of overflowing");
+    edc_app_update_manual_hint(g_app, NULL, 0);
+    CHECK(1, "a NULL buffer is a no-op");
+}
+
+static void test_update_surface_tolerates_null()
+{
+    TEST("the update surface tolerates a NULL app");
+    /* Every one of these is on a path that runs when the app never came up. */
+    edc_app_set_update_observer(NULL, on_update_found, NULL);
+    CHECK(1, "set_update_observer(NULL) is a no-op");
+    CHECK(!edc_app_update_can_self_upgrade(NULL), "can_self_upgrade(NULL) is false");
+    CHECK(!edc_app_update_start(NULL, "v1", on_upgrade_done, NULL), "update_start(NULL) is false");
+    edc_app_update_cancel(NULL);
+    CHECK(1, "update_cancel(NULL) is a no-op");
+
+    char buf[256];
+    memset(buf, 0, sizeof(buf));
+    /* No app, but the hint must still come out: the caller prints it either way. */
+    edc_app_update_manual_hint(NULL, buf, sizeof(buf));
+    CHECK(buf[0] != '\0', "manual_hint(NULL) still produces a command");
+}
+
 /* ── Frontend-owned files ───────────────────────────────────────────────── */
 
 static void test_write_file_and_ensure_parent_dir()
@@ -892,6 +971,9 @@ int main(void)
 
     test_write_file_and_ensure_parent_dir();
     test_ensure_parent_dir_refuses_what_is_not_a_path();
+
+    test_update_surface_on_a_real_app();
+    test_update_surface_tolerates_null();
 
     teardown();
 

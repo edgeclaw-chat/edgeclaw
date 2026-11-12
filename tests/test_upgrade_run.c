@@ -72,7 +72,9 @@ struct outcome
 {
     int done;
     bool ok;
-    char detail[4096];
+    /* Larger than the runner's 4 KiB tail PLUS the status line in front of it: a buffer of
+     * exactly the tail size clipped the very marker the cap test looks for. */
+    char detail[8192];
 };
 
 static void on_done(bool ok, const char *detail, void *ud)
@@ -259,6 +261,81 @@ int main(void)
             CHECK(!o.ok, "an unreachable installer URL is a failure");
             CHECK(strstr(o.detail, "cannot fetch") != NULL, "and says the fetch is what failed");
         }
+    }
+
+    printf("\n── output past the tail cap ──\n");
+    {
+        /* The detail keeps the last 4 KiB. A script that prints more than that exercises the
+         * trim, and the tail (not the head) has to survive: it is where a failing installer
+         * writes its error. */
+        /* awk rather than a shell loop: 900 iterations of `[ ]` fork a process each time, and
+         * the 5s deadline fired before the script finished -- which then took the timeout
+         * path (report without waiting for the pipes) and truncated the tail. The test has to
+         * produce a lot of output QUICKLY to exercise the trim rather than the deadline. */
+        struct outcome o;
+        run_case("#!/bin/sh\n"
+                 "echo HEAD_MARKER\n"
+                 "awk 'BEGIN{for(i=0;i<900;i++)print \"padding padding padding padding\"}'\n"
+                 "echo TAIL_MARKER\n"
+                 "exit 1\n",
+                 20000, 2000, &o);
+        CHECK(o.done == 1, "the callback fires");
+        CHECK(!o.ok, "a non-zero exit is a failure");
+        CHECK(strstr(o.detail, "TAIL_MARKER") != NULL, "the tail of the output is kept");
+        CHECK(strstr(o.detail, "HEAD_MARKER") == NULL, "the head is dropped once the cap is passed");
+    }
+
+    printf("\n── killed by a signal, not by the deadline ──\n");
+    {
+        /* A different path from the timeout: the child dies of its own accord, so the detail
+         * names the signal rather than the deadline. */
+        struct outcome o;
+        run_case("#!/bin/sh\nkill -TERM $$\n", 5000, 800, &o);
+        CHECK(o.done == 1, "the callback fires");
+        CHECK(!o.ok, "a signalled installer is a failure");
+        CHECK(strstr(o.detail, "signal") != NULL, "and the detail names the signal");
+        CHECK(strstr(o.detail, "did not finish in time") == NULL, "it is not reported as a timeout");
+    }
+
+    printf("\n── stopping while the installer runs ──\n");
+    {
+        /* stop() has to kill a live child, not wait for it: this is what Esc does. */
+        char *raw = http_ok("#!/bin/sh\nexec sleep 30\n");
+        struct tls_stub s;
+        if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
+        {
+            printf("    (skipped)\n");
+        }
+        else
+        {
+            uv_loop_t loop;
+            uv_loop_init(&loop);
+            struct outcome o;
+            memset(&o, 0, sizeof(o));
+            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/tools/install.sh", s.port);
+            struct edc_upgrade_run *run =
+                edc_upgrade_run_start(&loop, g_cert, url, "v9.9.9", g_install_dir, 60000, on_done, &o);
+            CHECK(run != NULL, "the runner starts");
+
+            /* Let it reach the spawned state, then stop. */
+            for (int i = 0; i < 300 && o.done == 0; i++)
+            {
+                uv_run(&loop, UV_RUN_NOWAIT);
+                uv_sleep(10);
+                if (i == 50)
+                    break; /* it should be running by now; stop it */
+            }
+            edc_upgrade_run_stop(run);
+            CHECK(true, "stopping a run whose installer is still alive returns");
+
+            for (int i = 0; i < 300 && uv_run(&loop, UV_RUN_NOWAIT) != 0; i++)
+            {
+            }
+            CHECK(uv_loop_close(&loop) == 0, "the loop closes: the killed child's handles are gone");
+            sdsfree(url);
+            tls_stub_stop(&s);
+        }
+        sdsfree(raw);
     }
 
     printf("\n── degenerate arguments ──\n");
