@@ -1704,6 +1704,10 @@ cc_library(
         "test_fs_util.h",
         "tls_stub.h",
     ],
+    # Static on purpose: linking this as a shared library makes the TEST BINARIES dynamic,
+    # and test_app_boundary's bootstrap copies its own executable into ~/.local/bin -- a copy
+    # of a dynamic binary cannot resolve $ORIGIN-relative libraries from its new location.
+    linkstatic = True,
     includes = ["."],
     deps = [
         "//src/common:common",

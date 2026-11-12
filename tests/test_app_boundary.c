@@ -48,7 +48,9 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "fake_release.h"
 #include "test_fs_util.h"
@@ -160,6 +162,47 @@ static bool copy_file(const char *from, const char *to)
     return ok;
 }
 
+/* Ask the copy whether it can start, before committing to it.
+ *
+ * Checking "is this binary dynamically linked" was the first attempt and it was both too
+ * strict and too weak: a binary that needs only libc starts fine from anywhere, while one that
+ * needs a bazel-generated .so does not -- and an exec that SUCCEEDS but produces a process the
+ * loader then rejects cannot be detected by the parent, because the parent is already gone.
+ * That is exactly how ASan in CI turned this into "error while loading shared libraries".
+ *
+ * So run the copy once with a probe flag and look at its exit status. The flag is handled
+ * before any of the test's own work (see main), so this costs a process spawn. */
+static bool copy_can_start(const char *dest)
+{
+#ifdef _WIN32
+    (void)dest;
+    return false;
+#else
+    pid_t pid = fork();
+    if (pid < 0)
+        return false;
+    if (pid == 0)
+    {
+        /* Child: exec the copy with the probe flag. stderr silenced -- a loader failure is
+         * expected here in some configurations and is reported by the parent instead. */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0)
+        {
+            dup2(devnull, STDERR_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            close(devnull);
+        }
+        execl(dest, dest, "--bootstrap-probe", (char *)NULL);
+        _exit(127); /* execl itself failed */
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid)
+        return false;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+#endif
+}
+
 /* Returns only when the current process is already the installed copy. */
 static void reexec_as_installed(int argc, char **argv)
 {
@@ -191,6 +234,17 @@ static void reexec_as_installed(int argc, char **argv)
     if (!copy_file(self, dest))
     {
         fprintf(stderr, "  (bootstrap: could not copy %s to %s)\n", self, dest);
+        return;
+    }
+
+    /* Decided before the real exec: an exec that starts a process the loader then rejects
+     * cannot be observed from here (see copy_can_start). */
+    if (!copy_can_start(dest))
+    {
+        fprintf(stderr, "  (bootstrap: the copy cannot start from %s -- probably a shared library it "
+                        "cannot find there; the update cases below run without it)\n",
+                dest);
+        unlink(dest);
         return;
     }
 
@@ -1179,6 +1233,11 @@ static sds release_json_for_this_platform(void)
 
 int main(int argc, char **argv)
 {
+    /* Handled before anything else: reexec_as_installed() runs the copy with this flag to find
+     * out whether it can start from its new location at all. Reaching here means it can. */
+    if (argc > 1 && strcmp(argv[1], "--bootstrap-probe") == 0)
+        return 0;
+
     reexec_as_installed(argc, argv);
 
     prepare_home();
