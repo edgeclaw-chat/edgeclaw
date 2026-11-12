@@ -50,7 +50,7 @@ struct tls_stub
     int port;
     uv_thread_t thread;
     const char *raw_response; /* borrowed; NULL = handshake only, then hold and stay silent */
-    int served;               /* 1 = handshake completed, 2 = response written */
+    int served;               /* 1 = handshake, 2 = response fully written, 3 = partial write */
 };
 
 /* Generate a self-signed CA-ish certificate (CN=localhost) and its key at the given paths.
@@ -245,9 +245,29 @@ static void tls_stub_serve(struct tls_stub *s, int client_fd)
     }
     else
     {
+        /* Written in a loop, not in one call: a single mbedtls_ssl_write returns at most one
+         * TLS record (16 KiB), so a larger response was silently truncated. That was not a
+         * theoretical concern -- serving a real 37 KiB release list through this stub produced
+         * a body that stopped mid-JSON, the parser rejected it, and the check reported "no
+         * update available" exactly as it would for a genuine empty list. A fixture that
+         * quietly loses data makes a broken client look correct.
+         *
+         * The loop also has to handle a short write from flow control, which is why it retries
+         * rather than trusting the first return value. */
+        const unsigned char *body = (const unsigned char *)s->raw_response;
         const size_t len = strlen(s->raw_response);
-        if (mbedtls_ssl_write(&ssl, (const unsigned char *)s->raw_response, len) > 0)
+        size_t sent = 0;
+        while (sent < len)
+        {
+            const int n = mbedtls_ssl_write(&ssl, body + sent, len - sent);
+            if (n <= 0)
+                break; /* MBEDTLS_ERR_SSL_WANT_WRITE cannot happen on a blocking socket */
+            sent += (size_t)n;
+        }
+        if (sent == len)
             s->served = 2;
+        else
+            s->served = 3; /* partial: the test should fail loudly rather than see a short body */
     }
 
 out:

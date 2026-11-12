@@ -207,6 +207,48 @@ static void test_oversized_body_offers_nothing(void)
     free_body(body);
 }
 
+/* A response bigger than one TLS record.
+ *
+ * This exists because the stub used to write the response with a single mbedtls_ssl_write,
+ * which returns at most one record (16 KiB) and silently drops the rest. A real release list
+ * is ~37 KiB, so serving one produced a body that stopped mid-JSON; the parser rejected it and
+ * the check reported "no update available", which is indistinguishable from an up-to-date
+ * install. Nothing failed, which is the worst kind of test failure.
+ *
+ * The case below pads a valid list past 16 KiB and expects it to still parse. If the stub
+ * regresses to a single write, the JSON is truncated and this fails.
+ */
+static void test_response_larger_than_one_tls_record(void)
+{
+    printf("\n── a response spanning several TLS records ──\n");
+
+    /* A list whose single release carries enough assets to push the body well past 16 KiB.
+     * The extra assets are for other platforms, so the picker ignores them; what matters is
+     * the byte count. */
+    sds json = sdscatprintf(sdsempty(),
+                            "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"assets\":["
+                            "{\"name\":\"%s_v9.9.9.tar.gz\"}",
+                            edc_update_target());
+    for (int i = 0; i < 400; i++)
+        json = sdscatprintf(json, ",{\"name\":\"unrelated-platform-%03d-aaaaaaaaaaaaaaaaaaaa.tar.gz\"}", i);
+    json = sdscat(json, "]}]");
+    printf("    body: %zu bytes (one TLS record is 16 KiB)\n", sdslen(json));
+    CHECK(sdslen(json) > 16 * 1024, "the body really is larger than one record");
+
+    char *raw = http_response(200, "OK", json);
+    sds tag = NULL, asset = NULL;
+    const bool got = run_case(raw, "1.0.0", false, 1 << 20, 8000, &tag, &asset);
+    CHECK(got, "a multi-record response is delivered whole and parses");
+    CHECK(tag && strcmp(tag, "v9.9.9") == 0, "and the release is found");
+
+    if (tag)
+        sdsfree(tag);
+    if (asset)
+        sdsfree(asset);
+    free_body(raw);
+    sdsfree(json);
+}
+
 static void test_silence_times_out(void)
 {
     printf("\n── the endpoint says nothing ──\n");
@@ -285,6 +327,7 @@ int main(void)
     test_http_error_offers_nothing();
     test_malformed_body_offers_nothing();
     test_oversized_body_offers_nothing();
+    test_response_larger_than_one_tls_record();
     test_silence_times_out();
     test_nothing_listening();
     test_degenerate_arguments();
