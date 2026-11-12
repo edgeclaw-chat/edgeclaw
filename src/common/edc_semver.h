@@ -24,4 +24,13 @@
  */
 bool edc_semver_is_newer(const char *candidate, const char *current);
 
+/* Is |version| a version this module can compare?
+ *
+ * Exists because "is_newer() returned false" is ambiguous -- it means both "same or older"
+ * and "could not parse". A caller that needs to tell those apart (the updater does: an
+ * unparseable version means the whole feature is off, which is worth saying out loud) would
+ * otherwise have to re-implement the parser.
+ */
+bool edc_semver_is_valid(const char *version);
+
 #endif /* __EDC_SEMVER_H__ */

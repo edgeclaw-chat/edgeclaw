@@ -22,6 +22,7 @@
 #include "edc_toolbox.h"
 #include "edc_toolset.h"
 #include "edc_turn.h"
+#include "edc_semver.h"
 #include "edc_update.h"
 #include "edc_update_service.h"
 #include "edc_version.h"
@@ -247,19 +248,35 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     edc_actor_runner_start(app->runner);
 
     /* The release check, after everything above is running: one check per launch, off the UI
-     * thread and off the actor loop, reported once if a newer release exists and silent
-     * otherwise. Failure to start it is not a startup problem.
+     * thread and off the actor loop, reported once if a newer release exists.
+     *
+     * A build whose version is not a release (a dev build reports the commit hash) has
+     * nothing to compare against, so the feature is off for it -- and that is said at INFO
+     * rather than debug. Silence here is not "nothing to report", it is "this build cannot
+     * check", and a user wondering why they are never told about updates deserves the
+     * difference. Every other reason for no result stays silent.
      *
      * The 10s delay is not politeness: at this instant the first model request is in flight,
      * and a check competing with it would delay the first thing the user sees. */
     if (app->config->update_check)
     {
-        sds cacert =
-            app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
-        app->update_service = edc_update_service_start(
-            &app->runner->loop, cacert, EDC_UPDATE_RELEASES_URL, edc_version(), app->config->update_allow_pre,
-            /* delay_ms */ 10000, app_update_found, app);
-        sdsfree(cacert);
+        if (!edc_semver_is_valid(edc_version()))
+        {
+            log_info("update check: off for this build (version '%s' is not a release)", edc_version());
+        }
+        else
+        {
+            sds cacert =
+                app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+            app->update_service = edc_update_service_start(
+                &app->runner->loop, cacert, EDC_UPDATE_RELEASES_URL, edc_version(), app->config->update_allow_pre,
+                /* delay_ms */ 10000, app_update_found, app);
+            sdsfree(cacert);
+        }
+    }
+    else
+    {
+        log_info("update check: disabled in config.json (update_check=false)");
     }
 
     sdsfree(edc_home);

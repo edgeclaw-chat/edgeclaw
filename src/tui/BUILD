@@ -117,6 +117,7 @@ cc_binary(
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",
+        "//src/common:update_cli",
         "//src/common:utlist_fix",
         "//src/common:version",
         "//src/kernel:kernel",

@@ -46,6 +46,22 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# The `--update-check` command. Its own target rather than part of :common because it needs
+# :version (which :common deliberately does not depend on), and a separate one keeps the
+# dependency direction readable: the diagnostic sits on top of the check, not beside it.
+cc_library(
+    name = "update_cli",
+    srcs = ["edc_update_cli.c"],
+    hdrs = ["edc_update_cli.h"],
+    includes = ["."],
+    deps = [
+        ":common",
+        ":version",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
 # Compile-time attribute shims (EDC_PRINTF). Header-only and dependency-free on purpose:
 # edc_error.h and edc_string_utils.h both use it, and neither should pull in edc_compat.h
 # (which includes <windows.h>) merely to declare a function.

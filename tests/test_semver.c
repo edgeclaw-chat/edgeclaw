@@ -28,6 +28,20 @@ static void check(const char *cand, const char *cur, bool want, const char *labe
     g_passed++;
 }
 
+/* Validity is a separate question from precedence: is_newer() answers false for both "not
+ * newer" and "cannot parse", and the updater has to tell those apart. */
+static void check_valid(const char *v, bool want, const char *label)
+{
+    const bool got = edc_semver_is_valid(v);
+    if (got != want)
+    {
+        fprintf(stderr, "FAIL %s: is_valid(%s) = %d, want %d\n", label, v ? v : "(null)", got, want);
+        g_failed++;
+        return;
+    }
+    g_passed++;
+}
+
 int main(void)
 {
     /* ── ordinary ordering ────────────────────────────────────────────────── */
@@ -109,6 +123,20 @@ int main(void)
     check("v", "1.0.0", false, "a bare v is refused");
     check("v1", "1.0.0", false, "a lone major is refused");
     check("1.0.0", "v", false, "a bare v as the current version is refused");
+
+    /* ── is this a version at all ─────────────────────────────────────────── */
+    /* Separate from "is it newer": that one answers false both for "not newer" and for "cannot
+     * parse", and the updater has to tell them apart -- an unparseable version means the whole
+     * feature is off, which is worth saying out loud. */
+    check_valid("1.0.0", true, "a release version is valid");
+    check_valid("v1.0.0", true, "the tag form is valid");
+    check_valid("1.0.0-rc.1", true, "a pre-release is valid");
+    check_valid("1.0.0+build.5", true, "build metadata is valid");
+    check_valid("89e3d2c", false, "a git commit hash is not a version");
+    check_valid("89e3d2c-dirty", false, "a dirty commit hash is not a version");
+    check_valid("dev", false, "the dev placeholder is not a version");
+    check_valid("", false, "empty is not a version");
+    check_valid(NULL, false, "NULL is not a version");
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;
