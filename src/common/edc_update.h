@@ -2,6 +2,7 @@
 #define __EDC_UPDATE_H__
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "sds.h"
 
@@ -40,6 +41,32 @@ const char *edc_update_target(void);
  */
 bool edc_update_check(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
                       size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset);
+
+/* The release endpoint, honouring `EDGECLAW_UPDATE_RELEASES_URL`.
+ *
+ * Both callers read it here: the launch-time check and the `--update-check` diagnostic. The
+ * diagnostic honouring it is what makes the command useful when GitHub is unreachable or
+ * rate-limited -- it can be pointed at a local server, which is otherwise impossible because
+ * the failure it exists to diagnose is indistinguishable from "no update".
+ *
+ * From the environment rather than config.json on purpose: config.json travels with a
+ * workspace, and reading the endpoint from it would let a shared workspace redirect its own
+ * updates. The environment is the one the process was started in. Caller frees. */
+sds edc_update_releases_url(void);
+
+/* The version to compare against, honouring `EDGECLAW_UPDATE_CURRENT_VERSION`.
+ *
+ * A development build reports its commit hash, which is not a version, so the check skips
+ * itself and there is no way to exercise the path before a tag exists. This is the environment
+ * spelling of what `--update-check --current` does explicitly. Returns |fallback| when unset. */
+const char *edc_update_current_version(const char *fallback);
+
+/* Delay before the launch-time request, honouring `EDGECLAW_UPDATE_CHECK_DELAY_MS`.
+ *
+ * Not politeness: at that instant the first model request is in flight, and a check competing
+ * with it delays the first thing the user sees. A test asserting what happens AFTER the delay
+ * should not have to sleep through it. */
+uint64_t edc_update_check_delay_ms(void);
 
 /* Pick the release to offer, from the JSON returned by
  * `GET /repos/<owner>/<repo>/releases`.

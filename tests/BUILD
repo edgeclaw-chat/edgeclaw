@@ -1642,8 +1642,9 @@ cc_test(
 )
 cc_test(
     name = "test_update_cli",
-    srcs = ["test_update_cli.c", "test_fs_util.h"],
+    srcs = ["test_update_cli.c", "test_fs_util.h", "fake_release.h"],
     deps = [
+        ":fake_release",
         "//src/common:update_cli",
         "@sds//:sds",
     ],

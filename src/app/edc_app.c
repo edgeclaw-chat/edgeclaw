@@ -114,57 +114,25 @@ struct edc_app
     bool shutdown_done;
 };
 
-/* The public release list. Not /releases/latest: that endpoint skips pre-releases, and every
- * tag this project has published carries a suffix. */
-#define EDC_UPDATE_RELEASES_URL "https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases"
-
-/* Delay before the request. Not politeness: at that instant the first model request is in
- * flight, and a check competing with it would delay the first thing the user sees. */
-#define EDC_UPDATE_CHECK_DELAY_MS 10000
-
-/* Three environment overrides, in the same spirit as EDGECLAW_MODELS_CATALOG and
- * EDGECLAW_TUI_NO_PULL (see their call sites): values a test can pin, and an operator can
- * point somewhere else.
+/* The three values the launch-time check needs, each with an environment override. The
+ * reading lives in edc_update.c so the `--update-check` diagnostic honours the same variables
+ * -- a diagnostic that cannot be pointed somewhere else cannot diagnose an unreachable
+ * endpoint, because the failure looks exactly like "no update".
  *
- * `EDGECLAW_UPDATE_RELEASES_URL` is how the whole chain -- service, fetch, selection, the
- * observer, the banner -- is exercised against a local server instead of GitHub. Without it
- * the check could only be tested in pieces, because the endpoint was a literal inside the
- * constructor.
- *
- * `EDGECLAW_UPDATE_CURRENT_VERSION` is the same idea for the version compared against. A
- * development build reports its commit hash, which is not a version, so the check is skipped
- * outright; there is no release tag to test against until one is published. This is the
- * environment equivalent of `--update-check --current`, which exists for the same reason.
- *
- * `EDGECLAW_UPDATE_CHECK_DELAY_MS` lets a test skip the ten seconds that exist to keep the
- * launch path clear -- a test asserting what happens AFTER the delay should not sleep through
- * it.
- *
- * Read from the environment rather than config.json on purpose: config.json travels with a
- * workspace, and reading these from it would let a shared workspace redirect its own updates
- * or lie about its version. The environment is the one the process was started in. */
+ * The version falls back to the build's own, which is the only sensible default here. */
 static sds app_update_url(void)
 {
-    const char *env = getenv("EDGECLAW_UPDATE_RELEASES_URL");
-    return sdsnew((env && *env) ? env : EDC_UPDATE_RELEASES_URL);
+    return edc_update_releases_url();
 }
 
 static const char *app_update_current_version(void)
 {
-    const char *env = getenv("EDGECLAW_UPDATE_CURRENT_VERSION");
-    return (env && *env) ? env : edc_version();
+    return edc_update_current_version(edc_version());
 }
 
 static uint64_t app_update_delay_ms(void)
 {
-    const char *env = getenv("EDGECLAW_UPDATE_CHECK_DELAY_MS");
-    if (env && *env)
-    {
-        const long v = strtol(env, NULL, 10);
-        if (v >= 0)
-            return (uint64_t)v;
-    }
-    return EDC_UPDATE_CHECK_DELAY_MS;
+    return edc_update_check_delay_ms();
 }
 
 /* A newer release exists. Runs on the loop thread, once.

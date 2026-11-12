@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "fake_release.h"
 #include "test_fs_util.h"
 
 static int g_passed = 0;
@@ -158,6 +159,70 @@ int main(void)
             free(out);
         }
         CHECK(code == 0, "and it exits 0");
+    }
+
+    printf("\n── the URL comes from the environment ──\n");
+    {
+        /* A diagnostic that always talks to github.com cannot diagnose an unreachable or
+         * rate-limited github.com, because the failure and "no update" print identically.
+         * Pointing it at a local server is the only way to tell them apart, and that requires
+         * the command to honour EDGECLAW_UPDATE_RELEASES_URL like the launch check does.
+         *
+         * The server answers one release newer than the version we claim to be on, so a
+         * correctly-wired command must report it. */
+        char url[256] = {0};
+        char cert[600] = {0};
+        if (fake_release_start_newer("v9.9.9", url, sizeof(url), cert, sizeof(cert)) != 0)
+        {
+            printf("    (skipped: cannot start the local release server)\n");
+        }
+        else
+        {
+            /* The command reads the CA bundle from <home>/workspace/ssl/cacert.pem. */
+            const char *tmp = getenv("TEST_TMPDIR");
+            char home[600], ssl[700], pem[800];
+            snprintf(home, sizeof(home), "%s/cli-home", (tmp && *tmp) ? tmp : "/tmp");
+            snprintf(ssl, sizeof(ssl), "%s/workspace/ssl", home);
+            snprintf(pem, sizeof(pem), "%s/cacert.pem", ssl);
+            test_mkdir_p(home);
+            test_mkdir_p(ssl);
+            {
+                FILE *in = fopen(cert, "rb");
+                FILE *out = in ? fopen(pem, "wb") : NULL;
+                if (out)
+                {
+                    char buf[8192];
+                    size_t n;
+                    while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+                        fwrite(buf, 1, n, out);
+                    fclose(out);
+                }
+                if (in)
+                    fclose(in);
+            }
+
+            setenv("HOME", home, 1);
+            setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
+            setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
+
+            int code = -1;
+            char *out = run_capturing_stdout(false, NULL, &code);
+            CHECK(out != NULL, "the command runs");
+            if (out)
+            {
+                CHECK(strstr(out, url) != NULL, "it prints and uses the URL from the environment");
+                CHECK(strstr(out, "v9.9.9") != NULL,
+                      "and the local server's release is found -- so the request really went there");
+                CHECK(strstr(out, "overridden") != NULL,
+                      "the env-supplied version is flagged as a diagnostics-only override");
+                free(out);
+            }
+            CHECK(code == 0, "and it exits 0");
+
+            unsetenv("EDGECLAW_UPDATE_RELEASES_URL");
+            unsetenv("EDGECLAW_UPDATE_CURRENT_VERSION");
+            fake_release_stop();
+        }
     }
 
     test_rm_rf(g_dir);

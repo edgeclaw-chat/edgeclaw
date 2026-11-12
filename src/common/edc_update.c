@@ -8,6 +8,13 @@
 #include <string.h>
 #include <uv.h>
 
+/* The public release list. Not /releases/latest: that endpoint skips pre-releases, and every
+ * tag this project has published carries a suffix. */
+#define EDC_UPDATE_RELEASES_URL "https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases"
+
+/* Default delay before the launch-time request; see edc_update_check_delay_ms(). */
+#define EDC_UPDATE_CHECK_DELAY_MS 10000
+
 /* The asset target for this build. Mirrors tools/install.sh's platform table -- those two
  * must agree, because one downloads what the other would have.
  *
@@ -38,6 +45,33 @@ const char *edc_update_target(void)
     return "edgeclaw_amd64_linux";
 #endif
 #endif
+}
+
+/* The release endpoint, honouring EDGECLAW_UPDATE_RELEASES_URL. See edc_update.h for why. */
+sds edc_update_releases_url(void)
+{
+    const char *env = getenv("EDGECLAW_UPDATE_RELEASES_URL");
+    return sdsnew((env && *env) ? env : EDC_UPDATE_RELEASES_URL);
+}
+
+/* The version to compare against, honouring EDGECLAW_UPDATE_CURRENT_VERSION. */
+const char *edc_update_current_version(const char *fallback)
+{
+    const char *env = getenv("EDGECLAW_UPDATE_CURRENT_VERSION");
+    return (env && *env) ? env : fallback;
+}
+
+/* Delay before the launch-time request, honouring EDGECLAW_UPDATE_CHECK_DELAY_MS. */
+uint64_t edc_update_check_delay_ms(void)
+{
+    const char *env = getenv("EDGECLAW_UPDATE_CHECK_DELAY_MS");
+    if (env && *env)
+    {
+        const long v = strtol(env, NULL, 10);
+        if (v >= 0)
+            return (uint64_t)v;
+    }
+    return EDC_UPDATE_CHECK_DELAY_MS;
 }
 
 /* The archive name for |tag| on this target; the release workflow builds exactly this. */
