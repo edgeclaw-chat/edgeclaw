@@ -269,6 +269,28 @@ class FakeFacade : public edc::port::IAppFacade
     void HandleChannelMessage(struct edc_channel_message *) override
     {
     }
+
+    /* The update port. SetupDialog never asks, but the interface is one piece -- a fake that
+     * implements only the methods its subject calls would stop compiling the moment the
+     * subject grew a call, and the failure would look unrelated. */
+    void SetUpdateObserver(std::function<void(std::string)>) override
+    {
+    }
+    bool UpdateCanSelfUpgrade() const override
+    {
+        return false;
+    }
+    bool UpdateStart(const std::string &, std::function<void(bool, std::string)>) override
+    {
+        return false;
+    }
+    void UpdateCancel() override
+    {
+    }
+    std::string UpdateManualHint() const override
+    {
+        return "";
+    }
 };
 
 void AddProvider(FakeFacade &f, const std::string &id, const std::string &name, const std::string &api)

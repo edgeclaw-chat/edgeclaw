@@ -49,6 +49,21 @@ cc_library(
 # The `--update-check` command. Its own target rather than part of :common because it needs
 # :version (which :common deliberately does not depend on), and a separate one keeps the
 # dependency direction readable: the diagnostic sits on top of the check, not beside it.
+# Runs the installer. Separate from :common because it needs :version's sibling -- the argv
+# it spawns comes from edc_upgrade, and it is only ever used by the app, never by a core path.
+cc_library(
+    name = "update_run",
+    srcs = ["edc_upgrade_run.c"],
+    hdrs = ["edc_upgrade_run.h"],
+    includes = ["."],
+    deps = [
+        ":common",
+        "@libuv",
+    ],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
 cc_library(
     name = "update_cli",
     srcs = ["edc_update_cli.c"],

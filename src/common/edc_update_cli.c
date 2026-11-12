@@ -10,10 +10,11 @@
 
 #define EDC_UPDATE_RELEASES_URL "https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases"
 
-int edc_update_check_cli(bool allow_pre)
+int edc_update_check_cli(bool allow_pre, const char *current_override)
 {
-    const char *version = edc_version();
-    printf("current   %s\n", version);
+    const char *version = (current_override && current_override[0]) ? current_override : edc_version();
+    printf("current   %s%s\n", version,
+           (current_override && current_override[0]) ? "  (overridden -- diagnostics only)" : "");
     printf("target    %s\n", edc_update_target());
     printf("channel   %s\n", allow_pre ? "pre" : "stable");
 

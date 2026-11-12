@@ -279,6 +279,14 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "subcommand word."},
     {"General", "/model search <q>", "search chat models across all providers", NULL},
     {"General", "/connect", "guided setup: choose a provider, API key, and model", NULL},
+    {"General", "/update", "install a newer release, if one is available",
+     "Shows the version on offer and what updating costs: the database is upgraded on first "
+     "start of the new build, and an older version will refuse it afterwards -- an update "
+     "cannot be undone. Confirming runs the EdgeClaw installer, which downloads, checks the "
+     "archive against the published sha256 and replaces the binary.\n\n"
+     "Only a copy that the installer put there can update itself; anything else (a binary "
+     "copied into place, a container image) gets the command to run by hand instead. The app "
+     "never restarts itself: quit and start it again to use the new build."},
     {"General", "/encrypt", "turn encryption back on (after choosing \"no encryption\" at setup)",
      "Prompts for a new passphrase, stores the key record, and re-encrypts the API key that "
      "`config.json` currently holds in the clear.\n\n"
@@ -394,6 +402,7 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"General", "/whoami", "show the current session, model and foreground task", NULL},
     {"General", "/model", "list / switch / search models", NULL},
     {"General", "/connect", "guided setup: provider, API key, model", NULL},
+    {"General", "/update", "install a newer release when one is available", NULL},
     {"General", "/encrypt", "turn encryption back on after choosing not to", NULL},
     {"General", "/prompt", "list and run prompt templates", NULL},
     {"General", "/skill", "list and run skills", NULL},

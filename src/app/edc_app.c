@@ -25,6 +25,8 @@
 #include "edc_semver.h"
 #include "edc_update.h"
 #include "edc_update_service.h"
+#include "edc_upgrade.h"
+#include "edc_upgrade_run.h"
 #include "edc_version.h"
 #include "log.h"
 #include "sds.h"
@@ -94,6 +96,19 @@ struct edc_app
      * error anywhere, it just means no check happened this run. */
     struct edc_update_service *update_service;
 
+    /* An upgrade in flight, if any. Only one at a time: a second run would have two
+     * installers racing over the same binary. */
+    struct edc_upgrade_run *upgrade;
+
+    /* Who to tell when a newer release is found. Set from the frontend after construction,
+     * because the app is built before the UI exists. */
+    edc_update_found_observer update_observer;
+    void *update_observer_ud;
+
+    /* The outcome callback for the running upgrade, so a cancel can still report. */
+    edc_upgrade_done_observer upgrade_done;
+    void *upgrade_done_ud;
+
     /* shutdown() idempotence gate (see edc_app_shutdown): persisting may happen
      * only once. */
     bool shutdown_done;
@@ -112,8 +127,105 @@ struct edc_app
 static void app_update_found(const char *tag, const char *asset, void *ud)
 {
     (void)asset;
-    (void)ud;
-    log_info("update: %s is available (run tools/install.sh to upgrade)", tag ? tag : "(unknown)");
+    struct edc_app *app = ud;
+    log_info("update: %s is available", tag ? tag : "(unknown)");
+    if (app && app->update_observer)
+        app->update_observer(tag, app->update_observer_ud);
+}
+
+void edc_app_set_update_observer(struct edc_app *app, edc_update_found_observer fn, void *ud)
+{
+    if (!app)
+        return;
+    app->update_observer = fn;
+    app->update_observer_ud = ud;
+}
+
+bool edc_app_update_can_self_upgrade(const struct edc_app *app)
+{
+    if (!app || !edc_upgrade_supported())
+        return false;
+    sds exe = edc_platform_exe_path();
+    sds home = edc_homedir();
+    const bool ok = exe && home && edc_upgrade_detect(exe, home) == EDC_UPGRADE_METHOD_INSTALLER;
+    sdsfree(exe);
+    sdsfree(home);
+    return ok;
+}
+
+/* The upgrade finished. Runs on the loop thread, from edc_upgrade_run. */
+static void app_upgrade_done(bool ok, const char *detail, void *ud)
+{
+    struct edc_app *app = ud;
+    if (!app)
+        return;
+    /* Clear the slot BEFORE reporting: the observer may immediately start another upgrade,
+     * and the "one at a time" guard must already be free by then. */
+    edc_upgrade_done_observer cb = app->upgrade_done;
+    void *cb_ud = app->upgrade_done_ud;
+    app->upgrade_done = NULL;
+    app->upgrade_done_ud = NULL;
+    app->upgrade = NULL;
+    if (cb)
+        cb(ok, detail, cb_ud);
+}
+
+bool edc_app_update_start(struct edc_app *app, const char *tag, edc_upgrade_done_observer on_done, void *ud)
+{
+    if (!app || !app->runner || !tag || !tag[0] || !on_done)
+        return false;
+    if (app->upgrade)
+        return false; /* one at a time */
+    if (!edc_app_update_can_self_upgrade(app))
+        return false;
+
+    sds exe = edc_platform_exe_path();
+    sds home = edc_homedir();
+    sds dir = exe ? edc_path_dirname(exe) : NULL;
+    sds cacert =
+        app->config && app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
+    (void)home;
+
+    struct edc_upgrade_run *run =
+        exe ? edc_upgrade_run_start(&app->runner->loop, cacert, tag, dir, /* timeout */ 120000, app_upgrade_done, app)
+            : NULL;
+
+    sdsfree(exe);
+    sdsfree(home);
+    sdsfree(dir);
+    sdsfree(cacert);
+    if (!run)
+        return false;
+
+    app->upgrade = run;
+    app->upgrade_done = on_done;
+    app->upgrade_done_ud = ud;
+    return true;
+}
+
+void edc_app_update_cancel(struct edc_app *app)
+{
+    if (!app || !app->upgrade)
+        return;
+    /* The run struct frees itself once its handles have closed; dropping the pointer is all
+     * this side has to do. The done callback is cleared first so a late exit does not report
+     * into a dialog that has already closed. */
+    app->upgrade_done = NULL;
+    app->upgrade_done_ud = NULL;
+    edc_upgrade_run_stop(app->upgrade);
+    app->upgrade = NULL;
+}
+
+void edc_app_update_manual_hint(const struct edc_app *app, char *buf, size_t cap)
+{
+    (void)app;
+    if (!buf || cap == 0)
+        return;
+    /* The version the hint names: whatever the check offered is not stored here, so the
+       placeholder form is used -- it still tells the user where to look. */
+    sds hint = edc_upgrade_manual_hint(NULL);
+    snprintf(buf, cap, "%s", hint ? hint : "see https://github.com/edgeclaw-chat/edgeclaw/releases");
+    sdsfree(hint);
 }
 
 /* Session store / cross-session resolution / persistence -> edc_scheduler_open/close:
@@ -415,6 +527,9 @@ void edc_app_free(struct edc_app *app)
      * down. Joining here also guarantees on_found cannot fire after the app is gone. */
     edc_update_service_stop(app->update_service);
     app->update_service = NULL;
+
+    /* Same for an upgrade in flight: its child process and pipes are on that loop too. */
+    edc_app_update_cancel(app);
 
     /* Run the shutdown work first (stop actors + persist + drop turns), keeping
      * the old "destroy = persist" behaviour; callers wanting two steps call

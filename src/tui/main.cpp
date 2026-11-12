@@ -113,10 +113,18 @@ int main(int argc, char **argv)
              * takes, because everything else it needs comes from the environment, not the
              * user's config. */
             bool allow_pre = false;
+            const char *current_override = nullptr;
             for (int k = 1; k < argc; k++)
+            {
                 if (strcmp(argv[k], "--pre") == 0 || strcmp(argv[k], "-Pre") == 0)
                     allow_pre = true;
-            return edc_update_check_cli(allow_pre);
+                /* --current <ver>: compare against this instead of the build's own version.
+                 * The only way to exercise the network path on a development build, whose
+                 * version is a commit hash and therefore skipped. */
+                else if ((strcmp(argv[k], "--current") == 0 || strcmp(argv[k], "-Current") == 0) && k + 1 < argc)
+                    current_override = argv[k + 1];
+            }
+            return edc_update_check_cli(allow_pre, current_override);
         }
     }
 

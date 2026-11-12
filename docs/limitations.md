@@ -146,6 +146,14 @@ Stated plainly, because "it compiles" is not evidence:
 
 Not "unverified" — verified, and wrong in a narrow case:
 
+- **`--update-check` answers a question the app cannot otherwise be observed asking.** The
+  release check runs once per launch, silently: it reports nothing when offline, rate limited,
+  or when no release is newer, and a build whose version is not a release (a development
+  build reports its commit hash) skips it entirely. `edgeclaw --update-check [--pre]
+  [--current <ver>]` runs it synchronously and prints the answer, which is the only way to
+  exercise the network path without publishing a release. `--current` exists because a dev
+  build has no version to compare; it affects that diagnostic only.
+
 - **An update proves the bytes arrived intact, not who sent them.** The installer compares
   each archive against the `sha256sums.txt` published next to it, which catches a truncated
   download, a wrong-platform asset, a stale mirror and an archive swapped on the wire. Both

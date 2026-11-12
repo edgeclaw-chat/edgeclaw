@@ -27,8 +27,13 @@ extern "C"
  * Does NOT load config.json: that needs the master key (the api_key is encrypted) and so a
  * passphrase prompt, for a question unrelated to the user's key. The channel is |allow_pre|
  * and nothing else.
+ *
+ * |current_override| replaces the version compared against, which is what makes this useful on
+ * a development build: a build reports its commit hash, which is not a version, so the check
+ * is skipped outright. Passing e.g. "1.0.0" asks the real question -- "what does the network
+ * path do?" -- without publishing a release first. It only affects this diagnostic.
  */
-int edc_update_check_cli(bool allow_pre);
+int edc_update_check_cli(bool allow_pre, const char *current_override);
 
 #ifdef __cplusplus
 }
