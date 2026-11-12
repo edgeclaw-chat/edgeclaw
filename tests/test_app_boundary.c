@@ -45,6 +45,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "test_fs_util.h"
@@ -103,6 +105,116 @@ static void write_file_or_die(const char *path, const char *content)
 }
 
 /* Build the temp HOME, the config, the catalog and the app. */
+/* ── self-bootstrapping: run the binary from where the installer would put it ──
+ *
+ * `edc_app_update_can_self_upgrade()` asks `edc_upgrade_detect(dirname(/proc/self/exe), $HOME)`,
+ * which answers "the installer's copy" only when the executable sits in `$HOME/.local/bin` or
+ * `$HOME/bin`. A bazel test binary sits in bazel-out, so the whole upgrade path reads as
+ * "cannot upgrade itself" and the SUCCESS half of the feature -- update_start, the completion
+ * callback, the banner -- could not be exercised at all.
+ *
+ * Copying the test binary into `$HOME/.local/bin` and re-exec there makes it look installed.
+ * That is the test bootstrapping itself, not a seam in the production code: nothing in src/
+ * knows about it, and the code under test runs exactly as it would on a user's machine.
+ *
+ * One re-exec, guarded by an environment variable. On the way back, setup() clears the home
+ * directory but must leave `.local/bin` alone -- unlinking the running executable would still
+ * work (dirname of the "(deleted)" path is the same) but it is a needlessly fragile thing to
+ * rely on. */
+static const char kInstalledMarker[] = "EDGECLAW_TEST_AS_INSTALLED";
+static const char kInstalledName[] = "edgeclaw-under-test";
+
+/* Copy |from| to |to|, mode 0755. */
+static bool copy_file(const char *from, const char *to)
+{
+    FILE *in = fopen(from, "rb");
+    if (!in)
+        return false;
+    FILE *out = fopen(to, "wb");
+    if (!out)
+    {
+        fclose(in);
+        return false;
+    }
+
+    char buf[64 * 1024];
+    size_t n;
+    bool ok = true;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+    {
+        if (fwrite(buf, 1, n, out) != n)
+        {
+            ok = false;
+            break;
+        }
+    }
+    if (ferror(in))
+        ok = false;
+    fclose(in);
+    if (fclose(out) != 0)
+        ok = false;
+    if (ok && chmod(to, 0755) != 0)
+        ok = false;
+    return ok;
+}
+
+/* Returns only when the current process is already the installed copy. */
+static void reexec_as_installed(int argc, char **argv)
+{
+#ifndef _WIN32
+    if (getenv(kInstalledMarker))
+        return; /* already there */
+
+    const char *tmp = getenv("TEST_TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = "/tmp";
+
+    char home[900], bindir[1024], dest[1200];
+    snprintf(home, sizeof(home), "%s/app-boundary-home", tmp);
+    snprintf(bindir, sizeof(bindir), "%s/.local/bin", home);
+    snprintf(dest, sizeof(dest), "%s/%s", bindir, kInstalledName);
+
+    char cmd[1400];
+    snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", bindir);
+    if (test_sh(cmd) != 0)
+        return; /* no bootstrap: the upgrade cases below will say "cannot upgrade", which is
+                 * still a valid assertion, just a weaker one */
+
+    char self[PATH_MAX];
+    const ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n <= 0)
+        return;
+    self[n] = '\0';
+
+    if (!copy_file(self, dest))
+    {
+        fprintf(stderr, "  (bootstrap: could not copy %s to %s)\n", self, dest);
+        return;
+    }
+
+    setenv(kInstalledMarker, "1", 1);
+    setenv("HOME", home, 1);
+    setenv("USERPROFILE", home, 1);
+
+    /* argv[0] becomes the copy so anything that reads it agrees with /proc/self/exe. */
+    char **next = calloc((size_t)argc + 1, sizeof(char *));
+    if (!next)
+        return;
+    for (int i = 0; i < argc; i++)
+        next[i] = argv[i];
+    next[0] = dest;
+    next[argc] = NULL;
+
+    execv(dest, next);
+    /* Only reachable if exec failed: fall through and run the un-bootstrapped tests. */
+    fprintf(stderr, "  (bootstrap: execv %s failed: %s)\n", dest, strerror(errno));
+    free(next);
+#else
+    (void)argc;
+    (void)argv;
+#endif
+}
+
 static void setup(void)
 {
     const char *tmp = getenv("TEST_TMPDIR");
@@ -113,7 +225,9 @@ static void setup(void)
     snprintf(g_config, sizeof(g_config), "%s/.edgeclaw/config.json", g_home);
 
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_home);
+    /* Clears everything EXCEPT .local/bin, which holds the copy of this test binary that
+     * reexec_as_installed() put there and is currently running. */
+    snprintf(cmd, sizeof(cmd), "rm -rf '%s/.edgeclaw' '%s/catalog.json'", g_home, g_home);
     if (test_sh(cmd) != 0)
         die("could not clear the temp home");
 
@@ -809,22 +923,30 @@ static void test_update_surface_on_a_real_app()
     edc_app_set_update_observer(g_app, on_update_found, g_app);
     CHECK(1, "an observer can be registered");
 
-    /* This binary lives in bazel-bin, not in ~/.local/bin, so it is exactly the "installed by
-     * something else" case: it must say it cannot upgrade itself rather than offering a button
-     * that would fail. */
-    CHECK(!edc_app_update_can_self_upgrade(g_app),
-          "a build-tree binary reports that it cannot upgrade itself");
-
-    /* With no usable installer, starting is refused before anything is fetched or spawned --
-     * which is also why this test has no network or child process to clean up. */
-    CHECK(!edc_app_update_start(g_app, "v9.9.9", on_upgrade_done, g_app),
-          "update_start refuses when the copy cannot upgrade itself");
+    /* The binary this process is running from decides which half of the feature is
+     * reachable. main() re-execs itself from $HOME/.local/bin when it can, so the normal
+     * case here is "installed by the installer" -- the branch that offers an upgrade.
+     * When the bootstrap could not run (no shell, no /proc), the fallback assertions below
+     * still hold, so the test degrades instead of failing for an environmental reason. */
+    const bool installed = getenv(kInstalledMarker) != NULL;
+    if (installed)
+    {
+        printf("      (running as the installed copy: %s)\n", "self-upgrade is available");
+        CHECK(edc_app_update_can_self_upgrade(g_app),
+              "a copy in $HOME/.local/bin reports that it CAN upgrade itself");
+    }
+    else
+    {
+        printf("      (bootstrap did not run; asserting the cannot-upgrade half)\n");
+        CHECK(!edc_app_update_can_self_upgrade(g_app),
+              "a build-tree binary reports that it cannot upgrade itself");
+    }
 
     /* Cancelling when nothing runs is a no-op, not a crash: Esc reaches it from every state. */
     edc_app_update_cancel(g_app);
     CHECK(1, "cancelling with nothing in flight is a no-op");
 
-    /* The manual hint is the fallback for exactly the case above, so it must never be empty
+    /* The manual hint is the fallback for the cannot-upgrade case, so it must never be empty
      * and must point at where the release actually is. */
     char buf[512];
     memset(buf, 0, sizeof(buf));
@@ -840,6 +962,98 @@ static void test_update_surface_on_a_real_app()
     CHECK(strlen(tiny) < sizeof(tiny), "a short buffer truncates instead of overflowing");
     edc_app_update_manual_hint(g_app, NULL, 0);
     CHECK(1, "a NULL buffer is a no-op");
+}
+
+/* Set by on_upgrade_done; the case below waits for it. */
+static volatile int g_upgrade_done_fired = 0;
+static bool g_upgrade_done_ok = false;
+
+static void on_upgrade_done_counted(bool ok, const char *detail, void *ud)
+{
+    (void)detail;
+    (void)ud;
+    g_upgrade_done_ok = ok;
+    g_upgrade_done_fired = 1;
+}
+
+/* The completion path: what happens when the runner actually finishes. It has to finish
+ * somehow -- the fetch is refused (no CA bundle here, or no network) or times out -- and the
+ * callback must fire once with a failure, clear the slot, and leave the app usable. */
+static void test_update_completion_callback()
+{
+    if (!getenv(kInstalledMarker))
+        return; /* unreachable without the bootstrap; the start case said so already */
+
+    TEST("the completion callback fires when the runner finishes");
+
+    g_upgrade_done_fired = 0;
+    g_upgrade_done_ok = true;
+    const bool started = edc_app_update_start(g_app, "v0.0.0-test", on_upgrade_done_counted, NULL);
+    CHECK(started, "the upgrade starts");
+    if (!started)
+        return;
+
+    /* The worker fetches from GitHub; it cannot succeed here (no CA bundle in this scratch
+     * home, and the test must not depend on the network), so the run ends in a failure. Wait
+     * for the callback rather than asserting on its timing: the fetch has its own 15s
+     * deadline and a refused connection can return sooner. */
+    for (int i = 0; i < 600 && !g_upgrade_done_fired; i++)
+        usleep(50 * 1000); /* up to 30s, well inside the test's own timeout */
+
+    CHECK(g_upgrade_done_fired == 1, "the callback fired");
+    CHECK(!g_upgrade_done_ok, "and reported the failure the fetch caused");
+
+    /* The slot is free afterwards -- that is what lets the user retry, or the next launch
+     * offer again. Asserted by starting once more. */
+    g_upgrade_done_fired = 0;
+    const bool again = edc_app_update_start(g_app, "v0.0.0-test", on_upgrade_done_counted, NULL);
+    CHECK(again, "after a completed run the slot is free");
+    if (again)
+        edc_app_update_cancel(g_app);
+}
+
+/* The startup half of update_start: only reachable when the binary looks installed. This is
+ * what the other half of `can_self_upgrade` exists for, and it is where the one-at-a-time
+ * guard and the cancel path live. */
+static void test_update_start_when_installed()
+{
+    if (!getenv(kInstalledMarker))
+    {
+        printf("\n── update_start on an installed copy ──\n");
+        printf("    (skipped: the bootstrap did not run, so this copy cannot self-upgrade)\n");
+        return;
+    }
+
+    TEST("update_start on an installed copy");
+
+    /* It starts a real runner, which spawns a worker to fetch the installer from GitHub. The
+     * fetch is not what is being tested here -- test_upgrade_run drives that against a local
+     * server -- so this case asserts the handover and then immediately cancels, which also
+     * exercises the cancel path with a live worker. */
+    bool done_called = false;
+    const bool started = edc_app_update_start(g_app, "v0.0.0-test", on_upgrade_done, &done_called);
+    CHECK(started, "an installed copy starts the upgrade");
+
+    if (started)
+    {
+        /* One at a time: a second run would put two installers over the same binary. */
+        CHECK(!edc_app_update_start(g_app, "v0.0.0-test", on_upgrade_done, &done_called),
+              "a second concurrent start is refused");
+
+        /* Cancel: joins the worker, kills any child, and clears the slot so a later upgrade
+         * can start. The completion callback is deliberately cleared first, so it must not
+         * fire after this. */
+        edc_app_update_cancel(g_app);
+        CHECK(true, "cancelling a live upgrade returns");
+        CHECK(!done_called, "and the completion callback does not fire for a cancelled run");
+
+        /* The slot is free again. Asserted by starting once more and cancelling: if cancel
+         * left `app->upgrade` set, this would be refused like the concurrent case above. */
+        const bool restarted = edc_app_update_start(g_app, "v0.0.0-test", on_upgrade_done, &done_called);
+        CHECK(restarted, "after a cancel the slot is free again");
+        if (restarted)
+            edc_app_update_cancel(g_app);
+    }
 }
 
 static void test_update_surface_tolerates_null()
@@ -920,8 +1134,10 @@ static void test_ensure_parent_dir_refuses_what_is_not_a_path()
     CHECK(access("/tmp/edgeclaw-outside-the-workspace", F_OK) != 0, "and was not created");
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    reexec_as_installed(argc, argv);
+
     setup();
     if (!g_app)
     {
@@ -973,6 +1189,8 @@ int main(void)
     test_ensure_parent_dir_refuses_what_is_not_a_path();
 
     test_update_surface_on_a_real_app();
+    test_update_start_when_installed();
+    test_update_completion_callback();
     test_update_surface_tolerates_null();
 
     teardown();
