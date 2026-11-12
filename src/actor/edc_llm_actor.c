@@ -81,7 +81,7 @@ static void edc_llm_actor_on_http_fn(struct edc_https_request *req, int ev, void
     if (ev == EDC_HTTPS_EVENT_HS)
     {
         sds request = sdscatprintf(sdsempty(),
-                                   "POST /%s HTTP/1.1\r\n"
+                                   "POST %s HTTP/1.1\r\n"
                                    "Host: %s\r\n"
                                    "Content-Type: application/json\r\n"
                                    "Connection: close\r\n",

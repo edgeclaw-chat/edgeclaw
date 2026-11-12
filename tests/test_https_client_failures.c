@@ -76,7 +76,7 @@ static void on_event(struct edc_https_request *req, int ev, void *data)
          * edc_llm_actor.c uses, and forgetting it is why the first version of this test saw
          * a handshake and then nothing: the stub was waiting for a request that never came. */
         sds request = sdscatprintf(sdsempty(),
-                                   "GET /%s HTTP/1.1\r\n"
+                                   "GET %s HTTP/1.1\r\n"
                                    "Host: %s\r\n"
                                    "Connection: close\r\n"
                                    "\r\n",

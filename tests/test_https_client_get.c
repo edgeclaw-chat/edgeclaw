@@ -23,7 +23,7 @@ static void edc_https_client_fn(struct edc_https_request *req, int ev, void *dat
     {
         static char body[256];
         int n = snprintf(body, sizeof(body),
-                         "GET /%s HTTP/1.1\r\n"
+                         "GET %s HTTP/1.1\r\n"
                          "Host: %s\r\n"
                          "Connection: close\r\n"
                          "\r\n",

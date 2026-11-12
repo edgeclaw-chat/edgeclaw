@@ -171,6 +171,10 @@ static int tls_stub_bio_recv(void *ctx, unsigned char *buf, size_t len)
  * thread argument: the worker function has one signature, and only one stub runs at a time
  * in a given test binary. */
 static const char *tls_stub_cert_file;
+
+/* The request line and headers the last case sent, for tests that need to check what the
+ * CLIENT asked for rather than what the server answered. Empty until a request arrives. */
+static char tls_stub_last_request[4096];
 static const char *tls_stub_key_file;
 
 static void tls_stub_serve(struct tls_stub *s, int client_fd)
@@ -215,18 +219,23 @@ static void tls_stub_serve(struct tls_stub *s, int client_fd)
     s->served = 1;
 
     /* Read the request headers: the handshake and the client's send both really happen, so a
-     * case cannot pass by accident on a connection that never carried a request. */
+     * case cannot pass by accident on a connection that never carried a request.
+     *
+     * What was read is KEPT in tls_stub_last_request, because the request line is otherwise
+     * the one part of the exchange no test ever looked at. A malformed target ("GET repos/x"
+     * without the leading slash) got a 400 from the server, and every case still passed --
+     * they assert on what the server SENDS, never on what the client asked for. See
+     * test_update_check's "the request line" case. */
     {
-        char buf[4096];
         size_t got = 0;
-        while (got < sizeof(buf) - 1)
+        while (got < sizeof(tls_stub_last_request) - 1)
         {
-            ret = mbedtls_ssl_read(&ssl, (unsigned char *)buf + got, 1);
+            ret = mbedtls_ssl_read(&ssl, (unsigned char *)tls_stub_last_request + got, 1);
             if (ret <= 0)
                 break;
             got += (size_t)ret;
-            buf[got] = '\0';
-            if (got >= 4 && strcmp(buf + got - 4, "\r\n\r\n") == 0)
+            tls_stub_last_request[got] = '\0';
+            if (got >= 4 && strcmp(tls_stub_last_request + got - 4, "\r\n\r\n") == 0)
                 break;
         }
     }
@@ -300,6 +309,8 @@ static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char 
 
     memset(s, 0, sizeof(*s));
     s->raw_response = raw_response;
+    /* Start each case from an empty capture, so a test cannot read the previous one's request. */
+    tls_stub_last_request[0] = '\0';
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0)
         return -1;

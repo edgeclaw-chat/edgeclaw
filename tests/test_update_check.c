@@ -304,6 +304,35 @@ static void test_degenerate_arguments(void)
           "a missing current version returns false");
 }
 
+static void test_request_line(void)
+{
+    printf("\n── the request line ──\n");
+    /* The one part of the exchange no case used to look at, and the one that broke: the target
+     * must be an absolute path. Without the leading slash GitHub answers 400 with an HTML
+     * error page, the JSON parse fails, and the check reports "nothing to offer" -- which is
+     * also what being up to date looks like, so nothing failed loudly.
+     *
+     * Asserts the SHAPE, not the exact URL: a caller may legitimately ask for any path. */
+    char *body = releases_body("v9.9.9");
+    char *raw = http_response(200, "OK", body);
+    sds tag = NULL, asset = NULL;
+    run_case(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset);
+    if (tag)
+        sdsfree(tag);
+    if (asset)
+        sdsfree(asset);
+
+    printf("    request: %.48s\n", tls_stub_last_request);
+    CHECK(strncmp(tls_stub_last_request, "GET /", 5) == 0,
+          "the target is an absolute path, starting with '/'");
+    /* The specific shape that was wrong, named so a failure points at the cause. */
+    CHECK(strncmp(tls_stub_last_request, "GET repos", 9) != 0, "and not a bare relative path");
+    CHECK(strstr(tls_stub_last_request, " HTTP/1.1\r\n") != NULL, "with an HTTP/1.1 request line");
+
+    free_body(raw);
+    free_body(body);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TEST_TMPDIR");
@@ -321,6 +350,7 @@ int main(void)
         return 0;
     }
 
+    test_request_line();
     test_offers_a_newer_release();
     test_current_version_is_not_an_offer();
     test_prerelease_policy();

@@ -86,6 +86,10 @@ struct edc_https_request
     struct yuarel url_parser;
     sds url;
 
+    /* The request target, leading slash included. Computed once at creation because
+     * yuarel_parse() stores the path WITHOUT one -- see edc_https_request_get_path(). */
+    sds request_target;
+
     struct edc_https_client *client;
     edc_https_event_fn fn;
 
@@ -429,6 +433,13 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
         return NULL;
     }
 
+    /* yuarel stores the path without a leading '/'. Restore it once, here, so every caller
+     * gets a usable request target instead of a fragment it has to know to repair. */
+    {
+        const char *p = req->url_parser.path;
+        req->request_target = (p && p[0] == '/') ? sdsnew(p) : sdscatprintf(sdsempty(), "/%s", p ? p : "");
+    }
+
     /* The ssl context is initialized here, symmetric with mbedtls_ssl_free at teardown: a
      * request failing before the handshake (connect failure, timeout, closed at exit)
      * takes the same free path and must release it safely -- init used to happen only on
@@ -484,6 +495,7 @@ static void edc_https_request_dispose(struct edc_https_request *req)
     }
 
     mbedtls_ssl_free(&req->ssl);
+    sdsfree(req->request_target);
     sdsfree(req->url);
     sdsfree(req->location);
     sdsfree(req->current_header_field);
@@ -573,10 +585,21 @@ const char *edc_https_request_get_host(struct edc_https_request *req)
 
 const char *edc_https_request_get_path(struct edc_https_request *req)
 {
-    /* yuarel_parse() leaves path as NULL when the URL has no path component
-     * (e.g. "https://host"). Return "" so callers that do "POST /%s" produce a
-     * valid request line instead of passing NULL to %s. */
-    return req->url_parser.path ? req->url_parser.path : "";
+    /* The request TARGET: an absolute path with a leading '/', which is what a request line
+     * requires. "/" when the URL named no path at all.
+     *
+     * This used to return yuarel's own `path` field verbatim, and yuarel does not include the
+     * leading slash -- "https://host/repos/x" parses to "repos/x". Four call sites build a
+     * request line from this; three prepended their own '/' and worked, and the fourth did not:
+     *
+     *     GET repos/edgeclaw-chat/edgeclaw/releases HTTP/1.1
+     *
+     * which GitHub answers with 400 and an HTML error page. The update check read that page,
+     * failed to parse it, and reported "nothing to offer" -- indistinguishable from being up
+     * to date, so the fault was invisible until someone looked at the response.
+     *
+     * Returning the target rather than a fragment makes the correct call the easy one. */
+    return req->request_target ? req->request_target : "/";
 }
 
 void *edc_https_request_get_priv(struct edc_https_request *req)
