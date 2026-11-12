@@ -1638,6 +1638,60 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_update_cli",
+    srcs = ["test_update_cli.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:update_cli",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_update_service",
+    srcs = ["test_update_service.c", "tls_stub.h", "test_fs_util.h"],
+    deps = [
+        "//src/kernel:kernel",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_upgrade_run",
+    srcs = ["test_upgrade_run.c", "tls_stub.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:update_run",
+        "@libuv",
+        "@mbedtls//:mbedtls",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
+    name = "test_update_dialog",
+    srcs = ["test_update_dialog.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+    target_compatible_with = POSIX_ONLY,
+)
+
+cc_test(
     name = "test_setup_dialog",
     srcs = ["test_setup_dialog.cpp"],
     deps = [

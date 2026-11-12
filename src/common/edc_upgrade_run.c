@@ -60,14 +60,29 @@ struct edc_upgrade_run
     bool spawned;
     bool timed_out;
 
+    /* Reporting waits for BOTH the child's exit and the end of its output. libuv does not
+     * order them: the exit callback can fire while a pipe still has unread bytes, and
+     * reporting there dropped stderr from the detail -- which is the half a user needs (it
+     * is where an installer writes its errors). */
+    bool exit_received;
+    int exit_status;
+    int term_signal;
+    int pipes_open;
+    bool reported;
+
     edc_upgrade_done_fn on_done;
     void *ud;
 
     /* Teardown accounting. |inited[H_COUNT]| records which handles were initialised, so
-     * stop() does not close a struct member that libuv never knew about. */
+     * stop() does not close a struct member that libuv never knew about.
+     *
+     * |refs| is shared ownership between the caller and the handles: one for the caller, one
+     * per initialised handle. Whichever lets go last frees. Without it two owners raced --
+     * the last close callback freed the struct while the caller still had a pointer, which
+     * ASan reported as a heap-use-after-free inside edc_upgrade_run_stop. */
     bool inited[H_COUNT];
-    bool closing;
-    int pending;
+    bool stopped; /* the caller has given up its reference */
+    int refs;
 };
 
 /* ── stage 1: fetch the installer ───────────────────────────────────────── */
@@ -215,12 +230,9 @@ static sds write_script(const sds body)
 
 /* ── stage 2: run it ────────────────────────────────────────────────────── */
 
-static void run_on_close(uv_handle_t *handle)
+static void run_unref(edc_upgrade_run_t *run)
 {
-    edc_upgrade_run_t *run = handle->data;
-    if (!run)
-        return;
-    if (--run->pending > 0)
+    if (!run || --run->refs > 0)
         return;
     sdsfree(run->cacert);
     sdsfree(run->tag);
@@ -228,14 +240,25 @@ static void run_on_close(uv_handle_t *handle)
     sdsfree(run->script_path);
     sdsfree(run->fetch_error);
     sdsfree(run->output);
+    sdsfree(run->install_dir);
     free(run);
 }
 
+static void run_on_close(uv_handle_t *handle)
+{
+    run_unref(handle->data);
+}
+
+/* Close one handle and take a reference for its close callback. |refs| is bumped BEFORE
+ * uv_close, because the callback may run on the next loop iteration -- after this function
+ * has returned and the caller's reference may already be gone. */
 static void run_close(edc_upgrade_run_t *run, int which)
 {
     if (!run->inited[which])
         return;
-    run->pending++;
+    run->inited[which] = false;
+    run->refs++;
+
     switch (which)
     {
     case H_STDOUT:
@@ -255,9 +278,9 @@ static void run_close(edc_upgrade_run_t *run, int which)
         uv_close((uv_handle_t *)&run->deadline, run_on_close);
         break;
     default:
+        run->refs--;
         break;
     }
-    run->inited[which] = false;
 }
 
 /* Append to the output tail, keeping only the last OUTPUT_KEEP bytes. */
@@ -274,6 +297,40 @@ static void run_keep_output(edc_upgrade_run_t *run, const char *data, size_t len
     }
 }
 
+/* Report once, and only when there is something complete to report. */
+static void run_ready_to_report(edc_upgrade_run_t *run)
+{
+    if (run->reported || !run->exit_received)
+        return;
+    /* Normally wait for both pipes: their bytes are the installer's own explanation of what
+     * went wrong. But a deadline kill can leave a grandchild (sh -c 'sleep 60') holding the
+     * write end, so the pipe never reaches EOF -- waiting for it then means never reporting at
+     * all. After a timeout the exit status is the whole story, so it is reported without the
+     * output. */
+    if (run->pipes_open > 0 && !run->timed_out)
+        return;
+    run->reported = true;
+
+    const bool ok = !run->timed_out && run->term_signal == 0 && run->exit_status == 0;
+    sds detail = sdsempty();
+    if (run->timed_out)
+        detail = sdscat(detail, "the installer did not finish in time");
+    else if (run->term_signal != 0)
+        detail = sdscatprintf(detail, "the installer was killed (signal %d)", run->term_signal);
+    else if (run->exit_status != 0)
+        detail = sdscatprintf(detail, "the installer exited with status %d", run->exit_status);
+    if (run->output && sdslen(run->output) > 0)
+    {
+        if (sdslen(detail) > 0)
+            detail = sdscat(detail, "\n");
+        detail = sdscat(detail, run->output);
+    }
+
+    if (run->on_done)
+        run->on_done(ok, detail ? detail : "", run->ud);
+    sdsfree(detail);
+}
+
 static void run_on_stdout(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
     edc_upgrade_run_t *run = stream->data;
@@ -284,7 +341,14 @@ static void run_on_stdout(uv_stream_t *stream, ssize_t nread, const uv_buf_t *bu
         free(buf->base);
     }
     if (nread < 0 && run)
+    {
+        /* EOF (or a read error): this pipe is done. Both have to be before the report, or
+         * stderr loses the race with the exit callback. */
         run_close(run, stream == (uv_stream_t *)&run->out_pipe ? H_STDOUT : H_STDERR);
+        if (run->pipes_open > 0)
+            run->pipes_open--;
+        run_ready_to_report(run);
+    }
 }
 
 static void run_alloc(uv_handle_t *handle, size_t suggested, uv_buf_t *buf)
@@ -315,27 +379,15 @@ static void run_on_exit(uv_process_t *process, int64_t exit_status, int term_sig
     uv_timer_stop(&run->deadline);
     run->spawned = false;
 
-    bool ok = !run->timed_out && term_signal == 0 && exit_status == 0;
-    sds detail = sdsempty();
-    if (run->timed_out)
-        detail = sdscat(detail, "the installer did not finish in time");
-    else if (term_signal != 0)
-        detail = sdscatprintf(detail, "the installer was killed (signal %d)", term_signal);
-    else if (exit_status != 0)
-        detail = sdscatprintf(detail, "the installer exited with status %d", (int)exit_status);
-    if (run->output && sdslen(run->output) > 0)
-    {
-        if (sdslen(detail) > 0)
-            detail = sdscat(detail, "\n");
-        detail = sdscat(detail, run->output);
-    }
-
-    if (run->on_done)
-        run->on_done(ok, detail ? detail : "", run->ud);
-    sdsfree(detail);
+    /* Record, do not report: the pipes may still hold unread bytes, and reporting here is
+     * what dropped stderr from the detail. run_ready_to_report() decides. */
+    run->exit_received = true;
+    run->exit_status = (int)exit_status;
+    run->term_signal = term_signal;
 
     run_close(run, H_TIMER);
     run_close(run, H_PROCESS);
+    run_ready_to_report(run);
 }
 
 static void run_spawn(edc_upgrade_run_t *run)
@@ -369,9 +421,14 @@ static void run_spawn(edc_upgrade_run_t *run)
 
     uv_stdio_container_t stdio[3];
     stdio[0].flags = UV_IGNORE;
-    stdio[1].flags = UV_CREATE_PIPE | UV_READABLE_PIPE;
+    /* WRITABLE_PIPE, not READABLE: the flag describes the CHILD's end. The child writes to
+     * its stdout, so the parent holds the read end -- which is the only side uv_read_start
+     * accepts. With READABLE_PIPE the parent got a write end and every uv_read_start returned
+     * UV_EINVAL, so the installer's output was never captured at all and the failure detail
+     * was always empty. */
+    stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
     stdio[1].data.stream = (uv_stream_t *)&run->out_pipe;
-    stdio[2].flags = UV_CREATE_PIPE | UV_READABLE_PIPE;
+    stdio[2].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
     stdio[2].data.stream = (uv_stream_t *)&run->err_pipe;
     options.stdio = stdio;
     options.stdio_count = 3;
@@ -385,6 +442,7 @@ static void run_spawn(edc_upgrade_run_t *run)
     }
     run->inited[H_STDOUT] = true;
     run->inited[H_STDERR] = true;
+    run->pipes_open = 2;
     run->out_pipe.data = run;
     run->err_pipe.data = run;
 
@@ -449,11 +507,11 @@ static void run_worker(void *arg)
     uv_async_send(&run->fetched);
 }
 
-edc_upgrade_run_t *edc_upgrade_run_start(uv_loop_t *loop, const char *cacert_path, const char *tag,
-                                         const char *install_dir, int timeout_ms, edc_upgrade_done_fn on_done,
-                                         void *ud)
+edc_upgrade_run_t *edc_upgrade_run_start(uv_loop_t *loop, const char *cacert_path, const char *script_url,
+                                         const char *tag, const char *install_dir, int timeout_ms,
+                                         edc_upgrade_done_fn on_done, void *ud)
 {
-    if (!loop || !tag || !tag[0] || !install_dir || !install_dir[0] || !on_done)
+    if (!loop || !script_url || !script_url[0] || !tag || !tag[0] || !install_dir || !install_dir[0] || !on_done)
         return NULL;
 
     edc_upgrade_run_t *run = calloc(1, sizeof(*run));
@@ -463,16 +521,13 @@ edc_upgrade_run_t *edc_upgrade_run_start(uv_loop_t *loop, const char *cacert_pat
     run->loop = loop;
     run->cacert = cacert_path ? sdsnew(cacert_path) : NULL;
     run->tag = sdsnew(tag);
-    /* Pinned to the tag, never a moving branch: the script and the archive it verifies then
-     * come from the same release. */
-    run->script_url = sdscatprintf(sdsempty(),
-                                   "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/%s", tag,
-                                   edc_upgrade_installer_filename());
+    run->script_url = sdsnew(script_url);
     run->install_dir = sdsnew(install_dir);
     run->output = sdsempty();
     run->timeout_ms = timeout_ms > 0 ? timeout_ms : 120000;
     run->on_done = on_done;
     run->ud = ud;
+    run->refs = 1; /* the caller's reference; stop() gives it up */
 
     if (!run->tag || !run->script_url || !run->install_dir || !run->output)
     {
@@ -509,9 +564,17 @@ void edc_upgrade_run_stop(edc_upgrade_run_t *run)
 {
     if (!run)
         return;
+    /* Idempotent: the caller may give up its reference once, and a second call must not
+     * decrement it again. */
+    if (run->stopped)
+        return;
+    run->stopped = true;
 
     if (run->worker_started)
+    {
         uv_thread_join(&run->worker);
+        run->worker_started = false;
+    }
 
     if (run->spawned)
     {
@@ -519,30 +582,10 @@ void edc_upgrade_run_stop(edc_upgrade_run_t *run)
         run->spawned = false;
     }
 
-    /* Close everything that was initialised; the struct frees itself once the last close
-     * callback lands (see run_on_close). Freeing here instead is the use-after-free the
-     * update service taught us about: uv_close is asynchronous. */
-    if (!run->closing)
-    {
-        run->closing = true;
-        run->pending = 0;
-        for (int i = 0; i < H_COUNT; i++)
-            run_close(run, i);
-        if (run->pending > 0)
-            return;
-    }
-    else
-    {
-        return;
-    }
+    for (int i = 0; i < H_COUNT; i++)
+        run_close(run, i);
 
-    /* Nothing was armed (a failure path out of start()): no callback will come. */
-    sdsfree(run->cacert);
-    sdsfree(run->tag);
-    sdsfree(run->script_url);
-    sdsfree(run->script_path);
-    sdsfree(run->fetch_error);
-    sdsfree(run->output);
-    sdsfree(run->install_dir);
-    free(run);
+    /* Release the caller's reference. The handles hold one each until their close callbacks
+     * run on the loop; the last of those frees (see run_unref). */
+    run_unref(run);
 }

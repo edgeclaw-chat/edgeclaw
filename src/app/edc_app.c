@@ -184,12 +184,17 @@ bool edc_app_update_start(struct edc_app *app, const char *tag, edc_upgrade_done
     sds dir = exe ? edc_path_dirname(exe) : NULL;
     sds cacert =
         app->config && app->config->workspace ? edc_path_join(app->config->workspace, "ssl", "cacert.pem", NULL) : NULL;
-    (void)home;
-
+    /* Pinned to the tag, never a moving branch: the script and the archive it verifies then
+     * come from the same release. */
+    sds script_url = sdscatprintf(sdsempty(),
+                                  "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/%s", tag,
+                                  edc_upgrade_installer_filename());
     struct edc_upgrade_run *run =
-        exe ? edc_upgrade_run_start(&app->runner->loop, cacert, tag, dir, /* timeout */ 120000, app_upgrade_done, app)
+        exe ? edc_upgrade_run_start(&app->runner->loop, cacert, script_url, tag, dir, /* timeout */ 120000,
+                                    app_upgrade_done, app)
             : NULL;
 
+    sdsfree(script_url);
     sdsfree(exe);
     sdsfree(home);
     sdsfree(dir);
