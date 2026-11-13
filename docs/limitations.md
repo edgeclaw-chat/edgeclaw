@@ -210,6 +210,13 @@ Not "unverified" — verified, and wrong in a narrow case:
   runs it synchronously and prints the answer, which is the only way to exercise the network
   path without publishing a release. `--current` exists because a development build has no
   version to compare; it affects that diagnostic only.
+  **A failed check and an up-to-date install print differently.** "up to date", "could not
+  check: HTTP 403 (GitHub's unauthenticated rate limit, 60 requests/hour per IP)", "could not
+  check: no response before the deadline" are three separate lines, because collapsing them
+  was the command's own worst failure: it exists to tell those apart. The exit status stays 0
+  in every case -- this diagnoses the updater, so a non-zero status would look like a failure
+  of the thing being diagnosed. Read the text, not `$?`. The launch-time check is still silent
+  to the user; only its log line names the reason.
 
 - **An update proves the bytes arrived intact, not who sent them.** The installer compares
   each archive against the `sha256sums.txt` published next to it, which catches a truncated
