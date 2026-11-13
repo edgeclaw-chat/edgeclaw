@@ -19,6 +19,7 @@ cc_library(
         "edc_tools_search.c",
         "edc_tools_shell.c",
         "edc_tools_todo.c",
+        "edc_tools_update.c",
         "edc_toolset.c",
     ],
     hdrs = [
@@ -35,6 +36,7 @@ cc_library(
         "edc_tools_search.h",
         "edc_tools_shell.h",
         "edc_tools_todo.h",
+        "edc_tools_update.h",
         "edc_toolset.h",
     ],
     includes = ["."],

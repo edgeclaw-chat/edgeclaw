@@ -396,6 +396,20 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The internal `update_install` tool: present for a seeded call, absent from everything the
+# model can see. Those two pull in opposite directions, which is why both are asserted.
+cc_test(
+    name = "test_update_tool",
+    srcs = ["test_update_tool.c"],
+    deps = [
+        "//src/toolbox:toolbox",
+        "@cjson//:cjson",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
 cc_test(
     name = "test_output_buf",
     srcs = ["test_output_buf.c", "test_ws.h"],

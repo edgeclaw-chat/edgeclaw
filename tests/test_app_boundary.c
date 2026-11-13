@@ -41,6 +41,7 @@
 #include "edc_config.h"
 #include "edc_models.h"
 #include "edc_update.h"
+#include "edc_task.h"
 #include "sds.h"
 
 #include <stdio.h>
@@ -979,6 +980,42 @@ static void on_upgrade_done(bool ok, const char *detail, void *ud)
     (void)ud;
 }
 
+/* The background requirement, asserted on the task the app actually built.
+ *
+ * The risk this covers is not "the call fails" but "the call succeeds and quietly takes the
+ * screen": an update can run for two minutes, and the user already agreed to it -- pushing
+ * whatever they were reading out of view is a regression nobody would notice in a test that
+ * only checked the return value. So the flags are read off the task.
+ *
+ * On a copy that cannot self-upgrade this returns false for that reason, and the assertions
+ * skip themselves. */
+static void test_update_task_is_background()
+{
+    TEST("the update task runs in the background, not in front");
+
+    struct edc_task *task = NULL;
+    const bool spawned = edc_app_update_spawn_task(g_app, "v9.9.9", &task);
+    if (!spawned)
+    {
+        printf("      (skipped: this copy cannot self-upgrade, so no task is created)\n");
+        CHECK(task == NULL, "a refusal leaves the out-param clear");
+        return;
+    }
+
+    CHECK(task != NULL, "the task was created");
+    if (!task)
+        return;
+
+    /* The two properties that make this an update rather than a takeover: it does not go on
+     * screen, and it never asks a model what to do. */
+    CHECK(task->is_background, "it is a background task (it does not take the screen)");
+    CHECK(task->tool_only, "it is tool-only -- no model call is made for an update");
+
+    /* The seeded call lives in the active turn; without it the task would have nothing to do
+     * and the scheduler would never start the tool. */
+    CHECK(task->active_turn != NULL, "it carries the turn holding the seeded call");
+}
+
 static void test_update_surface_on_a_real_app()
 {
     TEST("the update surface answers on a real app");
@@ -1372,6 +1409,7 @@ int main(int argc, char **argv)
     test_ensure_parent_dir_refuses_what_is_not_a_path();
 
     test_update_surface_on_a_real_app();
+    test_update_task_is_background();
     test_update_start_when_installed();
     test_update_completion_callback();
     test_update_surface_tolerates_null();

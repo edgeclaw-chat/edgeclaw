@@ -14,12 +14,14 @@
 #include "edc_llm_request.h"
 #include "edc_sandbox.h"
 #include "edc_secret.h"
+#include "edc_session_manager.h"
 #include "edc_state_store.h"
 #include "edc_string_utils.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox_actor.h"
 #include "edc_toolbox.h"
+#include "edc_tools_update.h"
 #include "edc_toolset.h"
 #include "edc_turn.h"
 #include "edc_semver.h"
@@ -225,6 +227,66 @@ bool edc_app_update_start(struct edc_app *app, const char *tag, edc_upgrade_done
     return true;
 }
 
+/* Adapter handed to the internal `update_install` tool: same contract as
+ * edc_app_update_start except that the app and the completion context arrive separately.
+ * |start_ud| is the app (registered once); |done_ud| is the tool's per-call state and is
+ * forwarded untouched so the tool gets its own pointer back. */
+static bool app_update_install_from_tool(void *start_ud, const char *tag, edc_upgrade_done_observer on_done,
+                                         void *done_ud)
+{
+    return edc_app_update_start((struct edc_app *)start_ud, tag, on_done, done_ud);
+}
+
+bool edc_app_update_spawn_task(struct edc_app *app, const char *tag, struct edc_task **out_task)
+{
+    if (out_task)
+        *out_task = NULL;
+    if (!app || !app->scheduler || !tag || !tag[0])
+        return false;
+    /* Asked before the task exists: a task that can only fail is worse than a refusal, and
+     * the caller has a dialog to keep open. */
+    if (!edc_app_update_can_self_upgrade(app))
+        return false;
+
+    struct edc_session_manager *sessions = app->scheduler->sessions;
+    struct edc_session *session = sessions ? edc_session_manager_get_active(sessions) : NULL;
+    if (!session)
+        return false;
+
+    cJSON *args = cJSON_CreateObject();
+    cJSON_AddStringToObject(args, "tag", tag);
+
+    sds desc = sdscatprintf(sdsempty(), "update to %s", tag);
+    sds input = sdscatprintf(sdsempty(), "update to %s", tag);
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = desc;
+    /* The turn's user message: what the transcript shows this task was for. */
+    spec.input = input;
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+
+    /* BACKGROUND, and it must stay that way. The download-and-install takes up to two
+     * minutes; taking the screen for that would push whatever the user was reading out of
+     * view for something they already agreed to. `background` additionally keeps it from
+     * queueing behind the group's current holder -- an update runs alongside. */
+    spec.background = true;
+    spec.take_foreground = false;
+
+    /* The whole mechanism, exactly as `!cmd` uses it: one seeded call, no LLM round. The
+     * tool is registered INTERNAL, so this is the only way it is ever invoked. */
+    spec.initial_tool_name = "update_install";
+    spec.initial_tool_args = args;
+
+    struct edc_task *task = edc_scheduler_task_create(app->scheduler, session, &spec);
+    cJSON_Delete(args);
+    sdsfree(desc);
+    sdsfree(input);
+    if (out_task)
+        *out_task = task;
+    return task != NULL;
+}
+
 void edc_app_update_cancel(struct edc_app *app)
 {
     if (!app || !app->upgrade)
@@ -363,6 +425,17 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     edc_actor_runner_add(app->runner, app->llm_actor);
 
     app->toolbox = edc_toolbox_new(app->config, edc_scheduler_get_actor(app->scheduler), app->channel_actor);
+
+    /* `update_install`, registered INTERNAL: reachable by a seeded call, invisible to the
+     * model. The upgrade entry point is injected because the toolbox sits below this file and
+     * cannot name struct edc_app; |app| is what the callback carries.
+     *
+     * This is the only tool reached by edc_task_spec.initial_tool_name whose work outlives a
+     * single actor turn (fetch the installer, spawn it, wait up to 120s), which is exactly why
+     * it is a tool: the ledger already knows how to hold a pending call across that. */
+    if (app->toolbox)
+        edc_tools_update_register(app->toolbox, app_update_install_from_tool, app);
+
     app->toolbox_actor = edc_toolbox_actor_new(app->toolbox);
     edc_actor_runner_add(app->runner, app->toolbox_actor);
 

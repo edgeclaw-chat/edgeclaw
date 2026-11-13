@@ -74,6 +74,22 @@ typedef void (*edc_upgrade_done_observer)(bool ok, const char *detail, void *ud)
 extern bool edc_app_update_start(struct edc_app *app, const char *tag, edc_upgrade_done_observer on_done, void *ud);
 extern void edc_app_update_cancel(struct edc_app *app);
 
+/* Run the upgrade to |tag| as a BACKGROUND TASK of the active session, driven by the internal
+ * `update_install` tool. Returns false when no task could be created (no session, not
+ * upgradable).
+ *
+ * This is the entry the update dialog should use in preference to edc_app_update_start: the
+ * work then has a sidebar line, a history entry and a ledger the scheduler already knows how
+ * to carry across a minute of waiting, and the user can see it happening without it taking
+ * over the screen.
+ *
+ * |out_task| (optional) receives the created task, so a test can assert the properties that
+ * are the point of this function -- background, not foreground, tool-only -- rather than
+ * trusting that a true return means they were set. It belongs to the scheduler; do not free
+ * it. */
+struct edc_task;
+extern bool edc_app_update_spawn_task(struct edc_app *app, const char *tag, struct edc_task **out_task);
+
 /* The command a user would type to upgrade by hand, written into |buf|. Always succeeds with
  * a non-empty string (a placeholder version is better than an empty hint). */
 extern void edc_app_update_manual_hint(const struct edc_app *app, char *buf, size_t cap);

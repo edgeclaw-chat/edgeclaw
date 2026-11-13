@@ -55,6 +55,17 @@ extern sds edc_toolbox_spill_output(struct edc_toolbox *tb, const char *tool_nam
                                     const char *content, size_t len);
 
 extern void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool);
+
+/* Register a tool that the MODEL must never see or call: it goes into the name table (so a
+ * seeded call can reach it) but not into any declared set, and its exposure is set to
+ * EDC_TOOL_EXPOSURE_INTERNAL.
+ *
+ * Why not just edc_toolbox_register() plus a flag: `tb->schemas` is the process-wide `tools`
+ * field (edc_app.c uses it as the fallback declaration set), so adding a schema there
+ * publishes the tool to the model in every session that has no group to freeze against. The
+ * two registrations differ in exactly that one step, which is why there are two of them
+ * rather than one with a boolean at the call site. */
+extern void edc_toolbox_register_internal(struct edc_toolbox *tb, struct edc_tool *tool);
 extern void edc_toolbox_register_defaults(struct edc_toolbox *tb);
 /* The request-shaped schema entry for one tool ({"type":"function","function":{...}}).
  * Exposed because the declaration set is derived elsewhere (edc_toolset); the caller owns

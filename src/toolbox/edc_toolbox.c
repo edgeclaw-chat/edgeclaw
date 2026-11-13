@@ -172,6 +172,20 @@ void edc_toolbox_register(struct edc_toolbox *tb, struct edc_tool *tool)
         cJSON_AddItemToArray(tb->memory_schemas, edc_tool_to_schema(tool));
 }
 
+void edc_toolbox_register_internal(struct edc_toolbox *tb, struct edc_tool *tool)
+{
+    if (!tb || !tool)
+        return;
+    /* Reachable by name (edc_toolbox_exec looks up the same table), invisible to the model.
+     * NOT added to tb->schemas -- see the declaration for why that one step is the whole
+     * difference. */
+    edc_tool_set_exposure(tool, EDC_TOOL_EXPOSURE_INTERNAL);
+    /* No snippet either: the prompt's tool section is built from tools that have one, and a
+     * hidden tool describing itself there would be the same leak in prose form. */
+    edc_tool_set_snippet(tool, NULL);
+    HASH_ADD_STR(tb->tools, name, tool);
+}
+
 void edc_toolbox_register_defaults(struct edc_toolbox *tb)
 {
     edc_tools_fs_register(tb);
@@ -266,6 +280,11 @@ static sds edc_toolbox_names_for_scope(const struct edc_toolbox *tb, uint32_t sc
     HASH_ITER(hh, tb->tools, t, tmp)
     {
         if ((t->scope & scope) == 0)
+            continue;
+        /* Internal tools are in this table so a seeded call can reach them, but telling the
+         * model their names here would undo the thing that makes them internal -- this text
+         * goes into a tool result, which is prompt content. */
+        if (t->exposure == EDC_TOOL_EXPOSURE_INTERNAL)
             continue;
         if (sdslen(names) > 0)
             names = sdscat(names, ", ");

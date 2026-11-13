@@ -19,6 +19,16 @@ typedef void (*EdcDestroyNotify)(void *data);
 /* How the model sees a tool (see struct edc_tool.exposure). */
 #define EDC_TOOL_EXPOSURE_DIRECT 0   /* full schema in the request's `tools` field */
 #define EDC_TOOL_EXPOSURE_DEFERRED 1 /* named in prose only; called by name */
+/* INTERNAL: the model never sees this tool at all -- not in the `tools` field, not in the
+ * prompt's prose, not in the "Available:" list of an error message. It exists so the
+ * kernel can seed a call to it itself (edc_task_spec.initial_tool_name), which is the only
+ * way it is ever invoked.
+ *
+ * The point is that some work must happen inside a task -- so it has a sidebar line, a
+ * history entry and a place in the ledger -- while remaining something the model must not
+ * decide to do on its own. Replacing the binary is the case this exists for: only the user
+ * asks for that. */
+#define EDC_TOOL_EXPOSURE_INTERNAL 2
 
 struct edc_tool_param
 {
