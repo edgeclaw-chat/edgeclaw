@@ -114,6 +114,15 @@ struct edc_https_request
      * edc_https_request_release. */
     int pending_closes;
 
+    /* A name lookup in flight, or NULL. Counted in |pending_closes| like the two handles:
+     * getaddrinfo is a uv_req, so uv_walk() cannot see it and the close callbacks know
+     * nothing about it. Without this reference, teardown's two close callbacks reach zero and
+     * free the request while the resolver still holds a pointer to it -- and the completion
+     * then writes into freed memory. ASan found exactly that (edc_https_on_resolved ->
+     * uv_is_closing on a freed request) once the drain loop started letting the lookup finish
+     * during teardown. Kept here as well as counted so teardown can cancel it. */
+    uv_getaddrinfo_t *resolver;
+
     /* Redirect following (301/302/303/307/308). |location| is the raw Location header of a
      * 3xx response; |redirecting| means this response is being discarded in favour of a new
      * request, so no body or CLOSE is delivered to the caller. |redirects_left| is the budget
@@ -1001,15 +1010,20 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
 {
     struct edc_https_request *http_req = uv_req_get_data((uv_req_t *)req);
 
-    /* The socket can already be closing: teardown does not wait for a lookup in flight, and
-     * uv_walk() sees the socket (a handle) even though it cannot see this request (a uv_req).
-     * Connecting or closing a closing handle is abort() in libuv, so both are skipped --
-     * nothing is lost, the socket is being closed by whoever closed it. */
-    if (uv_is_closing((uv_handle_t *)&http_req->socket))
+    /* This lookup held a reference to the request (see the work handler that started it), so
+     * the request is alive here even if teardown has already run. Clearing the pointer first
+     * makes that reference one-shot: nothing can cancel this req after it is freed below. */
+    http_req->resolver = NULL;
+    const bool closing = uv_is_closing((uv_handle_t *)&http_req->socket);
+
+    if (status == UV_ECANCELED || closing)
     {
+        /* Cancelled by teardown, or the socket is already closing. Nothing to report: the
+         * caller that started the teardown is the one this would be reporting to. */
         if (res)
             uv_freeaddrinfo(res);
         free(req);
+        edc_https_request_release(http_req);
         return;
     }
 
@@ -1020,12 +1034,15 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
         sdsfree(err_message);
         edc_https_close_once((uv_handle_t *)&http_req->socket, edc_https_on_tcp_close);
         free(req);
+        edc_https_request_release(http_req);
         return;
     }
 
     uv_tcp_connect(&http_req->conn, &http_req->socket, res->ai_addr, edc_https_client_on_tcp_connect);
     uv_freeaddrinfo(res);
     free(req);
+    /* Last: this may free the request, so nothing may touch http_req after it. */
+    edc_https_request_release(http_req);
 }
 
 static void on_work_async(uv_async_t *handle)
@@ -1065,6 +1082,10 @@ static void on_work_async(uv_async_t *handle)
 
         uv_getaddrinfo_t *req = malloc(sizeof(uv_getaddrinfo_t));
         uv_req_set_data((uv_req_t *)req, http_req);
+        /* The lookup now holds a reference, so the request cannot be freed by its two close
+         * callbacks while this is outstanding. See the field's declaration. */
+        http_req->resolver = req;
+        http_req->pending_closes++;
         sds port_s = sdscatprintf(sdsempty(), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
         uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, http_req->url_parser.host, port_s, &hints);
         sdsfree(port_s);
@@ -1180,7 +1201,18 @@ static void edc_https_client_close_walk(uv_handle_t *handle, void *arg)
      * wait for the other before free, see edc_https_request_release). At exit an in-flight
      * request also reaches here -- so the timer side must be given a callback, never NULL. */
     if (handle->type == UV_TCP)
+    {
+        /* Cancel a name lookup that is still outstanding, so its reference is dropped now
+         * rather than whenever the resolver happens to finish. The callback then runs with
+         * UV_ECANCELED during the drain loop and releases the request. Without this, a lookup
+         * to an unreachable DNS server would keep the request (and therefore the client)
+         * alive for as long as the resolver takes. */
+        struct edc_https_request *req = (struct edc_https_request *)handle;
+        if (req->resolver)
+            uv_cancel((uv_req_t *)req->resolver);
+
         uv_close(handle, edc_https_request_cleanup_close);
+    }
     else if (handle->type == UV_TIMER)
         uv_close(handle, edc_https_on_timer_close);
     else
