@@ -43,8 +43,7 @@ typedef enum edc_update_outcome
     EDC_UPDATE_OK = 0,         /* a newer release for this platform is available */
     EDC_UPDATE_UP_TO_DATE,     /* the API answered; nothing newer than |current_version| */
     EDC_UPDATE_BAD_ARG,        /* a required argument was NULL or empty */
-    EDC_UPDATE_NO_CLIENT,      /* the TLS client could not be created (unreadable CA bundle) */
-    EDC_UPDATE_CONNECT_FAILED, /* DNS, TCP, or the TLS handshake */
+    EDC_UPDATE_CONNECT_FAILED, /* DNS, TCP, the TLS handshake, or an unreadable CA bundle */
     EDC_UPDATE_TIMEOUT,        /* no close event before the deadline */
     EDC_UPDATE_HTTP_STATUS,    /* answered with a status other than 200 */
     EDC_UPDATE_BODY_TOO_LARGE, /* the body passed |max_bytes| and was discarded */

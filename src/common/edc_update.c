@@ -271,7 +271,14 @@ bool edc_update_check_ex(const char *cacert_path, const char *api_url, const cha
 
     struct edc_https_client *client = edc_https_client_new(cacert_path);
     if (!client)
+    {
+        /* Only mbedtls initialisation fails here -- a missing or unreadable CA bundle is NOT
+         * this: the bundle is loaded when connecting (see edc_https_client.c), so it surfaces
+         * as EDC_UPDATE_CONNECT_FAILED below. Nothing has been asked either way. */
+        if (diag)
+            diag->outcome = EDC_UPDATE_CONNECT_FAILED;
         return false;
+    }
     if (diag)
         diag->outcome = EDC_UPDATE_CONNECT_FAILED;
 

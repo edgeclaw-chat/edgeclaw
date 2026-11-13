@@ -88,7 +88,8 @@ int edc_update_check_cli(bool allow_pre, const char *current_override)
             printf("          (not the same as up to date -- nothing was determined)\n");
             break;
         case EDC_UPDATE_CONNECT_FAILED:
-            printf("result    could not check: could not connect (DNS, TCP, or the TLS handshake)\n");
+            printf("result    could not check: no connection (DNS, TCP, the TLS handshake, or an unreadable "
+                   "CA bundle)\n");
             printf("          (not the same as up to date -- nothing was determined)\n");
             break;
         case EDC_UPDATE_BODY_TOO_LARGE:
@@ -98,9 +99,6 @@ int edc_update_check_cli(bool allow_pre, const char *current_override)
         case EDC_UPDATE_MALFORMED:
             printf("result    could not check: the response is not the release list (bad JSON or an error page)\n");
             printf("          (not the same as up to date -- nothing was determined)\n");
-            break;
-        case EDC_UPDATE_NO_CLIENT:
-            printf("result    could not check: the CA bundle could not be loaded (%s)\n", cacert ? cacert : "(none)");
             break;
         case EDC_UPDATE_BAD_ARG:
         case EDC_UPDATE_OK: /* unreachable: OK is always reported through |found| */
