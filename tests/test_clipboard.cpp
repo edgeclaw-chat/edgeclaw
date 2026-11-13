@@ -222,6 +222,96 @@ void TestToastTiming()
     Check(toast.Visible(t0 + ms(100)), "a second copy raises it again");
 }
 
+// The standing notice: the same chip look, translucent, and -- unlike the toast -- its label
+// stays at full strength. That asymmetry is the whole point (a toast is leaving, a notice
+// stays), and it is invisible unless the colours are read back.
+void TestTranslucentChip()
+{
+    std::cout << "the standing chip lets the pane through but keeps its label crisp\n";
+
+    const int width = 60;
+    const int height = 6;
+    const ::ftxui::Color pane = ::ftxui::Color::RGB(12, 34, 56);
+
+    struct Frame
+    {
+        std::vector<std::string> chars;
+        std::vector<::ftxui::Color> fg;
+        std::vector<::ftxui::Color> bg;
+    };
+
+    auto draw = [&](bool with_chip, float alpha) {
+        auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
+        auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()}) | ::ftxui::bgcolor(pane);
+        if (with_chip)
+            ::ftxui::Render(screen, ::ftxui::dbox({std::move(base), edc::TranslucentChipElement(" NOTICE ", alpha)}));
+        else
+            ::ftxui::Render(screen, std::move(base));
+
+        Frame frame;
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                const auto &cell = screen.CellAt(x, y);
+                frame.chars.push_back(cell.character);
+                frame.fg.push_back(cell.foreground_color);
+                frame.bg.push_back(cell.background_color);
+            }
+        return frame;
+    };
+
+    const Frame plain = draw(false, 0.35f);
+    const Frame shown = draw(true, 0.35f);
+    const Frame opaque = draw(true, 0.0f);
+
+    Check(shown.chars != plain.chars, "the chip paints over the pane");
+
+    // The label is on screen and readable: find its first cell by its character.
+    bool found = false;
+    size_t label_cell = 0;
+    for (size_t i = 0; i < shown.chars.size(); i++)
+        if (shown.chars[i] == "N")
+        {
+            found = true;
+            label_cell = i;
+            break;
+        }
+    Check(found, "the label is rendered");
+
+    if (found)
+    {
+        const auto &pal = edc::style::palette();
+        Check(shown.fg[label_cell] == pal.accent,
+              "the label keeps the accent colour at alpha 0.35 -- this is what a fade cannot do");
+        Check(shown.fg[label_cell] == opaque.fg[label_cell], "and it is exactly as strong as when fully opaque");
+
+        /* Left side of the pane, not the right: the transient toasts (copy, paste, backfill)
+         * all own the top-right corner, and a notice that never goes away would sit under
+         * every one of them. Pinning the corner here is what keeps a future refactor from
+         * quietly moving it back. */
+        const int x = static_cast<int>(label_cell % static_cast<size_t>(width));
+        Check(x < width / 3, "the chip is pinned to the LEFT (toasts own the right)");
+    }
+
+    // The surface really is translucent: its background is neither the pane's nor the chip's
+    // own raised colour, but a blend of the two.
+    if (found)
+    {
+        const ::ftxui::Color &blended = shown.bg[label_cell];
+        const ::ftxui::Color &solid = opaque.bg[label_cell];
+        Check(!(blended == solid), "the surface is not the opaque one");
+        Check(!(blended == plain.bg[label_cell]), "and not the pane either -- it is a blend");
+    }
+
+    // Over the pane's own cells that the chip does not cover, nothing changes.
+    Check(plain.bg[0] == shown.bg[0] || shown.chars[0] != plain.chars[0],
+          "cells the chip does not reach are untouched (or were overwritten by it)");
+
+    // alpha 1 is the "paint nothing" end, like a finished fade.
+    const Frame invisible = draw(true, 1.0f);
+    Check(invisible.chars == plain.chars, "alpha 1 leaves the pane exactly as it was");
+}
+
 } // namespace
 
 int main()
@@ -232,6 +322,7 @@ int main()
     TestDragDetection();
     TestToastFade();
     TestToastTiming();
+    TestTranslucentChip();
 
     if (g_failures == 0)
     {
