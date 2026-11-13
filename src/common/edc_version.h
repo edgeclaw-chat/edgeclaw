@@ -56,13 +56,13 @@ void edc_version_print(int schema_version, FILE *out);
  * start -- no config, no passphrase, no terminal. `program` is argv[0]'s basename; NULL
  * or empty falls back to "edgeclaw".
  *
- * Kept short on purpose: this is the first output a new user sees, and a screenful of
- * flags is worse than a pointer to where the rest lives. */
+ * It lists EVERY option the binary answers, however rarely used. An earlier version said
+ * "kept short on purpose: a screenful of flags is worse than a pointer to where the rest
+ * lives" and listed three -- and `--update-check`, added afterwards, was then absent from
+ * the one place a user looks. A flag missing from --help is indistinguishable from a flag
+ * that does not exist; `tests/test_version.c` asserts the list against the parser for
+ * that reason. */
 void edc_usage_print(const char *program, FILE *out);
-
-/* The same for the non-interactive frontend, whose flags and whose "one line in" contract
- * differ from the interface's; sharing one body would have meant lying in one of them. */
-void edc_usage_print_cli(const char *program, FILE *out);
 
 #ifdef __cplusplus
 }

@@ -112,8 +112,15 @@ void edc_usage_print(const char *program, FILE *out)
             "Usage: %s [options]\n"
             "\n"
             "  --version        print version, schema, build time and platform\n"
+            "  --update-check   ask the release list whether a newer version exists\n"
+            "  --pre            with --update-check: consider pre-releases too\n"
+            "  --current <ver>  with --update-check: compare against <ver>, not this build\n"
             "  --no-sandbox     disable the filesystem sandbox for this run\n"
+            "  --sandbox        force the sandbox on for this run\n"
             "  --help, -h       this text\n"
+            "\n"
+            "--update-check reports what it found, and names the reason when it found\n"
+            "nothing -- a refused request and an up-to-date install do not read alike.\n"
             "\n"
             "Running it with no arguments starts the interface. The first run writes\n"
             "~/.edgeclaw/config.json, asks for a passphrase to encrypt your API key, and\n"
@@ -121,35 +128,5 @@ void edc_usage_print(const char *program, FILE *out)
             "\n"
             "Inside: /help lists the commands, /connect changes provider or key.\n",
             name, EDC_VERSION, EDC_COMMIT, name);
-    usage_tail(out);
-}
-
-void edc_usage_print_cli(const char *program, FILE *out)
-{
-    if (!out)
-        out = stdout;
-    const char *name = program_name(program);
-
-    /* Same skeleton as the interactive one, different body: this binary takes the line as
-     * an argument, so "run it with no arguments" and "/help" would both be untrue here. */
-    fprintf(out,
-            "%s %s (%s) -- one line in, one task out\n"
-            "\n"
-            "Usage: %s [options] '<line>'\n"
-            "\n"
-            "  --version        print version, schema, build time and platform\n"
-            "  --json           emit every message as a JSON line, not just the answer\n"
-            "  --silent         emit nothing; the exit status is the answer\n"
-            "  --session <id>   use this session instead of the one derived from the cwd\n"
-            "  --timeout <sec>  give up after this long\n"
-            "  --no-sandbox     disable the filesystem sandbox for this run\n"
-            "  --sandbox=off    same as --no-sandbox\n"
-            "  --help, -h       this text\n"
-            "\n"
-            "The line is exactly what you would type in the interface, quoting included:\n"
-            "  %s 'explain @src/main.c'\n"
-            "  %s '/task new \"write the docs\"'\n"
-            "  %s '\"a\" | \"b\"'\n",
-            name, EDC_VERSION, EDC_COMMIT, name, name, name, name);
     usage_tail(out);
 }
