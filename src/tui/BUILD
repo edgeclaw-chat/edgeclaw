@@ -109,6 +109,15 @@ cc_library(
     visibility = ["//tests:__pkg__"],
 )
 
+# main.cpp is not in a library (it is the binary's only source), so the option parser has no
+# target of its own for a test to depend on. tests/test_version reads it to cross-check the
+# --help block against the flags the parser actually answers -- see that file for why.
+filegroup(
+    name = "main_cpp",
+    srcs = ["main.cpp"],
+    visibility = ["//tests:__pkg__"],
+)
+
 cc_binary(
     name = "edgeclaw",
     srcs = [

@@ -22,6 +22,24 @@ OPTIONS
      --help, -h
              Print usage and exit.  Likewise answered before anything else.
 
+     --update-check [--pre] [--current ver]
+             Ask the release list whether a newer version exists, print the
+             answer and exit.  Likewise answered before anything else, which is
+             what makes it usable on a binary that cannot start.
+
+             The report distinguishes "up to date" from "could not check".  A
+             refused request -- GitHub's unauthenticated rate limit is 60
+             requests per hour per IP -- prints the status and says nothing was
+             determined, rather than reading like an up-to-date install.  The
+             exit status is 0 either way: this diagnoses the updater, so a
+             non-zero status would look like a failure of the thing being
+             diagnosed.
+
+             --pre admits pre-releases.  --current compares against the given
+             version instead of this build's own, which is the only way to
+             exercise the network path on a development build whose version is
+             a commit hash.
+
      --no-sandbox, --sandbox=off
              Disable the filesystem sandbox for this run, without touching
              config.json.  --sandbox=on (or a bare --sandbox) does the opposite

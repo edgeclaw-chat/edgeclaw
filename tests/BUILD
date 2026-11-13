@@ -255,6 +255,20 @@ cc_test(
     target_compatible_with = POSIX_ONLY,
 )
 
+# The --help block, cross-checked against main.cpp's option parser: every long option the
+# binary answers must be documented. That is the property that was missing when
+# --update-check shipped without a line in --help.
+cc_test(
+    name = "test_version",
+    srcs = ["test_version.c", "test_fs_util.h"],
+    data = ["//src/tui:main_cpp"],
+    deps = [
+        "//src/common:version",
+    ],
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
+
 cc_test(
     name = "test_https_redirect",
     srcs = ["test_https_redirect.c"],
