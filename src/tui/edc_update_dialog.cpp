@@ -269,7 +269,18 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
     rows.push_back(separator() | color(pal.line_dim));
     rows.push_back(ButtonsElement());
 
-    return vbox(std::move(rows)) | size(WIDTH, EQUAL, kDialogWidth) | borderStyled(BorderStyle::ROUNDED) |
+    /* Borderless, matching the /connect dialog (edc_setup_dialog.cpp).
+     *
+     * This is the house style, not an oversight in either file: the interface has no boxes
+     * anywhere else, so a framed modal reads as a different program laid over it. The
+     * structure that a border would normally provide is carried by the header row, the
+     * separators and the right-aligned hint instead -- which is exactly what the setup
+     * dialog does, and why the two now look like one surface.
+     *
+     * BorderStyle::EMPTY still reserves the one column a border would have used, so the
+     * title needs the same two-space lead-in as the setup dialog's ("  " + title) to sit
+     * where the eye expects it. */
+    return vbox(std::move(rows)) | size(WIDTH, EQUAL, kDialogWidth) | borderStyled(BorderStyle::EMPTY) |
            bgcolor(pal.dialog_bg);
 }
 
