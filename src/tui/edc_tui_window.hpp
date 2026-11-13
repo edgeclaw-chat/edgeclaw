@@ -5,6 +5,7 @@
 #include "edc_clipboard.hpp"
 #include "edc_ports.hpp"
 #include "edc_setup_dialog.hpp"
+#include "edc_update_banner.hpp"
 #include "edc_update_dialog.hpp"
 #include "edc_task_snapshot.hpp"
 #include "edc_transcript_store.hpp"
@@ -329,16 +330,25 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     /* The /connect setup wizard: a modal shown on first run (and by /connect). */
     std::shared_ptr<ui::SetupDialog> setup_dialog_;
 
-    /* The update dialog: confirm -> running -> done/failed, and the "cannot upgrade here"
-     * page. Modal, same as the wizard. */
+    /* The update dialog: the "may I?" question (CONFIRM) and the "cannot upgrade here" page.
+     * It closes as soon as the work starts -- see UpdateState, which is where progress and the
+     * outcome are reported instead. Modal, same as the wizard. */
     std::shared_ptr<ui::UpdateDialog> update_dialog_;
 
-    /* The release the check found, empty when there is nothing to offer. This is the banner's
-     * whole state: it appears when this is non-empty and the dialog is closed. */
+    /* What the banner is saying, and the whole of the update UI's state.
+     *
+     * The install runs in the background: the dialog closes the moment it is confirmed, and
+     * everything the user needs to know afterwards is one line above the chat. A modal that
+     * sat in a RUNNING state for up to two minutes would block the whole interface for
+     * something the user has already agreed to.
+     *
+     * The enum and its wording live in edc_update_banner.hpp so the four states can be
+     * asserted on a frame; this member is only the current one. */
+    ui::UpdateBanner update_state_ = ui::UpdateBanner::None;
     std::string update_tag_;
-    /* The version whose dialog the user already dismissed or acted on, so re-opening the
-     * banner does not re-pop the modal on every frame. */
-    std::string update_acknowledged_;
+    /* The installer's own words when it failed (its tail output). Shown in the banner, because
+     * "the update failed" without a reason leaves the user with nothing to act on. */
+    std::string update_detail_;
 
     // True while the foreground group's active task runs. Owned exclusively by
     // SyncWorkingFromSnapshot(), never toggled by channel messages.

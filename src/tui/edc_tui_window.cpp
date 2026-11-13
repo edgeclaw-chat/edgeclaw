@@ -305,37 +305,53 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
     /* The update dialog. The two callbacks are the whole of its coupling to the app: it asks
      * for an upgrade and it asks for the manual command. Everything else -- fetching, spawning,
-     * timing out -- stays behind the facade. */
+     * timing out -- stays behind the facade.
+     *
+     * `on_cancel` is wired even though this flow never shows the dialog's RUNNING state: the
+     * widget supports it, and a caller that keeps the dialog open would need it. What matters
+     * here is that confirming CLOSES the dialog, so the install cannot be mistaken for
+     * something the user is waiting on. */
     update_dialog_ = std::make_shared<ui::UpdateDialog>(
         [this](const std::string &tag) {
-            /* Start the upgrade; the dialog is already in RUNNING, so a failure here means
-             * the work never began and has to be reported as such. */
+            /* Confirmed: the install runs in the background from here, so the dialog has done
+             * its job. Closing it first means the callback that reports the outcome cannot
+             * re-enter a visible modal. */
+            update_dialog_->Close();
+            update_state_ = ui::UpdateBanner::Running;
+            update_detail_.clear();
+
             const bool started = app_->UpdateStart(tag, [this](bool ok, std::string detail) {
-                update_dialog_->OnResult(ok, detail);
+                update_state_ = ok ? ui::UpdateBanner::Done : ui::UpdateBanner::Failed;
+                update_detail_ = std::move(detail);
                 if (screen_)
                     screen_->RequestAnimationFrame();
             });
             if (!started)
             {
-                update_dialog_->OnResult(false, "could not start the installer");
-                if (screen_)
-                    screen_->RequestAnimationFrame();
+                /* Refused before anything began (already running, or this copy cannot replace
+                 * itself). Reported in the banner, like every other outcome. */
+                update_state_ = ui::UpdateBanner::Failed;
+                update_detail_ = "could not start the installer";
             }
+            if (screen_)
+                screen_->RequestAnimationFrame();
         },
         [this]() { return app_->UpdateManualHint(); },
-        /* Esc while the installer runs: kill it. This is the difference between "abandoned"
-         * and "hidden but still replacing your binary". A cancel during the download stage
-         * waits for that fetch to return (it has no cancellation hook), which is at most its
-         * own timeout. */
+        /* Only reachable if a caller leaves the dialog in RUNNING, which this one does not.
+         * Kept because "Esc while it runs" must mean abandon, not hide, if it ever is. */
         [this]() { app_->UpdateCancel(); });
 
     /* The check reports here, on the UI thread (the facade marshals it). Record the tag and
      * ask for a frame: the screen is idle by the time the check lands, so without the request
-     * the banner would only appear at the user's next keystroke. */
+     * the banner would only appear at the user's next keystroke.
+     *
+     * A report that arrives while an install is already under way is ignored: the check runs
+     * once per launch, but nothing guarantees it landed before the user typed /update. */
     app_->SetUpdateObserver([this](std::string tag) {
-        if (tag.empty())
+        if (tag.empty() || update_state_ != ui::UpdateBanner::None)
             return;
         update_tag_ = std::move(tag);
+        update_state_ = ui::UpdateBanner::Available;
         if (screen_)
             screen_->RequestAnimationFrame();
     });
@@ -407,16 +423,24 @@ void TUIWindow::Submit()
 
     // "/update" is local for the same reason, and for one more: the dialog is the only place
     // that can say what the update costs, so the command must not become a chat message that
-    // scrolls away. With nothing on offer it says so instead of opening an empty dialog.
+    // scrolls away. It acts on the banner's state, so the command and the line above the chat
+    // never disagree about what is happening.
     if (message == "/update")
     {
         input_text_.clear();
         input_->Reset();
         RecomputeCommandPalette();
-        if (update_tag_.empty())
-            RaisePasteHint(" No update available ");
-        else
+        switch (ui::UpdateCommandFor(update_state_))
+        {
+        case ui::UpdateCommand::OpenDialog:
             OpenUpdate();
+            break;
+        default:
+            /* Everything else is a sentence, not a modal: already running (wait), restart
+             * needed (the work is done), or nothing on offer. */
+            RaisePasteHint(ui::UpdateCommandHint(ui::UpdateCommandFor(update_state_)));
+            break;
+        }
         if (screen_)
             screen_->RequestAnimationFrame();
         return;
@@ -1140,10 +1164,10 @@ void TUIWindow::TickAnimations()
     // looks like part of the input box.
     ::ftxui::Elements children;
     /* The banner sits above the chat, not floating over it: it is a standing fact ("a newer
-     * release exists") rather than an event, and a chip that fades would hide it before the
-     * user has read it. Hidden while the dialog is open -- the dialog says the same thing with
-     * more detail. */
-    if (!update_tag_.empty() && !update_dialog_->IsOpen())
+     * release exists", "it is installed, restart when you like") rather than an event, and a
+     * chip that fades would hide it before the user has read it. Hidden while the dialog is
+     * open -- the dialog says the same thing with more detail. */
+    if (update_state_ != ui::UpdateBanner::None && !update_dialog_->IsOpen())
         children.push_back(UpdateBannerElement());
     children.push_back(chat | ::ftxui::flex);
     if (!history_view_ && command_palette_.open() && !setup_dialog_->IsOpen())
@@ -1191,20 +1215,18 @@ void TUIWindow::TickAnimations()
 
 ::ftxui::Element TUIWindow::UpdateBannerElement()
 {
-    const auto &pal = style::palette();
-    /* One line, no border: it sits between the chat and the top edge and should read as a
-     * notice, not as another pane. */
-    return ::ftxui::hbox({
-        ::ftxui::text("  EdgeClaw ") | ::ftxui::color(pal.accent),
-        ::ftxui::text(update_tag_) | ::ftxui::bold | ::ftxui::color(pal.accent),
-        ::ftxui::text(" is available  ·  /update to install ") | ::ftxui::color(pal.text_dim),
-        ::ftxui::filler(),
-    });
+    /* The wording lives in edc_update_banner.cpp, where a test can drive all four states: the
+     * install runs in the background and the dialog is gone, so this line is the entire
+     * progress report. */
+    return ui::UpdateBannerElement(update_state_, update_tag_, update_detail_);
 }
 
 void TUIWindow::OpenUpdate()
 {
-    if (update_tag_.empty())
+    /* Only the states that can act on it open the dialog. DONE has nothing to confirm (the
+     * binary is already replaced and only a restart helps), and RUNNING must not offer a
+     * second install -- /update answers those with a hint instead of a modal. */
+    if ((update_state_ != ui::UpdateBanner::Available && update_state_ != ui::UpdateBanner::Failed) || update_tag_.empty())
         return;
     const bool can = app_ && app_->UpdateCanSelfUpgrade();
     update_dialog_->Open(update_tag_, can);

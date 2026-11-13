@@ -396,6 +396,25 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# The banner's four states and what /update means in each: the install runs in the
+# background, so this one line is the whole progress report.
+cc_test(
+    name = "test_update_banner",
+    srcs = ["test_update_banner.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+    target_compatible_with = POSIX_ONLY,
+)
+
 cc_test(
     name = "test_output_buf",
     srcs = ["test_output_buf.c", "test_ws.h"],
