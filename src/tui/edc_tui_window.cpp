@@ -1112,19 +1112,26 @@ void TUIWindow::TickAnimations()
     auto chat = chat_widget_->Render();
     const auto toast_now = std::chrono::steady_clock::now();
 
-    /* The update notice. First, so it is the BOTTOM-most overlay: the toasts below are
-     * reactions to something the user just did and belong on top of a standing fact.
+    /* The update notice. An overlay rather than a layout row, and translucent (see
+     * TranslucentChipElement): a line between the chat and the input used to cost one row of
+     * conversation for as long as the release went uninstalled. Hidden while the dialog is
+     * open, which says the same thing with more detail.
      *
-     * An overlay rather than a layout row, and translucent (see TranslucentChipElement): a
-     * line between the chat and the input used to cost one row of conversation for as long as
-     * the release went uninstalled. Hidden while the dialog is open, which says the same thing
-     * with more detail. */
-    if (!update_tag_.empty() && !update_dialog_->IsOpen())
+     * It shares the top-right corner with the toasts, and the toasts give way by starting
+     * below it (see rows_below_banner) rather than being painted over: the notice can stand
+     * for days, so "the copy confirmation was never visible" would be a permanent condition,
+     * not a flicker. */
+    const bool banner_up = !update_tag_.empty() && !update_dialog_->IsOpen();
+    if (banner_up)
         chat = ::ftxui::dbox({std::move(chat), UpdateBannerElement()});
+    /* Rows the banner already occupies at the top of the pane -- its own top margin plus the
+     * chip. Zero when it is not up, so a lone toast keeps its usual place. */
+    const int rows_below_banner = banner_up ? kChipTopMargin + kChipRows : 0;
 
     if (clipboard_toast_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox({std::move(chat), ClipboardToastElement(clipboard_toast_.Fade(toast_now))});
+        chat = ::ftxui::dbox(
+            {std::move(chat), ClipboardToastElement(clipboard_toast_.Fade(toast_now), rows_below_banner)});
         if (screen_)
             screen_->RequestAnimationFrame();
     }
@@ -1133,8 +1140,9 @@ void TUIWindow::TickAnimations()
     // while the startup backfill is still filling the older history in.
     if (backfill_hint_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox(
-            {std::move(chat), ToastChipElement(" Loading earlier history… ", backfill_hint_.Fade(toast_now))});
+        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(" Loading earlier history… ",
+                                                                backfill_hint_.Fade(toast_now),
+                                                                rows_below_banner)});
         if (screen_)
             screen_->RequestAnimationFrame();
     }
@@ -1142,7 +1150,8 @@ void TUIWindow::TickAnimations()
     // The "Fetching the pasted block…" / "Pasted block is gone": same chip, same corner.
     if (paste_hint_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(paste_hint_label_, paste_hint_.Fade(toast_now))});
+        chat = ::ftxui::dbox({std::move(chat),
+                              ToastChipElement(paste_hint_label_, paste_hint_.Fade(toast_now), rows_below_banner)});
         if (screen_)
             screen_->RequestAnimationFrame();
     }

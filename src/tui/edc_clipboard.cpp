@@ -198,11 +198,30 @@ class TranslucentSurfaceNode : public ::ftxui::Node
     return ::ftxui::text("") | ::ftxui::size(::ftxui::WIDTH, ::ftxui::EQUAL, 1);
 }
 
-// |fade| runs from 0 (fully painted) to 1 (gone).
-::ftxui::Element ToastChipElement(const std::string &label, float fade)
+// |fade| runs from 0 (fully painted) to 1 (gone). |rows_above| extra blank rows are emitted
+// before the chip, so a caller can stack it under something already on screen.
+::ftxui::Element ToastChipElement(const std::string &label, float fade, int rows_above)
 {
     ::ftxui::Element chip = std::make_shared<ToastFadeNode>(ChipShell(label), fade);
     auto margin = ChipMargin();
+
+    ::ftxui::Elements rows;
+    /* One blank row is the edge margin every chip has; anything beyond it is what the caller
+     * has already put at the top of the pane. */
+    for (int i = 0; i < kChipTopMargin + (rows_above > 0 ? rows_above : 0); i++)
+        rows.push_back(::ftxui::text(""));
+    rows.push_back(::ftxui::hbox({::ftxui::filler(), std::move(chip), std::move(margin)}));
+    rows.push_back(::ftxui::filler());
+    return ::ftxui::vbox(std::move(rows));
+}
+
+::ftxui::Element TranslucentChipElement(const std::string &label, float alpha)
+{
+    ::ftxui::Element chip = std::make_shared<TranslucentSurfaceNode>(ChipShell(label), alpha);
+    auto margin = ChipMargin();
+    /* Top-RIGHT, the same corner the toasts use: one place to look for anything transient or
+     * standing. They do not fight over it -- the callers stack a toast BELOW this one (see
+     * ToastChipElement's rows_above) instead of painting over it. */
     return ::ftxui::vbox({
         ::ftxui::text(""), // one blank row below the top edge
         ::ftxui::hbox({::ftxui::filler(), std::move(chip), std::move(margin)}),
@@ -210,23 +229,9 @@ class TranslucentSurfaceNode : public ::ftxui::Node
     });
 }
 
-::ftxui::Element TranslucentChipElement(const std::string &label, float alpha)
+::ftxui::Element ClipboardToastElement(float fade, int rows_above)
 {
-    ::ftxui::Element chip = std::make_shared<TranslucentSurfaceNode>(ChipShell(label), alpha);
-    auto margin = ChipMargin();
-    /* Top-LEFT, unlike the toasts. They all share the top-right corner and are transient; a
-     * notice that never goes away would occupy that corner permanently and be overdrawn by
-     * every copy, paste and backfill chip for as long as it stands. */
-    return ::ftxui::vbox({
-        ::ftxui::text(""), // one blank row below the top edge
-        ::ftxui::hbox({std::move(margin), std::move(chip), ::ftxui::filler()}),
-        ::ftxui::filler(),
-    });
-}
-
-::ftxui::Element ClipboardToastElement(float fade)
-{
-    return ToastChipElement(" Copied to clipboard ", fade);
+    return ToastChipElement(" Copied to clipboard ", fade, rows_above);
 }
 
 // Whether a left-button release ends a drag rather than a plain click. A click
