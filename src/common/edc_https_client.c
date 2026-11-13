@@ -1193,9 +1193,42 @@ void edc_https_client_free(struct edc_https_client *client)
     uv_thread_join(&client->thread);
 
     uv_walk(&client->loop, edc_https_client_close_walk, NULL);
-    uv_run(&client->loop, UV_RUN_NOWAIT);
 
-    uv_loop_close(&client->loop);
+    /* uv_close() is ASYNCHRONOUS: it only queues the handle, and libuv runs the close
+     * callbacks on a later iteration. One UV_RUN_NOWAIT is not enough, because a close
+     * callback here closes another handle: edc_https_request_cleanup_close() (the socket's)
+     * calls edc_https_request_close_timer(), whose close callback is what finally drops the
+     * request's last reference. Two iterations are the minimum, and a redirect or a second
+     * in-flight request needs more.
+     *
+     * Running only one left the loop with handles still queued, so uv_loop_close() failed
+     * with UV_EBUSY -- a return value nobody read -- the request ledger never reached zero,
+     * and the still-registered handles pointed into the struct freed immediately below. The
+     * wreckage surfaced later, in the NEXT client allocated on the same heap: an intermittent
+     * segfault with no frame of ours in the stack. That is the shape m39 describes for
+     * edc_actor_runner_free, which drains the same way for the same reason.
+     *
+     * Bounded: a handle that refuses to close must not turn this into a hang. */
+    for (int i = 0; i < 50 && uv_loop_alive(&client->loop); i++)
+        uv_run(&client->loop, UV_RUN_NOWAIT);
+
+    if (uv_loop_alive(&client->loop))
+    {
+        /* Something did not close. Freeing `client` now hands libuv a dangling pointer, and
+         * the failure would land in unrelated code later -- so leak instead, loudly. This is
+         * the same trade edc_actor_runner_free makes. */
+        log_error("edc_https_client: loop still alive after closing every handle (%d iterations); "
+                  "leaking the client rather than freeing memory libuv still points at",
+                  50);
+        return;
+    }
+
+    const int closed = uv_loop_close(&client->loop);
+    if (closed != 0)
+    {
+        log_error("edc_https_client: uv_loop_close failed: %s; leaking the client", uv_strerror(closed));
+        return;
+    }
 
     /* free any remaining work queue items */
     {

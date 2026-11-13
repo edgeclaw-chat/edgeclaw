@@ -507,6 +507,22 @@ static void test_free_while_connect_in_flight()
          * timeout: the connect is in flight when free() is called. */
         uv_sleep(300);
 
+        /* The vacuity guard, and the most important assertion in this test.
+         *
+         * If the connect had COMPLETED, free() would exercise the ordinary teardown and the
+         * test would pass while proving nothing -- a green result for a case that never
+         * happened. Silence is what says the request is still in flight: no HS (so no
+         * completed TCP connect), no ERROR, no CLOSE. Every event this client can deliver
+         * means it got past the state the crash needs.
+         *
+         * It also matters on a machine where the backlog cannot be filled (a different
+         * net.core.somaxconn, or a kernel that resets instead of dropping): there the peer
+         * answers, the events arrive, and this line reports the case as unusable rather than
+         * as a pass. */
+        CHECK(s.n_events == 0, "the request had not progressed yet (%d events) -- the connect was pending, "
+                               "which is the state the crash needs",
+              s.n_events);
+
         edc_https_client_free(client);
         /* Reaching this line is the assertion. Before the fix the process died inside
          * uv_close() above (glibc "Assertion `!uv__is_closing(handle)' failed"). */
@@ -514,6 +530,70 @@ static void test_free_while_connect_in_flight()
     }
 
     uv_sem_destroy(&s.done);
+    full_backlog_stop(&b);
+}
+
+/* Free a client at several points along the same request's life.
+ *
+ * The crash lives in one instant -- a handle closed by teardown while its connect callback is
+ * still outstanding -- but the teardown code has several stages that can each decide to close
+ * that handle: before the connect is issued, while it is pending, after it completes but
+ * before the handshake, and during the handshake. A guard fixed at one of them and forgotten
+ * at the next is exactly how this bug shipped (the write path had the guard, the connect path
+ * did not), so the sweep is the point: it does not need to know which stage is broken.
+ *
+ * The peer accepts nothing and says nothing, so every delay leaves the request short of a
+ * response. 0 covers "free before uv_tcp_connect ran"; the rest walk the window while the
+ * connect is pending.
+ */
+static void test_free_at_every_stage()
+{
+    TEST("freeing the client at any stage of a request does not abort");
+
+    struct full_backlog b;
+    if (full_backlog_start(&b) != 0)
+    {
+        CHECK(false, "could not set up a hanging peer");
+        full_backlog_stop(&b);
+        return;
+    }
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://127.0.0.1:%d/chat/completions", b.port);
+
+    static const int delays_ms[] = {0, 1, 10, 50, 250};
+    for (size_t i = 0; i < sizeof(delays_ms) / sizeof(delays_ms[0]); i++)
+    {
+        struct seen s;
+        memset(&s, 0, sizeof(s));
+        uv_sem_init(&s.done, 0);
+
+        struct edc_https_client *client = edc_https_client_new(g_cert);
+        if (!client)
+        {
+            CHECK(false, "the client was created at delay %d ms", delays_ms[i]);
+            uv_sem_destroy(&s.done);
+            continue;
+        }
+
+        if (edc_https_client_connect(client, url, on_event, &s) != 0)
+        {
+            CHECK(false, "connect() accepted the request at delay %d ms", delays_ms[i]);
+            edc_https_client_free(client);
+            uv_sem_destroy(&s.done);
+            continue;
+        }
+
+        if (delays_ms[i] > 0)
+            uv_sleep((unsigned)delays_ms[i]);
+
+        edc_https_client_free(client);
+        /* Surviving the free is the assertion, at every one of these instants. */
+        CHECK(s.n_events == 0, "delay %d ms: the request never completed, so free() tore down a live handle",
+              delays_ms[i]);
+        uv_sem_destroy(&s.done);
+    }
+
     full_backlog_stop(&b);
 }
 
@@ -547,6 +627,7 @@ int main(void)
     test_invalid_url_is_refused_synchronously();
     test_connection_refused();
     test_free_while_connect_in_flight();
+    test_free_at_every_stage();
     test_handshake_failure();
     test_timeout();
     test_success_event_sequence();
