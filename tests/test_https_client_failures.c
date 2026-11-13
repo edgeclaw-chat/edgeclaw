@@ -27,6 +27,7 @@
 #include "tls_stub.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -392,6 +393,130 @@ static void test_status_only_bodyless()
     tls_stub_stop(&stub);
 }
 
+/* A listener that accepts nothing, with its accept queue deliberately full.
+ *
+ * Why: the crash this guards against needs a connect that is still PENDING when the client is
+ * freed. With a full backlog the kernel drops the SYN (tcp_abort_on_overflow=0), so the
+ * client's connect never completes and libuv keeps it in flight -- deterministically, on
+ * loopback, with no network involved. A blackhole address would depend on the sandbox's
+ * routing table; this does not.
+ */
+struct full_backlog
+{
+    int listen_fd;
+    int port;
+    int fillers[4];
+    int n_fillers;
+};
+
+static int full_backlog_start(struct full_backlog *b)
+{
+    memset(b, 0, sizeof(*b));
+    b->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (b->listen_fd < 0)
+        return -1;
+
+    int on = 1;
+    setsockopt(b->listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (bind(b->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return -1;
+    /* backlog 1: the queue holds one completed handshake, so a few non-blocking connects are
+     * enough to make every later SYN be dropped. */
+    if (listen(b->listen_fd, 1) != 0)
+        return -1;
+    if (getsockname(b->listen_fd, (struct sockaddr *)&addr, &alen) != 0)
+        return -1;
+    b->port = ntohs(addr.sin_port);
+
+    for (int i = 0; i < 4; i++)
+    {
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+            break;
+        /* Non-blocking: the point is to occupy the queue, not to wait for an accept that
+         * never comes. */
+        const int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+        b->fillers[b->n_fillers++] = fd;
+    }
+    uv_sleep(200); /* let the queue fill */
+    return 0;
+}
+
+static void full_backlog_stop(struct full_backlog *b)
+{
+    for (int i = 0; i < b->n_fillers; i++)
+        if (b->fillers[i] >= 0)
+            close(b->fillers[i]);
+    if (b->listen_fd >= 0)
+        close(b->listen_fd);
+}
+
+/* Freeing the client with a connect still in flight.
+ *
+ * This is the offline-launch crash, and it needs no network to reproduce:
+ *
+ *   - the launch-time update check has a 10s deadline;
+ *   - offline, the connect is still pending when that deadline expires;
+ *   - edc_update_check_ex then calls edc_https_client_free(), which uv_walk()s the loop and
+ *     closes the socket;
+ *   - libuv reports the cancellation to the pending connect callback as UV_ECANCELED (from
+ *     uv__stream_destroy -> uv__finish_close);
+ *   - that callback called uv_close() again, and uv_close asserts !uv__is_closing(handle).
+ *
+ * So the program aborts, in libuv, on an idle offline start -- which is what the user saw.
+ * The assertion here is simply that free() returns.
+ */
+static void test_free_while_connect_in_flight()
+{
+    TEST("freeing the client with a connect in flight does not abort");
+
+    struct full_backlog b;
+    if (full_backlog_start(&b) != 0)
+    {
+        CHECK(false, "could not set up a hanging peer");
+        full_backlog_stop(&b);
+        return;
+    }
+
+    char url[128];
+    /* A literal address, so getaddrinfo cannot be what holds the request up: the pending
+     * thing must be the TCP connect, not a lookup. */
+    snprintf(url, sizeof(url), "https://127.0.0.1:%d/chat/completions", b.port);
+
+    struct seen s;
+    memset(&s, 0, sizeof(s));
+    uv_sem_init(&s.done, 0);
+
+    struct edc_https_client *client = edc_https_client_new(g_cert);
+    CHECK(client != NULL, "the client was created");
+    if (client)
+    {
+        const int rc = edc_https_client_connect(client, url, on_event, &s);
+        CHECK(rc == 0, "connect() accepted the request (the connect itself stays pending), got %d", rc);
+
+        /* Long enough for the resolver and uv_tcp_connect to have run, far short of any
+         * timeout: the connect is in flight when free() is called. */
+        uv_sleep(300);
+
+        edc_https_client_free(client);
+        /* Reaching this line is the assertion. Before the fix the process died inside
+         * uv_close() above (glibc "Assertion `!uv__is_closing(handle)' failed"). */
+        CHECK(true, "free() returned instead of aborting in uv_close");
+    }
+
+    uv_sem_destroy(&s.done);
+    full_backlog_stop(&b);
+}
+
 int main(void)
 {
     /* The stubs write to sockets whose peer has hung up (that is how the handshake and the
@@ -421,6 +546,7 @@ int main(void)
 
     test_invalid_url_is_refused_synchronously();
     test_connection_refused();
+    test_free_while_connect_in_flight();
     test_handshake_failure();
     test_timeout();
     test_success_event_sequence();
