@@ -28,7 +28,9 @@ immediately (it writes the base URL, key, model and the model's context window).
 
 Command-line options, all answered before the configuration or the database is touched —
 so they work even when the binary cannot start: `--version` (version, schema, build time
-and platform), `--help` / `-h` (usage), and the sandbox override — `--no-sandbox` or
+and platform), `--help` / `-h` (usage), `--update-check` (ask the release list and report
+what it found, plus `--pre` to include pre-releases and `--current <ver>` to compare
+against a version other than this build's), and the sandbox override — `--no-sandbox` or
 `--sandbox=off` to disable it for this run, `--sandbox` or `--sandbox=on` to force it on
 where the platform allows. None of them writes `config.json`. With no arguments it starts
 the interface.
