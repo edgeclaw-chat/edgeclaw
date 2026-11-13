@@ -89,6 +89,27 @@ bool Has(const std::string &frame, const std::string &needle)
     return frame.find(needle) != std::string::npos;
 }
 
+/* The first row that has any non-space character.
+ *
+ * Used to pin "there is no border on top": a framed dialog's first non-blank row IS the
+ * frame's top edge, so reading it is the direct way to assert the absence of one, without
+ * depending on which glyph a particular BorderStyle happens to draw. */
+std::string FirstNonBlankLine(const std::string &frame)
+{
+    size_t pos = 0;
+    while (pos <= frame.size())
+    {
+        const size_t nl = frame.find('\n', pos);
+        const std::string line = frame.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        if (line.find_first_not_of(" \t\r") != std::string::npos)
+            return line;
+        if (nl == std::string::npos)
+            break;
+        pos = nl + 1;
+    }
+    return std::string();
+}
+
 /* The hooks the dialog is built with, and what they were asked to do. */
 struct Hooks
 {
@@ -288,6 +309,34 @@ int main()
         auto dialog = MakeDialog(hooks);
         CHECK(!dialog.OnEvent(::ftxui::Event::Return), "a closed dialog consumes nothing");
         CHECK(!dialog.OnEvent(::ftxui::Event::Escape), "not even Esc");
+    }
+
+    printf("\n── borderless, like every other surface ──\n");
+    {
+        /* The house style: this interface draws no boxes, and a framed modal reads as a
+         * different program laid over it. /connect (edc_setup_dialog.cpp) is the reference;
+         * this dialog used BorderStyle::ROUNDED and was the odd one out.
+         *
+         * Asserted two ways, because either alone can be satisfied by accident:
+         *   - no frame glyphs anywhere (the corners are unique to a drawn border; the
+         *     horizontal '-' separators inside are legitimate and are NOT asserted against);
+         *   - the first non-blank row is the title, not a top edge.
+         * A future change back to any bordered style fails the first; a style that draws
+         * only some edges fails the second. */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        const std::string frame = Frame(dialog);
+
+        CHECK(!Has(frame, "╭") && !Has(frame, "╮") && !Has(frame, "╰") && !Has(frame, "╯"),
+              "no rounded corners are drawn");
+        CHECK(!Has(frame, "┌") && !Has(frame, "┐") && !Has(frame, "└") && !Has(frame, "┘"),
+              "no square corners either");
+        CHECK(!Has(frame, "│"), "no vertical edges");
+
+        const std::string first = FirstNonBlankLine(frame);
+        CHECK(Has(first, "EdgeClaw v1.0.1"), "the first visible row is the title, not a border");
+        CHECK(!Has(first, "─"), "and that row carries no rule glyph");
     }
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
