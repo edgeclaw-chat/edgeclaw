@@ -368,8 +368,7 @@ bool edc_update_check(const char *cacert_path, const char *api_url, const char *
                                out_asset, NULL);
 }
 
-bool edc_update_pick(const char *releases_json, const char *current_version, bool allow_pre, sds *out_tag,
-                     sds *out_asset)
+bool edc_update_pick(const char *releases_json, const char *current_version, bool allow_pre, sds *out_tag, sds *out_asset)
 {
     if (out_tag)
         *out_tag = NULL;
@@ -390,4 +389,27 @@ bool edc_update_pick(const char *releases_json, const char *current_version, boo
     const bool got = pick_from_root(root, current_version, allow_pre, out_tag, out_asset);
     cJSON_Delete(root);
     return got;
+}
+
+/* Names for the outcomes, indexed by the enum.
+ *
+ * Written as data, not a switch: this exists so callers can report the reason without each of
+ * them keeping its own copy of the mapping, and callers that are not the diagnostic have no
+ * business owning user-facing phrasing. A switch here would also put a line of unreachable
+ * code per outcome in a coverage report, which is what prompted the table. */
+static const char *const k_outcome_names[] = {
+    [EDC_UPDATE_OK] = "an offer",
+    [EDC_UPDATE_UP_TO_DATE] = "up to date",
+    [EDC_UPDATE_BAD_ARG] = "bad argument",
+    [EDC_UPDATE_CONNECT_FAILED] = "could not connect",
+    [EDC_UPDATE_TIMEOUT] = "timed out",
+    [EDC_UPDATE_HTTP_STATUS] = "non-200 status",
+    [EDC_UPDATE_BODY_TOO_LARGE] = "response past the cap",
+    [EDC_UPDATE_MALFORMED] = "response is not the release list",
+};
+
+const char *edc_update_outcome_name(edc_update_outcome outcome)
+{
+    const size_t n = sizeof(k_outcome_names) / sizeof(k_outcome_names[0]);
+    return ((size_t)outcome < n && k_outcome_names[outcome]) ? k_outcome_names[outcome] : "unknown outcome";
 }
