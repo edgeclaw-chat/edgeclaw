@@ -103,8 +103,11 @@ edc_task_life edc_task_classify_life(const char *name)
     return EDC_LIFE_ALIVE;
 }
 
-/* sink name + classify, matching step/life. Not persisted today, so _name serves
- * logs and _classify has no caller yet; kept as one family. */
+/* sink name + classify, matching step/life. Both are load-bearing: the name is written to
+ * the tasks table (`sink` column, edc_state_store.c) and classify() turns it back into the
+ * enum on resume, so a value that does not round-trip loses the task's scope across a
+ * restart. Unknown names fall back to CHANNEL -- an old binary reading a row written by a
+ * newer one degrades to "ordinary task" rather than refusing to load it. */
 
 const char *edc_task_sink_name(edc_sink sink)
 {
@@ -116,6 +119,8 @@ const char *edc_task_sink_name(edc_sink sink)
         return "GROUP_MEMORY";
     case EDC_SINK_SESSION_MEMORY:
         return "SESSION_MEMORY";
+    case EDC_SINK_INTERNAL:
+        return "INTERNAL";
     }
     return "CHANNEL";
 }
@@ -128,6 +133,8 @@ edc_sink edc_task_classify_sink(const char *name)
         return EDC_SINK_GROUP_MEMORY;
     if (strcmp(name, "SESSION_MEMORY") == 0)
         return EDC_SINK_SESSION_MEMORY;
+    if (strcmp(name, "INTERNAL") == 0)
+        return EDC_SINK_INTERNAL;
     return EDC_SINK_CHANNEL;
 }
 

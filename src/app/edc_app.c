@@ -265,6 +265,10 @@ bool edc_app_update_spawn_task(struct edc_app *app, const char *tag, struct edc_
     /* The turn's user message: what the transcript shows this task was for. */
     spec.input = input;
     spec.place = EDC_TASK_PLACE_FOREGROUND;
+    /* An internal task: its result goes to the dialog, not to the user or to memory, and the
+     * sink is what gives it EDC_TOOL_SCOPE_INTERNAL -- the only scope that may run
+     * update_install. */
+    spec.sink = EDC_SINK_INTERNAL;
 
     /* BACKGROUND, and it must stay that way. The download-and-install takes up to two
      * minutes; taking the screen for that would push whatever the user was reading out of

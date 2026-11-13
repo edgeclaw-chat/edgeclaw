@@ -81,6 +81,11 @@ typedef enum
     EDC_SINK_CHANNEL,        /* output goes back to the user */
     EDC_SINK_GROUP_MEMORY,   /* output becomes the group's memory (L1 fold) */
     EDC_SINK_SESSION_MEMORY, /* output becomes session memory entries (L2 curation) */
+    /* Output goes to a subsystem, not to the user or to memory: today the update task, whose
+     * result the dialog displays. Such a task gets EDC_TOOL_SCOPE_INTERNAL and therefore
+     * declares -- and may run -- only internal tools. A general sink rather than one per
+     * feature, because "the app doing something to itself" is a category, not a case. */
+    EDC_SINK_INTERNAL,
 } edc_sink;
 
 extern const char *edc_task_sink_name(edc_sink sink);

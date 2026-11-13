@@ -19,6 +19,7 @@
 #include "edc_tools_update.h"
 #include "edc_toolbox.h"
 #include "edc_toolset.h"
+#include "edc_task.h"
 
 #include "cJSON.h"
 
@@ -93,11 +94,14 @@ static bool fake_start(void *start_ud, const char *tag, void (*on_done)(bool, co
     return true;
 }
 
-/* The exec callback records what the tool reported. */
+/* The exec callback records what the tool reported. Both channels are captured: a successful
+ * tool answers with a result, a refused one answers with an error, and the interesting
+ * assertions live in both. */
 struct exec_outcome
 {
     int calls;
     char result[512];
+    char error[512];
     bool is_error;
 };
 
@@ -119,9 +123,38 @@ static void on_exec_done(struct edc_toolbox_call_ctx *ctx, sds result, EdcError 
     }
     o->calls++;
     snprintf(o->result, sizeof(o->result), "%s", result ? result : "");
+    snprintf(o->error, sizeof(o->error), "%s", (error && error->message) ? error->message : "");
     o->is_error = error != NULL;
     if (error)
         edc_error_free(error);
+}
+
+/* Run |name| with |tag| against |tb| as a task of |sink|, and record the outcome.
+ *
+ * A task is always supplied: the tool declares EDC_TOOL_SCOPE_INTERNAL, and
+ * edc_toolbox_exec resolves the caller's scope from ctx->task (NULL means NORMAL, which is
+ * refused). Passing NULL here would test the gate, not the tool. */
+static void run_as(void *tb, edc_sink sink, const char *name, const char *tag, struct exec_outcome *out)
+{
+    memset(out, 0, sizeof(*out));
+    g_exec_outcome = out;
+
+    struct edc_task *task = edc_task_new(1, 1, 1, "caller", edc_channel_adapter);
+    task->sink = sink;
+
+    struct edc_toolbox_call_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.tb = (struct edc_toolbox *)tb;
+    ctx.task = task;
+
+    cJSON *args = cJSON_CreateObject();
+    if (tag)
+        cJSON_AddStringToObject(args, "tag", tag);
+    edc_toolbox_exec(&ctx, name, args, on_exec_done);
+    cJSON_Delete(args);
+
+    edc_task_free(task);
+    g_exec_outcome = NULL;
 }
 
 int main(void)
@@ -200,17 +233,8 @@ int main(void)
         up.complete_now = true;
         edc_tools_update_register(tb, fake_start, &up);
 
-        struct exec_outcome out = {0};
-        g_exec_outcome = &out;
-
-        struct edc_toolbox_call_ctx ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.tb = tb;
-
-        cJSON *args = cJSON_CreateObject();
-        cJSON_AddStringToObject(args, "tag", "v9.9.9");
-        edc_toolbox_exec(&ctx, "update_install", args, on_exec_done);
-        cJSON_Delete(args);
+        struct exec_outcome out;
+        run_as(tb, EDC_SINK_INTERNAL, "update_install", "v9.9.9", &out);
 
         CHECK(out.calls == 1, "the call completes exactly once");
         CHECK(up.started == 1, "the injected upgrade was started");
@@ -219,7 +243,6 @@ int main(void)
         CHECK(strstr(out.result, "start EdgeClaw again") != NULL,
               "and the result tells the user the change takes effect on restart");
 
-        g_exec_outcome = NULL;
         edc_toolbox_free(tb);
     }
 
@@ -230,21 +253,12 @@ int main(void)
         up.refuse = true;
         edc_tools_update_register(tb, fake_start, &up);
 
-        struct exec_outcome out = {0};
-        g_exec_outcome = &out;
-
-        struct edc_toolbox_call_ctx ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.tb = tb;
-        cJSON *args = cJSON_CreateObject();
-        cJSON_AddStringToObject(args, "tag", "v9.9.9");
-        edc_toolbox_exec(&ctx, "update_install", args, on_exec_done);
-        cJSON_Delete(args);
+        struct exec_outcome out;
+        run_as(tb, EDC_SINK_INTERNAL, "update_install", "v9.9.9", &out);
 
         CHECK(out.calls == 1, "a refusal reports once");
         CHECK(out.is_error, "and is an error, so the task fails rather than claiming success");
 
-        g_exec_outcome = NULL;
         edc_toolbox_free(tb);
     }
 
@@ -256,23 +270,14 @@ int main(void)
         up.complete_ok = false; /* fails, with the installer's detail */
         edc_tools_update_register(tb, fake_start, &up);
 
-        struct exec_outcome out = {0};
-        g_exec_outcome = &out;
-
-        struct edc_toolbox_call_ctx ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.tb = tb;
-        cJSON *args = cJSON_CreateObject();
-        cJSON_AddStringToObject(args, "tag", "v9.9.9");
-        edc_toolbox_exec(&ctx, "update_install", args, on_exec_done);
-        cJSON_Delete(args);
+        struct exec_outcome out;
+        run_as(tb, EDC_SINK_INTERNAL, "update_install", "v9.9.9", &out);
 
         CHECK(out.calls == 1, "the failure reports once");
         CHECK(out.is_error, "as an error");
         CHECK(strstr(out.result, "checksum mismatch") != NULL,
               "carrying the installer's own message -- the only real diagnosis there is");
 
-        g_exec_outcome = NULL;
         edc_toolbox_free(tb);
     }
 
@@ -281,22 +286,94 @@ int main(void)
         struct edc_toolbox *tb = make_toolbox();
         edc_tools_update_register(tb, NULL, NULL);
 
-        struct exec_outcome out = {0};
-        g_exec_outcome = &out;
-
-        struct edc_toolbox_call_ctx ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.tb = tb;
-        cJSON *args = cJSON_CreateObject();
-        cJSON_AddStringToObject(args, "tag", "v9.9.9");
-        edc_toolbox_exec(&ctx, "update_install", args, on_exec_done);
-        cJSON_Delete(args);
+        struct exec_outcome out;
+        run_as(tb, EDC_SINK_INTERNAL, "update_install", "v9.9.9", &out);
 
         CHECK(out.calls == 1, "it still reports");
         CHECK(out.is_error, "and refuses instead of pretending to have installed something");
 
-        g_exec_outcome = NULL;
         edc_toolbox_free(tb);
+    }
+
+    printf("\n── the scope gate: a reply task cannot run it ──\n");
+    {
+        /* `EDC_TOOL_SCOPE_INTERNAL` is the hard half of "the model cannot update your
+         * binary". Exposure keeps the NAME out of the model's context; this keeps the CALL
+         * from running when the name gets there anyway -- a stray log line, an error message,
+         * a future prompt change. Two different failures, two mechanisms.
+         *
+         * An ordinary reply task is the sink default (EDC_SINK_CHANNEL), which resolves to
+         * EDC_TOOL_SCOPE_NORMAL through edc_tool_scope_for_task. */
+        struct edc_toolbox *tb = make_toolbox();
+        struct fake_upgrade up = {0};
+        up.complete_now = true;
+        up.complete_ok = true;
+        edc_tools_update_register(tb, fake_start, &up);
+
+        struct exec_outcome out;
+        run_as(tb, EDC_SINK_CHANNEL, "update_install", "v9.9.9", &out);
+
+        CHECK(out.calls == 1, "the call is answered");
+        CHECK(out.is_error, "a reply task is REFUSED (this is the gate, not just invisibility)");
+        CHECK(up.started == 0, "and the upgrade never started -- the gate is before the work");
+        CHECK(strstr(out.error, "not available to this task") != NULL,
+              "the refusal says the tool is not available to this task");
+        printf("      refusal: %.120s\n", out.error);
+
+        edc_toolbox_free(tb);
+    }
+
+    printf("\n── the scope gate: an internal task CAN run it ──\n");
+    {
+        /* The other half: a task with the INTERNAL sink resolves to
+         * EDC_TOOL_SCOPE_INTERNAL, which is the only scope this tool declares. Without this
+         * the previous case would pass for a tool that can never run at all. */
+        struct edc_toolbox *tb = make_toolbox();
+        struct fake_upgrade up = {0};
+        up.complete_now = true;
+        up.complete_ok = true;
+        edc_tools_update_register(tb, fake_start, &up);
+
+        struct exec_outcome out;
+        run_as(tb, EDC_SINK_INTERNAL, "update_install", "v9.9.9", &out);
+
+        CHECK(out.calls == 1, "the call is answered");
+        CHECK(!out.is_error, "an internal task is allowed through the gate");
+        CHECK(up.started == 1, "and the upgrade really starts");
+
+        edc_toolbox_free(tb);
+    }
+
+    printf("\n── the sink survives a round trip through its name ──\n");
+    {
+        /* The sink is persisted as a name (edc_state_store.c writes
+         * edc_task_sink_name() into the tasks table and reads it back through
+         * edc_task_classify_sink() on resume). A value that does not round-trip silently
+         * turns a resumed internal task into an ordinary one -- which would then be unable to
+         * run the only tool it exists for, and would say so only in a log line. */
+        CHECK(strcmp(edc_task_sink_name(EDC_SINK_INTERNAL), "INTERNAL") == 0, "INTERNAL is named");
+        CHECK(edc_task_classify_sink("INTERNAL") == EDC_SINK_INTERNAL, "and classifies back");
+        CHECK(edc_task_classify_sink(edc_task_sink_name(EDC_SINK_INTERNAL)) == EDC_SINK_INTERNAL,
+              "name -> classify is a round trip");
+
+        /* The pre-existing sinks still round-trip, and an unknown name degrades to CHANNEL
+         * rather than failing to load (an older binary reading a newer row). */
+        CHECK(edc_task_classify_sink(edc_task_sink_name(EDC_SINK_CHANNEL)) == EDC_SINK_CHANNEL, "CHANNEL round trips");
+        CHECK(edc_task_classify_sink(edc_task_sink_name(EDC_SINK_GROUP_MEMORY)) == EDC_SINK_GROUP_MEMORY,
+              "GROUP_MEMORY round trips");
+        CHECK(edc_task_classify_sink(edc_task_sink_name(EDC_SINK_SESSION_MEMORY)) == EDC_SINK_SESSION_MEMORY,
+              "SESSION_MEMORY round trips");
+        CHECK(edc_task_classify_sink("SOMETHING_NEWER") == EDC_SINK_CHANNEL,
+              "an unknown name degrades to CHANNEL, so a newer row still loads");
+
+        /* An internal task is NOT a memory task: it must not be pulled into the fold/curation
+         * accounting. is_memory_sink enumerates rather than comparing against CHANNEL, which
+         * is why adding a sink did not need it changed -- worth pinning, since rewriting it as
+         * `sink != CHANNEL` would quietly break this. */
+        struct edc_task *t = edc_task_new(3, 1, 1, "internal", edc_channel_adapter);
+        t->sink = EDC_SINK_INTERNAL;
+        CHECK(!edc_task_is_memory_sink(t), "an internal task is not a memory sink");
+        edc_task_free(t);
     }
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

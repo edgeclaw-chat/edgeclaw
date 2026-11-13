@@ -138,7 +138,15 @@ void edc_tools_update_register(struct edc_toolbox *tb, edc_update_install_fn sta
     tool->priv_free_fn = update_registration_free;
     tool->keep_full_output = true;
 
-    /* INTERNAL: in the name table (a seeded call resolves through it) but in no declared set,
-     * no prompt section and no "Available:" list. */
+    /* INTERNAL scope, and NOT NORMAL: this is the gate rather than the invisibility. An
+     * ordinary reply task resolves to EDC_TOOL_SCOPE_NORMAL, so edc_toolbox_exec refuses this
+     * name even when the model somehow learns it -- and nothing a conversation does can
+     * produce an EDC_SINK_INTERNAL task. */
+    edc_tool_set_scope(tool, EDC_TOOL_SCOPE_INTERNAL);
+
+    /* INTERNAL exposure as well: in the name table (a seeded call resolves through it) but in
+     * no declared set, no prompt section and no "Available:" list. The two mechanisms cover
+     * different failures: exposure keeps the name out of the model's context, scope keeps the
+     * call from running if the name gets there anyway. */
     edc_toolbox_register_internal(tb, tool);
 }

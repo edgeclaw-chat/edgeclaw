@@ -15,6 +15,17 @@ typedef void (*EdcDestroyNotify)(void *data);
  * tools at all, so it has no bit here. */
 #define EDC_TOOL_SCOPE_NORMAL (1u << 0) /* an ordinary reply task */
 #define EDC_TOOL_SCOPE_MEMORY (1u << 1) /* the session-memory curator's one-shot call */
+/* A task that exists to run one internal tool, and whose output goes to a subsystem rather
+ * than to the user (sink EDC_SINK_INTERNAL). Tools that live here are declared to no other
+ * scope, so an ordinary reply task -- which is every task the model drives -- cannot run them
+ * even by name: edc_toolbox_exec checks the scope. That is the difference between "the model
+ * does not know it exists" and "the model cannot use it", and it is the property worth
+ * having: invisible can be undone by one stray log line, declared-elsewhere cannot.
+ *
+ * A general bit rather than one per feature: the next tool that operates on the app itself
+ * rather than on the user's work belongs here too, and it should not need a new sink and a
+ * new scope each time. */
+#define EDC_TOOL_SCOPE_INTERNAL (1u << 2)
 
 /* How the model sees a tool (see struct edc_tool.exposure). */
 #define EDC_TOOL_EXPOSURE_DIRECT 0   /* full schema in the request's `tools` field */

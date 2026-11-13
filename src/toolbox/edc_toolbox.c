@@ -264,6 +264,13 @@ static uint32_t edc_tool_scope_for_task(const struct edc_task *task)
     case EDC_SINK_GROUP_MEMORY:
         /* A fold's one-shot summary declares no tools at all; a stray call must not run. */
         return 0;
+    case EDC_SINK_INTERNAL:
+        /* An internal task declares -- and may run -- only internal tools, and an ordinary
+         * reply task (the default below) declares none of them. That is the gate: a tool
+         * registered with EDC_TOOL_SCOPE_INTERNAL cannot be executed from a conversation even
+         * if the model names it, because this is what decides both the declared set and the
+         * check in edc_toolbox_exec. */
+        return EDC_TOOL_SCOPE_INTERNAL;
     default:
         return EDC_TOOL_SCOPE_NORMAL;
     }
