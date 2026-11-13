@@ -37,6 +37,15 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 // The clipboard chip (ToastChipElement with the "Copied to clipboard" label).
 ::ftxui::Element ClipboardToastElement(float fade);
 
+// The same chip, but a standing notice rather than a toast: no fade, and a TRANSLUCENT
+// surface so what is behind it still reads through. |alpha| is how much of the backdrop
+// shows: 0 = the opaque surface a toast uses, 1 = nothing painted at all.
+//
+// Only the background is blended. ToastFadeNode interpolates the foreground too, because a
+// toast is on its way out and washing out its text is the point; a notice that stays on
+// screen would spend its whole life hard to read. This is the readable half of the two.
+::ftxui::Element TranslucentChipElement(const std::string &label, float alpha);
+
 // When a chip is on screen and how far gone it is: a hold at full strength, then a
 // fade. Generic over which chip, so the clipboard toast and the loading hint both
 // drive it (Raise while the condition holds, leave it alone to let it fade out).

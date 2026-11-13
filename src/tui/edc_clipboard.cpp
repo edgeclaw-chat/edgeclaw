@@ -108,34 +108,118 @@ class ToastFadeNode : public ::ftxui::Node
 };
 } // namespace
 
+// A surface that lets the backdrop through: the same screen-cell trick as ToastFadeNode, but
+// only the BACKGROUND is blended.
+//
+// ToastFadeNode interpolates the foreground too, because a toast is leaving and washing out
+// its own text is the point. A notice that stays on screen cannot afford that -- at any alpha
+// worth having, its label would be permanently half-erased. So the label keeps its colour and
+// only the raised surface becomes translucent, which is what "overlaid, not occupying a row"
+// should look like.
+class TranslucentSurfaceNode : public ::ftxui::Node
+{
+  public:
+    TranslucentSurfaceNode(::ftxui::Element child, float alpha) : Node({std::move(child)}), alpha_(alpha)
+    {
+    }
+
+    void SetBox(::ftxui::Box box) override
+    {
+        Node::SetBox(box);
+        children_[0]->SetBox(box);
+    }
+
+    void Render(::ftxui::Screen &screen) override
+    {
+        if (alpha_ >= 1.0f) // nothing painted at all
+            return;
+        if (alpha_ <= 0.0f) // fully opaque: the ordinary path
+        {
+            Node::Render(screen);
+            return;
+        }
+
+        const int columns = box_.x_max - box_.x_min + 1;
+        const int rows = box_.y_max - box_.y_min + 1;
+        if (columns <= 0 || rows <= 0)
+            return;
+
+        std::vector<::ftxui::Color> backdrop;
+        backdrop.reserve(static_cast<size_t>(columns) * static_cast<size_t>(rows));
+        for (int y = box_.y_min; y <= box_.y_max; y++)
+            for (int x = box_.x_min; x <= box_.x_max; x++)
+                backdrop.push_back(screen.CellAt(x, y).background_color);
+
+        Node::Render(screen);
+
+        size_t i = 0;
+        for (int y = box_.y_min; y <= box_.y_max; y++)
+        {
+            for (int x = box_.x_min; x <= box_.x_max; x++)
+            {
+                ::ftxui::Cell &cell = screen.CellAt(x, y);
+                cell.background_color = ::ftxui::Color::Interpolate(alpha_, cell.background_color, backdrop[i++]);
+            }
+        }
+    }
+
+  private:
+    float alpha_;
+};
+
 // The chip look: flat and borderless like the section headers, but on the
 // palette's raised surface (dialog_bg) so it reads as a surface of its own instead
 // of vanishing into the message background. A blank row above and below the label
 // lives inside it, and one cell of margin keeps it off the corner. The heavy left
 // rule is the one UserMessage carries, so the chip reads as something just done.
-// |fade| runs from 0 (fully painted) to 1 (gone).
-::ftxui::Element ToastChipElement(const std::string &label, float fade)
+//
+// The shell only: no fade, no placement. Two callers wrap it differently -- a toast fades
+// out in the top-right corner, a standing notice sits translucent in the top-left.
+::ftxui::Element ChipShell(const std::string &label)
 {
     const auto &pal = style::palette();
     auto bar = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
     auto text = ::ftxui::text(label) | ::ftxui::bold | ::ftxui::color(pal.accent);
-    ::ftxui::Element chip = ::ftxui::hbox({
-                                std::move(bar),
-                                ::ftxui::vbox({
-                                    ::ftxui::text(""), // breathing room above the label
-                                    std::move(text),
-                                    ::ftxui::text(""), // and below it
-                                }),
-                            }) |
-                            ::ftxui::bgcolor(pal.dialog_bg);
-    chip = std::make_shared<ToastFadeNode>(std::move(chip), fade);
-    // The right margin is an empty element pinned to one column rather than a
-    // space: a literal space would write a character over the pane even when the
-    // chip itself paints nothing.
-    auto margin = ::ftxui::text("") | ::ftxui::size(::ftxui::WIDTH, ::ftxui::EQUAL, 1);
+    return ::ftxui::hbox({
+               std::move(bar),
+               ::ftxui::vbox({
+                   ::ftxui::text(""), // breathing room above the label
+                   std::move(text),
+                   ::ftxui::text(""), // and below it
+               }),
+           }) |
+           ::ftxui::bgcolor(pal.dialog_bg);
+}
+
+// One column of margin, as an empty element rather than a space: a literal space would write
+// a character over the pane even when the chip itself paints nothing.
+::ftxui::Element ChipMargin()
+{
+    return ::ftxui::text("") | ::ftxui::size(::ftxui::WIDTH, ::ftxui::EQUAL, 1);
+}
+
+// |fade| runs from 0 (fully painted) to 1 (gone).
+::ftxui::Element ToastChipElement(const std::string &label, float fade)
+{
+    ::ftxui::Element chip = std::make_shared<ToastFadeNode>(ChipShell(label), fade);
+    auto margin = ChipMargin();
     return ::ftxui::vbox({
         ::ftxui::text(""), // one blank row below the top edge
         ::ftxui::hbox({::ftxui::filler(), std::move(chip), std::move(margin)}),
+        ::ftxui::filler(),
+    });
+}
+
+::ftxui::Element TranslucentChipElement(const std::string &label, float alpha)
+{
+    ::ftxui::Element chip = std::make_shared<TranslucentSurfaceNode>(ChipShell(label), alpha);
+    auto margin = ChipMargin();
+    /* Top-LEFT, unlike the toasts. They all share the top-right corner and are transient; a
+     * notice that never goes away would occupy that corner permanently and be overdrawn by
+     * every copy, paste and backfill chip for as long as it stands. */
+    return ::ftxui::vbox({
+        ::ftxui::text(""), // one blank row below the top edge
+        ::ftxui::hbox({std::move(margin), std::move(chip), ::ftxui::filler()}),
         ::ftxui::filler(),
     });
 }
