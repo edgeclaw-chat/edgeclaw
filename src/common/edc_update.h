@@ -25,6 +25,50 @@
  * after spending the bandwidth. */
 const char *edc_update_target(void);
 
+/* Why a check ended the way it did.
+ *
+ * This exists because `false` was answering two different questions. "There is no newer
+ * release" and "the request was refused with a 403" both came back as `false`, and the
+ * diagnostic printed the same line for both -- so a rate-limited install looked exactly like
+ * an up-to-date one, which is the one distinction `--update-check` exists to make (see
+ * edc_update_releases_url below, whose whole rationale is that the failure it diagnoses is
+ * otherwise indistinguishable from "no update").
+ *
+ * The launch-time path still says nothing to the user: nothing here is actionable by whoever
+ * is looking at the screen, and the next launch tries again. The outcome is for the
+ * diagnostic, and for the log.
+ */
+typedef enum edc_update_outcome
+{
+    EDC_UPDATE_OK = 0,         /* a newer release for this platform is available */
+    EDC_UPDATE_UP_TO_DATE,     /* the API answered; nothing newer than |current_version| */
+    EDC_UPDATE_BAD_ARG,        /* a required argument was NULL or empty */
+    EDC_UPDATE_CONNECT_FAILED, /* DNS, TCP, the TLS handshake, or an unreadable CA bundle */
+    EDC_UPDATE_TIMEOUT,        /* no close event before the deadline */
+    EDC_UPDATE_HTTP_STATUS,    /* answered with a status other than 200 */
+    EDC_UPDATE_BODY_TOO_LARGE, /* the body passed |max_bytes| and was discarded */
+    EDC_UPDATE_MALFORMED,      /* 200, but the body is not the release list */
+} edc_update_outcome;
+
+/* What the check ended with, and the status line behind it when there was one.
+ *
+ * |http_status| is 0 when no status line arrived (connect failure, timeout). A 403 is worth
+ * naming on its own: it is what GitHub's unauthenticated rate limit (60 requests/hour per IP)
+ * returns, and on a shared address it is the most likely reason for a check that "found
+ * nothing". */
+typedef struct edc_update_diag
+{
+    edc_update_outcome outcome;
+    int http_status;
+} edc_update_diag;
+
+/* A short name for an outcome, for log lines.
+ *
+ * A table lookup rather than a switch at each call site: both the worker's log and anything
+ * else that wants to record the reason would otherwise carry their own copy of the same
+ * switch, and copies drift. */
+const char *edc_update_outcome_name(edc_update_outcome outcome);
+
 /* Ask the release list whether a newer version exists.
  *
  * Runs off the UI thread (it blocks on a condition variable, the same shape as
@@ -35,10 +79,21 @@ const char *edc_update_target(void);
  * server; production passes the GitHub releases endpoint.
  *
  * Every failure -- DNS, TLS, a timeout, a non-200, a body that is not the JSON we expect, a
- * body larger than |max_bytes| -- returns false and says nothing. A background check must
- * never produce a user-visible error: there is nothing the user could do about it, and the
- * next launch tries again.
+ * body larger than |max_bytes| -- returns false. That is the whole answer for the launch
+ * path, which must never produce a user-visible error: there is nothing the user could do
+ * about it, and the next launch tries again.
+ *
+ * For the diagnostic, |diag| (may be NULL) carries WHY. |diag->outcome| distinguishes "up to
+ * date" from "could not determine", and |diag->http_status| names the 403. This variant
+ * exists rather than an extra parameter on the one above so that the silent callers -- the
+ * worker thread and the tests that pin "false and nothing else" -- keep exactly their old
+ * contract.
  */
+bool edc_update_check_ex(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
+                         size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset,
+                         edc_update_diag *diag);
+
+/* edc_update_check_ex with no diagnosis. The launch-time check uses this. */
 bool edc_update_check(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
                       size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset);
 

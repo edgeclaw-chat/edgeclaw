@@ -18,11 +18,13 @@ static char g_cert[600];
 static char g_key[600];
 static sds g_response = NULL;
 
-int fake_release_start(const char *json, char *url_out, size_t url_cap, char *cert_out, size_t cert_cap)
+/* Shared setup: make a certificate, serve |raw| verbatim, report where to reach it.
+ *
+ * |raw| is the complete HTTP response, or NULL for "handshake, then say nothing" -- the
+ * latter is what an unresponsive endpoint looks like, and a CLI case needs it to reach the
+ * timeout branch. */
+static int start_serving(const char *raw, char *url_out, size_t url_cap, char *cert_out, size_t cert_cap)
 {
-    if (!json || !url_out || url_cap == 0 || !cert_out || cert_cap == 0)
-        return -1;
-
     const char *tmp = getenv("TEST_TMPDIR");
     if (!tmp || !*tmp)
         tmp = getenv("TMPDIR");
@@ -38,13 +40,8 @@ int fake_release_start(const char *json, char *url_out, size_t url_cap, char *ce
     if (tls_stub_cert(g_cert, g_key) != 0)
         return -1;
 
-    /* A complete HTTP/1.1 response. Connection: close so the client reads to EOF instead of
-     * waiting on a keep-alive it will never reuse. */
     sdsfree(g_response);
-    g_response = sdscatprintf(sdsempty(),
-                              "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %zu\r\n"
-                              "Connection: close\r\n\r\n%s",
-                              strlen(json), json);
+    g_response = raw ? sdsnew(raw) : NULL;
 
     if (tls_stub_start(&g_stub, g_cert, g_key, g_response) != 0)
     {
@@ -58,6 +55,46 @@ int fake_release_start(const char *json, char *url_out, size_t url_cap, char *ce
     snprintf(url_out, url_cap, "https://localhost:%d/repos/o/r/releases", g_stub.port);
     snprintf(cert_out, cert_cap, "%s", g_cert);
     return 0;
+}
+
+/* A complete HTTP/1.1 response with a JSON body. Connection: close so the client reads to EOF
+ * instead of waiting on a keep-alive it will never reuse. */
+static sds http_response(int status, const char *reason, const char *body)
+{
+    return sdscatprintf(sdsempty(),
+                        "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %zu\r\n"
+                        "Connection: close\r\n\r\n%s",
+                        status, reason, strlen(body), body);
+}
+
+int fake_release_start(const char *json, char *url_out, size_t url_cap, char *cert_out, size_t cert_cap)
+{
+    if (!json || !url_out || url_cap == 0 || !cert_out || cert_cap == 0)
+        return -1;
+
+    sds raw = http_response(200, "OK", json);
+    const int rc = start_serving(raw, url_out, url_cap, cert_out, cert_cap);
+    sdsfree(raw);
+    return rc;
+}
+
+int fake_release_start_status(int status, const char *reason, const char *body, char *url_out, size_t url_cap,
+                              char *cert_out, size_t cert_cap)
+{
+    if (!url_out || url_cap == 0 || !cert_out || cert_cap == 0)
+        return -1;
+
+    sds raw = http_response(status, reason ? reason : "", body ? body : "");
+    const int rc = start_serving(raw, url_out, url_cap, cert_out, cert_cap);
+    sdsfree(raw);
+    return rc;
+}
+
+int fake_release_start_silent(char *url_out, size_t url_cap, char *cert_out, size_t cert_cap)
+{
+    if (!url_out || url_cap == 0 || !cert_out || cert_cap == 0)
+        return -1;
+    return start_serving(NULL, url_out, url_cap, cert_out, cert_cap);
 }
 
 int fake_release_start_newer(const char *tag, char *url_out, size_t url_cap, char *cert_out, size_t cert_cap)

@@ -313,22 +313,29 @@ UI 必须说清楚：**更新后无法回退**。
 
 ## 11. 失败模式矩阵
 
-| 场景 | 行为 |
-|---|---|
-| 离线 / DNS 失败 | 静默（只 `log_debug`），不提示 |
-| 403 / 429 限流 | 静默，不重试 |
-| 无匹配本平台资产 | 静默（不是错误：只是这次不发版这个平台） |
-| releases JSON 畸形 | 静默 |
-| 当前版本不可解析（`dev`） | 整个链路禁用 |
-| 安装方式未知 | 提示里给手动命令，不执行 |
-| 没有 `sh` / `curl` / `wget` | 同上 |
-| 安装器超时（120 s） | 杀掉进程组，报「升级超时」，提示手动命令 |
-| 安装器非 0 退出 | 显示 stderr 尾部 |
-| 校验和不符 | 透传安装器的错误（它会说明哪个归档、期望值和实际值） |
-| 升级中被用户中止 | 杀掉进程组；已下载的临时文件由安装器自己的 trap 清理 |
-| Windows | 只提示手动方式 |
+下表说的是**启动期检查**的行为：它对用户静默，只写 `log_debug`。
 
-**统一原则**：检查阶段的任何失败都不产生用户可见噪音；升级阶段的任何失败都必须说清楚并给出下一步。
+`edgeclaw --update-check` 这个诊断命令不一样，它会把原因打出来——因为「被限流」和「已是最新」在启动期看起来一模一样，而区分这两件事正是这个命令存在的理由。诊断命令的退出码始终是 0（它诊断的是更新器，不是它自己的失败），要看的是文本。
+
+| 场景 | 启动期行为 | `--update-check` 的说法 |
+|---|---|---|
+| 离线 / DNS 失败 | 静默（只 `log_debug`） | `could not check: could not connect` |
+| 403 / 429 限流 | 静默，不重试 | `could not check: HTTP 403, which is GitHub's unauthenticated rate limit (60 requests/hour per IP)` |
+| 请求超时 | 静默 | `could not check: no response before the deadline` |
+| 响应超过 1 MiB | 静默 | `could not check: the response was larger than the 1 MiB cap` |
+| releases JSON 畸形 | 静默 | `could not check: the response is not the release list` |
+| 已是最新 | 静默 | `up to date -- no release newer than <ver> ships an archive for <target>` |
+| 无匹配本平台资产 | 静默（不是错误） | 归入 `up to date` |
+| 当前版本不可解析（`dev`） | 整个链路禁用 | `check skipped` + 原因 |
+| 安装方式未知 | 提示里给手动命令，不执行 | — |
+| 没有 `sh` / `curl` / `wget` | 同上 | — |
+| 安装器超时（120 s） | 杀掉进程组，报「升级超时」，提示手动命令 | — |
+| 安装器非 0 退出 | 显示 stderr 尾部 | — |
+| 校验和不符 | 透传安装器的错误（它会说明哪个归档、期望值和实际值） | — |
+| 升级中被用户中止 | 杀掉进程组；已下载的临时文件由安装器自己的 trap 清理 | — |
+| Windows | 只提示手动方式 | — |
+
+**统一原则**：检查阶段的任何失败都不产生用户可见噪音；升级阶段的任何失败都必须说清楚并给出下一步。诊断命令是例外——它存在的目的就是把「没查到」和「没问了」分开。
 
 ## 12. 安全边界：明确不做的事
 

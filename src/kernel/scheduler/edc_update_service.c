@@ -56,8 +56,11 @@ static void update_worker(void *arg)
     uv_sem_wait(&svc->go);
 
     sds tag = NULL, asset = NULL;
-    const bool found = edc_update_check(svc->cacert, svc->api_url, svc->current_version, svc->allow_pre,
-                                        1u << 20 /* body cap */, 10000 /* ms */, &tag, &asset);
+    edc_update_diag diag;
+    diag.outcome = EDC_UPDATE_UP_TO_DATE;
+    diag.http_status = 0;
+    const bool found = edc_update_check_ex(svc->cacert, svc->api_url, svc->current_version, svc->allow_pre,
+                                           1u << 20 /* body cap */, 10000 /* ms */, &tag, &asset, &diag);
     if (found)
     {
         svc->found_tag = tag;
@@ -67,9 +70,15 @@ static void update_worker(void *arg)
         return;
     }
 
-    /* Silent by design: a timeout, a rate limit and a malformed body are not events the user
-     * can act on, and the next launch tries again. */
-    log_debug("update check: nothing to offer");
+    /* Silent to the user by design: a timeout, a rate limit and a malformed body are not
+     * events the user can act on, and the next launch tries again. The REASON is still worth
+     * recording, because "nothing to offer" was the line that made a 403 indistinguishable
+     * from an up-to-date install while debugging exactly this -- silent is not the same as
+     * unrecorded. `edgeclaw --update-check` prints the same distinction for a human.
+     *
+     * The phrasing lives in edc_update_outcome_name(); a switch here would be a second copy of
+     * that mapping, in the one caller nobody can observe. */
+    log_debug("update check: %s (http %d)", edc_update_outcome_name(diag.outcome), diag.http_status);
     if (tag)
         sdsfree(tag);
     if (asset)

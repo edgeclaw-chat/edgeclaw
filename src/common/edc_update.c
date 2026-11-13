@@ -177,70 +177,18 @@ static void update_on_event(struct edc_https_request *req, int ev, void *data)
     }
 }
 
-bool edc_update_check(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
-                      size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset)
+/* The selection rules, over an already-parsed array.
+ *
+ * Split out of edc_update_pick so the caller that has to tell "nothing newer" apart from
+ * "the body was not the release list" can do so: parsing happens once, and its failure is
+ * reported as EDC_UPDATE_MALFORMED by edc_update_check_ex rather than as an empty result.
+ * |root| must be an array. */
+static bool pick_from_root(cJSON *root, const char *current_version, bool allow_pre, sds *out_tag, sds *out_asset)
 {
     if (out_tag)
         *out_tag = NULL;
     if (out_asset)
         *out_asset = NULL;
-    if (!api_url || !api_url[0] || !current_version)
-        return false;
-
-    struct edc_https_client *client = edc_https_client_new(cacert_path);
-    if (!client)
-        return false;
-
-    struct update_state st;
-    memset(&st, 0, sizeof(st));
-    uv_mutex_init(&st.m);
-    uv_cond_init(&st.c);
-    st.body = sdsempty();
-    st.max = max_bytes > 0 ? max_bytes : 1u << 20; /* 1 MiB: the release list is far smaller */
-
-    bool ok = false;
-    if (edc_https_client_connect(client, api_url, update_on_event, &st) == 0)
-    {
-        uv_mutex_lock(&st.m);
-        while (!st.done)
-        {
-            if (uv_cond_timedwait(&st.c, &st.m, (uint64_t)(timeout_ms > 0 ? timeout_ms : 1) * 1000000ULL) != 0)
-                break; /* deadline: treat exactly like a failed check */
-        }
-        const int done = st.done, status = st.status, err = st.err, over = st.over;
-        uv_mutex_unlock(&st.m);
-
-        /* 200 only. A 403 here is the unauthenticated rate limit (60/hour/IP) and is expected
-         * on a shared address -- silent, like every other failure. */
-        if (done && !err && !over && status == 200)
-            ok = edc_update_pick(st.body, current_version, allow_pre, out_tag, out_asset);
-    }
-
-    sdsfree(st.body);
-    uv_cond_destroy(&st.c);
-    uv_mutex_destroy(&st.m);
-    edc_https_client_free(client);
-    return ok;
-}
-
-bool edc_update_pick(const char *releases_json, const char *current_version, bool allow_pre, sds *out_tag,
-                     sds *out_asset)
-{
-    if (out_tag)
-        *out_tag = NULL;
-    if (out_asset)
-        *out_asset = NULL;
-    if (!releases_json || !current_version)
-        return false;
-
-    cJSON *root = cJSON_Parse(releases_json);
-    if (!root)
-        return false;
-    if (!cJSON_IsArray(root))
-    {
-        cJSON_Delete(root);
-        return false;
-    }
 
     const sds target = sdsnew(edc_update_target());
     sds best_tag = NULL;
@@ -290,7 +238,6 @@ bool edc_update_pick(const char *releases_json, const char *current_version, boo
     }
 
     sdsfree(target);
-    cJSON_Delete(root);
 
     if (!best_tag)
         return false;
@@ -304,4 +251,165 @@ bool edc_update_pick(const char *releases_json, const char *current_version, boo
     else
         sdsfree(best_asset);
     return true;
+}
+
+bool edc_update_check_ex(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
+                         size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset, edc_update_diag *diag)
+{
+    if (diag)
+    {
+        diag->outcome = EDC_UPDATE_BAD_ARG;
+        diag->http_status = 0;
+    }
+
+    if (out_tag)
+        *out_tag = NULL;
+    if (out_asset)
+        *out_asset = NULL;
+    if (!api_url || !api_url[0] || !current_version)
+        return false;
+
+    struct edc_https_client *client = edc_https_client_new(cacert_path);
+    if (!client)
+    {
+        /* Only mbedtls initialisation fails here -- a missing or unreadable CA bundle is NOT
+         * this: the bundle is loaded when connecting (see edc_https_client.c), so it surfaces
+         * as EDC_UPDATE_CONNECT_FAILED below. Nothing has been asked either way. */
+        if (diag)
+            diag->outcome = EDC_UPDATE_CONNECT_FAILED;
+        return false;
+    }
+    if (diag)
+        diag->outcome = EDC_UPDATE_CONNECT_FAILED;
+
+    struct update_state st;
+    memset(&st, 0, sizeof(st));
+    uv_mutex_init(&st.m);
+    uv_cond_init(&st.c);
+    st.body = sdsempty();
+    st.max = max_bytes > 0 ? max_bytes : 1u << 20; /* 1 MiB: the release list is far smaller */
+
+    bool ok = false;
+    if (edc_https_client_connect(client, api_url, update_on_event, &st) == 0)
+    {
+        uv_mutex_lock(&st.m);
+        while (!st.done)
+        {
+            if (uv_cond_timedwait(&st.c, &st.m, (uint64_t)(timeout_ms > 0 ? timeout_ms : 1) * 1000000ULL) != 0)
+                break; /* deadline */
+        }
+        const int done = st.done, status = st.status, err = st.err, over = st.over;
+        uv_mutex_unlock(&st.m);
+
+        /* Recorded before the outcome is classified, so every branch that has a status line
+         * reports it -- including the 200 that "up to date" comes back from. */
+        if (diag && done)
+            diag->http_status = status;
+
+        if (!done)
+        {
+            /* The deadline fired with no close event. Named separately from a connect failure
+             * because it is the one case that is usually transient. */
+            if (diag)
+                diag->outcome = EDC_UPDATE_TIMEOUT;
+        }
+        else if (err)
+        {
+            if (diag)
+                diag->outcome = EDC_UPDATE_CONNECT_FAILED;
+        }
+        else if (over)
+        {
+            if (diag)
+                diag->outcome = EDC_UPDATE_BODY_TOO_LARGE;
+        }
+        else if (status != 200)
+        {
+            /* A 403 here is the unauthenticated rate limit (60/hour/IP) and is expected on a
+             * shared address. Silent for the launch path -- but recorded, because the
+             * diagnostic has to say "not determined" rather than "up to date". A status of 0
+             * means the peer closed without ever sending a status line, which is the same
+             * class of thing: nothing was determined. */
+            if (diag)
+                diag->outcome = EDC_UPDATE_HTTP_STATUS;
+        }
+        else
+        {
+            cJSON *root = cJSON_Parse(st.body);
+            if (!root || !cJSON_IsArray(root))
+            {
+                if (diag)
+                    diag->outcome = EDC_UPDATE_MALFORMED;
+            }
+            else
+            {
+                ok = pick_from_root(root, current_version, allow_pre, out_tag, out_asset);
+                if (diag)
+                    diag->outcome = ok ? EDC_UPDATE_OK : EDC_UPDATE_UP_TO_DATE;
+            }
+            /* cJSON_Delete(NULL) is a no-op, so the two failure paths above share this. */
+            cJSON_Delete(root);
+        }
+    }
+    /* A connect() failure leaves the outcome as CONNECT_FAILED with no status, which is what
+     * a caller can report: nothing was asked, or nothing answered. */
+
+    sdsfree(st.body);
+    uv_cond_destroy(&st.c);
+    uv_mutex_destroy(&st.m);
+    edc_https_client_free(client);
+    return ok;
+}
+
+bool edc_update_check(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
+                      size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset)
+{
+    return edc_update_check_ex(cacert_path, api_url, current_version, allow_pre, max_bytes, timeout_ms, out_tag,
+                               out_asset, NULL);
+}
+
+bool edc_update_pick(const char *releases_json, const char *current_version, bool allow_pre, sds *out_tag, sds *out_asset)
+{
+    if (out_tag)
+        *out_tag = NULL;
+    if (out_asset)
+        *out_asset = NULL;
+    if (!releases_json || !current_version)
+        return false;
+
+    cJSON *root = cJSON_Parse(releases_json);
+    if (!root)
+        return false;
+    if (!cJSON_IsArray(root))
+    {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    const bool got = pick_from_root(root, current_version, allow_pre, out_tag, out_asset);
+    cJSON_Delete(root);
+    return got;
+}
+
+/* Names for the outcomes, indexed by the enum.
+ *
+ * Written as data, not a switch: this exists so callers can report the reason without each of
+ * them keeping its own copy of the mapping, and callers that are not the diagnostic have no
+ * business owning user-facing phrasing. A switch here would also put a line of unreachable
+ * code per outcome in a coverage report, which is what prompted the table. */
+static const char *const k_outcome_names[] = {
+    [EDC_UPDATE_OK] = "an offer",
+    [EDC_UPDATE_UP_TO_DATE] = "up to date",
+    [EDC_UPDATE_BAD_ARG] = "bad argument",
+    [EDC_UPDATE_CONNECT_FAILED] = "could not connect",
+    [EDC_UPDATE_TIMEOUT] = "timed out",
+    [EDC_UPDATE_HTTP_STATUS] = "non-200 status",
+    [EDC_UPDATE_BODY_TOO_LARGE] = "response past the cap",
+    [EDC_UPDATE_MALFORMED] = "response is not the release list",
+};
+
+const char *edc_update_outcome_name(edc_update_outcome outcome)
+{
+    const size_t n = sizeof(k_outcome_names) / sizeof(k_outcome_names[0]);
+    return ((size_t)outcome < n && k_outcome_names[outcome]) ? k_outcome_names[outcome] : "unknown outcome";
 }

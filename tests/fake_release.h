@@ -26,6 +26,19 @@ extern "C"
  */
 int fake_release_start(const char *json, char *url_out, size_t url_cap, char *cert_out, size_t cert_cap);
 
+/* Same, but answering |status| with |body| instead of 200 and the given JSON.
+ *
+ * The reason: `--update-check` prints a different line per outcome, and those lines are the
+ * user-facing half of the fix that made a failed request distinguishable from "no update".
+ * A test asserting them has to be able to produce a 403 and a malformed body, which the
+ * 200-only variant cannot. |reason| may be "" (the phrase after the status code). */
+int fake_release_start_status(int status, const char *reason, const char *body, char *url_out, size_t url_cap,
+                              char *cert_out, size_t cert_cap);
+
+/* Same, but completes the handshake and then says nothing -- the silent endpoint a timeout
+ * case needs. */
+int fake_release_start_silent(char *url_out, size_t url_cap, char *cert_out, size_t cert_cap);
+
 /* Same, answering one release named |tag| that carries this platform's asset name. Exists so
  * a C++ caller does not have to build the JSON: including sds.h from C++ does not compile
  * (see the note in edc_app.h), and the asset name has to match edc_update_target() or the
