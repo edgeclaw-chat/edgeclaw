@@ -612,6 +612,23 @@ int edc_https_request_get_status(struct edc_https_request *req)
     return req->status_code;
 }
 
+/* Close a request handle exactly once.
+ *
+ * uv_close() asserts !uv__is_closing(handle), so reaching it twice is abort(), not a leak or
+ * a warning. Twice is easy to reach: edc_https_client_free() uv_walk()s the loop and closes a
+ * handle whose connect is still in flight, and libuv then reports that cancellation to the
+ * connect callback as UV_ECANCELED -- so the callback's own uv_close() is the second one.
+ * That is the offline-launch crash: the update check's 10s deadline expires with the connect
+ * pending, teardown closes it, and the program dies in libuv's assert.
+ *
+ * Skipping the second close cannot skip a needed callback: the first close already scheduled
+ * one, and it runs either way. */
+static void edc_https_close_once(uv_handle_t *handle, uv_close_cb close_cb)
+{
+    if (!uv_is_closing(handle))
+        uv_close(handle, close_cb);
+}
+
 int edc_https_request_write(struct edc_https_request *req, const unsigned char *buf, size_t len)
 {
     size_t written = 0;
@@ -625,7 +642,7 @@ int edc_https_request_write(struct edc_https_request *req, const unsigned char *
             sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl write failed: %s", (char *)errbuf);
             req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
             sdsfree(message);
-            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
             return -1;
         }
         written += (size_t)ret;
@@ -690,8 +707,8 @@ static void edc_https_on_timeout(uv_timer_t *timer)
     sdsfree(message);
 
     uv_timer_stop(timer);
-    uv_close((uv_handle_t *)timer, edc_https_on_timer_close);
-    uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+    edc_https_close_once((uv_handle_t *)timer, edc_https_on_timer_close);
+    edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
 }
 
 static void edc_https_client_drive_mbedtls(struct edc_https_request *req);
@@ -773,7 +790,7 @@ static int edc_https_ssl_bio_send(void *ctx, const unsigned char *buf, size_t le
             sds message = sdscatprintf(sdsnew(NULL), "uv_write failed in bio_send");
             req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
             sdsfree(message);
-            uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+            edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
             return -1;
         }
     }
@@ -834,7 +851,7 @@ static bool edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
         sds message = sdscatprintf(sdsnew(NULL), "mbedtls handshake error: %s", buf);
         req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
         sdsfree(message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return false;
     }
 
@@ -855,7 +872,7 @@ static bool edc_https_client_drive_mbedtls_read(struct edc_https_request *req)
     if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
     {
         log_info("mbedtls ssl : peer close notify.");
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return false;
     }
 
@@ -865,7 +882,7 @@ static bool edc_https_client_drive_mbedtls_read(struct edc_https_request *req)
         sds message = sdscatprintf(sdsnew(NULL), "mbedtls ssl read failed: %s", buf);
         req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
         sdsfree(message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return false;
     }
 
@@ -946,10 +963,18 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
     struct edc_https_request *req = (struct edc_https_request *)conn->handle;
     if (status < 0)
     {
-        sds err_message = sdscatprintf(sdsnew(NULL), "tcp connect failed: %s", uv_strerror(status));
-        req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
-        sdsfree(err_message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        /* UV_ECANCELED is not a failure of the request: it means this handle was closed
+         * while the connect was pending, i.e. the caller already gave up and is tearing the
+         * client down. Reporting an error to it then would be noise at best -- the deadline
+         * that expired is the report -- and the close is already scheduled, so closing here
+         * would abort (see edc_https_close_once). */
+        if (status != UV_ECANCELED)
+        {
+            sds err_message = sdscatprintf(sdsnew(NULL), "tcp connect failed: %s", uv_strerror(status));
+            req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+            sdsfree(err_message);
+        }
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return;
     }
 
@@ -963,7 +988,7 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
         sds err_message = sdscatprintf(sdsnew(NULL), "mbedtls ssl_setup failed");
         req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
         sdsfree(err_message);
-        uv_close((uv_handle_t *)req, edc_https_on_tcp_close);
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return;
     }
     mbedtls_ssl_set_hostname(&req->ssl, req->url_parser.host);
@@ -975,12 +1000,25 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
 static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addrinfo *res)
 {
     struct edc_https_request *http_req = uv_req_get_data((uv_req_t *)req);
+
+    /* The socket can already be closing: teardown does not wait for a lookup in flight, and
+     * uv_walk() sees the socket (a handle) even though it cannot see this request (a uv_req).
+     * Connecting or closing a closing handle is abort() in libuv, so both are skipped --
+     * nothing is lost, the socket is being closed by whoever closed it. */
+    if (uv_is_closing((uv_handle_t *)&http_req->socket))
+    {
+        if (res)
+            uv_freeaddrinfo(res);
+        free(req);
+        return;
+    }
+
     if (status < 0)
     {
         sds err_message = sdscatprintf(sdsnew(NULL), "tcp connect failed: %s", uv_strerror(status));
         http_req->fn(http_req, EDC_HTTPS_EVENT_ERROR, err_message);
         sdsfree(err_message);
-        uv_close((uv_handle_t *)&http_req->socket, edc_https_on_tcp_close);
+        edc_https_close_once((uv_handle_t *)&http_req->socket, edc_https_on_tcp_close);
         free(req);
         return;
     }
@@ -1155,9 +1193,42 @@ void edc_https_client_free(struct edc_https_client *client)
     uv_thread_join(&client->thread);
 
     uv_walk(&client->loop, edc_https_client_close_walk, NULL);
-    uv_run(&client->loop, UV_RUN_NOWAIT);
 
-    uv_loop_close(&client->loop);
+    /* uv_close() is ASYNCHRONOUS: it only queues the handle, and libuv runs the close
+     * callbacks on a later iteration. One UV_RUN_NOWAIT is not enough, because a close
+     * callback here closes another handle: edc_https_request_cleanup_close() (the socket's)
+     * calls edc_https_request_close_timer(), whose close callback is what finally drops the
+     * request's last reference. Two iterations are the minimum, and a redirect or a second
+     * in-flight request needs more.
+     *
+     * Running only one left the loop with handles still queued, so uv_loop_close() failed
+     * with UV_EBUSY -- a return value nobody read -- the request ledger never reached zero,
+     * and the still-registered handles pointed into the struct freed immediately below. The
+     * wreckage surfaced later, in the NEXT client allocated on the same heap: an intermittent
+     * segfault with no frame of ours in the stack. That is the shape m39 describes for
+     * edc_actor_runner_free, which drains the same way for the same reason.
+     *
+     * Bounded: a handle that refuses to close must not turn this into a hang. */
+    for (int i = 0; i < 50 && uv_loop_alive(&client->loop); i++)
+        uv_run(&client->loop, UV_RUN_NOWAIT);
+
+    if (uv_loop_alive(&client->loop))
+    {
+        /* Something did not close. Freeing `client` now hands libuv a dangling pointer, and
+         * the failure would land in unrelated code later -- so leak instead, loudly. This is
+         * the same trade edc_actor_runner_free makes. */
+        log_error("edc_https_client: loop still alive after closing every handle (%d iterations); "
+                  "leaking the client rather than freeing memory libuv still points at",
+                  50);
+        return;
+    }
+
+    const int closed = uv_loop_close(&client->loop);
+    if (closed != 0)
+    {
+        log_error("edc_https_client: uv_loop_close failed: %s; leaking the client", uv_strerror(closed));
+        return;
+    }
 
     /* free any remaining work queue items */
     {
