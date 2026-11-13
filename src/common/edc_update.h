@@ -62,6 +62,13 @@ typedef struct edc_update_diag
     int http_status;
 } edc_update_diag;
 
+/* A short name for an outcome, for log lines.
+ *
+ * A table lookup rather than a switch at each call site: both the worker's log and anything
+ * else that wants to record the reason would otherwise carry their own copy of the same
+ * switch, and copies drift. */
+const char *edc_update_outcome_name(edc_update_outcome outcome);
+
 /* Ask the release list whether a newer version exists.
  *
  * Runs off the UI thread (it blocks on a condition variable, the same shape as

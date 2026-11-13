@@ -72,34 +72,13 @@ static void update_worker(void *arg)
 
     /* Silent to the user by design: a timeout, a rate limit and a malformed body are not
      * events the user can act on, and the next launch tries again. The REASON is still worth
-     * logging, because "nothing to offer" was the line that made a 403 indistinguishable from
-     * an up-to-date install while debugging exactly this -- silent is not the same as
-     * unrecorded. `edgeclaw --update-check` prints the same distinction for a human. */
-    switch (diag.outcome)
-    {
-    case EDC_UPDATE_UP_TO_DATE:
-        log_debug("update check: up to date");
-        break;
-    case EDC_UPDATE_HTTP_STATUS:
-        log_debug("update check: not determined, HTTP %d%s", diag.http_status,
-                  diag.http_status == 403 ? " (unauthenticated rate limit)" : "");
-        break;
-    case EDC_UPDATE_TIMEOUT:
-        log_debug("update check: not determined, timed out");
-        break;
-    case EDC_UPDATE_CONNECT_FAILED:
-        log_debug("update check: not determined, could not connect");
-        break;
-    case EDC_UPDATE_BODY_TOO_LARGE:
-        log_debug("update check: not determined, response larger than the cap");
-        break;
-    case EDC_UPDATE_MALFORMED:
-        log_debug("update check: not determined, response is not the release list");
-        break;
-    default:
-        log_debug("update check: not determined");
-        break;
-    }
+     * recording, because "nothing to offer" was the line that made a 403 indistinguishable
+     * from an up-to-date install while debugging exactly this -- silent is not the same as
+     * unrecorded. `edgeclaw --update-check` prints the same distinction for a human.
+     *
+     * The phrasing lives in edc_update_outcome_name(); a switch here would be a second copy of
+     * that mapping, in the one caller nobody can observe. */
+    log_debug("update check: %s (http %d)", edc_update_outcome_name(diag.outcome), diag.http_status);
     if (tag)
         sdsfree(tag);
     if (asset)

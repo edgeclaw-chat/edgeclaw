@@ -194,6 +194,44 @@ int main(void)
         sdsfree(body);
     }
 
+    printf("\n── a refused request gets no callback, and is not 'already current' ──\n");
+    {
+        /* The launch path is silent either way, so what this pins is the branch: a 403 (the
+         * unauthenticated rate limit) must leave the callback unfired, exactly like being up to
+         * date does -- while the log records which of the two happened. Before the outcome
+         * existed both produced the same single line, "nothing to offer". */
+        char *raw = sdscatprintf(sdsempty(),
+                                 "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n"
+                                 "Content-Length: 28\r\nConnection: close\r\n\r\n"
+                                 "{\"message\":\"rate limit\"}\n");
+        struct tls_stub s;
+        if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
+        {
+            printf("    (skipped)\n");
+        }
+        else
+        {
+            uv_loop_t loop;
+            uv_loop_init(&loop);
+            struct hits h = {0, {0}};
+            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
+            struct edc_update_service *svc =
+                edc_update_service_start(&loop, g_cert, url, "1.0.0", false, 0, on_found, &h);
+            CHECK(svc != NULL, "the service starts");
+            pump(&loop, &h, 0, 2000);
+            CHECK(h.count == 0, "a refused request produces no callback");
+
+            edc_update_service_stop(svc);
+            for (int i = 0; i < 200 && uv_run(&loop, UV_RUN_NOWAIT) != 0; i++)
+            {
+            }
+            CHECK(uv_loop_close(&loop) == 0, "the loop closes");
+            sdsfree(url);
+            tls_stub_stop(&s);
+        }
+        sdsfree(raw);
+    }
+
     printf("\n── the delay holds the REQUEST, not just the report ──\n");
     {
         /* The server records whether it was contacted. With a delay the worker must still be
