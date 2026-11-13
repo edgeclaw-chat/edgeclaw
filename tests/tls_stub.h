@@ -51,6 +51,23 @@ struct tls_stub
     uv_thread_t thread;
     const char *raw_response; /* borrowed; NULL = handshake only, then hold and stay silent */
     int served;               /* 1 = handshake, 2 = response fully written, 3 = partial write */
+    /* End the connection with a RST instead of a TLS close_notify.
+     *
+     * The default is the polite shutdown: mbedtls_ssl_close_notify, so the client reads
+     * PEER_CLOSE_NOTIFY and treats the socket close as the normal end of the response. That
+     * is the right fixture for "the server finished answering", and it is why the client's
+     * read-error and write-error branches had no coverage at all -- a polite peer never
+     * produces them.
+     *
+     * With this set the server skips the notify and closes with SO_LINGER{1,0}, which sends a
+     * RST: the client's next read fails with a socket error, and a write to it fails too.
+     * That is what a crash, a killed process, or a NAT timeout looks like from the other
+     * side, and it is a different client path from a clean close. */
+    bool abrupt_close;
+
+    /* After a completed handshake, write bytes straight to the socket instead of answering
+     * through TLS: the client's mbedtls then reads a record it cannot decrypt. */
+    bool garbage_after_handshake;
 };
 
 /* Generate a self-signed CA-ish certificate (CN=localhost) and its key at the given paths.
@@ -240,7 +257,27 @@ static void tls_stub_serve(struct tls_stub *s, int client_fd)
         }
     }
 
-    if (!s->raw_response)
+    if (s->garbage_after_handshake)
+    {
+        /* A syntactically shaped TLS record whose payload is not a valid ciphertext: the
+         * client's mbedtls accepts the framing and fails the record authentication, which is
+         * a read ERROR rather than a socket error. That distinction is the point -- a reset
+         * surfaces in libuv's read callback, while this surfaces inside mbedtls, and the two
+         * take different branches in the client. */
+        static const unsigned char bad_record[] = {
+            0x17, 0x03, 0x03, 0x00, 0x08, /* application_data, TLS 1.2, length 8 */
+            'b',  'a',  'd',  'r',  'e',  'c',  'o',  'd',
+        };
+        size_t off = 0;
+        while (off < sizeof(bad_record))
+        {
+            const ssize_t n = send(client_fd, bad_record + off, sizeof(bad_record) - off, 0);
+            if (n <= 0)
+                break;
+            off += (size_t)n;
+        }
+    }
+    else if (!s->raw_response)
     {
         /* Silent mode: answer nothing and hold the connection until the client gives up, so
          * the case measures the client's own timeout rather than a server that vanished. */
@@ -280,7 +317,8 @@ static void tls_stub_serve(struct tls_stub *s, int client_fd)
     }
 
 out:
-    mbedtls_ssl_close_notify(&ssl);
+    if (!s->abrupt_close)
+        mbedtls_ssl_close_notify(&ssl);
     mbedtls_ssl_free(&ssl);
     mbedtls_ssl_config_free(&conf);
     mbedtls_x509_crt_free(&cert);
@@ -296,6 +334,17 @@ static void tls_stub_thread(void *arg)
     if (client_fd >= 0)
     {
         tls_stub_serve(s, client_fd);
+        if (s->abrupt_close)
+        {
+            /* SO_LINGER{on=1, seconds=0}: close() discards the send queue and sends a RST
+             * rather than a FIN. The peer's read then fails with ECONNRESET instead of seeing
+             * an orderly end-of-stream, which is the only way to reach the client's
+             * socket-error branches from a test. */
+            struct linger lg;
+            lg.l_onoff = 1;
+            lg.l_linger = 0;
+            setsockopt(client_fd, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+        }
         close(client_fd);
     }
 }

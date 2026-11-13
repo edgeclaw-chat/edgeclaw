@@ -597,6 +597,161 @@ static void test_free_at_every_stage()
     full_backlog_stop(&b);
 }
 
+/* The resolver fails: a hostname that cannot exist.
+ *
+ * `.invalid` is reserved by RFC 2606 precisely so it never resolves, which makes this a
+ * deterministic DNS failure rather than one that depends on the sandbox having (or not
+ * having) a working resolver or network. It reaches edc_https_on_resolved() with status < 0,
+ * a path nothing else in this suite touches -- the other cases use a literal address
+ * specifically so that name resolution cannot be what fails.
+ */
+static void test_resolution_failure()
+{
+    TEST("a host that cannot resolve fails as a connect error, not a hang");
+
+    struct seen s;
+    memset(&s, 0, sizeof(s));
+    uv_sem_init(&s.done, 0);
+
+    struct edc_https_client *client = edc_https_client_new(g_cert);
+    CHECK(client != NULL, "the client was created");
+    if (client)
+    {
+        const int rc = edc_https_client_connect(client, "https://edgeclaw.invalid/chat/completions", on_event, &s);
+        CHECK(rc == 0, "connect() accepted the request, got %d", rc);
+
+        uv_thread_t dog;
+        const bool dog_ok = uv_thread_create(&dog, watchdog, &s) == 0;
+        uv_sem_wait(&s.done);
+        if (dog_ok)
+            uv_thread_join(&dog);
+
+        CHECK(s.closed && !s.timed_out, "the request reported a result instead of hanging");
+        CHECK(strstr(s.error, "tcp connect failed") != NULL, "the error names the failure: %.90s", s.error);
+        CHECK(s.status == 0, "no status line, because no connection was made, got %d", s.status);
+
+        edc_https_client_free(client);
+    }
+    uv_sem_destroy(&s.done);
+}
+
+/* The peer dies without a TLS close_notify.
+ *
+ * A polite server ends the stream with close_notify, and the client treats the socket close
+ * as the normal end of the response. A crash, a killed process or a NAT timeout looks
+ * different: the connection is reset, and the client's read has to report an error rather
+ * than a clean EOF. The stub's abrupt_close does that with SO_LINGER{1,0}.
+ *
+ * The assertion is that the caller still gets an error and still gets CLOSE -- not that any
+ * particular errno appears, since which error mbedtls reports depends on where in the record
+ * layer the reset lands.
+ */
+static void test_peer_resets_without_close_notify()
+{
+    TEST("a peer that resets mid-response is an error, not a clean end");
+
+    /* A response that PROMISES more than it delivers, then a reset: this is a server that
+     * died part-way through writing, which is the case the client has to distinguish from
+     * "the response ended". Content-Length says 100, the body carries 8. */
+    const char *partial = "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: 100\r\n"
+                          "Connection: close\r\n"
+                          "\r\n"
+                          "{\"ok\":tr";
+
+    struct tls_stub stub;
+    if (tls_stub_start(&stub, g_cert, g_key, partial) != 0)
+    {
+        CHECK(false, "could not start the TLS stub");
+        return;
+    }
+    /* Set before the client connects, so the stub's teardown sees it. */
+    stub.abrupt_close = true;
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://localhost:%d/chat/completions", stub.port);
+
+    struct seen s;
+    const bool finished = run(url, &s);
+    CHECK(finished, "the request completed rather than hanging");
+    CHECK(s.status == 200, "the status line did arrive, got %d", s.status);
+    CHECK(strstr(s.error, "read failed") != NULL,
+          "the truncation is reported as a read failure: %.90s", s.error);
+    free_seen(&s);
+
+    tls_stub_stop(&stub);
+}
+
+/* A peer that finishes the handshake and then speaks nonsense.
+ *
+ * This is the one path a socket error cannot reach: a reset is delivered by libuv to the read
+ * callback (nread < 0), while a well-framed record that fails authentication is returned by
+ * mbedtls_ssl_read itself. Different branches, different reporting, and the second had no
+ * coverage at all because every fixture answered either in valid TLS or not at all.
+ *
+ * What a user sees is a proxy or middlebox that completed the handshake and then started
+ * injecting its own bytes -- rare, but the failure mode is a hang if the error is not
+ * reported, so it is worth a case.
+ */
+static void test_garbage_after_handshake()
+{
+    TEST("a peer that speaks non-TLS after the handshake is a read error");
+
+    struct tls_stub stub;
+    if (tls_stub_start(&stub, g_cert, g_key, "ignored") != 0)
+    {
+        CHECK(false, "could not start the TLS stub");
+        return;
+    }
+    stub.garbage_after_handshake = true;
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://localhost:%d/chat/completions", stub.port);
+
+    struct seen s;
+    const bool finished = run(url, &s);
+    CHECK(finished, "the request completed rather than hanging");
+    CHECK(s.status == 0, "no response line could be parsed, got %d", s.status);
+    CHECK(strstr(s.error, "read failed") != NULL, "reported as a read failure: %.90s", s.error);
+    CHECK(strstr(s.error, "mbedtls") != NULL, "and names mbedtls, not the socket: %.90s", s.error);
+    free_seen(&s);
+
+    tls_stub_stop(&stub);
+}
+
+static void test_free_while_lookup_in_flight()
+{
+    TEST("freeing the client while the name lookup is in flight does not abort");
+
+    struct edc_https_client *client = edc_https_client_new(g_cert);
+    CHECK(client != NULL, "the client was created");
+    if (client)
+    {
+        struct seen s;
+        memset(&s, 0, sizeof(s));
+        uv_sem_init(&s.done, 0);
+
+        const int rc = edc_https_client_connect(client, "https://edgeclaw.invalid/chat/completions",
+                                                on_event, &s);
+        CHECK(rc == 0, "connect() accepted the request, got %d", rc);
+
+        /* No sleep: the lookup has been queued and almost certainly not finished, which is
+         * the state this case needs. */
+        edc_https_client_free(client);
+        /* Reaching this line is the assertion.
+         *
+         * This case LEAKS by design: uv_loop_close() refuses (the lookup is an active
+         * request, not a handle), and the client is kept rather than freed under a loop that
+         * still points into it. Every byte LeakSanitizer reports for this binary traces back
+         * to this line, which is why it is spelled out here -- and why the project runs
+         * --config=asan with detect_leaks=0 (.bazelrc: "several tests fork or hold a store
+         * open on purpose"). */
+        CHECK(true, "free() returned instead of aborting or corrupting the heap");
+        uv_sem_destroy(&s.done);
+    }
+}
+
 int main(void)
 {
     /* The stubs write to sockets whose peer has hung up (that is how the handshake and the
@@ -625,8 +780,12 @@ int main(void)
     }
 
     test_invalid_url_is_refused_synchronously();
+    test_resolution_failure();
     test_connection_refused();
+    test_peer_resets_without_close_notify();
+    test_garbage_after_handshake();
     test_free_while_connect_in_flight();
+    test_free_while_lookup_in_flight();
     test_free_at_every_stage();
     test_handshake_failure();
     test_timeout();
