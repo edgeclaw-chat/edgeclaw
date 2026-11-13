@@ -15,8 +15,14 @@
  *   - silence -> the deadline fires and the call returns rather than hanging the launch;
  *   - a body larger than the cap -> no offer, and the transfer is not accumulated without end;
  *   - malformed JSON -> no offer.
- * Every one of those must be a false return and nothing else, because the caller treats false
- * as "say nothing".
+ *
+ * Every one of those is still a false return, because the launch-time caller treats false as
+ * "say nothing". What changed is that the false now carries a REASON: `false` alone was
+ * answering two different questions. A 403 (the unauthenticated rate limit) and "you are
+ * already current" both came back as false, so `--update-check` printed the same line for
+ * both -- and a rate-limited install looked exactly like an up-to-date one. The assertions
+ * below therefore check `diag.outcome` as well: a failure and an up-to-date answer must not
+ * be the same value.
  */
 
 #include "edc_update.h"
@@ -88,9 +94,11 @@ static void free_body(char *p)
     sdsfree(p);
 }
 
-/* Run one case against a server that answers |raw| (NULL = handshake then silence). */
-static bool run_case(const char *raw, const char *current, bool allow_pre, size_t max_bytes, int timeout_ms,
-                     sds *tag, sds *asset)
+/* Same, recording WHY it ended that way. The diagnostic is the only consumer of the outcome,
+ * but the distinction belongs to the library: what a caller can print depends on what this
+ * function is willing to tell it. */
+static bool run_case_diag(const char *raw, const char *current, bool allow_pre, size_t max_bytes, int timeout_ms,
+                          sds *tag, sds *asset, edc_update_diag *diag)
 {
     struct tls_stub s;
     if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
@@ -99,10 +107,17 @@ static bool run_case(const char *raw, const char *current, bool allow_pre, size_
         return false;
     }
     sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
-    const bool got = edc_update_check(g_cert, url, current, allow_pre, max_bytes, timeout_ms, tag, asset);
+    const bool got = edc_update_check_ex(g_cert, url, current, allow_pre, max_bytes, timeout_ms, tag, asset, diag);
     sdsfree(url);
     tls_stub_stop(&s);
     return got;
+}
+
+/* Run one case against a server that answers |raw| (NULL = handshake then silence). */
+static bool run_case(const char *raw, const char *current, bool allow_pre, size_t max_bytes, int timeout_ms,
+                     sds *tag, sds *asset)
+{
+    return run_case_diag(raw, current, allow_pre, max_bytes, timeout_ms, tag, asset, NULL);
 }
 
 static void test_offers_a_newer_release(void)
@@ -177,10 +192,36 @@ static void test_http_error_offers_nothing(void)
     printf("\n── a non-200 answer ──\n");
     char *raw = http_response(403, "Forbidden", "{\"message\":\"rate limit\"}");
     sds tag = NULL, asset = NULL;
-    const bool got = run_case(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset);
+    edc_update_diag diag;
+    diag.outcome = EDC_UPDATE_OK;
+    diag.http_status = 0;
+    const bool got = run_case_diag(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset, &diag);
     CHECK(!got, "a 403 (the unauthenticated rate limit) offers nothing");
     CHECK(tag == NULL, "and fills in nothing");
+
+    /* The point of the outcome: this must NOT look like an up-to-date install. Before
+     * EDC_UPDATE_HTTP_STATUS existed, both returned bare `false` and the diagnostic printed
+     * the same line -- "nothing to offer" -- for a refused request and for being current. */
+    CHECK(diag.outcome == EDC_UPDATE_HTTP_STATUS, "the outcome is a status, not 'up to date'");
+    CHECK(diag.http_status == 403, "and the status itself is reported, so the caller can name the rate limit");
     free_body(raw);
+}
+
+static void test_up_to_date_is_its_own_outcome(void)
+{
+    printf("\n── up to date, and distinguishable from a failure ──\n");
+    char *body = releases_body("v1.0.0");
+    char *raw = http_response(200, "OK", body);
+    sds tag = NULL, asset = NULL;
+    edc_update_diag diag;
+    diag.outcome = EDC_UPDATE_HTTP_STATUS;
+    diag.http_status = 0;
+    const bool got = run_case_diag(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset, &diag);
+    CHECK(!got, "the running version is not an offer");
+    CHECK(diag.outcome == EDC_UPDATE_UP_TO_DATE, "but the outcome says the API answered");
+    CHECK(diag.http_status == 200, "with the status that says so");
+    free_body(raw);
+    free_body(body);
 }
 
 static void test_malformed_body_offers_nothing(void)
@@ -188,7 +229,13 @@ static void test_malformed_body_offers_nothing(void)
     printf("\n── a body that is not the list ──\n");
     char *raw = http_response(200, "OK", "not json at all");
     sds tag = NULL, asset = NULL;
-    CHECK(!run_case(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset), "garbage offers nothing");
+    edc_update_diag diag;
+    diag.outcome = EDC_UPDATE_UP_TO_DATE;
+    diag.http_status = 0;
+    CHECK(!run_case_diag(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset, &diag), "garbage offers nothing");
+    /* A 200 that is not the release list is a failure to determine, not a "no update": the
+     * server answered, so something is wrong that a retry will not fix by itself. */
+    CHECK(diag.outcome == EDC_UPDATE_MALFORMED, "and the outcome says the body was not the release list");
     free_body(raw);
 }
 
@@ -200,9 +247,13 @@ static void test_oversized_body_offers_nothing(void)
     char *body = releases_body("v9.9.9");
     char *raw = http_response(200, "OK", body);
     sds tag = NULL, asset = NULL;
-    const bool got = run_case(raw, "1.0.0", false, 16, 5000, &tag, &asset);
+    edc_update_diag diag;
+    diag.outcome = EDC_UPDATE_OK;
+    diag.http_status = 0;
+    const bool got = run_case_diag(raw, "1.0.0", false, 16, 5000, &tag, &asset, &diag);
     CHECK(!got, "a body larger than the cap offers nothing");
     CHECK(tag == NULL, "and fills in nothing");
+    CHECK(diag.outcome == EDC_UPDATE_BODY_TOO_LARGE, "the outcome names the cap rather than 'up to date'");
     free_body(raw);
     free_body(body);
 }
@@ -253,9 +304,13 @@ static void test_silence_times_out(void)
 {
     printf("\n── the endpoint says nothing ──\n");
     sds tag = NULL, asset = NULL;
-    const bool got = run_case(NULL, "1.0.0", false, 1 << 20, 300, &tag, &asset);
+    edc_update_diag diag;
+    diag.outcome = EDC_UPDATE_OK;
+    diag.http_status = 0;
+    const bool got = run_case_diag(NULL, "1.0.0", false, 1 << 20, 300, &tag, &asset, &diag);
     CHECK(!got, "silence returns false rather than hanging");
     CHECK(tag == NULL, "and fills in nothing");
+    CHECK(diag.outcome == EDC_UPDATE_TIMEOUT, "and the outcome says the deadline fired");
 }
 
 static void test_nothing_listening(void)
@@ -353,6 +408,7 @@ int main(void)
     test_request_line();
     test_offers_a_newer_release();
     test_current_version_is_not_an_offer();
+    test_up_to_date_is_its_own_outcome();
     test_prerelease_policy();
     test_http_error_offers_nothing();
     test_malformed_body_offers_nothing();

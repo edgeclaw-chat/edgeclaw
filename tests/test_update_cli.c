@@ -24,6 +24,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include "fake_release.h"
 #include "test_fs_util.h"
 
@@ -159,6 +162,62 @@ int main(void)
             free(out);
         }
         CHECK(code == 0, "and it exits 0");
+    }
+
+    printf("\n── a check that could not be made says so ──\n");
+    {
+        /* The defect this pins: a rate-limited or unreachable GitHub used to print exactly
+         * what an up-to-date install prints, so the one question this command exists to
+         * answer -- "did it ask, or did it fail?" -- was unanswerable. GitHub's unauthenticated
+         * limit (60/hour per IP) is not rare on a shared address; it is the ordinary case.
+         *
+         * A closed port is the cheapest stand-in for that here: no fixture to serve, and the
+         * outcome is the same class of thing (nothing was determined). The 403 wording itself
+         * is covered in test_update_check.c, which can serve a real status line. */
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in addr;
+        socklen_t alen = sizeof(addr);
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        int port = 0;
+        if (fd >= 0 && bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0 &&
+            getsockname(fd, (struct sockaddr *)&addr, &alen) == 0)
+            port = ntohs(addr.sin_port);
+        if (fd >= 0)
+            close(fd);
+
+        if (port == 0)
+        {
+            printf("    (skipped: cannot reserve a port)\n");
+        }
+        else
+        {
+            char url[128];
+            snprintf(url, sizeof(url), "https://localhost:%d/repos/o/r/releases", port);
+            setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
+            setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
+
+            int code = -1;
+            char *out = run_capturing_stdout(false, NULL, &code);
+            CHECK(out != NULL, "the command runs");
+            if (out)
+            {
+                CHECK(strstr(out, "could not check") != NULL, "it says the check could not be made");
+                /* The exact result line, not a substring: the explanatory line below it
+                 * legitimately contains the words "up to date", in the sentence that tells
+                 * the reader this is NOT that. */
+                CHECK(strstr(out, "result    up to date") == NULL, "and the result line does NOT claim to be up to date");
+                CHECK(strstr(out, "not the same as up to date") != NULL,
+                      "it spells out the difference, because that is the whole point");
+                free(out);
+            }
+            CHECK(code == 0, "and it still exits 0 -- this diagnoses the updater, it is not its failure");
+
+            unsetenv("EDGECLAW_UPDATE_RELEASES_URL");
+            unsetenv("EDGECLAW_UPDATE_CURRENT_VERSION");
+        }
     }
 
     printf("\n── the URL comes from the environment ──\n");
