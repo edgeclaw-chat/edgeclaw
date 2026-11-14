@@ -1,5 +1,6 @@
 #include "edc_https_client.h"
 #include "edc_https_client_internal.h"
+#include "edc_proxy.h"
 
 /* strcasecmp/strncasecmp are POSIX; MSVC has only _stricmp/_strnicmp. edc_compat.h is where
  * this repository maps them, and it is what every other file using them includes -- omitting
@@ -122,6 +123,43 @@ struct edc_https_request
      * uv_is_closing on a freed request) once the drain loop started letting the lookup finish
      * during teardown. Kept here as well as counted so teardown can cancel it. */
     uv_getaddrinfo_t *resolver;
+
+    /* The whole address list from the lookup, and where the connect attempt has got to.
+     *
+     * Both families are asked for and every address is tried in turn, because one of them can
+     * be unusable while the other is fine -- IPv4 is blocked on some networks (a reset during
+     * the handshake) while IPv6 works, and the reverse happens where IPv6 is configured but
+     * not routed. The lookup usually returns IPv4 first, so "take the first result" was a
+     * silent dependency on IPv4 being reachable; on a network where it is not, every https
+     * request to such a host failed with "connection reset by peer" while curl (which does try
+     * the next address) worked. |addrs| is owned here and freed when the request is. */
+    struct addrinfo *addrs;
+    struct addrinfo *try_addr;
+    /* Which family the current pass is offering: 0 = IPv6 only, 1 = IPv4 only.
+     *
+     * Two passes rather than one list in lookup order. The lookup usually answers IPv4 first,
+     * and on some networks an IPv4 connection to a host is accepted and then RESET during the
+     * TLS handshake -- so the failure does not even come back from connect(), where picking the
+     * next address would be enough. Offering IPv6 first avoids that path entirely; the IPv4
+     * pass still runs when there is no IPv6 address, or when IPv6 turns out to be unusable. */
+    int addr_phase;
+    /* Set while a failed connect is handing over to the next address: the socket's close
+     * callback must re-arm rather than release the request. */
+    bool retry_pending;
+
+    /* Proxy CONNECT tunnel, decided once per request (see edc_proxy.h).
+     *
+     * |proxy_host| is where the TCP connection actually goes; the TLS handshake and the
+     * request still name the target host, which is the point of CONNECT. proxy_state:
+     *   0 = not tunnelled yet (send CONNECT once TCP is up)
+     *   1 = CONNECT sent, reading the proxy's reply
+     *   2 = tunnel established, TLS owns the socket from here
+     * |proxy_reply| accumulates the reply while state is 1. */
+    sds proxy_host;
+    int proxy_port;
+    sds proxy_auth;
+    int proxy_state;
+    sds proxy_reply;
 
     /* Redirect following (301/302/303/307/308). |location| is the raw Location header of a
      * 3xx response; |redirecting| means this response is being discarded in favour of a new
@@ -405,7 +443,15 @@ static void edc_https_on_timeout(uv_timer_t *timer);
 static struct edc_https_request *edc_https_request_new(struct edc_https_client *client, const char *url,
                                                        edc_https_event_fn fn, void *priv, int redirects_left)
 {
-    struct edc_https_request *req = malloc(sizeof(struct edc_https_request));
+    /* calloc, not malloc: this struct has grown several flags over time (tool_only-style
+     * booleans, retry_pending, addr_phase) and each one was a chance to read an uninitialised
+     * value on a path that does not set it. UBSan caught exactly that: a load of 190 as a
+     * `bool` in edc_https_on_tcp_close, from a request that never went through the retry path.
+     * Zeroing once here means a new field starts as "off" without every future addition having
+     * to remember an explicit initialiser. */
+    struct edc_https_request *req = calloc(1, sizeof(struct edc_https_request));
+    if (!req)
+        return NULL;
     req->client = client;
     req->priv = priv;
     req->fn = fn;
@@ -449,6 +495,30 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
         req->request_target = (p && p[0] == '/') ? sdsnew(p) : sdscatprintf(sdsempty(), "/%s", p ? p : "");
     }
 
+    /* Decide the route once, here: the socket goes to the proxy when one applies, while the
+     * TLS handshake and the Host header keep naming the target -- which is what CONNECT buys.
+     * The decision is per request, not per client, because no_proxy is per host. */
+    {
+        struct edc_proxy proxy;
+        const char *why = NULL;
+        if (edc_proxy_resolve(req->url_parser.host, &proxy, &why))
+        {
+            req->proxy_host = proxy.host;
+            req->proxy_port = proxy.port;
+            req->proxy_auth = proxy.auth;
+            req->proxy_state = 0;
+            log_info("edc_https_client: %s via proxy %s:%d", req->url_parser.host, req->proxy_host, req->proxy_port);
+        }
+        else if (why)
+        {
+            /* Configured but unusable (a socks proxy, a malformed value). Said out loud rather
+             * than silently going direct: a direct connection is exactly what the user's proxy
+             * was meant to prevent, and on a locked-down network it just fails obscurely. */
+            log_warn("edc_https_client: not using a proxy for %s: %s; connecting directly",
+                     req->url_parser.host, why);
+        }
+    }
+
     /* The ssl context is initialized here, symmetric with mbedtls_ssl_free at teardown: a
      * request failing before the handshake (connect failure, timeout, closed at exit)
      * takes the same free path and must release it safely -- init used to happen only on
@@ -456,7 +526,10 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
      * context. */
     mbedtls_ssl_init(&req->ssl);
 
-    uv_tcp_init(&client->loop, &req->socket);
+    /* AF_UNSPEC, not uv_tcp_init(): the family is not known until the lookup answers, and the
+     * answer may be either one. libuv then creates the socket when connecting, for whatever
+     * family the address is. See the struct's note on |addrs|. */
+    uv_tcp_init_ex(&client->loop, &req->socket, AF_UNSPEC);
 
     /* The timer starts at creation: connect failure, handshake failure, sent but no
      * reply -- all three hangs are covered. One-shot (repeat=0): the completion path
@@ -504,8 +577,15 @@ static void edc_https_request_dispose(struct edc_https_request *req)
     }
 
     mbedtls_ssl_free(&req->ssl);
+    /* The whole lookup result, not just the address that was tried: it is one allocation from
+     * getaddrinfo and must be freed once, after the last attempt. */
+    if (req->addrs)
+        uv_freeaddrinfo(req->addrs);
     sdsfree(req->request_target);
     sdsfree(req->url);
+    sdsfree(req->proxy_host);
+    sdsfree(req->proxy_auth);
+    sdsfree(req->proxy_reply);
     sdsfree(req->location);
     sdsfree(req->current_header_field);
     sdsfree(req->current_header_value);
@@ -586,6 +666,12 @@ int edc_https_client_connect(struct edc_https_client *client, const char *url, e
 }
 
 static void edc_https_on_tcp_close(uv_handle_t *handle);
+/* Defined with the connect path further down; the close callback calls it to move on to the
+ * next address after a failed connect. */
+static void try_next_address(struct edc_https_request *req);
+/* Defined after the connect callback: the tunnel path reaches TLS through the same function. */
+static void edc_https_start_tls(struct edc_https_request *req);
+void edc_https_client_on_proxy_reply(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf);
 
 const char *edc_https_request_get_host(struct edc_https_request *req)
 {
@@ -662,6 +748,21 @@ int edc_https_request_write(struct edc_https_request *req, const unsigned char *
 static void edc_https_on_tcp_close(uv_handle_t *handle)
 {
     struct edc_https_request *req = (struct edc_https_request *)handle;
+
+    /* A failed connect handing over to the next address. The socket cannot be reused (its
+     * connect failed, so its state is not one to connect from again), so it is re-created for
+     * whatever family the next address is, and the request stays alive: this is not the end
+     * of it, and releasing here would free a request the retry is about to use. */
+    if (req->retry_pending)
+    {
+        req->retry_pending = false;
+        if (uv_tcp_init_ex(&req->client->loop, &req->socket, AF_UNSPEC) != 0)
+        {
+            req->try_addr = NULL; /* cannot re-arm: report through the same path as none left */
+        }
+        try_next_address(req);
+        return;
+    }
 
     /* A followed redirect: this hop is not the caller's answer, so no CLOSE is delivered --
      * from the caller's point of view one request was made and one answer arrived. The
@@ -906,6 +1007,15 @@ static void edc_https_client_drive_mbedtls(struct edc_https_request *req)
         return;
     }
 
+    /* Waiting for the proxy's CONNECT reply: TLS has not been set up on this socket yet, so
+     * driving it here would push an unconfigured context and tear the tunnel down before it
+     * exists. The write callback lands here once the CONNECT bytes have gone out -- hence the
+     * guard rather than relying on it not being called. */
+    if (req->proxy_state == 1)
+    {
+        return;
+    }
+
     while (1)
     {
         if (req->ssl.private_state != MBEDTLS_SSL_HANDSHAKE_OVER)
@@ -967,11 +1077,151 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
     }
 }
 
+static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status);
+
+/* Connect to the next address in the list, or report that none of them worked.
+ *
+ * The socket is initialised with AF_UNSPEC (see edc_https_request_new), so libuv creates it
+ * for whatever family the address turns out to be. That is what allows one request to end up
+ * on IPv4 or IPv6 depending on which one the network can actually reach.
+ *
+ * A synchronous uv_tcp_connect() failure (bad address, no memory) is skipped rather than
+ * reported: it is not the answer, it is one more address that did not work. */
+static void try_next_address(struct edc_https_request *req)
+{
+    const int want = (req->addr_phase == 0) ? AF_INET6 : AF_INET;
+
+    while (req->try_addr)
+    {
+        struct addrinfo *ai = req->try_addr;
+        req->try_addr = ai->ai_next;
+        if (ai->ai_family != want)
+            continue;
+        if (uv_tcp_connect(&req->conn, &req->socket, ai->ai_addr, edc_https_client_on_tcp_connect) == 0)
+            return;
+        /* A synchronous failure is one more address that did not work; keep going. */
+    }
+
+    if (req->addr_phase == 0 && req->addrs)
+    {
+        /* No IPv6 address worked (or there was none). Offer the IPv4 ones now. */
+        req->addr_phase = 1;
+        req->try_addr = req->addrs;
+        try_next_address(req);
+        return;
+    }
+
+    /* Every address failed before even reaching the network. */
+    sds err_message = sdsnew("tcp connect failed: no usable address");
+    req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+    sdsfree(err_message);
+    edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+}
+
+/* The proxy's answer to CONNECT, read as plaintext.
+ *
+ * Only the status line matters: 200 means the tunnel is open and TLS starts from the next
+ * byte. Everything the proxy says about itself (Via, Proxy-Agent) is for a human debugging a
+ * proxy, not for this client, so the reply is consumed and dropped. */
+void edc_https_client_on_proxy_reply(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct edc_https_request *req = (struct edc_https_request *)stream;
+    if (nread == 0)
+    {
+        /* Nothing available yet; the socket is still being read. */
+        if (buf->base)
+            free(buf->base);
+        return;
+    }
+    if (nread < 0)
+    {
+        if (buf->base)
+            free(buf->base);
+        sds err_message = sdscatprintf(sdsnew(NULL), "proxy connect failed: %s", uv_strerror((int)nread));
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+        sdsfree(err_message);
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+        return;
+    }
+
+    req->proxy_reply = sdscatlen(req->proxy_reply, buf->base, (size_t)nread);
+    if (buf->base)
+        free(buf->base);
+
+    /* A proxy that answers with more than this is not answering a CONNECT. */
+    if (sdslen(req->proxy_reply) > (64u << 10))
+    {
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, (void *)"proxy reply was larger than 64 KiB");
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+        return;
+    }
+
+    const char *sep = strstr(req->proxy_reply, "\r\n\r\n");
+    if (!sep)
+        return; /* headers still arriving */
+
+    int status = 0;
+    if (sscanf(req->proxy_reply, "HTTP/%*d.%*d %d", &status) != 1)
+        status = 0;
+
+    if (status != 200)
+    {
+        /* The proxy's own words: "403 Forbidden", "407 Proxy Authentication Required" (the
+         * credentials were wrong or missing), "502 Bad Gateway". Passing the status line
+         * through is the difference between "the proxy said no" and "the network is down". */
+        sds line = sdsnewlen(req->proxy_reply, strcspn(req->proxy_reply, "\r\n"));
+        sds err_message = sdscatprintf(sdsnew(NULL), "proxy refused the tunnel: %s", line);
+        req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+        sdsfree(err_message);
+        sdsfree(line);
+        edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+        return;
+    }
+
+    uv_read_stop(stream);
+
+    /* Anything the proxy sent after its headers is the first bytes of the TLS stream. Cannot
+     * normally happen -- the server cannot greet us before ClientHello -- but a proxy is free
+     * to pipeline, and dropping those bytes would deadlock the handshake. */
+    const size_t header_len = (size_t)(sep - req->proxy_reply) + 4;
+    if (sdslen(req->proxy_reply) > header_len)
+    {
+        const size_t extra = sdslen(req->proxy_reply) - header_len;
+        unsigned char *copy = malloc(extra);
+        if (copy)
+        {
+            memcpy(copy, req->proxy_reply + header_len, extra);
+            uv_buf_t actual = uv_buf_init((char *)copy, (unsigned int)extra);
+            EDC_LL_APPEND(struct edc_https_buf_list, req->mbedtls_recv_bufs,
+                          edc_https_buf_list_node(&actual, 0));
+        }
+    }
+    sdsfree(req->proxy_reply);
+    req->proxy_reply = NULL;
+
+    edc_https_start_tls(req);
+}
+
 static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
 {
     struct edc_https_request *req = (struct edc_https_request *)conn->handle;
     if (status < 0)
     {
+        /* Another address may work. One family being unreachable is a property of the network,
+         * not of the request: resetting every IPv4 handshake on the way to such a host is a
+         * real way to be online and still unable to fetch anything from it.
+         *
+         * The retry cannot reuse this socket -- a socket whose connect failed is not one to
+         * connect again -- so the close callback re-initialises it and calls back into
+         * try_next_address(). retry_pending is what tells that callback to re-arm instead of
+         * releasing the request. */
+        if (status != UV_ECANCELED && req->try_addr)
+        {
+            req->retry_pending = true;
+            edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+            return;
+        }
+
         /* UV_ECANCELED is not a failure of the request: it means this handle was closed
          * while the connect was pending, i.e. the caller already gave up and is tearing the
          * client down. Reporting an error to it then would be noise at best -- the deadline
@@ -987,6 +1237,41 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
         return;
     }
 
+    /* A proxy applies and the tunnel is not up yet: the TCP peer is the proxy, so speak
+     * CONNECT first. Only after its 200 does mbedtls take the socket, which is the whole point
+     * of the tunnel -- the certificate and the Host header still name the target. */
+    if (req->proxy_host && req->proxy_state == 0)
+    {
+        const int port = req->url_parser.port ? req->url_parser.port : 443;
+        sds connect_req = sdscatprintf(sdsempty(),
+                                       "CONNECT %s:%d HTTP/1.1\r\n"
+                                       "Host: %s:%d\r\n"
+                                       "%s%s"
+                                       "\r\n",
+                                       req->url_parser.host, port, req->url_parser.host, port,
+                                       req->proxy_auth ? "Proxy-Authorization: " : "",
+                                       req->proxy_auth ? req->proxy_auth : "");
+        req->proxy_state = 1;
+        req->proxy_reply = sdsempty();
+        /* Raw bytes, not edc_https_request_write(): that goes through mbedtls_ssl_write, and
+         * TLS has not been set up yet -- the CONNECT request is what makes TLS possible. The
+         * bio send is the same socket write mbedtls would use, one layer down. */
+        edc_https_ssl_bio_send(req, (const unsigned char *)connect_req, sdslen(connect_req));
+        sdsfree(connect_req);
+        uv_read_start((uv_stream_t *)req, edc_https_client_alloc_read_buf, edc_https_client_on_proxy_reply);
+        return;
+    }
+
+    edc_https_start_tls(req);
+}
+
+/* Bring up TLS on a socket that is already connected (directly, or through a CONNECT tunnel).
+ *
+ * Split out of the connect callback so the tunnel path can reach it too: after the proxy's 200
+ * the only thing that changes is who owns the socket before this point, not what happens from
+ * here on. */
+static void edc_https_start_tls(struct edc_https_request *req)
+{
     struct edc_https_client *client = req->client;
 
     /* The ssl context was initialized in edc_https_request_new (symmetric with
@@ -1000,8 +1285,11 @@ static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
         edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return;
     }
+    /* The TARGET hostname, not the proxy: the certificate is the target's, and SNI must say so
+     * or the proxy's own certificate would be what gets verified. */
     mbedtls_ssl_set_hostname(&req->ssl, req->url_parser.host);
     mbedtls_ssl_set_bio(&req->ssl, req, edc_https_ssl_bio_send, edc_https_ssl_bio_recv, NULL);
+    req->proxy_state = 2; /* from here the socket belongs to TLS */
     uv_read_start((uv_stream_t *)req, edc_https_client_alloc_read_buf, edc_https_client_on_tcp_read);
     edc_https_client_drive_mbedtls(req);
 }
@@ -1038,11 +1326,12 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
         return;
     }
 
-    uv_tcp_connect(&http_req->conn, &http_req->socket, res->ai_addr, edc_https_client_on_tcp_connect);
-    uv_freeaddrinfo(res);
+    /* Keep the whole list and walk it: the first address is not always the reachable one (see
+     * the struct's note on |addrs|). The request owns it from here. */
+    http_req->addrs = res;
+    http_req->try_addr = res;
     free(req);
-    /* Last: this may free the request, so nothing may touch http_req after it. */
-    edc_https_request_release(http_req);
+    try_next_address(http_req);
 }
 
 static void on_work_async(uv_async_t *handle)
@@ -1075,7 +1364,11 @@ static void on_work_async(uv_async_t *handle)
         }
 
         struct addrinfo hints = {0};
-        hints.ai_family = PF_INET;
+        /* Both families. PF_INET here meant "IPv4 or nothing", which is invisible until the
+         * network is one where IPv4 to a host is reset while IPv6 is fine -- then every
+         * request to that host fails with "connection reset by peer" and looks like a server
+         * problem. The addresses are tried in turn (try_next_address). */
+        hints.ai_family = PF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
         hints.ai_flags = 0;
@@ -1086,8 +1379,14 @@ static void on_work_async(uv_async_t *handle)
          * callbacks while this is outstanding. See the field's declaration. */
         http_req->resolver = req;
         http_req->pending_closes++;
-        sds port_s = sdscatprintf(sdsempty(), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
-        uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, http_req->url_parser.host, port_s, &hints);
+        /* Through a proxy the TCP peer is the proxy, so its name and port are what get
+         * resolved. The target still supplies the TLS hostname and the Host header. */
+        const bool tunnelled = http_req->proxy_host != NULL;
+        const char *lookup_host = tunnelled ? http_req->proxy_host : http_req->url_parser.host;
+        const int lookup_port = tunnelled ? http_req->proxy_port
+                                          : (http_req->url_parser.port ? http_req->url_parser.port : 443);
+        sds port_s = sdscatprintf(sdsempty(), "%d", lookup_port);
+        uv_getaddrinfo(&client->loop, req, edc_https_on_resolved, lookup_host, port_s, &hints);
         sdsfree(port_s);
 
         free(work->url);

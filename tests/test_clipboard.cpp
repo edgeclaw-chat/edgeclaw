@@ -222,6 +222,179 @@ void TestToastTiming()
     Check(toast.Visible(t0 + ms(100)), "a second copy raises it again");
 }
 
+// The standing notice: the same chip look, translucent, and -- unlike the toast -- its label
+// stays at full strength. That asymmetry is the whole point (a toast is leaving, a notice
+// stays), and it is invisible unless the colours are read back.
+void TestTranslucentChip()
+{
+    std::cout << "the standing chip lets the pane through but keeps its label crisp\n";
+
+    const int width = 60;
+    const int height = 6;
+    const ::ftxui::Color pane = ::ftxui::Color::RGB(12, 34, 56);
+
+    struct Frame
+    {
+        std::vector<std::string> chars;
+        std::vector<::ftxui::Color> fg;
+        std::vector<::ftxui::Color> bg;
+    };
+
+    auto draw = [&](bool with_chip, float alpha) {
+        auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
+        auto base = ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()}) | ::ftxui::bgcolor(pane);
+        if (with_chip)
+            ::ftxui::Render(screen, ::ftxui::dbox({std::move(base), edc::TranslucentChipElement(" NOTICE ", alpha)}));
+        else
+            ::ftxui::Render(screen, std::move(base));
+
+        Frame frame;
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                const auto &cell = screen.CellAt(x, y);
+                frame.chars.push_back(cell.character);
+                frame.fg.push_back(cell.foreground_color);
+                frame.bg.push_back(cell.background_color);
+            }
+        return frame;
+    };
+
+    const Frame plain = draw(false, 0.35f);
+    const Frame shown = draw(true, 0.35f);
+    const Frame opaque = draw(true, 0.0f);
+
+    Check(shown.chars != plain.chars, "the chip paints over the pane");
+
+    // The label is on screen and readable: find its first cell by its character.
+    bool found = false;
+    size_t label_cell = 0;
+    for (size_t i = 0; i < shown.chars.size(); i++)
+        if (shown.chars[i] == "N")
+        {
+            found = true;
+            label_cell = i;
+            break;
+        }
+    Check(found, "the label is rendered");
+
+    if (found)
+    {
+        const auto &pal = edc::style::palette();
+        Check(shown.fg[label_cell] == pal.accent,
+              "the label keeps the accent colour at alpha 0.35 -- this is what a fade cannot do");
+        Check(shown.fg[label_cell] == opaque.fg[label_cell], "and it is exactly as strong as when fully opaque");
+
+        /* Right side, the same corner the toasts use: one place to look for anything
+         * transient or standing. The toasts give way by stacking below this chip rather than
+         * by painting over it, so the two coexist instead of competing. */
+        const int x = static_cast<int>(label_cell % static_cast<size_t>(width));
+        Check(x > width / 2, "the chip is pinned to the RIGHT, where the toasts are");
+    }
+
+    // The surface really is translucent: its background is neither the pane's nor the chip's
+    // own raised colour, but a blend of the two.
+    if (found)
+    {
+        const ::ftxui::Color &blended = shown.bg[label_cell];
+        const ::ftxui::Color &solid = opaque.bg[label_cell];
+        Check(!(blended == solid), "the surface is not the opaque one");
+        Check(!(blended == plain.bg[label_cell]), "and not the pane either -- it is a blend");
+    }
+
+    // Over the pane's own cells that the chip does not cover, nothing changes.
+    Check(plain.bg[0] == shown.bg[0] || shown.chars[0] != plain.chars[0],
+          "cells the chip does not reach are untouched (or were overwritten by it)");
+
+    // alpha 1 is the "paint nothing" end, like a finished fade.
+    const Frame invisible = draw(true, 1.0f);
+    Check(invisible.chars == plain.chars, "alpha 1 leaves the pane exactly as it was");
+}
+
+// The stacking rule: with the update notice standing in the top-right corner, a toast that
+// arrives has to start BELOW it, not on top of it.
+//
+// That is the whole reason ToastChipElement takes a row offset. Without it the copy
+// confirmation -- a reaction to something the user just did, visible for two seconds -- would
+// be the thing that gets hidden, by a notice that stands for days.
+void TestChipStacking()
+{
+    std::cout << "a toast stacks under the standing notice instead of over it\n";
+
+    const int width = 60;
+    const int height = 10;
+    const ::ftxui::Color pane = ::ftxui::Color::RGB(12, 34, 56);
+
+    /* Each chip is a label with a blank row above and below, so the label of a chip that
+     * starts at row |start| is one row lower. Named once here rather than as a magic +1. */
+    const int kLabelInChip = 1;
+
+    auto draw = [&](bool banner, bool toast, int rows_above) {
+        auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
+        ::ftxui::Element base =
+            ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()}) | ::ftxui::bgcolor(pane);
+        if (banner)
+            base = ::ftxui::dbox({std::move(base), edc::TranslucentChipElement(" NOTICE ", 0.35f)});
+        if (toast)
+            base = ::ftxui::dbox({std::move(base), edc::ToastChipElement(" TOASTING ", 0.0f, rows_above)});
+        ::ftxui::Render(screen, std::move(base));
+
+        std::vector<std::string> rows;
+        for (int y = 0; y < height; y++)
+        {
+            std::string line;
+            for (int x = 0; x < width; x++)
+                line += screen.CellAt(x, y).character;
+            rows.push_back(line);
+        }
+        return rows;
+    };
+
+    auto row_of = [](const std::vector<std::string> &rows, const char *needle) {
+        for (size_t i = 0; i < rows.size(); i++)
+            if (rows[i].find(needle) != std::string::npos)
+                return static_cast<int>(i);
+        return -1;
+    };
+
+    /* Three frames, each with ONE chip, so each measurement is of that chip alone. */
+    const auto notice_only = draw(true, false, 0);
+    const auto toast_only = draw(false, true, 0);
+    const auto both = draw(true, true, edc::kChipRows);
+
+    const int notice_row = row_of(notice_only, "NOTICE");
+    const int toast_row = row_of(toast_only, "TOASTING");
+    Check(notice_row >= 0, "the notice renders on its own");
+    Check(toast_row >= 0, "the toast renders on its own");
+
+    /* Same corner, same first row: the two share a placement rule, which is why one can be
+     * stacked under the other by a single offset. */
+    Check(notice_row == edc::kChipTopMargin + kLabelInChip, "the notice starts at the top margin");
+    Check(toast_row == edc::kChipTopMargin + kLabelInChip, "a lone toast starts at the same row");
+
+    const int both_notice = row_of(both, "NOTICE");
+    const int both_toast = row_of(both, "TOASTING");
+    Check(both_notice >= 0, "the notice survives a stacking toast");
+    Check(both_toast >= 0, "and the toast is on screen too -- neither erases the other");
+
+    if (both_notice >= 0 && both_toast >= 0)
+    {
+        Check(both_toast > both_notice, "the toast sits BELOW the notice");
+        /* Clear of it, not merely lower: the notice occupies kChipRows rows from its own
+         * first row, so the toast's label must come at or after that boundary. */
+        Check(both_toast >= both_notice - kLabelInChip + edc::kChipRows,
+              "clear of it: no row is shared");
+    }
+
+    /* Without the offset the toast hides the notice completely -- which is what makes the
+     * parameter load bearing rather than cosmetic. Measured, not assumed: this is the bug the
+     * offset exists to prevent, reproduced by passing 0. */
+    const auto overlapped = draw(true, true, 0);
+    Check(row_of(overlapped, "NOTICE") < 0,
+          "with rows_above = 0 the toast covers the notice outright -- so the offset is doing the work");
+    Check(row_of(overlapped, "TOASTING") >= 0, "and the toast is the one left visible");
+}
+
 } // namespace
 
 int main()
@@ -232,6 +405,8 @@ int main()
     TestDragDetection();
     TestToastFade();
     TestToastTiming();
+    TestTranslucentChip();
+    TestChipStacking();
 
     if (g_failures == 0)
     {

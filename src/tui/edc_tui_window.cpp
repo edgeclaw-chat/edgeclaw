@@ -53,6 +53,12 @@ static void DisableBracketedPaste()
 
 // Ctrl+C pressed twice within this window quits; a lone press only clears the input box.
 constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
+
+// How much of the chat shows through the update notice: 0 is the opaque surface a toast wears,
+// 1 paints nothing. A third of the way gives a surface that is clearly there without hiding
+// the messages under it -- and since only the background is blended, the label stays crisp at
+// any value.
+constexpr float kUpdateBannerAlpha = 0.35f;
 // The "press Ctrl+C again to quit" hint stays up exactly as long as a second press
 // would still quit, so the hint is never shown when the second press would do nothing.
 constexpr auto kHintHold = kQuitWindow;
@@ -1105,9 +1111,27 @@ void TUIWindow::TickAnimations()
     // keeps the fade moving (an idle screen is not redrawn otherwise).
     auto chat = chat_widget_->Render();
     const auto toast_now = std::chrono::steady_clock::now();
+
+    /* The update notice. An overlay rather than a layout row, and translucent (see
+     * TranslucentChipElement): a line between the chat and the input used to cost one row of
+     * conversation for as long as the release went uninstalled. Hidden while the dialog is
+     * open, which says the same thing with more detail.
+     *
+     * It shares the top-right corner with the toasts, and the toasts give way by starting
+     * below it (see rows_below_banner) rather than being painted over: the notice can stand
+     * for days, so "the copy confirmation was never visible" would be a permanent condition,
+     * not a flicker. */
+    const bool banner_up = !update_tag_.empty() && !update_dialog_->IsOpen();
+    if (banner_up)
+        chat = ::ftxui::dbox({std::move(chat), UpdateBannerElement()});
+    /* Rows the banner already occupies at the top of the pane -- its own top margin plus the
+     * chip. Zero when it is not up, so a lone toast keeps its usual place. */
+    const int rows_below_banner = banner_up ? kChipTopMargin + kChipRows : 0;
+
     if (clipboard_toast_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox({std::move(chat), ClipboardToastElement(clipboard_toast_.Fade(toast_now))});
+        chat = ::ftxui::dbox(
+            {std::move(chat), ClipboardToastElement(clipboard_toast_.Fade(toast_now), rows_below_banner)});
         if (screen_)
             screen_->RequestAnimationFrame();
     }
@@ -1116,16 +1140,18 @@ void TUIWindow::TickAnimations()
     // while the startup backfill is still filling the older history in.
     if (backfill_hint_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox(
-            {std::move(chat), ToastChipElement(" Loading earlier history… ", backfill_hint_.Fade(toast_now))});
+        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(" Loading earlier history… ",
+                                                                backfill_hint_.Fade(toast_now),
+                                                                rows_below_banner)});
         if (screen_)
             screen_->RequestAnimationFrame();
     }
 
-    // "Fetching the pasted block…" / "Pasted block is gone": same chip, same corner.
+    // The "Fetching the pasted block…" / "Pasted block is gone": same chip, same corner.
     if (paste_hint_.Visible(toast_now))
     {
-        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(paste_hint_label_, paste_hint_.Fade(toast_now))});
+        chat = ::ftxui::dbox({std::move(chat),
+                              ToastChipElement(paste_hint_label_, paste_hint_.Fade(toast_now), rows_below_banner)});
         if (screen_)
             screen_->RequestAnimationFrame();
     }
@@ -1139,12 +1165,6 @@ void TUIWindow::TickAnimations()
     // input block (rule / input / rule) keeps its exact place and height: the list never
     // looks like part of the input box.
     ::ftxui::Elements children;
-    /* The banner sits above the chat, not floating over it: it is a standing fact ("a newer
-     * release exists") rather than an event, and a chip that fades would hide it before the
-     * user has read it. Hidden while the dialog is open -- the dialog says the same thing with
-     * more detail. */
-    if (!update_tag_.empty() && !update_dialog_->IsOpen())
-        children.push_back(UpdateBannerElement());
     children.push_back(chat | ::ftxui::flex);
     if (!history_view_ && command_palette_.open() && !setup_dialog_->IsOpen())
         children.push_back(ui::CommandPaletteElement(command_palette_));
@@ -1191,15 +1211,19 @@ void TUIWindow::TickAnimations()
 
 ::ftxui::Element TUIWindow::UpdateBannerElement()
 {
-    const auto &pal = style::palette();
-    /* One line, no border: it sits between the chat and the top edge and should read as a
-     * notice, not as another pane. */
-    return ::ftxui::hbox({
-        ::ftxui::text("  EdgeClaw ") | ::ftxui::color(pal.accent),
-        ::ftxui::text(update_tag_) | ::ftxui::bold | ::ftxui::color(pal.accent),
-        ::ftxui::text(" is available  ·  /update to install ") | ::ftxui::color(pal.text_dim),
-        ::ftxui::filler(),
-    });
+    /* The clipboard chip's look, worn by a notice that does not go away: a translucent
+     * surface over the top-left of the chat, so it reports without occupying a layout row.
+     *
+     * Overlaid rather than stacked on purpose -- a standing "an update is available" line
+     * between the chat and the input used to cost one row of conversation for as long as the
+     * release went uninstalled. The chip borrows the same corner treatment the transient
+     * toasts use, but the opposite corner: they own the top-right and would overdraw a
+     * permanent neighbour for the length of every copy and paste.
+     *
+     * The text keeps the banner's shape (name, version, what to type) because that part was
+     * never the problem; only where it sits and how solid it is. */
+    return TranslucentChipElement(" EdgeClaw " + update_tag_ + " is available  ·  /update to install ",
+                                  kUpdateBannerAlpha);
 }
 
 void TUIWindow::OpenUpdate()

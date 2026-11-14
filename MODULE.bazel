@@ -69,6 +69,22 @@ use_repo(python, "python_3_8")
 # against --platforms=//:arm_linux and a full `bazel build //src/tui:edgeclaw
 # //:device_agent`.
 
+# ── macOS: Xcode's clang needs apple_support's cc toolchain ──────────────────
+# Apple clang 21 (Xcode 27) records the SDK's SDKSettings.json in the depfile by
+# passing `-fdepfile-entry=<SDK>/SDKSettings.json` to cc1. Bazel's autodetected
+# `local_config_cc` lists only the SDK's include subdirectories in
+# `cxx_builtin_include_directories`, not the SDK root, so the hermeticity check in
+# HeaderDiscovery rejects that absolute path:
+#
+#   absolute path inclusion(s) found ... SDKSettings.json
+#
+# apple_support's toolchain lists the SDK root itself, so the file is treated as a
+# builtin header. It is declared before `rules_cc` because module extension repos are
+# registered in module graph order: its `register_toolchains` must be seen before
+# rules_cc's autoconf one so it wins toolchain resolution on macOS. The registration
+# is Apple-only; Linux/Windows resolution is unaffected.
+bazel_dep(name = "apple_support", version = "2.3.0")
+
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_foreign_cc", version = "0.15.1")

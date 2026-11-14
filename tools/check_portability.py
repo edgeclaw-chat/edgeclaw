@@ -38,6 +38,21 @@ POSIX_ONLY = {
     "strncasecmp": "_strnicmp",
 }
 
+# Symbols with NO usable shim on MSVC, which must therefore not be called at all.
+#
+# This is a different category from the table above, and the distinction cost a red CI run:
+# `strtok_r` HAS a shim, but it lives in win_compat/unistd.h, and edc_compat.h only reaches that
+# header under MinGW (its `_WIN32` branch includes <unistd.h> only inside `#ifdef __GNUC__`). So
+# a file that includes edc_compat.h -- exactly what the check above asks for -- still fails to
+# link under MSVC with "unresolved external symbol strtok_r". Keeping it in POSIX_ONLY would have
+# made this checker report "shimmed" for code that does not build, which is worse than no check.
+#
+# Listed with what to use instead.
+BANNED = {
+    "strtok_r": "strtok_s on MSVC; hand-roll the split so both platforms use one code path "
+                "(edc_secret.c and edc_proxy.c both do)",
+}
+
 # The shim. Any file using the symbols above must reach it.
 #
 # The include may be path-qualified ("common/edc_compat.h"), so the pattern allows a path.
@@ -51,6 +66,7 @@ EXEMPT_SUBSTRINGS = (
 )
 
 CALL_RE = re.compile(r"\b(" + "|".join(re.escape(s) for s in POSIX_ONLY) + r")\s*\(")
+BANNED_RE = re.compile(r"\b(" + "|".join(re.escape(s) for s in BANNED) + r")\s*\(")
 # `#include "edc_compat.h"`, `#include <edc_compat.h>`, and path-qualified spellings such as
 # `#include "common/edc_compat.h"` -- a file that reaches the shim by any of these is fine.
 INCLUDE_RE = re.compile(
@@ -101,12 +117,20 @@ def check_file(path: pathlib.Path) -> list[str]:
         return [f"{path}: cannot read: {exc}"]
 
     code = strip_comments_and_strings(raw)
+
+    # Checked before the shim test, and independently of it: including edc_compat.h does not
+    # rescue these on MSVC (see BANNED).
+    for sym in sorted({m.group(1) for m in BANNED_RE.finditer(code)}):
+        problems.append(
+            f"{path}: uses `{sym}`, which has no shim MSVC can reach -- {BANNED[sym]}"
+        )
+
     calls = sorted({m.group(1) for m in CALL_RE.finditer(code)})
     if not calls:
-        return []
+        return problems
 
     if INCLUDE_RE.search(raw):
-        return []
+        return problems
 
     for sym in calls:
         problems.append(

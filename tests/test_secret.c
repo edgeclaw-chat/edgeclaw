@@ -40,8 +40,8 @@
 #include <util.h>
 #elif defined(__linux__)
 #include <pty.h>
-#include "test_fs_util.h"
 #endif
+#include "test_fs_util.h"
 
 static int g_failed = 0;
 static int g_passed = 0;

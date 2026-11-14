@@ -57,7 +57,14 @@ struct edc_upgrade_run
     uv_pipe_t err_pipe;
     uv_timer_t deadline;
     sds output; /* the tail of stdout+stderr, for the failure message */
+    /* A chunk boundary can land between ESC and the byte that says what kind of sequence it
+     * is; the stripper has to remember that across reads. Per run, not a static: two upgrades
+     * cannot run at once today, but a static would make that assumption invisible. */
+    bool output_esc_pending;
     bool spawned;
+    /* The environment handed to the installer. Lives as long as the child, because uv_spawn
+     * keeps the pointer; freed with the run. */
+    char **child_env;
     bool timed_out;
 
     /* Reporting waits for BOTH the child's exit and the end of its output. libuv does not
@@ -241,6 +248,15 @@ static void run_unref(edc_upgrade_run_t *run)
     sdsfree(run->fetch_error);
     sdsfree(run->output);
     sdsfree(run->install_dir);
+    if (run->child_env)
+    {
+        /* sdsfree, not free: each entry is built with sdscatprintf, which returns an sds --
+         * a pointer into a header-prefixed allocation. free() on it aborts with
+         * "free(): invalid pointer", which is how this was found. */
+        for (size_t i = 0; run->child_env[i]; i++)
+            sdsfree(run->child_env[i]);
+        free(run->child_env);
+    }
     free(run);
 }
 
@@ -283,12 +299,126 @@ static void run_close(edc_upgrade_run_t *run, int which)
     }
 }
 
-/* Append to the output tail, keeping only the last OUTPUT_KEEP bytes. */
+/* Drop ANSI escape sequences and other control bytes from installer output.
+ *
+ * The installer is a shell script run under `sh`, and everything it calls -- curl, tar, apt,
+ * git -- writes colour when it thinks a terminal is attached. This output ends up in the
+ * dialog, where ftxui renders it as plain text: an ESC is not interpreted, it is drawn, so
+ * "\x1b[1mError\x1b[0m" reached the reader as "[1mError[0m" and the sequence's bytes shifted
+ * every colour and column after it. That is what "one part is white, one part is grey" was.
+ *
+ * Stripped at the source rather than in the dialog: the escape is not information, and the
+ * dialog is not the only thing that may one day show this text (a log, a report). Handles CSI
+ * ("ESC [ ... final"), OSC ("ESC ] ... BEL/ST") and two-byte escapes; anything else below 0x20
+ * except tab and newline is dropped, and a lone trailing ESC is held back rather than emitted
+ * half-parsed.
+ */
+static sds run_strip_escapes(const char *data, size_t len, bool *pending_esc)
+{
+    sds clean = sdsempty();
+    size_t i = 0;
+    bool in_esc = pending_esc ? *pending_esc : false;
+
+    while (i < len)
+    {
+        const unsigned char c = (unsigned char)data[i];
+
+        if (in_esc)
+        {
+            if (c == '[')
+            {
+                /* CSI: parameters then a final byte in 0x40..0x7E. */
+                i++;
+                while (i < len)
+                {
+                    const unsigned char d = (unsigned char)data[i];
+                    if (d >= 0x40 && d <= 0x7E)
+                    {
+                        i++;
+                        in_esc = false;
+                        break;
+                    }
+                    i++;
+                }
+                if (in_esc && i >= len)
+                    break; /* sequence continues in the next chunk */
+                continue;
+            }
+            if (c == ']')
+            {
+                /* OSC: ends with BEL or ESC \. */
+                i++;
+                while (i < len)
+                {
+                    const unsigned char d = (unsigned char)data[i];
+                    if (d == 0x07)
+                    {
+                        i++;
+                        in_esc = false;
+                        break;
+                    }
+                    if (d == 0x1B && i + 1 < len && data[i + 1] == '\\')
+                    {
+                        i += 2;
+                        in_esc = false;
+                        break;
+                    }
+                    i++;
+                }
+                if (in_esc && i >= len)
+                    break;
+                continue;
+            }
+            /* Any other two-byte escape: drop ESC and the byte after it. */
+            i++;
+            in_esc = false;
+            continue;
+        }
+
+        if (c == 0x1B)
+        {
+            if (i + 1 >= len)
+            {
+                /* A chunk boundary landed between ESC and its introducer. Hold it. */
+                in_esc = true;
+                i++;
+                break;
+            }
+            in_esc = true;
+            i++;
+            continue;
+        }
+
+        if (c == '\t' || c == '\n' || c == '\r' || c >= 0x20)
+        {
+            /* '\r' is kept: the installer writes progress with it, and carriage returns make
+             * a mess of the wrapped dialog but deleting them joins words. The caller's
+             * line-splitting turns each into a break. */
+            clean = sdscatlen(clean, &data[i], 1);
+        }
+        /* Any other control byte (< 0x20) is dropped. */
+        i++;
+    }
+
+    if (pending_esc)
+        *pending_esc = in_esc;
+    return clean;
+}
+
+/* Append to the output tail, keeping only the last OUTPUT_KEEP bytes.
+ *
+ * Stripped on the way in, not on the way out: the tail window is a fixed byte budget, and an
+ * escape sequence split by that boundary would leave half of one at the front of the text --
+ * exactly the kind of fragment that used to reach the reader. */
 static void run_keep_output(edc_upgrade_run_t *run, const char *data, size_t len)
 {
     if (!run->output)
         return;
-    run->output = sdscatlen(run->output, data, len);
+
+    sds clean = run_strip_escapes(data, len, &run->output_esc_pending);
+    run->output = sdscatsds(run->output, clean);
+    sdsfree(clean);
+
     if (sdslen(run->output) > OUTPUT_KEEP)
     {
         const size_t cut = sdslen(run->output) - OUTPUT_KEEP;
@@ -404,17 +534,53 @@ static void run_spawn(edc_upgrade_run_t *run)
         return;
     }
 
-    static char *const no_env[] = {NULL};
+    /* Fallback when no proxy variables are set: an empty environment, not an inherited one.
+     * (uv_spawn with a NULL env inherits everything.) Non-const so it can be assigned to
+     * options.env without discarding a qualifier. */
+    static char *no_env[] = {NULL};
     uv_process_options_t options;
     memset(&options, 0, sizeof(options));
     options.exit_cb = run_on_exit;
     options.file = argv[0];
     options.args = argv;
 
-    /* No environment: the installer needs PATH at most, and inheriting ours would hand it the
-     * app's working state for no reason. uv_spawn with a NULL env inherits everything, so an
-     * empty vector is the way to say "nothing". */
-    options.env = no_env;
+    /* Not a full inherit: the app's own environment (master key, config paths) has no business
+     * in an installer. But NOT empty either -- the installer downloads with curl/wget, and those
+     * read the proxy variables. An empty environment silently disables the proxy, which is the
+     * one setting a machine behind an egress proxy cannot work without: the fetch of this very
+     * script may have gone through it, so clearing it here would make the two halves of one
+     * upgrade use different routes.
+     *
+     * So: proxy variables only, passed through verbatim. */
+    {
+        static const char *const kPassThrough[] = {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+                                                   "all_proxy",   "ALL_PROXY",   "no_proxy",   "NO_PROXY"};
+        size_t n = 0;
+        for (size_t i = 0; i < sizeof(kPassThrough) / sizeof(kPassThrough[0]); i++)
+            if (getenv(kPassThrough[i]) && getenv(kPassThrough[i])[0])
+                n++;
+        /* n entries + terminator; freed in run_free. */
+        char **env = n > 0 ? calloc(n + 1, sizeof(char *)) : NULL;
+        if (env)
+        {
+            size_t at = 0;
+            for (size_t i = 0; i < sizeof(kPassThrough) / sizeof(kPassThrough[0]); i++)
+            {
+                const char *v = getenv(kPassThrough[i]);
+                if (v && v[0])
+                    env[at++] = sdscatprintf(sdsempty(), "%s=%s", kPassThrough[i], v);
+                if (at == n)
+                    break;
+            }
+            env[at] = NULL;
+            run->child_env = env;
+            options.env = env;
+        }
+        else
+        {
+            options.env = no_env;
+        }
+    }
 #ifndef _WIN32
     options.flags |= UV_PROCESS_DETACHED;
 #endif

@@ -68,6 +68,12 @@ struct tls_stub
     /* After a completed handshake, write bytes straight to the socket instead of answering
      * through TLS: the client's mbedtls then reads a record it cannot decrypt. */
     bool garbage_after_handshake;
+
+    /* Act as an HTTP CONNECT proxy instead of a plain TLS server: read the CONNECT request,
+     * answer 200, and only then start TLS on the same socket. That is exactly the shape a
+     * tunnel presents to the client, so it exercises the client's CONNECT path end to end
+     * without a second process splicing two sockets. */
+    bool as_proxy;
 };
 
 /* Generate a self-signed CA-ish certificate (CN=localhost) and its key at the given paths.
@@ -79,7 +85,7 @@ struct tls_stub
  *
  * Returns 0 on success, -1 on failure.
  */
-static int tls_stub_cert(const char *cert_path, const char *key_path)
+static int tls_stub_cert_named(const char *cert_path, const char *key_path, const char *common_name)
 {
     int rc = -1;
     mbedtls_entropy_context entropy;
@@ -105,10 +111,15 @@ static int tls_stub_cert(const char *cert_path, const char *key_path)
     mbedtls_x509write_crt_set_subject_key(&crt, &key);
     mbedtls_x509write_crt_set_issuer_key(&crt, &key);
 
-    if (mbedtls_x509write_crt_set_subject_name(&crt, "CN=localhost,O=EdgeClaw") != 0)
-        goto out;
-    if (mbedtls_x509write_crt_set_issuer_name(&crt, "CN=localhost,O=EdgeClaw") != 0)
-        goto out;
+    {
+        const char *cn = (common_name && common_name[0]) ? common_name : "localhost";
+        char subject[128];
+        snprintf(subject, sizeof(subject), "CN=%s,O=EdgeClaw", cn);
+        if (mbedtls_x509write_crt_set_subject_name(&crt, subject) != 0)
+            goto out;
+        if (mbedtls_x509write_crt_set_issuer_name(&crt, subject) != 0)
+            goto out;
+    }
     /* Wide, fixed validity so the test cannot rot. */
     if (mbedtls_x509write_crt_set_validity(&crt, "20200101000000", "20450101000000") != 0)
         goto out;
@@ -162,6 +173,12 @@ out:
     return rc;
 }
 
+/* The common case: a certificate for "localhost". */
+static int tls_stub_cert(const char *cert_path, const char *key_path)
+{
+    return tls_stub_cert_named(cert_path, key_path, "localhost");
+}
+
 /* ── the server ─────────────────────────────────────────────────────────────── */
 
 static int tls_stub_bio_send(void *ctx, const unsigned char *buf, size_t len)
@@ -192,6 +209,10 @@ static const char *tls_stub_cert_file;
 /* The request line and headers the last case sent, for tests that need to check what the
  * CLIENT asked for rather than what the server answered. Empty until a request arrives. */
 static char tls_stub_last_request[4096];
+/* The CONNECT preamble, captured separately: tls_stub_serve() overwrites
+ * tls_stub_last_request with the HTTP request that arrives inside the tunnel, so a case that
+ * wants to assert on the CONNECT line needs its own buffer. */
+static char tls_stub_last_connect[1024];
 static const char *tls_stub_key_file;
 
 static void tls_stub_serve(struct tls_stub *s, int client_fd)
@@ -333,6 +354,27 @@ static void tls_stub_thread(void *arg)
     const int client_fd = accept(s->listen_fd, NULL, NULL);
     if (client_fd >= 0)
     {
+        if (s->as_proxy)
+        {
+            /* The CONNECT preamble, read as plaintext up to the blank line. Kept in
+             * tls_stub_last_request so a case can assert the target host and port the client
+             * asked for -- that, not the handshake, is what the client has to get right. */
+            size_t got = 0;
+            while (got < sizeof(tls_stub_last_connect) - 1)
+            {
+                const ssize_t n = recv(client_fd, tls_stub_last_connect + got,
+                                       sizeof(tls_stub_last_connect) - 1 - got, 0);
+                if (n <= 0)
+                    break;
+                got += (size_t)n;
+                tls_stub_last_connect[got] = '\0';
+                if (strstr(tls_stub_last_connect, "\r\n\r\n") != NULL)
+                    break;
+            }
+            const char *ok = "HTTP/1.1 200 Connection established\r\n\r\n";
+            if (send(client_fd, ok, strlen(ok), 0) > 0)
+                s->served = 1;
+        }
         tls_stub_serve(s, client_fd);
         if (s->abrupt_close)
         {
@@ -349,17 +391,31 @@ static void tls_stub_thread(void *arg)
     }
 }
 
+/* Listen on ::1 only. Same server, same certificate checks -- the difference is the family.
+ *
+ * Exists so a case can reproduce "the first address the resolver offers is unreachable": this
+ * system maps `ip6-localhost` to ::1 and nothing else, so a client that asks only for IPv4
+ * finds no address at all, while one that asks for both reaches it.
+ *
+ * Defined after tls_stub_thread (below) so it can start it; the forward declaration of that
+ * thread is not needed because this header's functions are all static and ordered. */
+static int tls_stub_start_v6(struct tls_stub *s, const char *cert_path, const char *key_path,
+                             const char *raw_response);
+
 /* Start listening on a kernel-assigned loopback port. Returns 0 on success, -1 on failure. */
-static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char *key_path,
-                          const char *raw_response)
+static int tls_stub_start_ex(struct tls_stub *s, const char *cert_path, const char *key_path,
+                             const char *raw_response, bool as_proxy)
 {
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
 
     memset(s, 0, sizeof(*s));
     s->raw_response = raw_response;
+    /* Must be set before the thread starts: it is the first thing the thread reads. */
+    s->as_proxy = as_proxy;
     /* Start each case from an empty capture, so a test cannot read the previous one's request. */
     tls_stub_last_request[0] = '\0';
+    tls_stub_last_connect[0] = '\0';
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0)
         return -1;
@@ -387,6 +443,52 @@ static void tls_stub_stop(struct tls_stub *s)
 {
     uv_thread_join(&s->thread);
     close(s->listen_fd);
+}
+
+/* The plain TLS server: the common case. */
+static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char *key_path,
+                          const char *raw_response)
+{
+    return tls_stub_start_ex(s, cert_path, key_path, raw_response, /*as_proxy=*/false);
+}
+
+/* The same server, but it speaks the CONNECT preamble first (see `as_proxy`). */
+static int tls_stub_start_proxy(struct tls_stub *s, const char *cert_path, const char *key_path,
+                                const char *raw_response)
+{
+    return tls_stub_start_ex(s, cert_path, key_path, raw_response, /*as_proxy=*/true);
+}
+
+static int tls_stub_start_v6(struct tls_stub *s, const char *cert_path, const char *key_path,
+                             const char *raw_response)
+{
+    struct sockaddr_in6 addr;
+    socklen_t alen = sizeof(addr);
+
+    memset(s, 0, sizeof(*s));
+    s->raw_response = raw_response;
+    tls_stub_last_request[0] = '\0';
+    s->listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (s->listen_fd < 0)
+        return -1;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_loopback;
+    addr.sin6_port = 0; /* kernel picks, as in the IPv4 stub */
+    if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return -1;
+    if (listen(s->listen_fd, 4) != 0)
+        return -1;
+    if (getsockname(s->listen_fd, (struct sockaddr *)&addr, &alen) != 0)
+        return -1;
+    s->port = ntohs(addr.sin6_port);
+
+    tls_stub_cert_file = cert_path;
+    tls_stub_key_file = key_path;
+    if (uv_thread_create(&s->thread, tls_stub_thread, s) != 0)
+        return -1;
+    return 0;
 }
 
 /* Build a complete HTTP/1.1 response into |out|. `status_line` is e.g. "429 Too Many

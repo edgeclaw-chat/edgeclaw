@@ -23,12 +23,14 @@
  */
 
 #include "edc_update_dialog.hpp"
+#include "edc_style.hpp"
 
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -77,16 +79,98 @@ std::string Plain(const std::string &frame)
     return out;
 }
 
-std::string Frame(edc::ui::UpdateDialog &dialog, int w = 70, int h = 22)
+std::string Frame(edc::ui::UpdateDialog &dialog, int w = 78, int h = 22)
 {
     auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(w), ::ftxui::Dimension::Fixed(h));
     ::ftxui::Render(screen, dialog.Render());
     return Plain(screen.ToString());
 }
 
+/* A rendered frame kept as cells, for the two things a stripped string cannot answer: what
+ * colour a row actually is, and which column a row actually ends at. */
+struct Cells
+{
+    int width = 0;
+    int height = 0;
+    std::vector<std::string> chars; /* one per cell */
+    std::vector<::ftxui::Color> fg;
+
+    std::string RowText(int y) const
+    {
+        std::string s;
+        for (int x = 0; x < width; x++)
+            s += chars[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+        return s;
+    }
+
+    /* Last column holding a non-space character, or -1 for a blank row. */
+    int LastInkColumn(int y) const
+    {
+        for (int x = width - 1; x >= 0; x--)
+            if (chars[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] != " ")
+                return x;
+        return -1;
+    }
+
+    /* Row index whose text contains |needle|, or -1. */
+    int FindRow(const std::string &needle) const
+    {
+        for (int y = 0; y < height; y++)
+            if (RowText(y).find(needle) != std::string::npos)
+                return y;
+        return -1;
+    }
+
+    ::ftxui::Color FgAt(int x, int y) const
+    {
+        return fg[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+    }
+
+    /* Foreground colour of the first cell of the first row containing |needle|. Assumes the
+     * needle is unique in the frame, which every caller below arranges. */
+    ::ftxui::Color InkOf(const std::string &needle) const
+    {
+        const int y = FindRow(needle);
+        if (y < 0)
+            return ::ftxui::Color::Default;
+        const std::string row = RowText(y);
+        const size_t at = row.find(needle);
+        return FgAt(static_cast<int>(at), y);
+    }
+};
+
+Cells Capture(edc::ui::UpdateDialog &dialog, int w = 78, int h = 24)
+{
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(w), ::ftxui::Dimension::Fixed(h));
+    ::ftxui::Render(screen, dialog.Render());
+
+    Cells c;
+    c.width = w;
+    c.height = h;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+        {
+            const auto &cell = screen.CellAt(x, y);
+            c.chars.push_back(cell.character);
+            c.fg.push_back(cell.foreground_color);
+        }
+    return c;
+}
+
 bool Has(const std::string &frame, const std::string &needle)
 {
     return frame.find(needle) != std::string::npos;
+}
+
+/* The frame with every space removed: used to prove that a wrapped line lost nothing. A
+ * truncated line and a wrapped one look equally short in a per-row search. */
+std::string Squashed(const std::string &frame)
+{
+    std::string out;
+    for (char c : frame)
+        if (c != ' ' && c != '\n' && c != '\r')
+            out += c;
+    return out;
 }
 
 /* The first row that has any non-space character.
@@ -264,6 +348,48 @@ int main()
         CHECK(Has(frame, "status 3"), "the installer's own output is shown");
         CHECK(Has(frame, "permission denied"), "every line of it, not just the first");
         CHECK(Has(frame, "install.sh"), "the manual command is offered");
+
+        /* Installer output arrives with ANSI colour in it -- curl, tar and apt all write it --
+         * and ftxui DRAWS an escape instead of interpreting it, so "\x1b[1mError\x1b[0m" used
+         * to reach the reader as "[1mError[0m" and break the colour of every cell after it.
+         * That was the "one part white, one part grey" in this page. The run layer strips it
+         * at the source; this asserts the dialog survives text that arrives with it anyway. */
+        Hooks coloured_hooks;
+        auto coloured = MakeDialog(coloured_hooks);
+        coloured.Open("v1.0.1", /*can_upgrade=*/true);
+        /* OnResult is deliberately ignored outside RUNNING (a late callback from an abandoned
+         * upgrade must not overwrite a newer dialog), so the dialog has to be started first --
+         * Enter on the default button does that. */
+        coloured.OnEvent(::ftxui::Event::Return);
+        coloured.OnResult(false, "\x1b[1mError\x1b[0m: permission denied\n\x1b[31msecond line\x1b[0m");
+        CHECK(coloured.state() == edc::ui::UpdateDialog::State::FAILED, "the coloured failure reached FAILED");
+        const std::string coloured_frame = Frame(coloured);
+
+        CHECK(Has(coloured_frame, "Error: permission denied"), "the text inside the sequence survives");
+        CHECK(Has(coloured_frame, "second line"), "and so does the next coloured line");
+        CHECK(!Has(coloured_frame, "[1m"), "the sequence is not drawn as text");
+        CHECK(!Has(coloured_frame, "[0m"), "nor its terminator");
+        CHECK(!Has(coloured_frame, "[31m"), "nor a colour parameter");
+
+        /* The other two escape shapes a tool emits: an OSC title (ends with BEL or ESC \) and a
+         * bare two-byte escape. Both are stripped in the dialog too, so a caller that skipped
+         * the run layer's filtering still cannot put garbage on screen.
+         *
+         * The literals are split around the BEL on purpose: `\x` in C++ consumes as many hex
+         * digits as follow it, so "\x07after-osc" is one escape worth 0x7A ("z") and no BEL at
+         * all -- which made this case fail against correct code when it was written. */
+        Hooks osc_hooks;
+        auto osc = MakeDialog(osc_hooks);
+        osc.Open("v1.0.1", /*can_upgrade=*/true);
+        osc.OnEvent(::ftxui::Event::Return);
+        osc.OnResult(false, "\x1b]0;a title" "\x07" "after-osc\n"
+                            "\x1b]2;another\x1b\\after-st\n"
+                            "\x1bMafter-two-byte");
+        const std::string osc_frame = Frame(osc);
+        CHECK(Has(osc_frame, "after-osc"), "text after a BEL-terminated OSC survives");
+        CHECK(Has(osc_frame, "after-st"), "and after an ESC-backslash-terminated one");
+        CHECK(Has(osc_frame, "after-two-byte"), "and after a two-byte escape");
+        CHECK(!Has(osc_frame, "a title"), "while the title itself is dropped");
     }
 
     printf("\n── a late result is ignored ──\n");
@@ -309,6 +435,173 @@ int main()
         auto dialog = MakeDialog(hooks);
         CHECK(!dialog.OnEvent(::ftxui::Event::Return), "a closed dialog consumes nothing");
         CHECK(!dialog.OnEvent(::ftxui::Event::Escape), "not even Esc");
+    }
+
+    printf("\n── body prose is one colour ──\n");
+    {
+        /* The bug: some rows had no colour (terminal default) and others were pal.text_dim, and
+         * the two met INSIDE a paragraph -- "Your conversations are kept…" started bright and
+         * turned grey mid-sentence. A row that says nothing about its colour is a row that will
+         * disagree with its neighbours, so this asserts the whole paragraph against pal.text. */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        const Cells c = Capture(dialog);
+
+        const auto &pal = edc::style::palette();
+        const char *body[] = {"A newer release is available", "binary with the published one",
+                              "Your conversations are kept", "upgraded on first start",
+                              "refuse it afterwards"};
+        for (const char *needle : body)
+        {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "\"%s\" is pal.text, not the terminal default", needle);
+            CHECK(c.InkOf(needle) == pal.text, msg);
+        }
+        /* All five agree with each other, which is the property the user actually sees. */
+        CHECK(c.InkOf(body[0]) == c.InkOf(body[3]), "the paragraph does not change colour halfway through");
+    }
+
+    printf("\n── no key legend under the buttons ──\n");
+    {
+        /* The dialog used to spell out "Left/Right choose | Enter confirm | Esc cancel", and
+         * "Enter closes" on the pages with one button. Both are gone: the buttons are labelled,
+         * Esc is the only other key, and a legend underneath a two-button dialog explained what
+         * the dialog already showed.
+         *
+         * Asserted on every state rather than just CONFIRM, because the removal has to hold
+         * for all five or the pages disagree about how much help they offer. */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        const char *phrases[] = {"Enter confirm", "Esc cancel", "Enter closes", "abandons the update",
+                                 "Left/Right choose"};
+
+        auto check_no_legend = [&](const char *where) {
+            const std::string frame = Frame(dialog);
+            for (const char *phrase : phrases)
+            {
+                char msg[160];
+                snprintf(msg, sizeof(msg), "%s: no \"%s\" legend", where, phrase);
+                CHECK(!Has(frame, phrase), msg);
+            }
+        };
+
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        check_no_legend("CONFIRM");
+
+        dialog.OnEvent(::ftxui::Event::Return);
+        check_no_legend("RUNNING");
+
+        dialog.OnResult(true, "");
+        check_no_legend("DONE");
+
+        Hooks failing;
+        auto failed = MakeDialog(failing);
+        failed.Open("v1.0.1", /*can_upgrade=*/true);
+        failed.OnEvent(::ftxui::Event::Return);
+        failed.OnResult(false, "boom\nline two");
+        const std::string failed_frame = Frame(failed);
+        for (const char *phrase : phrases)
+        {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "FAILED: no \"%s\" legend", phrase);
+            CHECK(!Has(failed_frame, phrase), msg);
+        }
+
+        /* The buttons themselves stay: removing the legend must not remove the affordance. */
+        CHECK(Has(failed_frame, "Close"), "the FAILED page still has its button");
+    }
+
+    printf("\n── the failed page is one colour ──\n");
+    {
+        /* The page's heading was written as `Row(...) | color(pal.accent)`, and that does not
+         * work: Row has already painted the cell, and ftxui keeps the inner colour. So the
+         * heading rendered in the body colour, and the page then ran body text followed by
+         * dim quoted output -- three shades for a reader trying to work out what mattered.
+         *
+         * Now: accent for the heading, pal.text for everything else the page says, including
+         * the installer's output and the manual command. Asserted per row rather than by
+         * eyeballing a frame, because two greys are indistinguishable in a stripped string. */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        dialog.OnEvent(::ftxui::Event::Return);
+        dialog.OnResult(false, "the installer exited with status 3\npermission denied");
+        CHECK(dialog.state() == edc::ui::UpdateDialog::State::FAILED, "the dialog is on the failure page");
+
+        const Cells c = Capture(dialog);
+        const auto &pal = edc::style::palette();
+
+        CHECK(c.InkOf("Update failed") == pal.accent, "the heading is the accent colour, not body text");
+        CHECK(c.InkOf("The update did not complete") == pal.text, "the prose is body text");
+        CHECK(c.InkOf("the installer exited") == pal.text, "the installer's output is the SAME colour");
+        CHECK(c.InkOf("permission denied") == pal.text, "on every one of its lines");
+        CHECK(c.InkOf("To update by hand:") == pal.text, "the lead-in to the command is the same colour");
+        CHECK(c.InkOf("curl -fsSL") == pal.text, "and so is the command itself");
+
+        /* The property, stated once: no row on this page other than the heading is dim. */
+        const int heading = c.FindRow("Update failed");
+        int dim_rows = 0;
+        for (int y = 0; y < c.height; y++)
+        {
+            const std::string row = c.RowText(y);
+            const size_t at = row.find_first_not_of(' ');
+            if (at == std::string::npos || y == heading)
+                continue;
+            if (c.FgAt(static_cast<int>(at), y) == pal.text_dim)
+                dim_rows++;
+        }
+        CHECK(dim_rows == 0, "no row on the failed page is dim (found some)");
+    }
+
+    printf("\n── a long command wraps instead of being cut off ──\n");
+    {
+        /* `edc_upgrade_manual_hint` returns lines ~120 columns wide against a ~64-column
+         * dialog. Clipping them is the worst option: a truncated command still looks complete,
+         * so a user copies half of it and cannot tell. Squash the frame (drop every space) and
+         * the whole command must still be in there. */
+        Hooks hooks;
+        /* The real shape: an intro line, a release URL (61 columns), a lead-in and the
+         * command. */
+        hooks.hint =
+            "download v9.9.9 from\n"
+            "  https://github.com/edgeclaw-chat/edgeclaw/releases/tag/v9.9.9\n"
+            "or run:\n"
+            "  curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/v9.9.9/tools/install.sh "
+            "| sh -s -- --tag v9.9.9";
+
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v9.9.9", /*can_upgrade=*/false);
+        CHECK(dialog.state() == edc::ui::UpdateDialog::State::UNAVAILABLE, "the unavailable page");
+
+        const std::string frame = Frame(dialog);
+        const std::string squashed = Squashed(frame);
+
+        CHECK(squashed.find(Squashed("https://github.com/edgeclaw-chat/edgeclaw/releases/tag/v9.9.9")) !=
+                  std::string::npos,
+              "the release URL survives whole");
+        CHECK(squashed.find(Squashed("https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/v9.9.9/tools/"
+                                     "install.sh")) != std::string::npos,
+              "and so does the long URL inside the command");
+        CHECK(squashed.find(Squashed("| sh -s -- --tag v9.9.9")) != std::string::npos,
+              "including its tail -- the part a clipped line loses first");
+
+        /* The hint's own leading indent is dropped rather than added to the row's: rows already
+         * indent, and doubling it pushed the URL past the width (it spilled a lone "9"). The
+         * measurable form of that is "the URL starts in the same column as every other row".
+         * Compared against another row, because an absolute column count depends on the screen
+         * the frame was rendered into. */
+        const Cells c = Capture(dialog);
+        const int body_row = c.FindRow("This copy was not installed");
+        const int url_row = c.FindRow("https://github.com/edgeclaw-chat/edgeclaw/releases");
+        CHECK(body_row >= 0 && url_row >= 0, "both rows render");
+        if (body_row >= 0 && url_row >= 0)
+        {
+            const int body_col = static_cast<int>(c.RowText(body_row).find_first_not_of(" "));
+            const int url_col = static_cast<int>(c.RowText(url_row).find_first_not_of(" "));
+            printf("      body starts at %d, url at %d\n", body_col, url_col);
+            CHECK(url_col == body_col, "the URL sits at the same indent as the prose around it");
+        }
     }
 
     printf("\n── borderless, like every other surface ──\n");

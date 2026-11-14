@@ -113,19 +113,21 @@ build:windows --conlyopt=/std:c11
 # SDK default, and ld warns "object file was built for newer macOS version than
 # being linked". Compiling alone would leave the load command unset.
 #
-# Explicit -mmacosx-version-min rather than Bazel's --macos_minimum_os: the latter is
-# only honoured by toolchains that expand %{macos_minimum_os}, and macOS here uses the
-# autodetected Xcode toolchain rather than one of ours (no @*_toolchain is registered
-# for //:aarch64_macos -- see MODULE.bazel). A --copt/--linkopt pair reaches the
-# command line regardless of toolchain, and lands in user_compile_flags /
-# user_link_flags, i.e. after the toolchain's own flags, so it wins on conflict.
+# macOS now uses apple_support's cc toolchain (see MODULE.bazel, which also explains
+# why: newer Xcode must not let the SDK's SDKSettings.json count as a non-builtin
+# absolute include). That toolchain expands %{macos_minimum_os} into the `-target`
+# triple, so the Bazel flag is what sets the floor: `--macos_minimum_os=11.0` turns
+# `-target arm64-apple-macosx27.0` into `...macosx11.0`. It is needed for both the
+# compile and the link; the `-mmacosx-version-min` pair stays as a belt-and-braces
+# spelling that also works if resolution ever falls back to the autodetected
+# toolchain, which ignores this flag.
 #
 # `build:macos` is activated by --enable_platform_specific_config (line 2) from the
 # HOST os, so it applies on the macOS runner and is inert everywhere else. Tests get
 # it too, which is what we want: a test binary built for 14.0 would not run on 11.0.
 #
-# Verified by the "Verify macOS minimum OS" step in release.yml -- this repo's dev
-# machines are Linux, so the value cannot be checked locally.
+# Verified by the "Verify macOS minimum OS" step in release.yml.
+build:macos --macos_minimum_os=11.0
 build:macos --copt=-mmacosx-version-min=11.0
 build:macos --linkopt=-mmacosx-version-min=11.0
 

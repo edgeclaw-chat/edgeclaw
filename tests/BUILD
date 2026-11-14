@@ -2093,3 +2093,17 @@ cc_test(
     ],
     linkopts = LINK_OPTS,
 )
+
+# HTTPS through an HTTP CONNECT proxy: the environment decision, and the tunnel itself.
+cc_test(
+    name = "test_proxy",
+    srcs = ["test_proxy.c", "tls_stub.h"],
+    deps = [
+        "//src/common:common",
+        "@libuv",
+        "@sds//:sds",
+    ],
+    linkstatic = True,
+    linkopts = LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)
