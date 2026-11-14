@@ -63,6 +63,21 @@ class UpdateDialog : public Widget
         return open_;
     }
 
+    /* The content width this dialog renders at, and the rendered width including the two cells
+     * BorderStyle::EMPTY reserves (one per side).
+     *
+     * 64 because of the "by hand" block: the release URL is 61 columns and the text area is
+     * this minus 2, so at 62 the URL broke at its last slash and left "v9.9.9" on a line of its
+     * own. Measured on a rendered frame, not estimated.
+     *
+     * The host needs PanelWidth() to place the panel and know where its left edge lands -- see
+     * edc_modal.hpp. */
+    static constexpr int kContentWidth = 64;
+    static constexpr int PanelWidth()
+    {
+        return kContentWidth + 2;
+    }
+
     State state() const
     {
         return state_;

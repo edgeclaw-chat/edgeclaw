@@ -15,13 +15,9 @@ namespace
 {
 
 /* Narrower than the setup wizard: this dialog is prose plus two buttons, and the setup
- * wizard's width makes short lines read as gaps.
- *
- * 64, not 62, because of the "by hand" block: the release URL is 61 columns, and the text
- * area is kDialogWidth - 2, so at 62 the URL broke at its last slash and left "v9.9.9" on a
- * line of its own. 64 puts it back on one line without widening the prose enough to read as
- * gappy. Measured on a rendered frame, not estimated. */
-constexpr int kDialogWidth = 64;
+ * wizard's width makes short lines read as gaps. The number itself lives on the class, because
+ * the modal host needs it too (see edc_modal.hpp). */
+constexpr int kDialogWidth = UpdateDialog::kContentWidth;
 /* What a line of text can actually occupy: the width minus the two-space indent every row
  * carries. Wrapping is measured against this, not kDialogWidth, or every wrapped line would
  * overflow by exactly the indent. */
@@ -332,7 +328,7 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
     case State::CONFIRM:
     {
         rows.push_back(hbox({Row("EdgeClaw ", Tone::Accent), text(tag_) | bold | color(pal.accent), filler()}));
-        rows.push_back(separator() | color(pal.line_dim));
+        rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
         rows.push_back(Row("A newer release is available. Updating replaces this"));
         rows.push_back(Row("binary with the published one for your platform."));
         rows.push_back(text(""));
@@ -346,13 +342,13 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
 
     case State::RUNNING:
         rows.push_back(hbox({Row("Updating to ", Tone::Accent), text(tag_) | bold | color(pal.accent)}));
-        rows.push_back(separator() | color(pal.line_dim));
+        rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
         rows.push_back(Row("Downloading and installing. This can take a moment."));
         break;
 
     case State::DONE:
         rows.push_back(hbox({Row("Updated to ", Tone::Accent), text(tag_) | bold | color(pal.accent)}));
-        rows.push_back(separator() | color(pal.line_dim));
+        rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
         rows.push_back(Row("The new binary is in place."));
         rows.push_back(text(""));
         /* Deliberately not "restarting now": an automatic restart would interrupt whatever
@@ -363,7 +359,7 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
     case State::FAILED:
     {
         rows.push_back(Row("Update failed", Tone::Accent));
-        rows.push_back(separator() | color(pal.line_dim));
+        rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
         rows.push_back(Row("The update did not complete; this version is unchanged."));
         if (!detail_.empty())
         {
@@ -405,7 +401,7 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
     default:
     {
         rows.push_back(hbox({Row("Update ", Tone::Accent), text(tag_) | bold | color(pal.accent), filler()}));
-        rows.push_back(separator() | color(pal.line_dim));
+        rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
         /* Why this copy cannot do it itself: the installer is what knows how to fetch and
          * check a release, and it only manages binaries it put there. */
         rows.push_back(Row("This copy was not installed by the EdgeClaw installer,"));
@@ -421,7 +417,7 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
     }
 
     rows.push_back(text(""));
-    rows.push_back(separator() | color(pal.line_dim));
+    rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
     rows.push_back(ButtonsElement());
 
     /* Borderless, matching the /connect dialog (edc_setup_dialog.cpp).

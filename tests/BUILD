@@ -2107,3 +2107,18 @@ cc_test(
     linkopts = LINK_OPTS,
     target_compatible_with = POSIX_ONLY,
 )
+
+# ModalOverlay: a borderless panel on a flattened ground, with its left edge protected from
+# fullwidth characters (see edc_modal.hpp).
+cc_test(
+    name = "test_modal",
+    srcs = ["test_modal.cxx"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    target_compatible_with = POSIX_ONLY,
+)

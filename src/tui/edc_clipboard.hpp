@@ -50,6 +50,7 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 // screen would spend its whole life hard to read. This is the readable half of the two.
 ::ftxui::Element TranslucentChipElement(const std::string &label, float alpha);
 
+
 // How many rows one chip occupies: the label plus the blank row above and below it that give
 // the surface its breathing room. Exported because the notices STACK -- a toast drawn while
 // the update notice is up has to start below it -- and that offset has to be the chip's real

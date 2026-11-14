@@ -7,6 +7,7 @@
 #include "edc_history_line.hpp"
 #include "edc_token_style.hpp"
 #include "edc_input.hpp"
+#include "edc_modal.hpp"
 #include "edc_scroll_view.hpp"
 #include "edc_sidebar.hpp"
 #include "edc_status_bar_view.hpp"
@@ -59,6 +60,7 @@ constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
 // the messages under it -- and since only the background is blended, the label stays crisp at
 // any value.
 constexpr float kUpdateBannerAlpha = 0.35f;
+
 // The "press Ctrl+C again to quit" hint stays up exactly as long as a second press
 // would still quit, so the hint is never shown when the second press would do nothing.
 constexpr auto kHintHold = kQuitWindow;
@@ -1253,17 +1255,24 @@ void TUIWindow::OpenUpdate()
     // task's state change, coalesced once per actor message.
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    // The /connect setup wizard is a modal, centered -- its natural place. The backdrop is
-    // dimmed while it is open; clear_under is load-bearing: ftxui's `dim` is a per-cell flag
-    // the backdrop stamps over its box, which an overlaid element does not clear.
-    //
-    // The update dialog is checked first: it appears while the app is in use, the wizard only
-    // on first run, and if both were somehow open the newer question is the update.
+
+    /* The modal overlay: see edc_modal.hpp. Two things had to be right for a borderless panel
+     * to read as a rectangle, and neither is about the panel itself -- the ground behind it has
+     * to be one colour (the chat alternates between the message surface and the gap between
+     * messages, and `dim` darkens those by different amounts), and no fullwidth character may
+     * sit in the cell just left of it (ftxui skips the cell after a wide character, so the
+     * panel's first column was never emitted on those rows -- measured, not guessed).
+     *
+     * The update dialog is checked first: it appears while the app is in use, the wizard only on
+     * first run, and if both were somehow open the newer question is the update. */
+    const auto &pal = style::palette();
     if (update_dialog_ && update_dialog_->IsOpen())
-        return ::ftxui::dbox({base | ::ftxui::dim, update_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
+        return edc::ModalOverlay(base | ::ftxui::dim, update_dialog_->Render(),
+                                 ui::UpdateDialog::PanelWidth(), pal.window_bg, pal.dialog_bg);
     if (!setup_dialog_->IsOpen())
         return base;
-    return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
+    return edc::ModalOverlay(base | ::ftxui::dim, setup_dialog_->Render(), ui::SetupDialog::PanelWidth(),
+                             pal.window_bg, pal.dialog_bg);
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)

@@ -997,6 +997,75 @@ void TestUpdateBanner(edc::TUIWindow &win)
      *
      * （"确认更新"那一页由 test_update_dialog 直接驱动，不需要这里再走一遍。） */
     TypeAndSubmit(win, "/update");
+    /* The dialog must read as a rectangle, and the ground it sits on must be one colour.
+     *
+     * The two go together: a borderless panel's only edge is where its surface stops, so if the
+     * backdrop alternates (the chat's own rows switch between the message surface and the gap
+     * between messages) the straight edge meets a striped neighbour and looks jagged -- worst on
+     * the left, where the transcript's text also comes and goes. The fix is to flatten the
+     * pane's background behind the modal, so this asserts both halves.
+     *
+     * The selected button is legitimately a third colour; it is the only cell allowed to be
+     * neither the panel's surface nor the flattened ground. */
+    {
+        auto mk = [] { return ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kW), ::ftxui::Dimension::Fixed(kH)); };
+        ::ftxui::Screen sc = mk();
+        for (int pass = 0; pass < 3; pass++)
+        {
+            sc = mk();
+            ::ftxui::Render(sc, win.OnRender());
+        }
+        const auto panel_bg = edc::style::palette().dialog_bg;
+        const auto ground_bg = edc::style::palette().window_bg;
+
+        int first = -1, last = -1, rows = 0;
+        bool columns_constant = true;
+        for (int y = 0; y < kH; y++)
+        {
+            int row_first = -1, row_last = -1;
+            for (int x = 0; x < kW; x++)
+            {
+                if (sc.CellAt(x, y).background_color == panel_bg)
+                {
+                    if (row_first < 0)
+                        row_first = x;
+                    row_last = x;
+                }
+            }
+            if (row_first < 0)
+                continue;
+            rows++;
+            if (first < 0)
+            {
+                first = row_first;
+                last = row_last;
+            }
+            else if (row_first != first || row_last != last)
+            {
+                columns_constant = false;
+            }
+        }
+        Check(rows > 0, "对话框已经上屏");
+        Check(columns_constant, "面板左右两列在它覆盖的每一行都相同（矩形，不是凹凸边界）");
+
+        /* Outside the panel, everything must be the flattened ground. Inside it, the panel owns
+         * its own cells (the selected button carries an accent band, spaces included), so the
+         * assertion stops at its edge -- which is also the edge the eye looks at. */
+        int striped = 0;
+        int outside = 0;
+        for (int y = 0; y < kH; y++)
+            for (int x = 0; x < kW; x++)
+            {
+                if (first >= 0 && x >= first && x <= last)
+                    continue;
+                outside++;
+                if (sc.CellAt(x, y).background_color != ground_bg)
+                    striped++;
+            }
+        Check(outside > 0, "面板之外确实有格子（断言不是空转）");
+        Check(striped == 0, "面板之外只有一种底色：背景被摊平，边界不再挨着条纹");
+    }
+
     const std::string modal = FrameOf(win);
     Check(Has(modal, "cannot update itself"), "/update 打开了对话框，并说明这份副本不能自升级");
     Check(Has(modal, "To update by hand"), "并把该手敲的命令给出来");
