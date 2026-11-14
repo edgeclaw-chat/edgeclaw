@@ -78,21 +78,36 @@ static bool no_proxy_excludes(const char *target_host)
         return false;
 
     /* Split on both separators: the variable is documented as comma-separated, but space is
-     * accepted everywhere in practice and a user typing "a.com b.com" means two entries. */
-    sds copy = sdsnew(np);
-    char *save = NULL;
-    for (char *tok = strtok_r(copy, ", \t", &save); tok; tok = strtok_r(NULL, ", \t", &save))
+     * accepted everywhere in practice and a user typing "a.com b.com" means two entries.
+     *
+     * Hand-rolled rather than strtok_r: that symbol is POSIX, and the compatibility shim lives
+     * in a header only the POSIX branch of edc_compat.h includes -- so using it here linked on
+     * Linux and failed on MSVC with "unresolved external symbol strtok_r". A loop over the
+     * separators has no such dependency and is not more code. */
+    const char *p = np;
+    while (*p)
     {
+        while (*p == ',' || *p == ' ' || *p == '\t')
+            p++;
+        if (!*p)
+            break;
+
+        const char *end = p;
+        while (*end && *end != ',' && *end != ' ' && *end != '\t')
+            end++;
+
         char entry[256];
-        snprintf(entry, sizeof(entry), "%s", tok);
-        host_only(entry);
-        if (host_matches(target_host, entry))
+        const size_t len = (size_t)(end - p);
+        if (len > 0 && len < sizeof(entry))
         {
-            sdsfree(copy);
-            return true;
+            memcpy(entry, p, len);
+            entry[len] = '\0';
+            host_only(entry);
+            if (host_matches(target_host, entry))
+                return true;
         }
+        p = end;
     }
-    sdsfree(copy);
     return false;
 }
 
