@@ -435,8 +435,33 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
      * BorderStyle::EMPTY still reserves the one column a border would have used, so the
      * title needs the same two-space lead-in as the setup dialog's ("  " + title) to sit
      * where the eye expects it. */
-    return vbox(std::move(rows)) | size(WIDTH, EQUAL, kDialogWidth) | borderStyled(BorderStyle::EMPTY) |
-           bgcolor(pal.dialog_bg);
+    ::ftxui::Element panel = vbox(std::move(rows)) | size(WIDTH, EQUAL, kDialogWidth) |
+                             borderStyled(BorderStyle::EMPTY) | bgcolor(pal.dialog_bg);
+
+    /* A gutter of the pane's own colour around the panel.
+     *
+     * Without it the panel's edge is the only thing separating it from the transcript, and the
+     * transcript is right there: `Row()` indents by two, so on rows where a line happens to be
+     * long the text stops one cell short of the surface. A borderless panel whose boundary is
+     * defined only by a background change then reads as if it had been cut out of the text --
+     * the edge looks ragged because what abuts it varies row by row.
+     *
+     * Painting the margin in window_bg (not dialog_bg) keeps it invisible against the pane
+     * while still overwriting whatever was behind it, so nothing touches the panel. It also
+     * gives the panel the shape a borderless dialog lacks: a clean rectangle of one surface
+     * with room around it, rather than a hole in another.
+     *
+     * The empty BorderStyle still reserves a cell per side, hence +2. */
+    const int panel_width = kDialogWidth + 2;
+    const int gutter = 2;
+    auto blank = [&](int cells) {
+        return ::ftxui::text(std::string(static_cast<size_t>(cells), ' ')) | ::ftxui::bgcolor(pal.window_bg);
+    };
+    return ::ftxui::vbox({
+        blank(panel_width + 2 * gutter),
+        ::ftxui::hbox({blank(gutter), std::move(panel), blank(gutter)}),
+        blank(panel_width + 2 * gutter),
+    });
 }
 
 } // namespace edc::ui
