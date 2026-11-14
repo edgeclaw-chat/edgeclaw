@@ -229,6 +229,38 @@ class TranslucentSurfaceNode : public ::ftxui::Node
     });
 }
 
+/* Sets every background in its box to one colour after the child has painted. */
+class FlattenBackgroundNode : public ::ftxui::Node
+{
+  public:
+    FlattenBackgroundNode(::ftxui::Element child, ::ftxui::Color color)
+        : Node({std::move(child)}), color_(color)
+    {
+    }
+
+    void SetBox(::ftxui::Box box) override
+    {
+        Node::SetBox(box);
+        children_[0]->SetBox(box);
+    }
+
+    void Render(::ftxui::Screen &screen) override
+    {
+        Node::Render(screen);
+        for (int y = box_.y_min; y <= box_.y_max; y++)
+            for (int x = box_.x_min; x <= box_.x_max; x++)
+                screen.CellAt(x, y).background_color = color_;
+    }
+
+  private:
+    ::ftxui::Color color_;
+};
+
+::ftxui::Element FlattenBackground(::ftxui::Element child, ::ftxui::Color color)
+{
+    return std::make_shared<FlattenBackgroundNode>(std::move(child), color);
+}
+
 ::ftxui::Element ClipboardToastElement(float fade, int rows_above)
 {
     return ToastChipElement(" Copied to clipboard ", fade, rows_above);

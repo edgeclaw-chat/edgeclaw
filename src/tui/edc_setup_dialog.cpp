@@ -363,7 +363,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     {
         body = vbox({
             field(provider_filter_input_), /* the search box itself: its placeholder reads as the prompt */
-            separator() | color(pal.line_dim),
+            separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg),
             ListElement(provider_rows_, provider_sel_, provider_current_row_, kListRows),
         });
     }
@@ -377,7 +377,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     {
         body = vbox({
             field(model_filter_input_),
-            separator() | color(pal.line_dim),
+            separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg),
             ListElement(model_rows_, model_sel_, model_current_row_, kListRows),
         });
     }
@@ -393,9 +393,9 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     Elements rows;
     rows.push_back(hbox({text("  " + std::string(title)) | bold | color(pal.accent), filler(),
                          text(step_no + " ") | color(pal.text_dim)}));
-    rows.push_back(separator() | color(pal.line_dim));
+    rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
     rows.push_back(body);
-    rows.push_back(separator() | color(pal.line_dim));
+    rows.push_back(separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg));
     rows.push_back(hbox({filler(), text(hint) | color(pal.text_dim)}));
     return vbox(std::move(rows)) | size(WIDTH, EQUAL, kDialogWidth) | borderStyled(BorderStyle::EMPTY) |
            bgcolor(pal.dialog_bg);

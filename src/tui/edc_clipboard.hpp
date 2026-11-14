@@ -50,6 +50,14 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 // screen would spend its whole life hard to read. This is the readable half of the two.
 ::ftxui::Element TranslucentChipElement(const std::string &label, float alpha);
 
+/* Force every cell in |child|'s area to |color| as its BACKGROUND, leaving the foreground
+ * alone. Not a blend: a blend keeps a trace of what was underneath, so rows whose background
+ * differed still differ afterwards, just less. This makes the ground one colour outright, which
+ * is what a borderless dialog needs -- its edge can only read as a rectangle against a single
+ * tone. The text underneath stays legible (dimmed by the caller), which is the reason not to
+ * paint over it entirely. */
+::ftxui::Element FlattenBackground(::ftxui::Element child, ::ftxui::Color color);
+
 // How many rows one chip occupies: the label plus the blank row above and below it that give
 // the surface its breathing room. Exported because the notices STACK -- a toast drawn while
 // the update notice is up has to start below it -- and that offset has to be the chip's real

@@ -59,6 +59,7 @@ constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
 // the messages under it -- and since only the background is blended, the label stays crisp at
 // any value.
 constexpr float kUpdateBannerAlpha = 0.35f;
+
 // The "press Ctrl+C again to quit" hint stays up exactly as long as a second press
 // would still quit, so the hint is never shown when the second press would do nothing.
 constexpr auto kHintHold = kQuitWindow;
@@ -1253,17 +1254,39 @@ void TUIWindow::OpenUpdate()
     // task's state change, coalesced once per actor message.
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
-    // The /connect setup wizard is a modal, centered -- its natural place. The backdrop is
-    // dimmed while it is open; clear_under is load-bearing: ftxui's `dim` is a per-cell flag
-    // the backdrop stamps over its box, which an overlaid element does not clear.
-    //
-    // The update dialog is checked first: it appears while the app is in use, the wizard only
-    // on first run, and if both were somehow open the newer question is the update.
+
+    /* The modal overlay.
+     *
+     * A borderless dialog has only its surface to mark its edge, so it reads as a rectangle
+     * only if the ground around it is ONE colour. `dim` was not enough: the chat's own rows
+     * alternate between the message surface and the gap between messages, and dim darkens them
+     * by different amounts, so the panel's dead-straight edge met a striped backdrop and looked
+     * jagged -- worst on the left, where the transcript's text also came and went.
+     *
+     * So the pane is first blended toward a flat colour (background only -- the text stays
+     * legible underneath, which is the point of not hiding the transcript entirely), and the
+     * panel is drawn on that uniform ground. `clear_under` still matters: it is what removes the
+     * per-cell `dim`/blend residue from the cells the panel covers.
+     *
+     * The update dialog is checked first: it appears while the app is in use, the wizard only on
+     * first run, and if both were somehow open the newer question is the update. */
+    auto overlay = [&](const ::ftxui::Element &dialog) {
+        /* Flatten, not blend: a blend keeps a trace of what was underneath, so the alternating
+         * message/gap rows still differed afterwards -- measured, and it is why the first
+         * attempt at this still looked striped. Forcing the background makes the ground one
+         * tone; the dimmed transcript still shows through the text. */
+        auto veil = ::ftxui::vbox({::ftxui::filler()}) | ::ftxui::bgcolor(style::palette().window_bg);
+        return ::ftxui::dbox({
+            std::move(base) | ::ftxui::dim,
+            edc::FlattenBackground(std::move(veil), style::palette().window_bg),
+            dialog | ::ftxui::clear_under | ::ftxui::center,
+        });
+    };
     if (update_dialog_ && update_dialog_->IsOpen())
-        return ::ftxui::dbox({base | ::ftxui::dim, update_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
+        return overlay(update_dialog_->Render());
     if (!setup_dialog_->IsOpen())
         return base;
-    return ::ftxui::dbox({base | ::ftxui::dim, setup_dialog_->Render() | ::ftxui::clear_under | ::ftxui::center});
+    return overlay(setup_dialog_->Render());
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
