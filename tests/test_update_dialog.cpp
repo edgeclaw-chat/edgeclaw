@@ -442,73 +442,96 @@ int main()
         CHECK(c.InkOf(body[0]) == c.InkOf(body[3]), "the paragraph does not change colour halfway through");
     }
 
-    printf("\n── the key hint is flush with the right edge ──\n");
+    printf("\n── no key legend under the buttons ──\n");
     {
-        /* It used to end in a space, which after right-alignment left the last character one
-         * column short of the separator above it -- a hairline that reads as "this line does
-         * not belong to the dialog".
+        /* The dialog used to spell out "Left/Right choose | Enter confirm | Esc cancel", and
+         * "Enter closes" on the pages with one button. Both are gone: the buttons are labelled,
+         * Esc is the only other key, and a legend underneath a two-button dialog explained what
+         * the dialog already showed.
          *
-         * Measured in columns of TEXT, not cells: the separator is a wide (3-byte) character and
-         * the cells past the dialog are blank padding, so counting cells answers a different
-         * question than "do these two rows end together". */
+         * Asserted on every state rather than just CONFIRM, because the removal has to hold
+         * for all five or the pages disagree about how much help they offer. */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        const char *phrases[] = {"Enter confirm", "Esc cancel", "Enter closes", "abandons the update",
+                                 "Left/Right choose"};
+
+        auto check_no_legend = [&](const char *where) {
+            const std::string frame = Frame(dialog);
+            for (const char *phrase : phrases)
+            {
+                char msg[160];
+                snprintf(msg, sizeof(msg), "%s: no \"%s\" legend", where, phrase);
+                CHECK(!Has(frame, phrase), msg);
+            }
+        };
+
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        check_no_legend("CONFIRM");
+
+        dialog.OnEvent(::ftxui::Event::Return);
+        check_no_legend("RUNNING");
+
+        dialog.OnResult(true, "");
+        check_no_legend("DONE");
+
+        Hooks failing;
+        auto failed = MakeDialog(failing);
+        failed.Open("v1.0.1", /*can_upgrade=*/true);
+        failed.OnEvent(::ftxui::Event::Return);
+        failed.OnResult(false, "boom\nline two");
+        const std::string failed_frame = Frame(failed);
+        for (const char *phrase : phrases)
+        {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "FAILED: no \"%s\" legend", phrase);
+            CHECK(!Has(failed_frame, phrase), msg);
+        }
+
+        /* The buttons themselves stay: removing the legend must not remove the affordance. */
+        CHECK(Has(failed_frame, "Close"), "the FAILED page still has its button");
+    }
+
+    printf("\n── the failed page is one colour ──\n");
+    {
+        /* The page's heading was written as `Row(...) | color(pal.accent)`, and that does not
+         * work: Row has already painted the cell, and ftxui keeps the inner colour. So the
+         * heading rendered in the body colour, and the page then ran body text followed by
+         * dim quoted output -- three shades for a reader trying to work out what mattered.
+         *
+         * Now: accent for the heading, pal.text for everything else the page says, including
+         * the installer's output and the manual command. Asserted per row rather than by
+         * eyeballing a frame, because two greys are indistinguishable in a stripped string. */
         Hooks hooks;
         auto dialog = MakeDialog(hooks);
         dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        dialog.OnEvent(::ftxui::Event::Return);
+        dialog.OnResult(false, "the installer exited with status 3\npermission denied");
+        CHECK(dialog.state() == edc::ui::UpdateDialog::State::FAILED, "the dialog is on the failure page");
 
-        /* Exactly as wide as the dialog, so there is no padding to confuse the arithmetic. */
-        const std::string frame = Frame(dialog, 66, 20);
-        std::vector<std::string> lines;
+        const Cells c = Capture(dialog);
+        const auto &pal = edc::style::palette();
+
+        CHECK(c.InkOf("Update failed") == pal.accent, "the heading is the accent colour, not body text");
+        CHECK(c.InkOf("The update did not complete") == pal.text, "the prose is body text");
+        CHECK(c.InkOf("the installer exited") == pal.text, "the installer's output is the SAME colour");
+        CHECK(c.InkOf("permission denied") == pal.text, "on every one of its lines");
+        CHECK(c.InkOf("To update by hand:") == pal.text, "the lead-in to the command is the same colour");
+        CHECK(c.InkOf("curl -fsSL") == pal.text, "and so is the command itself");
+
+        /* The property, stated once: no row on this page other than the heading is dim. */
+        const int heading = c.FindRow("Update failed");
+        int dim_rows = 0;
+        for (int y = 0; y < c.height; y++)
         {
-            std::string cur;
-            for (char ch : frame)
-            {
-                if (ch == '\n')
-                {
-                    lines.push_back(cur);
-                    cur.clear();
-                }
-                else if (ch != '\r')
-                {
-                    cur += ch;
-                }
-            }
-            lines.push_back(cur);
+            const std::string row = c.RowText(y);
+            const size_t at = row.find_first_not_of(' ');
+            if (at == std::string::npos || y == heading)
+                continue;
+            if (c.FgAt(static_cast<int>(at), y) == pal.text_dim)
+                dim_rows++;
         }
-
-        auto columns = [](const std::string &s) {
-            /* Count UTF-8 code points: every glyph ftxui draws here occupies one column. */
-            size_t n = 0;
-            for (size_t i = 0; i < s.size();)
-            {
-                const unsigned char b = static_cast<unsigned char>(s[i]);
-                i += (b < 0x80) ? 1 : ((b >> 5) == 0x6) ? 2 : ((b >> 4) == 0xE) ? 3 : 4;
-                n++;
-            }
-            return n;
-        };
-
-        int hint_end = -1;
-        int rule_end = -1;
-        for (const std::string &line : lines)
-        {
-            const size_t at = line.find("Esc cancel");
-            if (at != std::string::npos)
-                hint_end = static_cast<int>(columns(line.substr(0, at)) + strlen("Esc cancel"));
-
-            if (line.find("\xE2\x94\x80") != std::string::npos) /* first rule row: the header's */
-            {
-                /* Trim the row's own right padding first: the ink ends where the last
-                 * non-space character is, and the line is padded to the dialog's width. */
-                size_t end = line.find_last_not_of(' ');
-                end = (end == std::string::npos) ? 0 : end + 1;
-                rule_end = hint_end >= 0 ? rule_end : static_cast<int>(columns(line.substr(0, end)));
-            }
-        }
-        CHECK(hint_end > 0, "the key hint renders");
-        CHECK(rule_end > 0, "the separator renders");
-
-        printf("      hint ends at column %d, separator at %d\n", hint_end, rule_end);
-        CHECK(hint_end == rule_end, "the hint ends on the same column as the separator above it");
+        CHECK(dim_rows == 0, "no row on the failed page is dim (found some)");
     }
 
     printf("\n── a long command wraps instead of being cut off ──\n");

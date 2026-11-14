@@ -32,21 +32,25 @@ constexpr int kMaxDetailLines = 10;
 
 enum class Tone
 {
-    Body,  /* prose: everything the dialog is saying to the reader */
-    Muted, /* secondary: key hints and quoted installer output */
+    Body,   /* prose: everything the dialog is saying to the reader */
+    Accent, /* the one emphasised line: the page's own heading */
 };
 
 /* One row of dialog text.
  *
- * EVERY row goes through here so its colour is explicit. The bug this replaces: some rows had
- * no colour at all (so they took the terminal's default foreground) while others were painted
- * pal.text_dim -- and the two met inside a single paragraph, which made one sentence start
- * bright and turn grey halfway through. A row that says nothing about its colour is a row that
- * will disagree with the one above it. */
+ * EVERY row goes through here so its colour is explicit, and the tone is chosen HERE rather
+ * than by decorating the result. That distinction is not style: `Row(...) | color(pal.accent)`
+ * does not work, because Row has already set a colour on the cell and ftxui keeps the inner
+ * one. The failed page's heading was written that way and rendered in the body colour -- so the
+ * page had a heading that looked like prose, followed by body text, followed by dim quoted
+ * output: three shades down the page for readers who could not tell which was meant.
+ *
+ * So the page is one colour for everything it says, accent for its heading, and nothing else.
+ */
 ::ftxui::Element Row(const std::string &s, Tone tone = Tone::Body)
 {
     const auto &pal = style::palette();
-    const ::ftxui::Color c = (tone == Tone::Muted) ? pal.text_dim : pal.text;
+    const ::ftxui::Color c = (tone == Tone::Accent) ? pal.accent : pal.text;
     return ::ftxui::text("  " + s) | ::ftxui::color(c);
 }
 
@@ -176,19 +180,10 @@ void PushRow(::ftxui::Elements &rows, const std::string &raw, Tone tone = Tone::
     }
 }
 
-/* The key hints at the bottom: right-aligned and FLUSH with the right edge.
- *
- * Two things were wrong before. The literals ended in a space, which after right-alignment
- * left the last character one column short of the separator above it -- a hairline misalignment
- * that reads as "this line is not part of the dialog". And with no space to spare, the hint is
- * the one row that must never wrap: it is a key legend, not prose.
- *
- * Right-aligned and space-free is what the setup dialog does ("Up/Down move | Enter select |
- * Esc exit"), so the two modals put their legends in the same place. */
-::ftxui::Element HintRow(const std::string &s)
-{
-    return ::ftxui::hbox({::ftxui::filler(), ::ftxui::text(s) | ::ftxui::color(style::palette().text_dim)});
-}
+/* The key hints at the bottom used to live here. They are gone: the buttons are labelled, the
+ * only other key is Esc, and a legend under a two-button dialog explained something the dialog
+ * already said. Their removal also removes a class of bug -- the legend was the one row that
+ * could not wrap, so it was forever one column away from matching the separator above it. */
 
 } // namespace
 
@@ -336,7 +331,7 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
     {
     case State::CONFIRM:
     {
-        rows.push_back(hbox({Row("EdgeClaw "), text(tag_) | bold | color(pal.accent), filler()}));
+        rows.push_back(hbox({Row("EdgeClaw ", Tone::Accent), text(tag_) | bold | color(pal.accent), filler()}));
         rows.push_back(separator() | color(pal.line_dim));
         rows.push_back(Row("A newer release is available. Updating replaces this"));
         rows.push_back(Row("binary with the published one for your platform."));
@@ -346,34 +341,28 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
         rows.push_back(Row("Your conversations are kept, but the database is"));
         rows.push_back(Row("upgraded on first start -- and an older version will"));
         rows.push_back(Row("refuse it afterwards. This update cannot be undone."));
-        rows.push_back(text(""));
-        rows.push_back(HintRow("Left/Right choose  |  Enter confirm  |  Esc cancel"));
         break;
     }
 
     case State::RUNNING:
-        rows.push_back(hbox({Row("Updating to "), text(tag_) | bold | color(pal.accent)}));
+        rows.push_back(hbox({Row("Updating to ", Tone::Accent), text(tag_) | bold | color(pal.accent)}));
         rows.push_back(separator() | color(pal.line_dim));
         rows.push_back(Row("Downloading and installing. This can take a moment."));
-        rows.push_back(text(""));
-        rows.push_back(HintRow("Esc abandons the update"));
         break;
 
     case State::DONE:
-        rows.push_back(hbox({Row("Updated to "), text(tag_) | bold | color(pal.accent)}));
+        rows.push_back(hbox({Row("Updated to ", Tone::Accent), text(tag_) | bold | color(pal.accent)}));
         rows.push_back(separator() | color(pal.line_dim));
         rows.push_back(Row("The new binary is in place."));
         rows.push_back(text(""));
         /* Deliberately not "restarting now": an automatic restart would interrupt whatever
          * task is running, and the choice of when belongs to the user. */
         rows.push_back(Row("Quit and start EdgeClaw again to use it.") | bold);
-        rows.push_back(text(""));
-        rows.push_back(HintRow("Enter closes"));
         break;
 
     case State::FAILED:
     {
-        rows.push_back(Row("Update failed") | bold | color(pal.accent));
+        rows.push_back(Row("Update failed", Tone::Accent));
         rows.push_back(separator() | color(pal.line_dim));
         rows.push_back(Row("The update did not complete; this version is unchanged."));
         if (!detail_.empty())
@@ -381,8 +370,9 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
             rows.push_back(text(""));
             /* The installer's own output, wrapped rather than clipped: it is the only
              * diagnostic a user can paste into a report, and half a line is not a diagnostic.
-             * Quoted, so Muted -- the distinction is "what the dialog says" vs "what another
-             * program said", not bright vs grey for its own sake. */
+             * Same colour as the rest: a quoted paragraph in a different shade read as a
+             * different kind of statement, and on a page that is entirely about one failure
+             * there is nothing for the distinction to say. */
             int shown = 0;
             size_t pos = 0;
             while (pos <= detail_.size() && shown < kMaxDetailLines)
@@ -392,7 +382,7 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
                     detail_.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
                 if (!line.empty())
                 {
-                    PushRow(rows, line, Tone::Muted);
+                    PushRow(rows, line);
                     shown++;
                 }
                 if (nl == std::string::npos)
@@ -403,20 +393,18 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
         if (on_hint_)
         {
             rows.push_back(text(""));
-            rows.push_back(Row("To update by hand:", Tone::Muted));
+            rows.push_back(Row("To update by hand:"));
             /* Wrapped, not clipped: this is the line the user copies, and the real one is
              * twice the dialog's width. */
-            PushRow(rows, on_hint_(), Tone::Muted);
+            PushRow(rows, on_hint_());
         }
-        rows.push_back(text(""));
-        rows.push_back(HintRow("Enter closes"));
         break;
     }
 
     case State::UNAVAILABLE:
     default:
     {
-        rows.push_back(hbox({Row("Update "), text(tag_) | bold | color(pal.accent), filler()}));
+        rows.push_back(hbox({Row("Update ", Tone::Accent), text(tag_) | bold | color(pal.accent), filler()}));
         rows.push_back(separator() | color(pal.line_dim));
         /* Why this copy cannot do it itself: the installer is what knows how to fetch and
          * check a release, and it only manages binaries it put there. */
@@ -425,11 +413,9 @@ bool UpdateDialog::OnEvent(::ftxui::Event event)
         if (on_hint_)
         {
             rows.push_back(text(""));
-            rows.push_back(Row("To update by hand:", Tone::Muted));
-            PushRow(rows, on_hint_(), Tone::Muted);
+            rows.push_back(Row("To update by hand:"));
+            PushRow(rows, on_hint_());
         }
-        rows.push_back(text(""));
-        rows.push_back(HintRow("Enter closes"));
         break;
     }
     }
