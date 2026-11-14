@@ -123,6 +123,29 @@ struct edc_https_request
      * during teardown. Kept here as well as counted so teardown can cancel it. */
     uv_getaddrinfo_t *resolver;
 
+    /* The whole address list from the lookup, and where the connect attempt has got to.
+     *
+     * Both families are asked for and every address is tried in turn, because one of them can
+     * be unusable while the other is fine -- IPv4 is blocked on some networks (a reset during
+     * the handshake) while IPv6 works, and the reverse happens where IPv6 is configured but
+     * not routed. The lookup usually returns IPv4 first, so "take the first result" was a
+     * silent dependency on IPv4 being reachable; on a network where it is not, every https
+     * request to such a host failed with "connection reset by peer" while curl (which does try
+     * the next address) worked. |addrs| is owned here and freed when the request is. */
+    struct addrinfo *addrs;
+    struct addrinfo *try_addr;
+    /* Which family the current pass is offering: 0 = IPv6 only, 1 = IPv4 only.
+     *
+     * Two passes rather than one list in lookup order. The lookup usually answers IPv4 first,
+     * and on some networks an IPv4 connection to a host is accepted and then RESET during the
+     * TLS handshake -- so the failure does not even come back from connect(), where picking the
+     * next address would be enough. Offering IPv6 first avoids that path entirely; the IPv4
+     * pass still runs when there is no IPv6 address, or when IPv6 turns out to be unusable. */
+    int addr_phase;
+    /* Set while a failed connect is handing over to the next address: the socket's close
+     * callback must re-arm rather than release the request. */
+    bool retry_pending;
+
     /* Redirect following (301/302/303/307/308). |location| is the raw Location header of a
      * 3xx response; |redirecting| means this response is being discarded in favour of a new
      * request, so no body or CLOSE is delivered to the caller. |redirects_left| is the budget
@@ -405,7 +428,15 @@ static void edc_https_on_timeout(uv_timer_t *timer);
 static struct edc_https_request *edc_https_request_new(struct edc_https_client *client, const char *url,
                                                        edc_https_event_fn fn, void *priv, int redirects_left)
 {
-    struct edc_https_request *req = malloc(sizeof(struct edc_https_request));
+    /* calloc, not malloc: this struct has grown several flags over time (tool_only-style
+     * booleans, retry_pending, addr_phase) and each one was a chance to read an uninitialised
+     * value on a path that does not set it. UBSan caught exactly that: a load of 190 as a
+     * `bool` in edc_https_on_tcp_close, from a request that never went through the retry path.
+     * Zeroing once here means a new field starts as "off" without every future addition having
+     * to remember an explicit initialiser. */
+    struct edc_https_request *req = calloc(1, sizeof(struct edc_https_request));
+    if (!req)
+        return NULL;
     req->client = client;
     req->priv = priv;
     req->fn = fn;
@@ -456,7 +487,10 @@ static struct edc_https_request *edc_https_request_new(struct edc_https_client *
      * context. */
     mbedtls_ssl_init(&req->ssl);
 
-    uv_tcp_init(&client->loop, &req->socket);
+    /* AF_UNSPEC, not uv_tcp_init(): the family is not known until the lookup answers, and the
+     * answer may be either one. libuv then creates the socket when connecting, for whatever
+     * family the address is. See the struct's note on |addrs|. */
+    uv_tcp_init_ex(&client->loop, &req->socket, AF_UNSPEC);
 
     /* The timer starts at creation: connect failure, handshake failure, sent but no
      * reply -- all three hangs are covered. One-shot (repeat=0): the completion path
@@ -504,6 +538,10 @@ static void edc_https_request_dispose(struct edc_https_request *req)
     }
 
     mbedtls_ssl_free(&req->ssl);
+    /* The whole lookup result, not just the address that was tried: it is one allocation from
+     * getaddrinfo and must be freed once, after the last attempt. */
+    if (req->addrs)
+        uv_freeaddrinfo(req->addrs);
     sdsfree(req->request_target);
     sdsfree(req->url);
     sdsfree(req->location);
@@ -586,6 +624,9 @@ int edc_https_client_connect(struct edc_https_client *client, const char *url, e
 }
 
 static void edc_https_on_tcp_close(uv_handle_t *handle);
+/* Defined with the connect path further down; the close callback calls it to move on to the
+ * next address after a failed connect. */
+static void try_next_address(struct edc_https_request *req);
 
 const char *edc_https_request_get_host(struct edc_https_request *req)
 {
@@ -662,6 +703,21 @@ int edc_https_request_write(struct edc_https_request *req, const unsigned char *
 static void edc_https_on_tcp_close(uv_handle_t *handle)
 {
     struct edc_https_request *req = (struct edc_https_request *)handle;
+
+    /* A failed connect handing over to the next address. The socket cannot be reused (its
+     * connect failed, so its state is not one to connect from again), so it is re-created for
+     * whatever family the next address is, and the request stays alive: this is not the end
+     * of it, and releasing here would free a request the retry is about to use. */
+    if (req->retry_pending)
+    {
+        req->retry_pending = false;
+        if (uv_tcp_init_ex(&req->client->loop, &req->socket, AF_UNSPEC) != 0)
+        {
+            req->try_addr = NULL; /* cannot re-arm: report through the same path as none left */
+        }
+        try_next_address(req);
+        return;
+    }
 
     /* A followed redirect: this hop is not the caller's answer, so no CLOSE is delivered --
      * from the caller's point of view one request was made and one answer arrived. The
@@ -967,11 +1023,67 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
     }
 }
 
+static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status);
+
+/* Connect to the next address in the list, or report that none of them worked.
+ *
+ * The socket is initialised with AF_UNSPEC (see edc_https_request_new), so libuv creates it
+ * for whatever family the address turns out to be. That is what allows one request to end up
+ * on IPv4 or IPv6 depending on which one the network can actually reach.
+ *
+ * A synchronous uv_tcp_connect() failure (bad address, no memory) is skipped rather than
+ * reported: it is not the answer, it is one more address that did not work. */
+static void try_next_address(struct edc_https_request *req)
+{
+    const int want = (req->addr_phase == 0) ? AF_INET6 : AF_INET;
+
+    while (req->try_addr)
+    {
+        struct addrinfo *ai = req->try_addr;
+        req->try_addr = ai->ai_next;
+        if (ai->ai_family != want)
+            continue;
+        if (uv_tcp_connect(&req->conn, &req->socket, ai->ai_addr, edc_https_client_on_tcp_connect) == 0)
+            return;
+        /* A synchronous failure is one more address that did not work; keep going. */
+    }
+
+    if (req->addr_phase == 0 && req->addrs)
+    {
+        /* No IPv6 address worked (or there was none). Offer the IPv4 ones now. */
+        req->addr_phase = 1;
+        req->try_addr = req->addrs;
+        try_next_address(req);
+        return;
+    }
+
+    /* Every address failed before even reaching the network. */
+    sds err_message = sdsnew("tcp connect failed: no usable address");
+    req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
+    sdsfree(err_message);
+    edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+}
+
 static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status)
 {
     struct edc_https_request *req = (struct edc_https_request *)conn->handle;
     if (status < 0)
     {
+        /* Another address may work. One family being unreachable is a property of the network,
+         * not of the request: resetting every IPv4 handshake on the way to such a host is a
+         * real way to be online and still unable to fetch anything from it.
+         *
+         * The retry cannot reuse this socket -- a socket whose connect failed is not one to
+         * connect again -- so the close callback re-initialises it and calls back into
+         * try_next_address(). retry_pending is what tells that callback to re-arm instead of
+         * releasing the request. */
+        if (status != UV_ECANCELED && req->try_addr)
+        {
+            req->retry_pending = true;
+            edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+            return;
+        }
+
         /* UV_ECANCELED is not a failure of the request: it means this handle was closed
          * while the connect was pending, i.e. the caller already gave up and is tearing the
          * client down. Reporting an error to it then would be noise at best -- the deadline
@@ -1038,11 +1150,12 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
         return;
     }
 
-    uv_tcp_connect(&http_req->conn, &http_req->socket, res->ai_addr, edc_https_client_on_tcp_connect);
-    uv_freeaddrinfo(res);
+    /* Keep the whole list and walk it: the first address is not always the reachable one (see
+     * the struct's note on |addrs|). The request owns it from here. */
+    http_req->addrs = res;
+    http_req->try_addr = res;
     free(req);
-    /* Last: this may free the request, so nothing may touch http_req after it. */
-    edc_https_request_release(http_req);
+    try_next_address(http_req);
 }
 
 static void on_work_async(uv_async_t *handle)
@@ -1075,7 +1188,11 @@ static void on_work_async(uv_async_t *handle)
         }
 
         struct addrinfo hints = {0};
-        hints.ai_family = PF_INET;
+        /* Both families. PF_INET here meant "IPv4 or nothing", which is invisible until the
+         * network is one where IPv4 to a host is reset while IPv6 is fine -- then every
+         * request to that host fails with "connection reset by peer" and looks like a server
+         * problem. The addresses are tried in turn (try_next_address). */
+        hints.ai_family = PF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
         hints.ai_flags = 0;

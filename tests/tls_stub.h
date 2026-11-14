@@ -79,7 +79,7 @@ struct tls_stub
  *
  * Returns 0 on success, -1 on failure.
  */
-static int tls_stub_cert(const char *cert_path, const char *key_path)
+static int tls_stub_cert_named(const char *cert_path, const char *key_path, const char *common_name)
 {
     int rc = -1;
     mbedtls_entropy_context entropy;
@@ -105,10 +105,15 @@ static int tls_stub_cert(const char *cert_path, const char *key_path)
     mbedtls_x509write_crt_set_subject_key(&crt, &key);
     mbedtls_x509write_crt_set_issuer_key(&crt, &key);
 
-    if (mbedtls_x509write_crt_set_subject_name(&crt, "CN=localhost,O=EdgeClaw") != 0)
-        goto out;
-    if (mbedtls_x509write_crt_set_issuer_name(&crt, "CN=localhost,O=EdgeClaw") != 0)
-        goto out;
+    {
+        const char *cn = (common_name && common_name[0]) ? common_name : "localhost";
+        char subject[128];
+        snprintf(subject, sizeof(subject), "CN=%s,O=EdgeClaw", cn);
+        if (mbedtls_x509write_crt_set_subject_name(&crt, subject) != 0)
+            goto out;
+        if (mbedtls_x509write_crt_set_issuer_name(&crt, subject) != 0)
+            goto out;
+    }
     /* Wide, fixed validity so the test cannot rot. */
     if (mbedtls_x509write_crt_set_validity(&crt, "20200101000000", "20450101000000") != 0)
         goto out;
@@ -160,6 +165,12 @@ out:
     mbedtls_ctr_drbg_free(&drbg);
     mbedtls_entropy_free(&entropy);
     return rc;
+}
+
+/* The common case: a certificate for "localhost". */
+static int tls_stub_cert(const char *cert_path, const char *key_path)
+{
+    return tls_stub_cert_named(cert_path, key_path, "localhost");
 }
 
 /* ── the server ─────────────────────────────────────────────────────────────── */
@@ -349,6 +360,17 @@ static void tls_stub_thread(void *arg)
     }
 }
 
+/* Listen on ::1 only. Same server, same certificate checks -- the difference is the family.
+ *
+ * Exists so a case can reproduce "the first address the resolver offers is unreachable": this
+ * system maps `ip6-localhost` to ::1 and nothing else, so a client that asks only for IPv4
+ * finds no address at all, while one that asks for both reaches it.
+ *
+ * Defined after tls_stub_thread (below) so it can start it; the forward declaration of that
+ * thread is not needed because this header's functions are all static and ordered. */
+static int tls_stub_start_v6(struct tls_stub *s, const char *cert_path, const char *key_path,
+                             const char *raw_response);
+
 /* Start listening on a kernel-assigned loopback port. Returns 0 on success, -1 on failure. */
 static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char *key_path,
                           const char *raw_response)
@@ -387,6 +409,38 @@ static void tls_stub_stop(struct tls_stub *s)
 {
     uv_thread_join(&s->thread);
     close(s->listen_fd);
+}
+
+static int tls_stub_start_v6(struct tls_stub *s, const char *cert_path, const char *key_path,
+                             const char *raw_response)
+{
+    struct sockaddr_in6 addr;
+    socklen_t alen = sizeof(addr);
+
+    memset(s, 0, sizeof(*s));
+    s->raw_response = raw_response;
+    tls_stub_last_request[0] = '\0';
+    s->listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (s->listen_fd < 0)
+        return -1;
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_loopback;
+    addr.sin6_port = 0; /* kernel picks, as in the IPv4 stub */
+    if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return -1;
+    if (listen(s->listen_fd, 4) != 0)
+        return -1;
+    if (getsockname(s->listen_fd, (struct sockaddr *)&addr, &alen) != 0)
+        return -1;
+    s->port = ntohs(addr.sin6_port);
+
+    tls_stub_cert_file = cert_path;
+    tls_stub_key_file = key_path;
+    if (uv_thread_create(&s->thread, tls_stub_thread, s) != 0)
+        return -1;
+    return 0;
 }
 
 /* Build a complete HTTP/1.1 response into |out|. `status_line` is e.g. "429 Too Many

@@ -752,6 +752,75 @@ static void test_free_while_lookup_in_flight()
     }
 }
 
+/* A host whose only address is on the other family.
+ *
+ * This is the shape of the bug that made every upgrade fail on networks where IPv4 to
+ * raw.githubusercontent.com is reset during the TLS handshake while IPv6 is fine: the client
+ * asked the resolver for IPv4 only, so it never saw the address that worked, and the failure
+ * ("connection reset by peer") looked like a server problem. curl, which tries what it is
+ * given, worked -- which is what made the two paths disagree.
+ *
+ * `ip6-localhost` maps to ::1 and to nothing else on this system, so an IPv4-only lookup
+ * returns no address at all. The stub listens on ::1 with a certificate for that name.
+ */
+static void test_reaches_a_host_that_only_has_ipv6()
+{
+    TEST("a host reachable only over IPv6 is reached, not reported as unreachable");
+
+    char cert[600];
+    char key[600];
+    snprintf(cert, sizeof(cert), "%s/v6-cert.pem", g_dir);
+    snprintf(key, sizeof(key), "%s/v6-key.pem", g_dir);
+    if (tls_stub_cert_named(cert, key, "ip6-localhost") != 0)
+    {
+        CHECK(false, "could not generate a certificate for ip6-localhost");
+        return;
+    }
+
+    char raw[512];
+    tls_stub_response(raw, sizeof(raw), "200 OK", "{\"ok\":true}");
+
+    struct tls_stub stub;
+    if (tls_stub_start_v6(&stub, cert, key, raw) != 0)
+    {
+        printf("    (skipped: cannot listen on ::1 here)\n");
+        return;
+    }
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://ip6-localhost:%d/chat/completions", stub.port);
+
+    /* run() builds its own client with g_cert (the localhost CA); this case needs the CA that
+     * signed the ip6-localhost certificate, and here they are the same self-signed file. */
+    struct seen s;
+    memset(&s, 0, sizeof(s));
+    uv_sem_init(&s.done, 0);
+
+    struct edc_https_client *client = edc_https_client_new(cert);
+    CHECK(client != NULL, "the client was created");
+    if (client)
+    {
+        const int rc = edc_https_client_connect(client, url, on_event, &s);
+        CHECK(rc == 0, "connect() accepted the request, got %d", rc);
+
+        uv_thread_t dog;
+        const bool dog_ok = uv_thread_create(&dog, watchdog, &s) == 0;
+        uv_sem_wait(&s.done);
+        if (dog_ok)
+            uv_thread_join(&dog);
+
+        CHECK(s.closed && !s.timed_out, "the request completed rather than hanging");
+        CHECK(s.error[0] == '\0', "no error was reported: %.90s", s.error);
+        CHECK(s.status == 200, "the IPv6 address was reached, status %d", s.status);
+        CHECK(s.body && strcmp(s.body, "{\"ok\":true}") == 0, "and the body arrived");
+
+        edc_https_client_free(client);
+    }
+    uv_sem_destroy(&s.done);
+    free_seen(&s);
+    tls_stub_stop(&stub);
+}
+
 int main(void)
 {
     /* The stubs write to sockets whose peer has hung up (that is how the handshake and the
@@ -787,6 +856,7 @@ int main(void)
     test_free_while_connect_in_flight();
     test_free_while_lookup_in_flight();
     test_free_at_every_stage();
+    test_reaches_a_host_that_only_has_ipv6();
     test_handshake_failure();
     test_timeout();
     test_success_event_sequence();
