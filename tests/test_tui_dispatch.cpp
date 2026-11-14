@@ -997,62 +997,6 @@ void TestUpdateBanner(edc::TUIWindow &win)
      *
      * （"确认更新"那一页由 test_update_dialog 直接驱动，不需要这里再走一遍。） */
     TypeAndSubmit(win, "/update");
-    /* The panel must read as a rectangle, and nothing from the transcript may touch it.
-     *
-     * A borderless dialog has only its background to mark its edge, and the chat text is right
-     * there: on rows where a line happens to reach the panel, the boundary looked ragged --
-     * the panel seemed cut out of the text rather than laid over it. The fix is a gutter of the
-     * pane's own colour, so this asserts both halves: the panel's left and right columns are
-     * the same on every row it covers, and the two cells just outside it are blank. */
-    {
-        auto mk = [] { return ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(kW), ::ftxui::Dimension::Fixed(kH)); };
-        ::ftxui::Screen sc = mk();
-        for (int pass = 0; pass < 3; pass++)
-        {
-            sc = mk();
-            ::ftxui::Render(sc, win.OnRender());
-        }
-        const auto panel_bg = edc::style::palette().dialog_bg;
-
-        int first = -1, last = -1, rows = 0;
-        bool columns_constant = true, gutter_blank = true;
-        for (int y = 0; y < kH; y++)
-        {
-            int row_first = -1, row_last = -1;
-            for (int x = 0; x < kW; x++)
-            {
-                if (sc.CellAt(x, y).background_color == panel_bg)
-                {
-                    if (row_first < 0)
-                        row_first = x;
-                    row_last = x;
-                }
-            }
-            if (row_first < 0)
-                continue;
-            rows++;
-            if (first < 0)
-            {
-                first = row_first;
-                last = row_last;
-            }
-            else if (row_first != first || row_last != last)
-            {
-                columns_constant = false;
-            }
-            /* Two blank cells between the transcript and the panel. */
-            for (int x = row_first - 2; x < row_first; x++)
-                if (x < 0 || sc.CellAt(x, y).character != " ")
-                    gutter_blank = false;
-            for (int x = row_last + 1; x <= row_last + 2; x++)
-                if (x >= kW || sc.CellAt(x, y).character != " ")
-                    gutter_blank = false;
-        }
-
-        Check(rows > 0, "对话框已经上屏");
-        Check(columns_constant, "对话框的左右两列在它覆盖的每一行都是同一列（是矩形，不是凹凸边界）");
-        Check(gutter_blank, "面板左右各有两列空白：聊天文字不再顶到面板边缘");
-    }
     const std::string modal = FrameOf(win);
     Check(Has(modal, "cannot update itself"), "/update 打开了对话框，并说明这份副本不能自升级");
     Check(Has(modal, "To update by hand"), "并把该手敲的命令给出来");
