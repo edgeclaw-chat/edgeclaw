@@ -19,7 +19,9 @@ namespace
  * stays anchored, so it does not jump). The width is fixed so the centered column does
  * not shift. */
 constexpr int kListRows = 12;
-constexpr int kDialogWidth = 76;
+/* The number itself lives on the class, because the modal host needs it too (see
+ * edc_modal.hpp). */
+constexpr int kDialogWidth = SetupDialog::kContentWidth;
 
 /* Same base URL: the config may hold a base or a full endpoint, with or without a
  * trailing slash. */

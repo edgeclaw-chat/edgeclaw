@@ -7,6 +7,7 @@
 #include "edc_history_line.hpp"
 #include "edc_token_style.hpp"
 #include "edc_input.hpp"
+#include "edc_modal.hpp"
 #include "edc_scroll_view.hpp"
 #include "edc_sidebar.hpp"
 #include "edc_status_bar_view.hpp"
@@ -1255,38 +1256,23 @@ void TUIWindow::OpenUpdate()
 
     auto base = split_->Render() | ::ftxui::bgcolor(style::palette().window_bg);
 
-    /* The modal overlay.
-     *
-     * A borderless dialog has only its surface to mark its edge, so it reads as a rectangle
-     * only if the ground around it is ONE colour. `dim` was not enough: the chat's own rows
-     * alternate between the message surface and the gap between messages, and dim darkens them
-     * by different amounts, so the panel's dead-straight edge met a striped backdrop and looked
-     * jagged -- worst on the left, where the transcript's text also came and went.
-     *
-     * So the pane is first blended toward a flat colour (background only -- the text stays
-     * legible underneath, which is the point of not hiding the transcript entirely), and the
-     * panel is drawn on that uniform ground. `clear_under` still matters: it is what removes the
-     * per-cell `dim`/blend residue from the cells the panel covers.
+    /* The modal overlay: see edc_modal.hpp. Two things had to be right for a borderless panel
+     * to read as a rectangle, and neither is about the panel itself -- the ground behind it has
+     * to be one colour (the chat alternates between the message surface and the gap between
+     * messages, and `dim` darkens those by different amounts), and no fullwidth character may
+     * sit in the cell just left of it (ftxui skips the cell after a wide character, so the
+     * panel's first column was never emitted on those rows -- measured, not guessed).
      *
      * The update dialog is checked first: it appears while the app is in use, the wizard only on
      * first run, and if both were somehow open the newer question is the update. */
-    auto overlay = [&](const ::ftxui::Element &dialog) {
-        /* Flatten, not blend: a blend keeps a trace of what was underneath, so the alternating
-         * message/gap rows still differed afterwards -- measured, and it is why the first
-         * attempt at this still looked striped. Forcing the background makes the ground one
-         * tone; the dimmed transcript still shows through the text. */
-        auto veil = ::ftxui::vbox({::ftxui::filler()}) | ::ftxui::bgcolor(style::palette().window_bg);
-        return ::ftxui::dbox({
-            std::move(base) | ::ftxui::dim,
-            edc::FlattenBackground(std::move(veil), style::palette().window_bg),
-            dialog | ::ftxui::clear_under | ::ftxui::center,
-        });
-    };
+    const auto &pal = style::palette();
     if (update_dialog_ && update_dialog_->IsOpen())
-        return overlay(update_dialog_->Render());
+        return edc::ModalOverlay(base | ::ftxui::dim, update_dialog_->Render(),
+                                 ui::UpdateDialog::PanelWidth(), pal.window_bg, pal.dialog_bg);
     if (!setup_dialog_->IsOpen())
         return base;
-    return overlay(setup_dialog_->Render());
+    return edc::ModalOverlay(base | ::ftxui::dim, setup_dialog_->Render(), ui::SetupDialog::PanelWidth(),
+                             pal.window_bg, pal.dialog_bg);
 }
 
 bool TUIWindow::OnEvent(::ftxui::Event event)

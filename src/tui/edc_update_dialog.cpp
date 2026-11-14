@@ -15,13 +15,9 @@ namespace
 {
 
 /* Narrower than the setup wizard: this dialog is prose plus two buttons, and the setup
- * wizard's width makes short lines read as gaps.
- *
- * 64, not 62, because of the "by hand" block: the release URL is 61 columns, and the text
- * area is kDialogWidth - 2, so at 62 the URL broke at its last slash and left "v9.9.9" on a
- * line of its own. 64 puts it back on one line without widening the prose enough to read as
- * gappy. Measured on a rendered frame, not estimated. */
-constexpr int kDialogWidth = 64;
+ * wizard's width makes short lines read as gaps. The number itself lives on the class, because
+ * the modal host needs it too (see edc_modal.hpp). */
+constexpr int kDialogWidth = UpdateDialog::kContentWidth;
 /* What a line of text can actually occupy: the width minus the two-space indent every row
  * carries. Wrapping is measured against this, not kDialogWidth, or every wrapped line would
  * overflow by exactly the indent. */

@@ -39,6 +39,14 @@ class SetupDialog : public Widget
         return open_;
     }
 
+    /* The content width, and the rendered width including the two cells BorderStyle::EMPTY
+     * reserves. The host needs PanelWidth() to place the panel -- see edc_modal.hpp. */
+    static constexpr int kContentWidth = 76;
+    static constexpr int PanelWidth()
+    {
+        return kContentWidth + 2;
+    }
+
     // The window forwards events here while open (Esc exits, Up/Down move, Enter selects,
     // the rest is typed into the current step's field).
     bool OnEvent(::ftxui::Event event) override;
