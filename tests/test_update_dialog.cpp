@@ -23,12 +23,14 @@
  */
 
 #include "edc_update_dialog.hpp"
+#include "edc_style.hpp"
 
 #include <ftxui/component/event.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -77,16 +79,98 @@ std::string Plain(const std::string &frame)
     return out;
 }
 
-std::string Frame(edc::ui::UpdateDialog &dialog, int w = 70, int h = 22)
+std::string Frame(edc::ui::UpdateDialog &dialog, int w = 78, int h = 22)
 {
     auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(w), ::ftxui::Dimension::Fixed(h));
     ::ftxui::Render(screen, dialog.Render());
     return Plain(screen.ToString());
 }
 
+/* A rendered frame kept as cells, for the two things a stripped string cannot answer: what
+ * colour a row actually is, and which column a row actually ends at. */
+struct Cells
+{
+    int width = 0;
+    int height = 0;
+    std::vector<std::string> chars; /* one per cell */
+    std::vector<::ftxui::Color> fg;
+
+    std::string RowText(int y) const
+    {
+        std::string s;
+        for (int x = 0; x < width; x++)
+            s += chars[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+        return s;
+    }
+
+    /* Last column holding a non-space character, or -1 for a blank row. */
+    int LastInkColumn(int y) const
+    {
+        for (int x = width - 1; x >= 0; x--)
+            if (chars[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)] != " ")
+                return x;
+        return -1;
+    }
+
+    /* Row index whose text contains |needle|, or -1. */
+    int FindRow(const std::string &needle) const
+    {
+        for (int y = 0; y < height; y++)
+            if (RowText(y).find(needle) != std::string::npos)
+                return y;
+        return -1;
+    }
+
+    ::ftxui::Color FgAt(int x, int y) const
+    {
+        return fg[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+    }
+
+    /* Foreground colour of the first cell of the first row containing |needle|. Assumes the
+     * needle is unique in the frame, which every caller below arranges. */
+    ::ftxui::Color InkOf(const std::string &needle) const
+    {
+        const int y = FindRow(needle);
+        if (y < 0)
+            return ::ftxui::Color::Default;
+        const std::string row = RowText(y);
+        const size_t at = row.find(needle);
+        return FgAt(static_cast<int>(at), y);
+    }
+};
+
+Cells Capture(edc::ui::UpdateDialog &dialog, int w = 78, int h = 24)
+{
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(w), ::ftxui::Dimension::Fixed(h));
+    ::ftxui::Render(screen, dialog.Render());
+
+    Cells c;
+    c.width = w;
+    c.height = h;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+        {
+            const auto &cell = screen.CellAt(x, y);
+            c.chars.push_back(cell.character);
+            c.fg.push_back(cell.foreground_color);
+        }
+    return c;
+}
+
 bool Has(const std::string &frame, const std::string &needle)
 {
     return frame.find(needle) != std::string::npos;
+}
+
+/* The frame with every space removed: used to prove that a wrapped line lost nothing. A
+ * truncated line and a wrapped one look equally short in a per-row search. */
+std::string Squashed(const std::string &frame)
+{
+    std::string out;
+    for (char c : frame)
+        if (c != ' ' && c != '\n' && c != '\r')
+            out += c;
+    return out;
 }
 
 /* The first row that has any non-space character.
@@ -309,6 +393,150 @@ int main()
         auto dialog = MakeDialog(hooks);
         CHECK(!dialog.OnEvent(::ftxui::Event::Return), "a closed dialog consumes nothing");
         CHECK(!dialog.OnEvent(::ftxui::Event::Escape), "not even Esc");
+    }
+
+    printf("\n── body prose is one colour ──\n");
+    {
+        /* The bug: some rows had no colour (terminal default) and others were pal.text_dim, and
+         * the two met INSIDE a paragraph -- "Your conversations are kept…" started bright and
+         * turned grey mid-sentence. A row that says nothing about its colour is a row that will
+         * disagree with its neighbours, so this asserts the whole paragraph against pal.text. */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+        const Cells c = Capture(dialog);
+
+        const auto &pal = edc::style::palette();
+        const char *body[] = {"A newer release is available", "binary with the published one",
+                              "Your conversations are kept", "upgraded on first start",
+                              "refuse it afterwards"};
+        for (const char *needle : body)
+        {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "\"%s\" is pal.text, not the terminal default", needle);
+            CHECK(c.InkOf(needle) == pal.text, msg);
+        }
+        /* All five agree with each other, which is the property the user actually sees. */
+        CHECK(c.InkOf(body[0]) == c.InkOf(body[3]), "the paragraph does not change colour halfway through");
+    }
+
+    printf("\n── the key hint is flush with the right edge ──\n");
+    {
+        /* It used to end in a space, which after right-alignment left the last character one
+         * column short of the separator above it -- a hairline that reads as "this line does
+         * not belong to the dialog".
+         *
+         * Measured in columns of TEXT, not cells: the separator is a wide (3-byte) character and
+         * the cells past the dialog are blank padding, so counting cells answers a different
+         * question than "do these two rows end together". */
+        Hooks hooks;
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v1.0.1", /*can_upgrade=*/true);
+
+        /* Exactly as wide as the dialog, so there is no padding to confuse the arithmetic. */
+        const std::string frame = Frame(dialog, 66, 20);
+        std::vector<std::string> lines;
+        {
+            std::string cur;
+            for (char ch : frame)
+            {
+                if (ch == '\n')
+                {
+                    lines.push_back(cur);
+                    cur.clear();
+                }
+                else if (ch != '\r')
+                {
+                    cur += ch;
+                }
+            }
+            lines.push_back(cur);
+        }
+
+        auto columns = [](const std::string &s) {
+            /* Count UTF-8 code points: every glyph ftxui draws here occupies one column. */
+            size_t n = 0;
+            for (size_t i = 0; i < s.size();)
+            {
+                const unsigned char b = static_cast<unsigned char>(s[i]);
+                i += (b < 0x80) ? 1 : ((b >> 5) == 0x6) ? 2 : ((b >> 4) == 0xE) ? 3 : 4;
+                n++;
+            }
+            return n;
+        };
+
+        int hint_end = -1;
+        int rule_end = -1;
+        for (const std::string &line : lines)
+        {
+            const size_t at = line.find("Esc cancel");
+            if (at != std::string::npos)
+                hint_end = static_cast<int>(columns(line.substr(0, at)) + strlen("Esc cancel"));
+
+            if (line.find("\xE2\x94\x80") != std::string::npos) /* first rule row: the header's */
+            {
+                /* Trim the row's own right padding first: the ink ends where the last
+                 * non-space character is, and the line is padded to the dialog's width. */
+                size_t end = line.find_last_not_of(' ');
+                end = (end == std::string::npos) ? 0 : end + 1;
+                rule_end = hint_end >= 0 ? rule_end : static_cast<int>(columns(line.substr(0, end)));
+            }
+        }
+        CHECK(hint_end > 0, "the key hint renders");
+        CHECK(rule_end > 0, "the separator renders");
+
+        printf("      hint ends at column %d, separator at %d\n", hint_end, rule_end);
+        CHECK(hint_end == rule_end, "the hint ends on the same column as the separator above it");
+    }
+
+    printf("\n── a long command wraps instead of being cut off ──\n");
+    {
+        /* `edc_upgrade_manual_hint` returns lines ~120 columns wide against a ~64-column
+         * dialog. Clipping them is the worst option: a truncated command still looks complete,
+         * so a user copies half of it and cannot tell. Squash the frame (drop every space) and
+         * the whole command must still be in there. */
+        Hooks hooks;
+        /* The real shape: an intro line, a release URL (61 columns), a lead-in and the
+         * command. */
+        hooks.hint =
+            "download v9.9.9 from\n"
+            "  https://github.com/edgeclaw-chat/edgeclaw/releases/tag/v9.9.9\n"
+            "or run:\n"
+            "  curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/v9.9.9/tools/install.sh "
+            "| sh -s -- --tag v9.9.9";
+
+        auto dialog = MakeDialog(hooks);
+        dialog.Open("v9.9.9", /*can_upgrade=*/false);
+        CHECK(dialog.state() == edc::ui::UpdateDialog::State::UNAVAILABLE, "the unavailable page");
+
+        const std::string frame = Frame(dialog);
+        const std::string squashed = Squashed(frame);
+
+        CHECK(squashed.find(Squashed("https://github.com/edgeclaw-chat/edgeclaw/releases/tag/v9.9.9")) !=
+                  std::string::npos,
+              "the release URL survives whole");
+        CHECK(squashed.find(Squashed("https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/v9.9.9/tools/"
+                                     "install.sh")) != std::string::npos,
+              "and so does the long URL inside the command");
+        CHECK(squashed.find(Squashed("| sh -s -- --tag v9.9.9")) != std::string::npos,
+              "including its tail -- the part a clipped line loses first");
+
+        /* The hint's own leading indent is dropped rather than added to the row's: rows already
+         * indent, and doubling it pushed the URL past the width (it spilled a lone "9"). The
+         * measurable form of that is "the URL starts in the same column as every other row".
+         * Compared against another row, because an absolute column count depends on the screen
+         * the frame was rendered into. */
+        const Cells c = Capture(dialog);
+        const int body_row = c.FindRow("This copy was not installed");
+        const int url_row = c.FindRow("https://github.com/edgeclaw-chat/edgeclaw/releases");
+        CHECK(body_row >= 0 && url_row >= 0, "both rows render");
+        if (body_row >= 0 && url_row >= 0)
+        {
+            const int body_col = static_cast<int>(c.RowText(body_row).find_first_not_of(" "));
+            const int url_col = static_cast<int>(c.RowText(url_row).find_first_not_of(" "));
+            printf("      body starts at %d, url at %d\n", body_col, url_col);
+            CHECK(url_col == body_col, "the URL sits at the same indent as the prose around it");
+        }
     }
 
     printf("\n── borderless, like every other surface ──\n");
