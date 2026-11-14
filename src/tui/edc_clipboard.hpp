@@ -32,10 +32,14 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 // surface, pinned to the top-right of the pane it is drawn in. |label| is used
 // verbatim (keep the surrounding spaces for the chip's breathing room). |fade| runs
 // from 0 (fully painted) to 1 (gone) -- FTXUI has no alpha.
-::ftxui::Element ToastChipElement(const std::string &label, float fade);
+//
+// |rows_above| is how many rows of the pane are already spoken for, so the chip can be
+// stacked under them instead of painted over them: when the update notice is up, the toasts
+// start below it. It defaults to 0, which keeps the lone-chip behaviour (top margin only).
+::ftxui::Element ToastChipElement(const std::string &label, float fade, int rows_above = 0);
 
 // The clipboard chip (ToastChipElement with the "Copied to clipboard" label).
-::ftxui::Element ClipboardToastElement(float fade);
+::ftxui::Element ClipboardToastElement(float fade, int rows_above = 0);
 
 // The same chip, but a standing notice rather than a toast: no fade, and a TRANSLUCENT
 // surface so what is behind it still reads through. |alpha| is how much of the backdrop
@@ -45,6 +49,16 @@ bool IsSelectionDrag(int press_x, int press_y, int release_x, int release_y);
 // toast is on its way out and washing out its text is the point; a notice that stays on
 // screen would spend its whole life hard to read. This is the readable half of the two.
 ::ftxui::Element TranslucentChipElement(const std::string &label, float alpha);
+
+// How many rows one chip occupies: the label plus the blank row above and below it that give
+// the surface its breathing room. Exported because the notices STACK -- a toast drawn while
+// the update notice is up has to start below it -- and that offset has to be the chip's real
+// height rather than a number someone typed twice.
+constexpr int kChipRows = 3;
+
+// One row of margin from the top edge, before the first chip. Every caller starts here so a
+// stack and a lone chip put their first row in the same place.
+constexpr int kChipTopMargin = 1;
 
 // When a chip is on screen and how far gone it is: a hold at full strength, then a
 // fade. Generic over which chip, so the clipboard toast and the loading hint both

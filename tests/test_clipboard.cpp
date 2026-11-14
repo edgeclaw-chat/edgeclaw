@@ -285,12 +285,11 @@ void TestTranslucentChip()
               "the label keeps the accent colour at alpha 0.35 -- this is what a fade cannot do");
         Check(shown.fg[label_cell] == opaque.fg[label_cell], "and it is exactly as strong as when fully opaque");
 
-        /* Left side of the pane, not the right: the transient toasts (copy, paste, backfill)
-         * all own the top-right corner, and a notice that never goes away would sit under
-         * every one of them. Pinning the corner here is what keeps a future refactor from
-         * quietly moving it back. */
+        /* Right side, the same corner the toasts use: one place to look for anything
+         * transient or standing. The toasts give way by stacking below this chip rather than
+         * by painting over it, so the two coexist instead of competing. */
         const int x = static_cast<int>(label_cell % static_cast<size_t>(width));
-        Check(x < width / 3, "the chip is pinned to the LEFT (toasts own the right)");
+        Check(x > width / 2, "the chip is pinned to the RIGHT, where the toasts are");
     }
 
     // The surface really is translucent: its background is neither the pane's nor the chip's
@@ -312,6 +311,90 @@ void TestTranslucentChip()
     Check(invisible.chars == plain.chars, "alpha 1 leaves the pane exactly as it was");
 }
 
+// The stacking rule: with the update notice standing in the top-right corner, a toast that
+// arrives has to start BELOW it, not on top of it.
+//
+// That is the whole reason ToastChipElement takes a row offset. Without it the copy
+// confirmation -- a reaction to something the user just did, visible for two seconds -- would
+// be the thing that gets hidden, by a notice that stands for days.
+void TestChipStacking()
+{
+    std::cout << "a toast stacks under the standing notice instead of over it\n";
+
+    const int width = 60;
+    const int height = 10;
+    const ::ftxui::Color pane = ::ftxui::Color::RGB(12, 34, 56);
+
+    /* Each chip is a label with a blank row above and below, so the label of a chip that
+     * starts at row |start| is one row lower. Named once here rather than as a magic +1. */
+    const int kLabelInChip = 1;
+
+    auto draw = [&](bool banner, bool toast, int rows_above) {
+        auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(width), ::ftxui::Dimension::Fixed(height));
+        ::ftxui::Element base =
+            ::ftxui::vbox({::ftxui::text("BASE-MARK"), ::ftxui::filler()}) | ::ftxui::bgcolor(pane);
+        if (banner)
+            base = ::ftxui::dbox({std::move(base), edc::TranslucentChipElement(" NOTICE ", 0.35f)});
+        if (toast)
+            base = ::ftxui::dbox({std::move(base), edc::ToastChipElement(" TOASTING ", 0.0f, rows_above)});
+        ::ftxui::Render(screen, std::move(base));
+
+        std::vector<std::string> rows;
+        for (int y = 0; y < height; y++)
+        {
+            std::string line;
+            for (int x = 0; x < width; x++)
+                line += screen.CellAt(x, y).character;
+            rows.push_back(line);
+        }
+        return rows;
+    };
+
+    auto row_of = [](const std::vector<std::string> &rows, const char *needle) {
+        for (size_t i = 0; i < rows.size(); i++)
+            if (rows[i].find(needle) != std::string::npos)
+                return static_cast<int>(i);
+        return -1;
+    };
+
+    /* Three frames, each with ONE chip, so each measurement is of that chip alone. */
+    const auto notice_only = draw(true, false, 0);
+    const auto toast_only = draw(false, true, 0);
+    const auto both = draw(true, true, edc::kChipRows);
+
+    const int notice_row = row_of(notice_only, "NOTICE");
+    const int toast_row = row_of(toast_only, "TOASTING");
+    Check(notice_row >= 0, "the notice renders on its own");
+    Check(toast_row >= 0, "the toast renders on its own");
+
+    /* Same corner, same first row: the two share a placement rule, which is why one can be
+     * stacked under the other by a single offset. */
+    Check(notice_row == edc::kChipTopMargin + kLabelInChip, "the notice starts at the top margin");
+    Check(toast_row == edc::kChipTopMargin + kLabelInChip, "a lone toast starts at the same row");
+
+    const int both_notice = row_of(both, "NOTICE");
+    const int both_toast = row_of(both, "TOASTING");
+    Check(both_notice >= 0, "the notice survives a stacking toast");
+    Check(both_toast >= 0, "and the toast is on screen too -- neither erases the other");
+
+    if (both_notice >= 0 && both_toast >= 0)
+    {
+        Check(both_toast > both_notice, "the toast sits BELOW the notice");
+        /* Clear of it, not merely lower: the notice occupies kChipRows rows from its own
+         * first row, so the toast's label must come at or after that boundary. */
+        Check(both_toast >= both_notice - kLabelInChip + edc::kChipRows,
+              "clear of it: no row is shared");
+    }
+
+    /* Without the offset the toast hides the notice completely -- which is what makes the
+     * parameter load bearing rather than cosmetic. Measured, not assumed: this is the bug the
+     * offset exists to prevent, reproduced by passing 0. */
+    const auto overlapped = draw(true, true, 0);
+    Check(row_of(overlapped, "NOTICE") < 0,
+          "with rows_above = 0 the toast covers the notice outright -- so the offset is doing the work");
+    Check(row_of(overlapped, "TOASTING") >= 0, "and the toast is the one left visible");
+}
+
 } // namespace
 
 int main()
@@ -323,6 +406,7 @@ int main()
     TestToastFade();
     TestToastTiming();
     TestTranslucentChip();
+    TestChipStacking();
 
     if (g_failures == 0)
     {
