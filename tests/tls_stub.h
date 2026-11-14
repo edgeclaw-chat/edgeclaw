@@ -68,6 +68,12 @@ struct tls_stub
     /* After a completed handshake, write bytes straight to the socket instead of answering
      * through TLS: the client's mbedtls then reads a record it cannot decrypt. */
     bool garbage_after_handshake;
+
+    /* Act as an HTTP CONNECT proxy instead of a plain TLS server: read the CONNECT request,
+     * answer 200, and only then start TLS on the same socket. That is exactly the shape a
+     * tunnel presents to the client, so it exercises the client's CONNECT path end to end
+     * without a second process splicing two sockets. */
+    bool as_proxy;
 };
 
 /* Generate a self-signed CA-ish certificate (CN=localhost) and its key at the given paths.
@@ -203,6 +209,10 @@ static const char *tls_stub_cert_file;
 /* The request line and headers the last case sent, for tests that need to check what the
  * CLIENT asked for rather than what the server answered. Empty until a request arrives. */
 static char tls_stub_last_request[4096];
+/* The CONNECT preamble, captured separately: tls_stub_serve() overwrites
+ * tls_stub_last_request with the HTTP request that arrives inside the tunnel, so a case that
+ * wants to assert on the CONNECT line needs its own buffer. */
+static char tls_stub_last_connect[1024];
 static const char *tls_stub_key_file;
 
 static void tls_stub_serve(struct tls_stub *s, int client_fd)
@@ -344,6 +354,27 @@ static void tls_stub_thread(void *arg)
     const int client_fd = accept(s->listen_fd, NULL, NULL);
     if (client_fd >= 0)
     {
+        if (s->as_proxy)
+        {
+            /* The CONNECT preamble, read as plaintext up to the blank line. Kept in
+             * tls_stub_last_request so a case can assert the target host and port the client
+             * asked for -- that, not the handshake, is what the client has to get right. */
+            size_t got = 0;
+            while (got < sizeof(tls_stub_last_connect) - 1)
+            {
+                const ssize_t n = recv(client_fd, tls_stub_last_connect + got,
+                                       sizeof(tls_stub_last_connect) - 1 - got, 0);
+                if (n <= 0)
+                    break;
+                got += (size_t)n;
+                tls_stub_last_connect[got] = '\0';
+                if (strstr(tls_stub_last_connect, "\r\n\r\n") != NULL)
+                    break;
+            }
+            const char *ok = "HTTP/1.1 200 Connection established\r\n\r\n";
+            if (send(client_fd, ok, strlen(ok), 0) > 0)
+                s->served = 1;
+        }
         tls_stub_serve(s, client_fd);
         if (s->abrupt_close)
         {
@@ -372,16 +403,19 @@ static int tls_stub_start_v6(struct tls_stub *s, const char *cert_path, const ch
                              const char *raw_response);
 
 /* Start listening on a kernel-assigned loopback port. Returns 0 on success, -1 on failure. */
-static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char *key_path,
-                          const char *raw_response)
+static int tls_stub_start_ex(struct tls_stub *s, const char *cert_path, const char *key_path,
+                             const char *raw_response, bool as_proxy)
 {
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
 
     memset(s, 0, sizeof(*s));
     s->raw_response = raw_response;
+    /* Must be set before the thread starts: it is the first thing the thread reads. */
+    s->as_proxy = as_proxy;
     /* Start each case from an empty capture, so a test cannot read the previous one's request. */
     tls_stub_last_request[0] = '\0';
+    tls_stub_last_connect[0] = '\0';
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0)
         return -1;
@@ -409,6 +443,20 @@ static void tls_stub_stop(struct tls_stub *s)
 {
     uv_thread_join(&s->thread);
     close(s->listen_fd);
+}
+
+/* The plain TLS server: the common case. */
+static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char *key_path,
+                          const char *raw_response)
+{
+    return tls_stub_start_ex(s, cert_path, key_path, raw_response, /*as_proxy=*/false);
+}
+
+/* The same server, but it speaks the CONNECT preamble first (see `as_proxy`). */
+static int tls_stub_start_proxy(struct tls_stub *s, const char *cert_path, const char *key_path,
+                                const char *raw_response)
+{
+    return tls_stub_start_ex(s, cert_path, key_path, raw_response, /*as_proxy=*/true);
 }
 
 static int tls_stub_start_v6(struct tls_stub *s, const char *cert_path, const char *key_path,

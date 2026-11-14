@@ -62,6 +62,9 @@ struct edc_upgrade_run
      * cannot run at once today, but a static would make that assumption invisible. */
     bool output_esc_pending;
     bool spawned;
+    /* The environment handed to the installer. Lives as long as the child, because uv_spawn
+     * keeps the pointer; freed with the run. */
+    char **child_env;
     bool timed_out;
 
     /* Reporting waits for BOTH the child's exit and the end of its output. libuv does not
@@ -245,6 +248,12 @@ static void run_unref(edc_upgrade_run_t *run)
     sdsfree(run->fetch_error);
     sdsfree(run->output);
     sdsfree(run->install_dir);
+    if (run->child_env)
+    {
+        for (size_t i = 0; run->child_env[i]; i++)
+            free(run->child_env[i]);
+        free(run->child_env);
+    }
     free(run);
 }
 
@@ -522,17 +531,53 @@ static void run_spawn(edc_upgrade_run_t *run)
         return;
     }
 
-    static char *const no_env[] = {NULL};
+    /* Fallback when no proxy variables are set: an empty environment, not an inherited one.
+     * (uv_spawn with a NULL env inherits everything.) Non-const so it can be assigned to
+     * options.env without discarding a qualifier. */
+    static char *no_env[] = {NULL};
     uv_process_options_t options;
     memset(&options, 0, sizeof(options));
     options.exit_cb = run_on_exit;
     options.file = argv[0];
     options.args = argv;
 
-    /* No environment: the installer needs PATH at most, and inheriting ours would hand it the
-     * app's working state for no reason. uv_spawn with a NULL env inherits everything, so an
-     * empty vector is the way to say "nothing". */
-    options.env = no_env;
+    /* Not a full inherit: the app's own environment (master key, config paths) has no business
+     * in an installer. But NOT empty either -- the installer downloads with curl/wget, and those
+     * read the proxy variables. An empty environment silently disables the proxy, which is the
+     * one setting a machine behind an egress proxy cannot work without: the fetch of this very
+     * script may have gone through it, so clearing it here would make the two halves of one
+     * upgrade use different routes.
+     *
+     * So: proxy variables only, passed through verbatim. */
+    {
+        static const char *const kPassThrough[] = {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+                                                   "all_proxy",   "ALL_PROXY",   "no_proxy",   "NO_PROXY"};
+        size_t n = 0;
+        for (size_t i = 0; i < sizeof(kPassThrough) / sizeof(kPassThrough[0]); i++)
+            if (getenv(kPassThrough[i]) && getenv(kPassThrough[i])[0])
+                n++;
+        /* n entries + terminator; freed in run_free. */
+        char **env = n > 0 ? calloc(n + 1, sizeof(char *)) : NULL;
+        if (env)
+        {
+            size_t at = 0;
+            for (size_t i = 0; i < sizeof(kPassThrough) / sizeof(kPassThrough[0]); i++)
+            {
+                const char *v = getenv(kPassThrough[i]);
+                if (v && v[0])
+                    env[at++] = sdscatprintf(sdsempty(), "%s=%s", kPassThrough[i], v);
+                if (at == n)
+                    break;
+            }
+            env[at] = NULL;
+            run->child_env = env;
+            options.env = env;
+        }
+        else
+        {
+            options.env = no_env;
+        }
+    }
 #ifndef _WIN32
     options.flags |= UV_PROCESS_DETACHED;
 #endif
