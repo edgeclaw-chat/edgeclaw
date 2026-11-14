@@ -348,6 +348,28 @@ int main()
         CHECK(Has(frame, "status 3"), "the installer's own output is shown");
         CHECK(Has(frame, "permission denied"), "every line of it, not just the first");
         CHECK(Has(frame, "install.sh"), "the manual command is offered");
+
+        /* Installer output arrives with ANSI colour in it -- curl, tar and apt all write it --
+         * and ftxui DRAWS an escape instead of interpreting it, so "\x1b[1mError\x1b[0m" used
+         * to reach the reader as "[1mError[0m" and break the colour of every cell after it.
+         * That was the "one part white, one part grey" in this page. The run layer strips it
+         * at the source; this asserts the dialog survives text that arrives with it anyway. */
+        Hooks coloured_hooks;
+        auto coloured = MakeDialog(coloured_hooks);
+        coloured.Open("v1.0.1", /*can_upgrade=*/true);
+        /* OnResult is deliberately ignored outside RUNNING (a late callback from an abandoned
+         * upgrade must not overwrite a newer dialog), so the dialog has to be started first --
+         * Enter on the default button does that. */
+        coloured.OnEvent(::ftxui::Event::Return);
+        coloured.OnResult(false, "\x1b[1mError\x1b[0m: permission denied\n\x1b[31msecond line\x1b[0m");
+        CHECK(coloured.state() == edc::ui::UpdateDialog::State::FAILED, "the coloured failure reached FAILED");
+        const std::string coloured_frame = Frame(coloured);
+
+        CHECK(Has(coloured_frame, "Error: permission denied"), "the text inside the sequence survives");
+        CHECK(Has(coloured_frame, "second line"), "and so does the next coloured line");
+        CHECK(!Has(coloured_frame, "[1m"), "the sequence is not drawn as text");
+        CHECK(!Has(coloured_frame, "[0m"), "nor its terminator");
+        CHECK(!Has(coloured_frame, "[31m"), "nor a colour parameter");
     }
 
     printf("\n── a late result is ignored ──\n");

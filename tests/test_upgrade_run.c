@@ -181,6 +181,37 @@ int main(void)
         CHECK(strstr(o.detail, "cannot write") != NULL, "the installer's stderr reaches the detail");
     }
 
+    printf("\n── colour codes are stripped from the installer's output ──\n");
+    {
+        /* The installer is a shell script; what it runs (curl, tar, apt) writes ANSI colour
+         * when it believes a terminal is attached. ftxui does not interpret an escape -- it
+         * draws it -- so "\x1b[1mError\x1b[0m" reached the reader as "[1mError[0m" and shifted
+         * every colour and column after it. That was the "one part white, one part grey" in
+         * the failure dialog.
+         *
+         * printf rather than echo -e, so the escapes are real bytes regardless of the shell
+         * that runs the script. */
+        struct outcome o;
+        run_case("#!/bin/sh\n"
+                 "printf '\\033[1mError\\033[0m: nope\\n'\n"
+                 "printf '\\033[31mred line\\033[0m\\n'\n"
+                 "printf 'plain line\\n'\n"
+                 "exit 4\n",
+                 5000, 800, &o);
+
+        CHECK(!o.ok, "the failure is still reported");
+        CHECK(strstr(o.detail, "Error") != NULL, "the text inside the sequence survives");
+        CHECK(strstr(o.detail, "nope") != NULL, "including what follows it");
+        CHECK(strstr(o.detail, "red line") != NULL, "and the next coloured line");
+        CHECK(strstr(o.detail, "plain line") != NULL, "and the uncoloured one");
+
+        /* The escapes themselves are gone -- that is what restores the dialog's colour. */
+        CHECK(strstr(o.detail, "\x1b") == NULL, "no ESC byte reaches the detail");
+        CHECK(strstr(o.detail, "[1m") == NULL, "nor the sequence's own bytes, drawn as text");
+        CHECK(strstr(o.detail, "[0m") == NULL, "nor its terminator");
+        CHECK(strstr(o.detail, "[31m") == NULL, "nor a colour parameter");
+    }
+
     printf("\n── the installer's arguments ──\n");
     {
         /* The tag and the directory are what make the upgrade land on the running binary, so

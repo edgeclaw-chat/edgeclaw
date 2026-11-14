@@ -50,6 +50,54 @@ enum class Tone
     return ::ftxui::text("  " + s) | ::ftxui::color(c);
 }
 
+/* Drop ANSI escapes from |s|. The run layer already strips them at the source, but |detail_|
+ * can also arrive from a caller that did not, and the symptom is bad enough to be worth two
+ * layers: ftxui DRAWS an escape rather than interpreting it, so one sequence both prints as
+ * "[1m" and breaks the colour of every cell after it on the row. */
+std::string StripEscapes(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        if (static_cast<unsigned char>(s[i]) != 0x1B)
+        {
+            out += s[i];
+            continue;
+        }
+        /* Skip the sequence. CSI ends at a byte in 0x40..0x7E; OSC at BEL or ESC \; every
+         * other escape is the ESC plus one byte. */
+        size_t j = i + 1;
+        if (j >= s.size())
+            break;
+        if (s[j] == '[')
+        {
+            j++;
+            while (j < s.size() && !(static_cast<unsigned char>(s[j]) >= 0x40 && static_cast<unsigned char>(s[j]) <= 0x7E))
+                j++;
+            i = (j < s.size()) ? j : s.size();
+            continue;
+        }
+        if (s[j] == ']')
+        {
+            j++;
+            while (j < s.size() && s[j] != '\x07')
+            {
+                if (s[j] == 0x1B && j + 1 < s.size() && s[j + 1] == '\\')
+                {
+                    j++;
+                    break;
+                }
+                j++;
+            }
+            i = (j < s.size()) ? j : s.size();
+            continue;
+        }
+        i = j;
+    }
+    return out;
+}
+
 /* A row that may be longer than the dialog, or span several lines.
  *
  * The "by hand" command is ~120 columns and the installer's output can be anything; both used
@@ -66,8 +114,9 @@ enum class Tone
  * hint's own indentation would double it and push the release URL one column past the width
  * (measured: it spilled a single "9" onto its own line).
  */
-void PushRow(::ftxui::Elements &rows, const std::string &s, Tone tone = Tone::Body)
+void PushRow(::ftxui::Elements &rows, const std::string &raw, Tone tone = Tone::Body)
 {
+    const std::string s = StripEscapes(raw);
     if (s.empty())
     {
         rows.push_back(::ftxui::text(""));

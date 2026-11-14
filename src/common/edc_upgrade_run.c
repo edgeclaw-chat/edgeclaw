@@ -57,6 +57,10 @@ struct edc_upgrade_run
     uv_pipe_t err_pipe;
     uv_timer_t deadline;
     sds output; /* the tail of stdout+stderr, for the failure message */
+    /* A chunk boundary can land between ESC and the byte that says what kind of sequence it
+     * is; the stripper has to remember that across reads. Per run, not a static: two upgrades
+     * cannot run at once today, but a static would make that assumption invisible. */
+    bool output_esc_pending;
     bool spawned;
     bool timed_out;
 
@@ -283,12 +287,126 @@ static void run_close(edc_upgrade_run_t *run, int which)
     }
 }
 
-/* Append to the output tail, keeping only the last OUTPUT_KEEP bytes. */
+/* Drop ANSI escape sequences and other control bytes from installer output.
+ *
+ * The installer is a shell script run under `sh`, and everything it calls -- curl, tar, apt,
+ * git -- writes colour when it thinks a terminal is attached. This output ends up in the
+ * dialog, where ftxui renders it as plain text: an ESC is not interpreted, it is drawn, so
+ * "\x1b[1mError\x1b[0m" reached the reader as "[1mError[0m" and the sequence's bytes shifted
+ * every colour and column after it. That is what "one part is white, one part is grey" was.
+ *
+ * Stripped at the source rather than in the dialog: the escape is not information, and the
+ * dialog is not the only thing that may one day show this text (a log, a report). Handles CSI
+ * ("ESC [ ... final"), OSC ("ESC ] ... BEL/ST") and two-byte escapes; anything else below 0x20
+ * except tab and newline is dropped, and a lone trailing ESC is held back rather than emitted
+ * half-parsed.
+ */
+static sds run_strip_escapes(const char *data, size_t len, bool *pending_esc)
+{
+    sds clean = sdsempty();
+    size_t i = 0;
+    bool in_esc = pending_esc ? *pending_esc : false;
+
+    while (i < len)
+    {
+        const unsigned char c = (unsigned char)data[i];
+
+        if (in_esc)
+        {
+            if (c == '[')
+            {
+                /* CSI: parameters then a final byte in 0x40..0x7E. */
+                i++;
+                while (i < len)
+                {
+                    const unsigned char d = (unsigned char)data[i];
+                    if (d >= 0x40 && d <= 0x7E)
+                    {
+                        i++;
+                        in_esc = false;
+                        break;
+                    }
+                    i++;
+                }
+                if (in_esc && i >= len)
+                    break; /* sequence continues in the next chunk */
+                continue;
+            }
+            if (c == ']')
+            {
+                /* OSC: ends with BEL or ESC \. */
+                i++;
+                while (i < len)
+                {
+                    const unsigned char d = (unsigned char)data[i];
+                    if (d == 0x07)
+                    {
+                        i++;
+                        in_esc = false;
+                        break;
+                    }
+                    if (d == 0x1B && i + 1 < len && data[i + 1] == '\\')
+                    {
+                        i += 2;
+                        in_esc = false;
+                        break;
+                    }
+                    i++;
+                }
+                if (in_esc && i >= len)
+                    break;
+                continue;
+            }
+            /* Any other two-byte escape: drop ESC and the byte after it. */
+            i++;
+            in_esc = false;
+            continue;
+        }
+
+        if (c == 0x1B)
+        {
+            if (i + 1 >= len)
+            {
+                /* A chunk boundary landed between ESC and its introducer. Hold it. */
+                in_esc = true;
+                i++;
+                break;
+            }
+            in_esc = true;
+            i++;
+            continue;
+        }
+
+        if (c == '\t' || c == '\n' || c == '\r' || c >= 0x20)
+        {
+            /* '\r' is kept: the installer writes progress with it, and carriage returns make
+             * a mess of the wrapped dialog but deleting them joins words. The caller's
+             * line-splitting turns each into a break. */
+            clean = sdscatlen(clean, &data[i], 1);
+        }
+        /* Any other control byte (< 0x20) is dropped. */
+        i++;
+    }
+
+    if (pending_esc)
+        *pending_esc = in_esc;
+    return clean;
+}
+
+/* Append to the output tail, keeping only the last OUTPUT_KEEP bytes.
+ *
+ * Stripped on the way in, not on the way out: the tail window is a fixed byte budget, and an
+ * escape sequence split by that boundary would leave half of one at the front of the text --
+ * exactly the kind of fragment that used to reach the reader. */
 static void run_keep_output(edc_upgrade_run_t *run, const char *data, size_t len)
 {
     if (!run->output)
         return;
-    run->output = sdscatlen(run->output, data, len);
+
+    sds clean = run_strip_escapes(data, len, &run->output_esc_pending);
+    run->output = sdscatsds(run->output, clean);
+    sdsfree(clean);
+
     if (sdslen(run->output) > OUTPUT_KEEP)
     {
         const size_t cut = sdslen(run->output) - OUTPUT_KEEP;
