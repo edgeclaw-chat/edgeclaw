@@ -370,6 +370,26 @@ int main()
         CHECK(!Has(coloured_frame, "[1m"), "the sequence is not drawn as text");
         CHECK(!Has(coloured_frame, "[0m"), "nor its terminator");
         CHECK(!Has(coloured_frame, "[31m"), "nor a colour parameter");
+
+        /* The other two escape shapes a tool emits: an OSC title (ends with BEL or ESC \) and a
+         * bare two-byte escape. Both are stripped in the dialog too, so a caller that skipped
+         * the run layer's filtering still cannot put garbage on screen.
+         *
+         * The literals are split around the BEL on purpose: `\x` in C++ consumes as many hex
+         * digits as follow it, so "\x07after-osc" is one escape worth 0x7A ("z") and no BEL at
+         * all -- which made this case fail against correct code when it was written. */
+        Hooks osc_hooks;
+        auto osc = MakeDialog(osc_hooks);
+        osc.Open("v1.0.1", /*can_upgrade=*/true);
+        osc.OnEvent(::ftxui::Event::Return);
+        osc.OnResult(false, "\x1b]0;a title" "\x07" "after-osc\n"
+                            "\x1b]2;another\x1b\\after-st\n"
+                            "\x1bMafter-two-byte");
+        const std::string osc_frame = Frame(osc);
+        CHECK(Has(osc_frame, "after-osc"), "text after a BEL-terminated OSC survives");
+        CHECK(Has(osc_frame, "after-st"), "and after an ESC-backslash-terminated one");
+        CHECK(Has(osc_frame, "after-two-byte"), "and after a two-byte escape");
+        CHECK(!Has(osc_frame, "a title"), "while the title itself is dropped");
     }
 
     printf("\n── a late result is ignored ──\n");

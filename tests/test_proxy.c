@@ -109,6 +109,63 @@ static void test_resolution(void)
     setenv("all_proxy", "http://proxy.corp:3128", 1);
     CHECK(edc_proxy_resolve("api.github.com", &p, &why), "all_proxy is the fallback");
     edc_proxy_clear(&p);
+
+    /* The remaining shapes are the ones a hand-typed value takes. */
+    clear_proxy_env();
+    setenv("https_proxy", "http://[::1]:3128", 1);
+    CHECK(edc_proxy_resolve("api.github.com", &p, &why), "a bracketed IPv6 proxy is accepted");
+    CHECK(p.host && strcmp(p.host, "::1") == 0, "with the brackets removed from the host");
+    CHECK(p.port == 3128, "and the port after them");
+    edc_proxy_clear(&p);
+
+    clear_proxy_env();
+    setenv("https_proxy", "http://[::1]", 1);
+    CHECK(edc_proxy_resolve("api.github.com", &p, &why), "a bracketed IPv6 proxy with no port is accepted");
+    CHECK(p.host && strcmp(p.host, "::1") == 0, "with the address");
+    CHECK(p.port == 80, "and the default port");
+    edc_proxy_clear(&p);
+
+    clear_proxy_env();
+    setenv("https_proxy", "http://[::1:3128", 1);
+    CHECK(!edc_proxy_resolve("api.github.com", &p, &why), "an unterminated bracket is refused");
+    CHECK(why != NULL, "with a reason naming it");
+
+    clear_proxy_env();
+    setenv("https_proxy", "http://proxy.corp:70000", 1);
+    CHECK(!edc_proxy_resolve("api.github.com", &p, &why), "a port out of range is refused");
+    CHECK(why != NULL, "with a reason");
+
+    /* out == NULL asks "would a proxy be used", and must not leak the auth string. */
+    clear_proxy_env();
+    setenv("https_proxy", "http://user:pw@proxy.corp:3128", 1);
+    CHECK(edc_proxy_resolve("api.github.com", NULL, &why), "the question can be asked without an output");
+    clear_proxy_env();
+
+    /* Clearing a cleared struct, and a NULL one, are no-ops rather than crashes. */
+    struct edc_proxy empty = {0};
+    edc_proxy_clear(&empty);
+    edc_proxy_clear(NULL);
+    CHECK(true, "clearing an empty or NULL proxy is a no-op");
+
+    /* An empty userinfo ("http://@proxy") is not credentials. */
+    clear_proxy_env();
+    setenv("https_proxy", "http://@proxy.corp:3128", 1);
+    CHECK(edc_proxy_resolve("api.github.com", &p, &why), "an empty userinfo is accepted");
+    CHECK(p.auth == NULL, "and produces no auth header");
+    CHECK(p.host && strcmp(p.host, "proxy.corp") == 0, "with the host still parsed");
+    edc_proxy_clear(&p);
+
+    /* A no_proxy entry may carry a port; the host is what matters. */
+    clear_proxy_env();
+    setenv("https_proxy", "http://proxy.corp:3128", 1);
+    setenv("no_proxy", "api.github.com:443", 1);
+    CHECK(!edc_proxy_resolve("api.github.com", &p, &why), "a no_proxy entry with a port still excludes the host");
+
+    /* Separators with nothing between them, and a trailing one. */
+    setenv("no_proxy", " , other.example , ", 1);
+    CHECK(edc_proxy_resolve("api.github.com", &p, &why), "empty entries are skipped, not treated as a match");
+    edc_proxy_clear(&p);
+    clear_proxy_env();
 }
 
 static void test_refusal_and_no_proxy(void)

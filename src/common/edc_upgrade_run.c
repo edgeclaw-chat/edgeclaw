@@ -250,8 +250,11 @@ static void run_unref(edc_upgrade_run_t *run)
     sdsfree(run->install_dir);
     if (run->child_env)
     {
+        /* sdsfree, not free: each entry is built with sdscatprintf, which returns an sds --
+         * a pointer into a header-prefixed allocation. free() on it aborts with
+         * "free(): invalid pointer", which is how this was found. */
         for (size_t i = 0; run->child_env[i]; i++)
-            free(run->child_env[i]);
+            sdsfree(run->child_env[i]);
         free(run->child_env);
     }
     free(run);

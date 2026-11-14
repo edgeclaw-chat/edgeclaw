@@ -212,7 +212,55 @@ int main(void)
         CHECK(strstr(o.detail, "[31m") == NULL, "nor a colour parameter");
     }
 
-    printf("\n── the installer's arguments ──\n");
+    printf("\n── proxy variables reach the installer ──\n");
+    {
+        /* The installer downloads with curl/wget, which read these. The child used to get an
+         * empty environment, so `/update` would fetch install.sh through the proxy and then
+         * have the download go direct -- one upgrade, two different routes. */
+        /* no_proxy=localhost is load-bearing, not tidiness: this test's own fetch of install.sh
+         * goes through the same client, so without the exclusion the harness would try to reach
+         * the (non-existent) proxy and time out. It also proves the exclusion is honoured -- the
+         * run completes, so the fetch went direct while the variable itself still reached the
+         * child below. */
+        setenv("https_proxy", "http://proxy.example:3128", 1);
+        setenv("no_proxy", "localhost", 1);
+        unsetenv("HTTPS_PROXY");
+
+        struct outcome o;
+        run_case("#!/bin/sh\nprintf 'seen=[%s]\\n' \"${https_proxy:-none}\"\nexit 1\n", 5000, 800, &o);
+        CHECK(strstr(o.detail, "seen=[http://proxy.example:3128]") != NULL,
+              "the installer sees https_proxy");
+
+        /* And nothing else: the app's own environment must not travel with it. */
+        setenv("EDGECLAW_MASTER_KEY", "must-not-leak", 1);
+        struct outcome o2;
+        run_case("#!/bin/sh\nprintf 'key=[%s]\\n' \"${EDGECLAW_MASTER_KEY:-none}\"\nexit 1\n", 5000, 800, &o2);
+        CHECK(strstr(o2.detail, "key=[none]") != NULL, "and inherits nothing else");
+
+        unsetenv("https_proxy");
+        unsetenv("no_proxy");
+        unsetenv("EDGECLAW_MASTER_KEY");
+    }
+
+    printf("\n── every kind of ANSI escape is stripped ──\n");
+    {
+        /* The CSI case is covered above; these are the other two the stripper handles, and
+         * they matter because a terminal title sequence is emitted by plenty of tools. */
+        struct outcome o;
+        run_case("#!/bin/sh\n"
+                 "printf '\\033]0;a window title\\007after-osc\\n'\n"
+                 "printf '\\033Mtwo-byte\\n'\n"
+                 "printf 'plain\\n'\n"
+                 "exit 5\n",
+                 5000, 800, &o);
+
+        CHECK(strstr(o.detail, "after-osc") != NULL, "text after an OSC title sequence survives");
+        CHECK(strstr(o.detail, "two-byte") != NULL, "and text after a two-byte escape");
+        CHECK(strstr(o.detail, "a window title") == NULL, "while the title itself is dropped");
+        CHECK(strstr(o.detail, "\x1b") == NULL, "no ESC byte reaches the detail");
+        CHECK(strstr(o.detail, "\x07") == NULL, "and no BEL either");
+    }
+
     {
         /* The tag and the directory are what make the upgrade land on the running binary, so
          * the script asserts them rather than succeeding unconditionally. */
