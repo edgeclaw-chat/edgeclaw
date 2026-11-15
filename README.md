@@ -74,8 +74,9 @@ puts the binary in `~/.local/bin`:
 curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.sh | sh
 ```
 
-It takes `--pre` when you want the newest pre-release (every release so far is one, so
-without it the script stops and says so), `--tag <tag>` to pin an exact release,
+It takes `--pre` when you want the newest pre-release -- without it the script
+stops when nothing stable has been published yet, and says how to proceed --
+`--tag <tag>` to pin an exact release,
 `--musl` for the musl build on Linux, and `--dir <path>` to install somewhere else.
 Read it first if you prefer: `tools/install.sh` — it is POSIX `sh` with no dependencies
 beyond `curl` or `wget`.
@@ -88,12 +89,29 @@ Windows has its own installer, and it needs nothing beyond what the OS ships wit
 ```powershell
 iwr -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 `
     -OutFile "$env:TEMP\edgeclaw-install.ps1"
-& "$env:TEMP\edgeclaw-install.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\edgeclaw-install.ps1"
 ```
 
 It installs to `%USERPROFILE%\.local\bin` and takes the same `-Tag`, `-Pre`, `-Dir` and
 `-DryRun` options. Two steps rather than one pipe because the script takes arguments, and
 piping it into `Invoke-Expression` would lose them.
+
+That second line is `powershell -ExecutionPolicy Bypass -File`, not the shorter
+`& "$env:TEMP\edgeclaw-install.ps1"`, because on a stock Windows the short form fails
+before the script runs at all — the default execution policy is `Restricted`, and it
+refuses to load any `.ps1` ("cannot be loaded because running scripts is disabled on this
+system"). `Bypass` is scoped to that one process and changes no machine-wide setting; it is
+also how the app runs this same installer when it upgrades itself.
+
+Those two lines are PowerShell, and `iwr` is one of its aliases. Windows Terminal is only
+a window, not a shell: if the tab it opens is `cmd`, Git Bash or WSL, the first line dies
+with "`iwr` is not recognized" / "command not found" before anything else runs. Start a
+PowerShell tab, or type `powershell` at a `cmd` prompt. From `cmd` it can also be one
+line, with the alias spelled out because `cmd` has none:
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'edgeclaw-install.ps1'; Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 -OutFile $p; & $p"
+```
 
 #### No curl, no wget, or a hand-installed binary
 

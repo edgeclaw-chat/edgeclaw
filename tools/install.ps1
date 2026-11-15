@@ -79,7 +79,11 @@ function Resolve-Target {
 # Releases, newest first, as "tag<TAB>stable|pre". Same shape the sh installer parses, so the
 # two agree on what counts as a candidate.
 function Get-Releases {
-    $resp = Invoke-WebRequest -Uri "$Api?per_page=20" -UseBasicParsing -Headers @{
+    # ${Api}, not $Api: `?` is a legal character inside an unbraced variable name, so
+    # "$Api?per_page=20" asks for a variable called `Api?per_page`. It does not exist, and
+    # under the Set-StrictMode above that is a hard error rather than an empty string -- the
+    # installer died here before making a single request. Braces end the name.
+    $resp = Invoke-WebRequest -Uri "${Api}?per_page=20" -UseBasicParsing -Headers @{
         'Accept'     = 'application/vnd.github+json'
         'User-Agent' = 'edgeclaw-installer'
     }

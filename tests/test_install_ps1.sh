@@ -126,6 +126,26 @@ sed -i "s#^\\\$Dl = .*#\$Dl = 'http://127.0.0.1:${PORT}'#" "$RUN_PS1" 2>/dev/nul
     perl -0pi -e "s{^\\\$Dl = .*}{\$Dl = 'http://127.0.0.1:${PORT}'}m" "$RUN_PS1"
 grep -q "127.0.0.1:${PORT}" "$RUN_PS1" || { echo "could not point the script at the fixture server" >&2; exit 1; }
 
+# The release list is a fixture for the same reason, and it covers the path every other
+# case here skips: passing -Tag means Get-Releases never runs, so the API URL -- a query
+# string built by interpolation -- and the stable/pre split went unexecuted. A variable
+# expanding wrong there killed a real installer on a real Windows box before it made a
+# single request.
+#
+# The .json name is load-bearing: the fixture server derives Content-Type from the
+# extension, and Windows PowerShell hands Content back as a byte[] for anything that is not
+# text -- ConvertFrom-Json then reads one number per byte instead of the release objects.
+# GitHub answers application/json, so a file named `releases` would make the fixture unlike
+# the endpoint it stands in for.
+cat > "${WORK}/fixtures/releases.json" <<'JSON'
+[{"tag_name":"v9.9.9","prerelease":true,"draft":false},
+ {"tag_name":"v9.9.8","prerelease":false,"draft":false},
+ {"tag_name":"v9.9.7","prerelease":false,"draft":true}]
+JSON
+sed -i "s#^\\\$Api = .*#\$Api = 'http://127.0.0.1:${PORT}/releases.json'#" "$RUN_PS1" 2>/dev/null || \
+    perl -0pi -e "s{^\\\$Api = .*}{\$Api = 'http://127.0.0.1:${PORT}/releases.json'}m" "$RUN_PS1"
+grep -q "127.0.0.1:${PORT}/releases.json" "$RUN_PS1" || { echo "could not point the release list at the fixture server" >&2; exit 1; }
+
 run_ps1() {
     pwsh -NoProfile -NonInteractive -File "$RUN_PS1" "$@" 2>&1
 }
@@ -165,6 +185,18 @@ check "$(printf '%s\n' "$out" | awk '/^target /{print $2}')" "edgeclaw_amd64_win
     "the dry run names the target"
 check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.9" "the dry run names the tag"
 check "$(ls -A "${WORK}/bin" | wc -l | tr -d ' ')" "0" "a dry run installs nothing"
+
+# ── resolving the newest release: the path that needs no -Tag ─────────────────
+# v9.9.9 is a pre-release, v9.9.8 is stable, v9.9.7 is a draft: the answer differs
+# with -Pre, and a draft is never a candidate.
+out=$(run_ps1_expect_ok "newest stable" -Dir "${WORK}/bin" -DryRun)
+check "$?" "0" "the release list is read with no -Tag"
+check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.8" \
+    "the newest release skips pre-releases and drafts"
+
+out=$(run_ps1_expect_ok "newest pre" -Dir "${WORK}/bin" -DryRun -Pre)
+check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.9" \
+    "-Pre resolves the newest release, pre-release included"
 
 # ── a release with a matching checksum installs ─────────────────────────────────────────
 mk_archive v9.9.9

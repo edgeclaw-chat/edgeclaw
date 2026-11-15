@@ -223,6 +223,17 @@ int main(void)
          * because that is what the hint used to say, and nothing else would have caught it. */
         CHECK(hint && strstr(hint, "-File http") == NULL, "the Windows hint does not pass a URL to -File");
         CHECK(hint && strstr(hint, "-OutFile") != NULL, "the Windows hint downloads to a local file first");
+
+        /* The downloaded script used to be run with a bare `& "$env:TEMP\....ps1"`,
+         * which dies on a stock Windows before the script starts: the default execution
+         * policy is Restricted and refuses to load any .ps1. It has to be
+         * `powershell -ExecutionPolicy Bypass -File`, the same way edc_upgrade_argv() runs
+         * it for an automatic upgrade -- and a hint that asked the user to loosen a
+         * machine-wide policy first would be advice a default install cannot follow. */
+        CHECK(hint && strstr(hint, "-ExecutionPolicy Bypass") != NULL,
+              "the Windows hint bypasses the execution policy for that one process");
+        CHECK(hint && strstr(hint, "\n  & ") == NULL,
+              "the Windows hint does not run the script with a bare call operator");
 #else
         /* curl may be absent; the release page above is the fallback, and install.sh says so
          * itself when neither curl nor wget is present. */
