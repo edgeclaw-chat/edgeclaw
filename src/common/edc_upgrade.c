@@ -10,6 +10,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <wchar.h> /* wcslen/wcschr for the environment block */
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #include <stdlib.h>
@@ -18,13 +19,15 @@
 #include <unistd.h>
 #endif
 
-/* For the staging helpers below: snprintf on both platforms, and on POSIX the file API the
- * ELF branch above already has but macOS does not (mkstemp, fchmod, write, unlink). */
-#include <stdio.h>
-#if !defined(_WIN32)
+/* For the staging helpers below. <fcntl.h> and <sys/stat.h> exist on both platforms and carry
+ * the create flags and the modes; <io.h>, where the Windows file calls live, arrives with
+ * edc_compat.h; <unistd.h> is the POSIX spelling of close/write/unlink and is already pulled
+ * in above on ELF, but not on macOS. */
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <sys/stat.h>
+#if !defined(_WIN32)
 #include <unistd.h>
 #endif
 
@@ -243,146 +246,251 @@ sds edc_upgrade_manual_hint(const char *tag)
 #endif
 }
 
-/* ---- staging the installer ------------------------------------------------ */
+/* ---- the installer's environment ------------------------------------------ */
+
+/* The prefix this program uses for everything of its own. */
+#define EDC_UPGRADE_PRIVATE_PREFIX "EDGECLAW_"
+
+bool edc_upgrade_env_is_private(const char *entry)
+{
+    if (!entry)
+        return true;
+    return strncmp(entry, EDC_UPGRADE_PRIVATE_PREFIX, sizeof(EDC_UPGRADE_PRIVATE_PREFIX) - 1) == 0;
+}
+
+/* Append a copy of |entry| to |env|; returns the new count. */
+static size_t env_take(sds *env, size_t at, const char *entry)
+{
+    if (!entry || !entry[0] || edc_upgrade_env_is_private(entry))
+        return at;
+    sds copy = sdsnew(entry);
+    if (!copy)
+        return at;
+    env[at] = copy;
+    return at + 1;
+}
+
+/* Hand every variable to |fn|, in UTF-8, one at a time.
+ *
+ * The only platform-specific part of this module: everything above and below is one body of
+ * code that both platforms compile, so the filtering, the allocation and the ownership rules
+ * are measured by the Linux coverage run instead of being scored as untested lines.
+ *
+ * It is a callback rather than a returned array because the enumeration has to happen twice
+ * (count, then fill) and a returned array would have to be freed twice, which is exactly how
+ * the first version ended up carrying two copies of the same loop.
+ *
+ * The entry passed to |fn| is borrowed: it lives as long as the callback is running. */
+typedef void (*env_visit_fn)(const char *entry, void *ud);
+static void env_visit_all(env_visit_fn fn, void *ud);
 
 #if defined(_WIN32)
+static void env_visit_all(env_visit_fn fn, void *ud)
+{
+    /* GetEnvironmentStringsW returns a block of NUL-terminated strings ended by an empty one.
+     * It also contains per-drive current directories named "=C:=C:\...", which have no name
+     * before the '=' and which CreateProcess rejects in an environment block -- skipping them
+     * is why the check for a leading '=' comes before the split. */
+    wchar_t *block = GetEnvironmentStringsW();
+    if (!block)
+        return;
 
-/* GetTempPathA reads TMP, then TEMP, then USERPROFILE, and its result already ends with a
- * backslash. There is no '.' fallback: a .ps1 in the current directory is worse than a
- * visible failure. */
+    for (const wchar_t *p = block; *p; p += wcslen(p) + 1)
+    {
+        if (*p == L'=')
+            continue;
+        const wchar_t *eq = wcschr(p, L'=');
+        if (!eq || eq == p)
+            continue;
+        char *utf8 = edc_wide_to_utf8_alloc(p);
+        if (!utf8)
+            continue;
+        fn(utf8, ud);
+        free(utf8);
+    }
+    FreeEnvironmentStringsW(block);
+}
+#else
+static void env_visit_all(env_visit_fn fn, void *ud)
+{
+    extern char **environ;
+    for (char **e = environ; e && *e; e++)
+        fn(*e, ud);
+}
+#endif
+
+static void env_count_one(const char *entry, void *ud)
+{
+    if (entry && entry[0] && !edc_upgrade_env_is_private(entry))
+        (*(size_t *)ud)++;
+}
+
+struct env_fill
+{
+    sds *env;
+    size_t at;
+};
+
+static void env_fill_one(const char *entry, void *ud)
+{
+    struct env_fill *f = ud;
+    f->at = env_take(f->env, f->at, entry);
+}
+
+sds *edc_upgrade_child_env(void)
+{
+    size_t n = 0;
+    env_visit_all(env_count_one, &n);
+    if (n == 0)
+        return NULL;
+
+    sds *env = calloc(n + 1, sizeof(sds));
+    if (!env)
+        return NULL;
+
+    struct env_fill fill = {env, 0};
+    env_visit_all(env_fill_one, &fill);
+    env[fill.at] = NULL;
+    return env;
+}
+
+void edc_upgrade_env_free(sds *env)
+{
+    if (!env)
+        return;
+    for (size_t i = 0; env[i]; i++)
+        sdsfree(env[i]);
+    free(env);
+}
+
+/* ---- staging the installer ------------------------------------------------ */
+
+/* The four file calls, spelled per platform.
+ *
+ * Macros rather than four `#if` blocks inside the body, because the body is the part worth
+ * testing. Written twice, the Windows half is the half that no Linux coverage run ever
+ * executed -- and, until the PowerShell installer existed, no compiler either. One body means
+ * one set of tests and one place to reason about the retry logic.
+ *
+ * The Windows spellings are the underscored ones on purpose: <io.h>'s POSIX aliases (`open`,
+ * `write`, `unlink`) are deprecated under MSVC, and a /WX build treats that as an error.
+ *
+ * `O_EXCL` is the whole point on both platforms: the name is claimed by the create, so a
+ * squatted path costs another attempt instead of appending to somebody else's file. That is
+ * also why there is no `_mktemp_s` here -- it generates a name without claiming it. */
+#if defined(_WIN32)
+#define STAGE_OPEN_EXCLUSIVE(p) _open((p), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE)
+#define STAGE_WRITE(fd, buf, n) _write((fd), (buf), (unsigned)(n))
+#define STAGE_CLOSE(fd) _close(fd)
+#define STAGE_REMOVE(p) _unlink(p)
+#else
+/* 0600 from the create itself, so an inherited umask can only narrow the mode, never widen
+ * it -- which is why no fchmod follows. */
+#define STAGE_OPEN_EXCLUSIVE(p) open((p), O_WRONLY | O_CREAT | O_EXCL, 0600)
+#define STAGE_WRITE(fd, buf, n) write((fd), (buf), (n))
+#define STAGE_CLOSE(fd) close(fd)
+#define STAGE_REMOVE(p) unlink(p)
+#endif
+
+/* Where a temporary file belongs. */
 static sds stage_temp_dir(void)
 {
+#if defined(_WIN32)
+    /* GetTempPathA reads TMP, then TEMP, then USERPROFILE. No '.' fallback: a .ps1 dropped in
+     * the current directory is worse than a visible failure. */
     char buf[MAX_PATH + 1];
     const DWORD n = GetTempPathA((DWORD)sizeof(buf), buf);
     if (n == 0 || n >= (DWORD)sizeof(buf))
         return NULL;
     return sdsnew(buf);
-}
-
-/* Claim a fresh name and leave it open for writing.
- *
- * The name has to end in .ps1 -- `powershell -File` refuses anything else -- and it must not
- * be predictable, so the suffix mixes the pid with the clock. CREATE_NEW is what makes the
- * claim atomic: the name is ours only if that open succeeded, so a squatted name costs one
- * more attempt instead of appending to a file somebody else created. (_mktemp_s generates a
- * name without claiming it, which is the race CREATE_NEW closes.) 64 attempts is not a
- * probability: each collision has to be a name that already exists, and they are all
- * distinct. */
-static HANDLE stage_create(sds *path_out)
-{
-    sds dir = stage_temp_dir();
-    if (!dir)
-        return INVALID_HANDLE_VALUE;
-
-    HANDLE h = INVALID_HANDLE_VALUE;
-    for (unsigned attempt = 0; attempt < 64 && h == INVALID_HANDLE_VALUE; attempt++)
-    {
-        sds path = sdscatprintf(sdsempty(), "%sedgeclaw-install-%08lx%08x.ps1", dir,
-                                (unsigned long)GetCurrentProcessId(),
-                                (unsigned)(GetTickCount() ^ (attempt * 2654435761u)));
-        if (!path)
-            break;
-
-        h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (h != INVALID_HANDLE_VALUE)
-            *path_out = path;
-        else
-        {
-            const DWORD err = GetLastError();
-            sdsfree(path);
-            if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS)
-                break;
-        }
-    }
-
-    sdsfree(dir);
-    return h;
-}
-
+#else
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !tmpdir[0])
+        tmpdir = "/tmp";
+    return sdsnew(tmpdir);
 #endif
+}
+
+/* The name's extension.
+ *
+ * `powershell -File` refuses any file that does not end in .ps1 ("the file does not have a
+ * '.ps1' extension"), so on Windows the name is load-bearing. The POSIX branch is run as
+ * `sh <path>`, where an extension would only mislead -- that script is install.sh. */
+static const char *stage_suffix(void)
+{
+#if defined(_WIN32)
+    return ".ps1";
+#else
+    return "";
+#endif
+}
 
 sds edc_upgrade_stage_script(const char *body)
 {
     if (!body || !body[0])
         return NULL;
 
-    const size_t len = strlen(body);
-
-#if defined(_WIN32)
-    sds path = NULL;
-    const HANDLE h = stage_create(&path);
-    if (h == INVALID_HANDLE_VALUE)
+    sds dir = stage_temp_dir();
+    if (!dir)
         return NULL;
+
+    const size_t len = strlen(body);
+    char name[64];
+    sds path = NULL;
+    int fd = -1;
+
+    for (unsigned attempt = 0; attempt < 64 && fd < 0; attempt++)
+    {
+        /* pid and the clock, mixed with the attempt number: 64 attempts cannot collide with
+         * each other, and nothing about the name invites a guess. */
+        snprintf(name, sizeof(name), "edgeclaw-install-%08lx%08x%s", (unsigned long)getpid(),
+                 (unsigned)((unsigned long)time(NULL) ^ (attempt * 2654435761u)), stage_suffix());
+        sdsfree(path);
+        path = edc_path_join(dir, name, NULL);
+        if (!path)
+            break;
+        fd = STAGE_OPEN_EXCLUSIVE(path);
+        /* EEXIST is the one failure worth retrying: the name was taken. Anything else is a
+         * directory that cannot be written, and retrying it 63 more times would only be a
+         * slow way to fail. */
+        if (fd < 0 && errno != EEXIST)
+            break;
+    }
+
+    sdsfree(dir);
+
+    if (fd < 0)
+    {
+        sdsfree(path);
+        return NULL;
+    }
 
     size_t off = 0;
     while (off < len)
     {
         const size_t left = len - off;
-        const DWORD want = (DWORD)(left > 0x1000u ? 0x1000u : left);
-        DWORD wrote = 0;
-        if (!WriteFile(h, body + off, want, &wrote, NULL) || wrote == 0)
+        const size_t want = left > 0x40000000u ? 0x40000000u : left;
+        const long wrote = (long)STAGE_WRITE(fd, body + off, want);
+        if (wrote <= 0)
         {
-            CloseHandle(h);
-            DeleteFileA(path);
+            STAGE_CLOSE(fd);
+            STAGE_REMOVE(path);
             sdsfree(path);
             return NULL;
         }
-        off += wrote;
+        off += (size_t)wrote;
     }
 
-    if (!CloseHandle(h))
-    {
-        DeleteFileA(path);
-        sdsfree(path);
-        return NULL;
-    }
+    STAGE_CLOSE(fd);
     return path;
-#else
-    const char *tmpdir = getenv("TMPDIR");
-    if (!tmpdir || !tmpdir[0])
-        tmpdir = "/tmp";
-
-    char tmpl[512];
-    const int n = snprintf(tmpl, sizeof(tmpl), "%s/edgeclaw-install-XXXXXX", tmpdir);
-    if (n <= 0 || (size_t)n >= sizeof(tmpl))
-        return NULL;
-
-    const int fd = mkstemp(tmpl);
-    if (fd < 0)
-        return NULL;
-
-    size_t off = 0;
-    while (off < len)
-    {
-        const ssize_t w = write(fd, body + off, len - off);
-        if (w <= 0)
-        {
-            close(fd);
-            unlink(tmpl);
-            return NULL;
-        }
-        off += (size_t)w;
-    }
-    /* 0700 already from mkstemp; make the intent explicit and make sure an inherited umask
-     * did not widen it. */
-    if (fchmod(fd, 0700) != 0)
-        log_warn("upgrade: cannot set permissions on %s: %s", tmpl, strerror(errno));
-    close(fd);
-    return sdsnew(tmpl);
-#endif
 }
 
 void edc_upgrade_discard_script(const char *path)
 {
     if (!path || !path[0])
         return;
-#if defined(_WIN32)
-    if (!DeleteFileA(path) && GetLastError() != ERROR_FILE_NOT_FOUND)
-        log_warn("upgrade: cannot remove %s (error %lu)", path, (unsigned long)GetLastError());
-#else
-    if (unlink(path) != 0 && errno != ENOENT)
+    if (STAGE_REMOVE(path) != 0 && errno != ENOENT)
         log_warn("upgrade: cannot remove %s: %s", path, strerror(errno));
-#endif
 }
 
 sds *edc_upgrade_argv(edc_upgrade_method method, const char *script_path, const char *tag, const char *dir)

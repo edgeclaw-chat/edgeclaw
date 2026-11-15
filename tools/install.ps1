@@ -212,11 +212,58 @@ function Install-Binary {
         $dest = Join-Path $InstallDir 'edgeclaw.exe'
         $staging = "$dest.tmp$PID"
 
-        # Copy next to the destination and move into place, so a reader sees either the old
-        # binary or the new one and never a half-written file. Move-Item within one directory
-        # is a rename; the .tmp name carries the pid so two concurrent runs do not collide.
+        # Copy next to the destination first, so a reader sees either the old binary or the
+        # new one and never a half-written file. The .tmp name carries the pid so two
+        # concurrent runs do not collide.
         Copy-Item -Path $binary.FullName -Destination $staging -Force
-        Move-Item -Path $staging -Destination $dest -Force
+
+        # Then put it in place. Windows will not overwrite or delete a running executable, and
+        # this installer is normally started BY the program it is replacing -- so on an in-app
+        # upgrade the destination is locked for as long as the user's session lasts, and
+        # Move-Item -Force onto it fails with "Cannot create a file when that file already
+        # exists" (measured). Renaming is allowed, so the old binary is moved aside instead of
+        # being replaced, and the new one takes the name.
+        #
+        # The .old copy is removed afterwards when it can be: on POSIX, and on Windows when the
+        # destination was not locked. During an in-app upgrade it cannot be (the file is the
+        # running image), so the next run removes it -- which is why this starts by clearing
+        # whatever a previous run left behind.
+        $previous = "$dest.old"
+        if (Test-Path -Path $dest) {
+            Remove-Item -Path $previous -Force -ErrorAction SilentlyContinue
+            # If a PREVIOUS upgrade is still running, "$dest.old" is exactly the file it is
+            # running from: it cannot be removed, so renaming onto that name fails too
+            # (measured -- the second in-app upgrade in one session hit it). Fall back to a
+            # pid-suffixed name, which no other run can be using.
+            $aside = $null
+            foreach ($candidate in @($previous, "$previous$PID")) {
+                try {
+                    Rename-Item -Path $dest -NewName (Split-Path -Leaf $candidate) -ErrorAction Stop
+                    $aside = $candidate
+                    break
+                }
+                catch {
+                    # try the next name
+                }
+            }
+            if (-not $aside) {
+                Fail "cannot move $dest aside: it and $previous are both in use by a running copy"
+            }
+            $previous = $aside
+        }
+
+        # If the move fails, the staged copy is ours to clean up: it is not in $work, so the
+        # outer finally does not know about it. A failed run before this was added left an
+        # edgeclaw.exe.tmp<PID> in the install directory, next to the binary it failed to
+        # replace.
+        try {
+            Move-Item -Path $staging -Destination $dest -Force
+        }
+        catch {
+            Remove-Item -Path $staging -Force -ErrorAction SilentlyContinue
+            throw
+        }
+        Remove-Item -Path $previous -Force -ErrorAction SilentlyContinue
 
         Write-Host "Installed $dest"
         return $dest
