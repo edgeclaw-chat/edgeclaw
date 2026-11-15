@@ -270,21 +270,31 @@ static size_t env_take(sds *env, size_t at, const char *entry)
     return at + 1;
 }
 
-#if defined(_WIN32)
-
-/* First pass over the wide environment block: how many entries survive the filter.
+/* Hand every variable to |fn|, in UTF-8, one at a time.
  *
- * GetEnvironmentStringsW returns a block of NUL-terminated strings ended by an empty one, and
- * it also contains per-drive current directories named "=C:=C:\..." -- those start with '=',
- * have no name before the '=', and CreateProcess rejects an environment block that carries
- * them. They are skipped by the same filter that drops this program's own variables. */
-static size_t win_count_env(void)
+ * The only platform-specific part of this module: everything above and below is one body of
+ * code that both platforms compile, so the filtering, the allocation and the ownership rules
+ * are measured by the Linux coverage run instead of being scored as untested lines.
+ *
+ * It is a callback rather than a returned array because the enumeration has to happen twice
+ * (count, then fill) and a returned array would have to be freed twice, which is exactly how
+ * the first version ended up carrying two copies of the same loop.
+ *
+ * The entry passed to |fn| is borrowed: it lives as long as the callback is running. */
+typedef void (*env_visit_fn)(const char *entry, void *ud);
+static void env_visit_all(env_visit_fn fn, void *ud);
+
+#if defined(_WIN32)
+static void env_visit_all(env_visit_fn fn, void *ud)
 {
+    /* GetEnvironmentStringsW returns a block of NUL-terminated strings ended by an empty one.
+     * It also contains per-drive current directories named "=C:=C:\...", which have no name
+     * before the '=' and which CreateProcess rejects in an environment block -- skipping them
+     * is why the check for a leading '=' comes before the split. */
     wchar_t *block = GetEnvironmentStringsW();
     if (!block)
-        return 0;
+        return;
 
-    size_t n = 0;
     for (const wchar_t *p = block; *p; p += wcslen(p) + 1)
     {
         if (*p == L'=')
@@ -295,65 +305,52 @@ static size_t win_count_env(void)
         char *utf8 = edc_wide_to_utf8_alloc(p);
         if (!utf8)
             continue;
-        if (!edc_upgrade_env_is_private(utf8))
-            n++;
+        fn(utf8, ud);
         free(utf8);
     }
     FreeEnvironmentStringsW(block);
-    return n;
+}
+#else
+static void env_visit_all(env_visit_fn fn, void *ud)
+{
+    extern char **environ;
+    for (char **e = environ; e && *e; e++)
+        fn(*e, ud);
+}
+#endif
+
+static void env_count_one(const char *entry, void *ud)
+{
+    if (entry && entry[0] && !edc_upgrade_env_is_private(entry))
+        (*(size_t *)ud)++;
 }
 
-#endif
+struct env_fill
+{
+    sds *env;
+    size_t at;
+};
+
+static void env_fill_one(const char *entry, void *ud)
+{
+    struct env_fill *f = ud;
+    f->at = env_take(f->env, f->at, entry);
+}
 
 sds *edc_upgrade_child_env(void)
 {
-    sds *env = NULL;
-    size_t at = 0;
-
-#if defined(_WIN32)
-    const size_t n = win_count_env();
-    if (n == 0)
-        return NULL;
-    env = calloc(n + 1, sizeof(sds));
-    if (!env)
-        return NULL;
-
-    wchar_t *block = GetEnvironmentStringsW();
-    if (!block)
-    {
-        free(env);
-        return NULL;
-    }
-    for (const wchar_t *p = block; *p && at < n; p += wcslen(p) + 1)
-    {
-        if (*p == L'=')
-            continue;
-        const wchar_t *eq = wcschr(p, L'=');
-        if (!eq || eq == p)
-            continue;
-        char *utf8 = edc_wide_to_utf8_alloc(p);
-        if (!utf8)
-            continue;
-        at = env_take(env, at, utf8);
-        free(utf8);
-    }
-    FreeEnvironmentStringsW(block);
-#else
-    extern char **environ;
     size_t n = 0;
-    for (char **e = environ; e && *e; e++)
-        if (!edc_upgrade_env_is_private(*e))
-            n++;
+    env_visit_all(env_count_one, &n);
     if (n == 0)
         return NULL;
-    env = calloc(n + 1, sizeof(sds));
+
+    sds *env = calloc(n + 1, sizeof(sds));
     if (!env)
         return NULL;
-    for (char **e = environ; e && *e; e++)
-        at = env_take(env, at, *e);
-#endif
 
-    env[at] = NULL;
+    struct env_fill fill = {env, 0};
+    env_visit_all(env_fill_one, &fill);
+    env[fill.at] = NULL;
     return env;
 }
 
