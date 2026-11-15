@@ -18,6 +18,16 @@
 #include <unistd.h>
 #endif
 
+/* For the staging helpers below: snprintf on both platforms, and on POSIX the file API the
+ * ELF branch above already has but macOS does not (mkstemp, fchmod, write, unlink). */
+#include <stdio.h>
+#if !defined(_WIN32)
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 sds edc_platform_exe_path(void)
 {
 #if defined(_WIN32)
@@ -230,6 +240,148 @@ sds edc_upgrade_manual_hint(const char *tag)
                         "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.sh "
                         "| sh -s -- --tag %s",
                         t, t, t, t);
+#endif
+}
+
+/* ---- staging the installer ------------------------------------------------ */
+
+#if defined(_WIN32)
+
+/* GetTempPathA reads TMP, then TEMP, then USERPROFILE, and its result already ends with a
+ * backslash. There is no '.' fallback: a .ps1 in the current directory is worse than a
+ * visible failure. */
+static sds stage_temp_dir(void)
+{
+    char buf[MAX_PATH + 1];
+    const DWORD n = GetTempPathA((DWORD)sizeof(buf), buf);
+    if (n == 0 || n >= (DWORD)sizeof(buf))
+        return NULL;
+    return sdsnew(buf);
+}
+
+/* Claim a fresh name and leave it open for writing.
+ *
+ * The name has to end in .ps1 -- `powershell -File` refuses anything else -- and it must not
+ * be predictable, so the suffix mixes the pid with the clock. CREATE_NEW is what makes the
+ * claim atomic: the name is ours only if that open succeeded, so a squatted name costs one
+ * more attempt instead of appending to a file somebody else created. (_mktemp_s generates a
+ * name without claiming it, which is the race CREATE_NEW closes.) 64 attempts is not a
+ * probability: each collision has to be a name that already exists, and they are all
+ * distinct. */
+static HANDLE stage_create(sds *path_out)
+{
+    sds dir = stage_temp_dir();
+    if (!dir)
+        return INVALID_HANDLE_VALUE;
+
+    HANDLE h = INVALID_HANDLE_VALUE;
+    for (unsigned attempt = 0; attempt < 64 && h == INVALID_HANDLE_VALUE; attempt++)
+    {
+        sds path = sdscatprintf(sdsempty(), "%sedgeclaw-install-%08lx%08x.ps1", dir,
+                                (unsigned long)GetCurrentProcessId(),
+                                (unsigned)(GetTickCount() ^ (attempt * 2654435761u)));
+        if (!path)
+            break;
+
+        h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE)
+            *path_out = path;
+        else
+        {
+            const DWORD err = GetLastError();
+            sdsfree(path);
+            if (err != ERROR_FILE_EXISTS && err != ERROR_ALREADY_EXISTS)
+                break;
+        }
+    }
+
+    sdsfree(dir);
+    return h;
+}
+
+#endif
+
+sds edc_upgrade_stage_script(const char *body)
+{
+    if (!body || !body[0])
+        return NULL;
+
+    const size_t len = strlen(body);
+
+#if defined(_WIN32)
+    sds path = NULL;
+    const HANDLE h = stage_create(&path);
+    if (h == INVALID_HANDLE_VALUE)
+        return NULL;
+
+    size_t off = 0;
+    while (off < len)
+    {
+        const size_t left = len - off;
+        const DWORD want = (DWORD)(left > 0x1000u ? 0x1000u : left);
+        DWORD wrote = 0;
+        if (!WriteFile(h, body + off, want, &wrote, NULL) || wrote == 0)
+        {
+            CloseHandle(h);
+            DeleteFileA(path);
+            sdsfree(path);
+            return NULL;
+        }
+        off += wrote;
+    }
+
+    if (!CloseHandle(h))
+    {
+        DeleteFileA(path);
+        sdsfree(path);
+        return NULL;
+    }
+    return path;
+#else
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !tmpdir[0])
+        tmpdir = "/tmp";
+
+    char tmpl[512];
+    const int n = snprintf(tmpl, sizeof(tmpl), "%s/edgeclaw-install-XXXXXX", tmpdir);
+    if (n <= 0 || (size_t)n >= sizeof(tmpl))
+        return NULL;
+
+    const int fd = mkstemp(tmpl);
+    if (fd < 0)
+        return NULL;
+
+    size_t off = 0;
+    while (off < len)
+    {
+        const ssize_t w = write(fd, body + off, len - off);
+        if (w <= 0)
+        {
+            close(fd);
+            unlink(tmpl);
+            return NULL;
+        }
+        off += (size_t)w;
+    }
+    /* 0700 already from mkstemp; make the intent explicit and make sure an inherited umask
+     * did not widen it. */
+    if (fchmod(fd, 0700) != 0)
+        log_warn("upgrade: cannot set permissions on %s: %s", tmpl, strerror(errno));
+    close(fd);
+    return sdsnew(tmpl);
+#endif
+}
+
+void edc_upgrade_discard_script(const char *path)
+{
+    if (!path || !path[0])
+        return;
+#if defined(_WIN32)
+    if (!DeleteFileA(path) && GetLastError() != ERROR_FILE_NOT_FOUND)
+        log_warn("upgrade: cannot remove %s (error %lu)", path, (unsigned long)GetLastError());
+#else
+    if (unlink(path) != 0 && errno != ENOENT)
+        log_warn("upgrade: cannot remove %s: %s", path, strerror(errno));
 #endif
 }
 

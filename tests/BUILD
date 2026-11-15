@@ -204,6 +204,14 @@ cc_test(
 )
 
 cc_test(
+    name = "test_upgrade_script",
+    srcs = ["test_upgrade_script.c"],
+    deps = [
+        "//src/common:common",
+    ],
+    linkopts = LINK_OPTS,
+)
+cc_test(
     name = "test_update_check",
     srcs = ["test_update_check.c", "tls_stub.h", "test_fs_util.h"],
     deps = [

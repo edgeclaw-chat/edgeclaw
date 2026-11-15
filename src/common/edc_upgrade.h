@@ -60,8 +60,10 @@ void edc_upgrade_argv_free(sds *argv);
 /* Why no command could be produced, for the message shown to the user. Never NULL. */
 const char *edc_upgrade_unavailable_reason(edc_upgrade_method method);
 
-/* The command a user would type by hand, for the paths that refuse to act (unknown method,
- * no shell, Windows). Caller frees. */
+/* The command a user would type by hand, for the paths that refuse to act (an unknown
+ * method, or an installer that would not start). Windows prints a PowerShell form: its
+ * installer exists, so the hint is a shortcut there rather than a last resort. Caller
+ * frees. */
 sds edc_upgrade_manual_hint(const char *tag);
 
 /* Whether this build can offer an in-app upgrade at all.
@@ -78,5 +80,29 @@ bool edc_upgrade_supported(void);
  * Windows quick start is "unpack the tarball with the bundled tar and run the exe", so
  * requiring Git for Windows to enable updates would be a new dependency, not a convenience. */
 const char *edc_upgrade_installer_filename(void);
+
+/* Stage a copy of |body| in a private temporary file and return its path, or NULL.
+ *
+ * Both platforms need this file, for different reasons and with one requirement each:
+ *
+ *   - POSIX runs it as `sh <path>`, so the name does not matter and mkstemp's 0600 default
+ *     is the point: nobody else may rewrite the script between the write and the exec.
+ *   - Windows runs it as `powershell -File <path>`, and -File REFUSES a file whose name
+ *     does not end in `.ps1` ("the file does not have a '.ps1' extension"). The name is
+ *     therefore load-bearing there, and it is created with CREATE_NEW so a predictable name
+ *     cannot be squatted on beforehand.
+ *
+ * A staging step rather than an argument passed straight to the shell, because the script
+ * must be the exact bytes the release published -- a shell reading it from stdin would share
+ * a stream with whatever else the child reads.
+ *
+ * Shared with the tests rather than kept private to the runner: this is the one step that
+ * differs per platform, and the version that returned NULL on Windows ("there is no shell to
+ * run the script anyway" -- true until the PowerShell installer existed) survived precisely
+ * because no test ever wrote one. */
+sds edc_upgrade_stage_script(const char *body);
+
+/* Remove a staged installer. Tolerates NULL and a path that is already gone. */
+void edc_upgrade_discard_script(const char *path);
 
 #endif /* __EDC_UPGRADE_H__ */
