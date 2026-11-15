@@ -84,7 +84,19 @@ beyond `curl` or `wget`.
 #### Windows
 
 Windows has its own installer, and it needs nothing beyond what the OS ships with
-(`Invoke-WebRequest`, `tar`, `Get-FileHash`) — **no curl, no bash, no Git for Windows**:
+(`Invoke-WebRequest`, `tar`, `Get-FileHash`) — **no curl, no bash, no Git for Windows**.
+
+**Both lines below are PowerShell.** `iwr` is PowerShell's shorthand for `Invoke-WebRequest`
+and no other shell has it, so a `cmd`, Git Bash or WSL prompt answers "`iwr` is not
+recognized" / "command not found" before anything else happens. Pick the row for the window
+you have open:
+
+| Your prompt | What to do |
+|---|---|
+| `PS C:\>` — PowerShell | run the two lines below |
+| `C:\>` — `cmd`, 命令提示符 | run the one-line `cmd` form below |
+| Windows Terminal | it is a window, not a shell — what runs inside it is whatever profile the tab opened. Open a **Windows PowerShell** tab (the `⌄` beside `+`), or type `powershell` and press Enter first. If the default profile is *命令提示符*, the first line fails with "`iwr` is not recognized" |
+| Git Bash, WSL | switch to a PowerShell tab, or use the `bash` form below: PowerShell's `$env:TEMP` means nothing to bash |
 
 ```powershell
 iwr -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 `
@@ -92,26 +104,29 @@ iwr -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/ma
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\edgeclaw-install.ps1"
 ```
 
-It installs to `%USERPROFILE%\.local\bin` and takes the same `-Tag`, `-Pre`, `-Dir` and
-`-DryRun` options. Two steps rather than one pipe because the script takes arguments, and
-piping it into `Invoke-Expression` would lose them.
-
-That second line is `powershell -ExecutionPolicy Bypass -File`, not the shorter
-`& "$env:TEMP\edgeclaw-install.ps1"`, because on a stock Windows the short form fails
-before the script runs at all — the default execution policy is `Restricted`, and it
-refuses to load any `.ps1` ("cannot be loaded because running scripts is disabled on this
-system"). `Bypass` is scoped to that one process and changes no machine-wide setting; it is
-also how the app runs this same installer when it upgrades itself.
-
-Those two lines are PowerShell, and `iwr` is one of its aliases. Windows Terminal is only
-a window, not a shell: if the tab it opens is `cmd`, Git Bash or WSL, the first line dies
-with "`iwr` is not recognized" / "command not found" before anything else runs. Start a
-PowerShell tab, or type `powershell` at a `cmd` prompt. From `cmd` it can also be one
-line, with the alias spelled out because `cmd` has none:
+From `cmd`, as one line, with the alias spelled out because `cmd` has none:
 
 ```cmd
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'edgeclaw-install.ps1'; Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 -OutFile $p; & $p"
 ```
+
+From Git Bash, the same thing with bash's own `$TEMP` — and `cygpath`, because PowerShell
+wants a Windows path:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/master/tools/install.ps1 -o "$TEMP/edgeclaw-install.ps1" &&
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$TEMP/edgeclaw-install.ps1")"
+```
+
+It installs to `%USERPROFILE%\.local\bin` and takes the same `-Tag`, `-Pre`, `-Dir` and
+`-DryRun` options. Two steps rather than one pipe because the script takes arguments, and
+piping it into `Invoke-Expression` would lose them.
+
+`-ExecutionPolicy Bypass` is on the line that runs the script because the default policy is
+`Restricted`, which refuses to load any `.ps1` — the shorter `& "$env:TEMP\edgeclaw-install.ps1"`
+dies with "running scripts is disabled on this system" before the script starts. `Bypass` is
+scoped to that one process and changes no machine-wide setting; it is also how the app runs
+this same installer when it upgrades itself.
 
 #### No curl, no wget, or a hand-installed binary
 
