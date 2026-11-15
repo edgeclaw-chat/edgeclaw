@@ -69,6 +69,9 @@ static bool file_exists(const char *path)
 #endif
 }
 
+#if defined(_WIN32)
+/* Only the Windows name has a required suffix; see the assertion that uses this. Guarded so a
+ * POSIX build does not carry an unused static (-Wunused-function). */
 static bool ends_with(const char *s, const char *suffix)
 {
     const size_t ls = strlen(s), lx = strlen(suffix);
@@ -76,6 +79,7 @@ static bool ends_with(const char *s, const char *suffix)
         return false;
     return strcmp(s + ls - lx, suffix) == 0;
 }
+#endif
 
 int main(void)
 {
@@ -90,8 +94,14 @@ int main(void)
     if (path)
     {
         CHECK(file_exists(path), "the staged file exists");
+#if defined(_WIN32)
+        /* Windows only: `powershell -File` refuses any other extension. The POSIX branch is
+         * run as `sh <path>`, where an extension would only be misleading -- it is
+         * install.sh, not a .ps1. Asserting this everywhere is what a Linux CI run caught
+         * (the first version of this test did exactly that). */
         CHECK(ends_with(path, ".ps1"),
               "the staged name ends in .ps1, which is what powershell -File accepts");
+#endif
 
         char buf[512];
         const long n = slurp(path, buf, sizeof(buf) - 1);
@@ -107,6 +117,8 @@ int main(void)
         }
 
 #if !defined(_WIN32)
+        /* The POSIX name carries no extension on purpose (see above); what matters is that it
+         * is identifiable and private to this user. */
         struct stat st;
         if (stat(path, &st) == 0)
             CHECK((st.st_mode & 0777) == 0700, "the staged script is private (0700)");
