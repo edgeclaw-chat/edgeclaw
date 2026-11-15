@@ -10,6 +10,7 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <wchar.h> /* wcslen/wcschr for the environment block */
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #include <stdlib.h>
@@ -243,6 +244,126 @@ sds edc_upgrade_manual_hint(const char *tag)
                         "| sh -s -- --tag %s",
                         t, t, t, t);
 #endif
+}
+
+/* ---- the installer's environment ------------------------------------------ */
+
+/* The prefix this program uses for everything of its own. */
+#define EDC_UPGRADE_PRIVATE_PREFIX "EDGECLAW_"
+
+bool edc_upgrade_env_is_private(const char *entry)
+{
+    if (!entry)
+        return true;
+    return strncmp(entry, EDC_UPGRADE_PRIVATE_PREFIX, sizeof(EDC_UPGRADE_PRIVATE_PREFIX) - 1) == 0;
+}
+
+/* Append a copy of |entry| to |env|; returns the new count. */
+static size_t env_take(sds *env, size_t at, const char *entry)
+{
+    if (!entry || !entry[0] || edc_upgrade_env_is_private(entry))
+        return at;
+    sds copy = sdsnew(entry);
+    if (!copy)
+        return at;
+    env[at] = copy;
+    return at + 1;
+}
+
+#if defined(_WIN32)
+
+/* First pass over the wide environment block: how many entries survive the filter.
+ *
+ * GetEnvironmentStringsW returns a block of NUL-terminated strings ended by an empty one, and
+ * it also contains per-drive current directories named "=C:=C:\..." -- those start with '=',
+ * have no name before the '=', and CreateProcess rejects an environment block that carries
+ * them. They are skipped by the same filter that drops this program's own variables. */
+static size_t win_count_env(void)
+{
+    wchar_t *block = GetEnvironmentStringsW();
+    if (!block)
+        return 0;
+
+    size_t n = 0;
+    for (const wchar_t *p = block; *p; p += wcslen(p) + 1)
+    {
+        if (*p == L'=')
+            continue;
+        const wchar_t *eq = wcschr(p, L'=');
+        if (!eq || eq == p)
+            continue;
+        char *utf8 = edc_wide_to_utf8_alloc(p);
+        if (!utf8)
+            continue;
+        if (!edc_upgrade_env_is_private(utf8))
+            n++;
+        free(utf8);
+    }
+    FreeEnvironmentStringsW(block);
+    return n;
+}
+
+#endif
+
+sds *edc_upgrade_child_env(void)
+{
+    sds *env = NULL;
+    size_t at = 0;
+
+#if defined(_WIN32)
+    const size_t n = win_count_env();
+    if (n == 0)
+        return NULL;
+    env = calloc(n + 1, sizeof(sds));
+    if (!env)
+        return NULL;
+
+    wchar_t *block = GetEnvironmentStringsW();
+    if (!block)
+    {
+        free(env);
+        return NULL;
+    }
+    for (const wchar_t *p = block; *p && at < n; p += wcslen(p) + 1)
+    {
+        if (*p == L'=')
+            continue;
+        const wchar_t *eq = wcschr(p, L'=');
+        if (!eq || eq == p)
+            continue;
+        char *utf8 = edc_wide_to_utf8_alloc(p);
+        if (!utf8)
+            continue;
+        at = env_take(env, at, utf8);
+        free(utf8);
+    }
+    FreeEnvironmentStringsW(block);
+#else
+    extern char **environ;
+    size_t n = 0;
+    for (char **e = environ; e && *e; e++)
+        if (!edc_upgrade_env_is_private(*e))
+            n++;
+    if (n == 0)
+        return NULL;
+    env = calloc(n + 1, sizeof(sds));
+    if (!env)
+        return NULL;
+    for (char **e = environ; e && *e; e++)
+        at = env_take(env, at, *e);
+#endif
+
+    env[at] = NULL;
+    return env;
+}
+
+void edc_upgrade_env_free(sds *env)
+{
+    if (!env)
+        return;
+    for (size_t i = 0; env[i]; i++)
+        sdsfree(env[i]);
+    free(env);
 }
 
 /* ---- staging the installer ------------------------------------------------ */

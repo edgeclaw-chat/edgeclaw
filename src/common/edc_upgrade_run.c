@@ -223,15 +223,10 @@ static void run_unref(edc_upgrade_run_t *run)
     sdsfree(run->fetch_error);
     sdsfree(run->output);
     sdsfree(run->install_dir);
-    if (run->child_env)
-    {
-        /* sdsfree, not free: each entry is built with sdscatprintf, which returns an sds --
-         * a pointer into a header-prefixed allocation. free() on it aborts with
-         * "free(): invalid pointer", which is how this was found. */
-        for (size_t i = 0; run->child_env[i]; i++)
-            sdsfree(run->child_env[i]);
-        free(run->child_env);
-    }
+    /* Each entry is an sds -- a pointer into a header-prefixed allocation, so free() on one
+     * aborts with "free(): invalid pointer". edc_upgrade_env_free() does that accounting,
+     * next to the code that builds the array. */
+    edc_upgrade_env_free(run->child_env);
     free(run);
 }
 
@@ -519,43 +514,20 @@ static void run_spawn(edc_upgrade_run_t *run)
     options.file = argv[0];
     options.args = argv;
 
-    /* Not a full inherit: the app's own environment (master key, config paths) has no business
-     * in an installer. But NOT empty either -- the installer downloads with curl/wget, and those
-     * read the proxy variables. An empty environment silently disables the proxy, which is the
-     * one setting a machine behind an egress proxy cannot work without: the fetch of this very
-     * script may have gone through it, so clearing it here would make the two halves of one
-     * upgrade use different routes.
+    /* The installer's environment: the parent's, minus this program's own variables.
      *
-     * So: proxy variables only, passed through verbatim. */
-    {
-        static const char *const kPassThrough[] = {"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
-                                                   "all_proxy",   "ALL_PROXY",   "no_proxy",   "NO_PROXY"};
-        size_t n = 0;
-        for (size_t i = 0; i < sizeof(kPassThrough) / sizeof(kPassThrough[0]); i++)
-            if (getenv(kPassThrough[i]) && getenv(kPassThrough[i])[0])
-                n++;
-        /* n entries + terminator; freed in run_free. */
-        char **env = n > 0 ? calloc(n + 1, sizeof(char *)) : NULL;
-        if (env)
-        {
-            size_t at = 0;
-            for (size_t i = 0; i < sizeof(kPassThrough) / sizeof(kPassThrough[0]); i++)
-            {
-                const char *v = getenv(kPassThrough[i]);
-                if (v && v[0])
-                    env[at++] = sdscatprintf(sdsempty(), "%s=%s", kPassThrough[i], v);
-                if (at == n)
-                    break;
-            }
-            env[at] = NULL;
-            run->child_env = env;
-            options.env = env;
-        }
-        else
-        {
-            options.env = no_env;
-        }
-    }
+     * Inherit-and-subtract rather than an allowlist. The list used to be "proxy variables
+     * only", reasoning that the app's environment (master key, config paths) has no business
+     * in an installer -- and a machine behind an egress proxy needs those passed, or the two
+     * halves of one upgrade would take different routes. Correct as far as it went, and far
+     * too small: on Windows it dropped PROCESSOR_ARCHITECTURE (install.ps1 refuses to pick a
+     * target: "Fail : PROCESSOR_ARCHITECTURE is not set"), then PATHEXT (so `tar` resolved to
+     * nothing and the extraction failed), then TEMP. Three failures, each found by a user.
+     *
+     * edc_upgrade_child_env() inherits what a user's shell would have and removes every
+     * EDGECLAW_* -- which is what docs/auto-update.zh.md section 8.2 asks for. */
+    run->child_env = edc_upgrade_child_env();
+    options.env = run->child_env ? run->child_env : no_env;
 #ifndef _WIN32
     options.flags |= UV_PROCESS_DETACHED;
 #endif

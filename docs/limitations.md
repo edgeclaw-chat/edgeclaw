@@ -179,6 +179,20 @@ kill is immediate.
 POSIX (the installer's own requirement), `powershell` on Windows (`install.ps1` then uses
 `Invoke-WebRequest`, `tar` and `Get-FileHash`, all built in).
 
+**The installer inherits the app's environment, minus every `EDGECLAW_*` variable.** That is a
+narrower statement than it looks: it is what makes a proxy setting, `PATH`, and on Windows
+`PROCESSOR_ARCHITECTURE` and `PATHEXT` all reach `install.ps1`, and each of those was once
+missing — the installer then failed with "PROCESSOR_ARCHITECTURE is not set", or could not find
+`tar`, or ignored the proxy. If a machine needs something outside that rule to install, the
+upgrade cannot express it; install by hand there.
+
+**On Windows the old binary is moved aside, not overwritten.** A running executable cannot be
+replaced or deleted, and the app is running when it asks the installer to replace it, so
+`edgeclaw.exe` is renamed to `edgeclaw.exe.old` and the new binary takes the name. The copy is
+removed by the next run, because it is the running image until the app exits — expect one
+`edgeclaw.exe.old` in the install directory after an in-app upgrade, and until the app is
+restarted, `/update` sends the new binary into place for the *next* launch, not the current one.
+
 **Two platforms have no build at all**, and both installers refuse them explicitly rather than
 installing something that will not run:
 

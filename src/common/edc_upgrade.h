@@ -104,4 +104,32 @@ sds edc_upgrade_stage_script(const char *body);
 /* Remove a staged installer. Tolerates NULL and a path that is already gone. */
 void edc_upgrade_discard_script(const char *path);
 
+/* The environment handed to the installer: the parent's, minus this program's own variables.
+ *
+ * Inherit, then subtract -- rather than an allowlist -- because the installer needs a working
+ * machine environment and every hand-picked list has been too small. It started as proxy
+ * variables only, which on Windows dropped PROCESSOR_ARCHITECTURE (the installer refuses to
+ * pick a target without it: "Fail : PROCESSOR_ARCHITECTURE is not set"), then PATHEXT (so
+ * `tar` resolved to nothing and extraction failed with "The term 'tar' is not recognized"),
+ * then TEMP. Each was a separate bug report. A child process that inherits what a user's
+ * shell would have is the definition of working here.
+ *
+ * What is subtracted is everything whose name starts with `EDGECLAW_`: the master key, the
+ * catalog override, the HTTPS timeout, the theme. The installer has no use for any of them,
+ * and the design says so explicitly (docs/auto-update.zh.md section 8.2: inherit, but drop
+ * EDGECLAW_MASTER_KEY). Matching the whole prefix rather than that one name is deliberate: a
+ * variable added later is private by default instead of leaking until someone notices.
+ *
+ * Returns a NULL-terminated array of owned "NAME=value" strings (freed with
+ * edc_upgrade_env_free), or NULL when nothing could be collected. */
+sds *edc_upgrade_child_env(void);
+
+/* Free an array from edc_upgrade_child_env. Tolerates NULL. */
+void edc_upgrade_env_free(sds *env);
+
+/* Whether |entry| ("NAME=value") is one this program keeps out of the installer's
+ * environment. Exposed so the rule can be tested on every platform rather than only where a
+ * spawn happens. */
+bool edc_upgrade_env_is_private(const char *entry);
+
 #endif /* __EDC_UPGRADE_H__ */

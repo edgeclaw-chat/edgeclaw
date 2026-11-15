@@ -26,10 +26,43 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+
+static void set_env(const char *name, const char *value)
+{
+    _putenv_s(name, value ? value : "");
+}
 #else
 #include <stdlib.h>
 #include <unistd.h>
+
+static void set_env(const char *name, const char *value)
+{
+    if (value)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
+}
 #endif
+
+/* The value of NAME in a NULL-terminated "NAME=value" array, or NULL.
+ *
+ * Windows environment names are case-insensitive, and the spelling in the block is whatever
+ * created the entry: bazel's test runner sets SYSTEMROOT, so _putenv_s("SystemRoot", ...)
+ * updates the value and leaves the name in capitals. Comparing case-sensitively made this
+ * test pass when run by hand (no SYSTEMROOT there, so the name was created as written) and
+ * fail under `bazel test` -- the opposite of the failure it is supposed to catch. */
+static const char *env_lookup(char *const *env, const char *name)
+{
+    const size_t n = strlen(name);
+    for (size_t i = 0; env && env[i]; i++)
+#if defined(_WIN32)
+        if (_strnicmp(env[i], name, n) == 0 && env[i][n] == '=')
+#else
+        if (strncmp(env[i], name, n) == 0 && env[i][n] == '=')
+#endif
+            return env[i] + n + 1;
+    return NULL;
+}
 
 static int g_passed = 0;
 static int g_failed = 0;
@@ -183,6 +216,82 @@ int main(void)
         CHECK(0, "could not create a scratch directory for the discard test");
     }
 #endif
+
+    /* ── the installer's environment ────────────────────────────────────────
+     *
+     * What the runner hands the child used to be an allowlist -- proxy variables only. On
+     * Windows that meant no PROCESSOR_ARCHITECTURE (install.ps1 refuses to choose a target:
+     * "Fail : PROCESSOR_ARCHITECTURE is not set"), no PATHEXT (so `tar` never resolved and
+     * the extraction failed), and no TEMP. Three bugs, each found by a user in turn.
+     *
+     * The rule is now "inherit, minus this program's own variables", so both halves are
+     * asserted: what must survive, and what must not. */
+    {
+        set_env("EDGECLAW_MASTER_KEY", "the-passphrase-or-key");
+        set_env("EDGECLAW_SOMETHING_ADDED_LATER", "private-by-default");
+
+        /* The inheritance probes are SET here rather than read from the ambient environment.
+         * A bazel test action gets a minimal environment -- measured: this binary sees no
+         * PROCESSOR_ARCHITECTURE, PATHEXT or SystemRoot under `bazel test`, and all three when
+         * run directly -- so asserting on what happens to be there would make the test pass
+         * or fail on the runner rather than on the code. */
+        set_env("EDGE_UPGRADE_INHERIT_PROBE", "kept");
+
+        const sds *env = edc_upgrade_child_env();
+        char *const *lookup = (char *const *)env;
+        CHECK(env != NULL, "an environment is produced at all");
+
+        /* Subtracted: the secret, and anything else added under the prefix later. */
+        CHECK(lookup && env_lookup(lookup, "EDGECLAW_MASTER_KEY") == NULL,
+              "EDGECLAW_MASTER_KEY does not reach the installer");
+        CHECK(lookup && env_lookup(lookup, "EDGECLAW_SOMETHING_ADDED_LATER") == NULL,
+              "a variable added later under the prefix is private without anyone listing it");
+
+        /* Inherited: the variables whose absence actually broke the upgrade. */
+        CHECK(lookup && env_lookup(lookup, "EDGE_UPGRADE_INHERIT_PROBE") != NULL,
+              "an ordinary variable is inherited");
+
+#if defined(_WIN32)
+        /* The three whose absence actually broke install.ps1 on Windows, set explicitly so the
+         * assertion is about the code and not about the runner's environment. */
+        set_env("PROCESSOR_ARCHITECTURE", "AMD64");
+        set_env("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+        set_env("SystemRoot", "C:\\Windows");
+        const sds *win_env = edc_upgrade_child_env();
+        char *const *win = (char *const *)win_env;
+        CHECK(win && env_lookup(win, "PROCESSOR_ARCHITECTURE") != NULL,
+              "PROCESSOR_ARCHITECTURE is inherited (install.ps1 cannot pick a target without it)");
+        CHECK(win && env_lookup(win, "PATHEXT") != NULL,
+              "PATHEXT is inherited (without it `tar` does not resolve)");
+        CHECK(win && env_lookup(win, "SystemRoot") != NULL, "SystemRoot is inherited");
+        edc_upgrade_env_free((sds *)win_env);
+#endif
+        /* The half the old allowlist got right, kept from regressing. */
+        set_env("HTTPS_PROXY", "http://127.0.0.1:9/");
+        const sds *with_proxy = edc_upgrade_child_env();
+        CHECK(with_proxy && env_lookup((char *const *)with_proxy, "HTTPS_PROXY") != NULL,
+              "the proxy variables still reach the installer");
+        edc_upgrade_env_free((sds *)with_proxy);
+        set_env("HTTPS_PROXY", NULL);
+
+        /* An array the caller owns, freed once; a second pass must be harmless too. */
+        edc_upgrade_env_free((sds *)env);
+        edc_upgrade_env_free(NULL);
+
+        set_env("EDGECLAW_MASTER_KEY", NULL);
+        set_env("EDGECLAW_SOMETHING_ADDED_LATER", NULL);
+        set_env("EDGE_UPGRADE_INHERIT_PROBE", NULL);
+    }
+
+    /* The rule itself, so a platform that cannot spawn still tests it. */
+    CHECK(edc_upgrade_env_is_private("EDGECLAW_MASTER_KEY=x"), "the master key is private");
+    CHECK(edc_upgrade_env_is_private("EDGECLAW_=x"), "the bare prefix counts as private");
+    CHECK(!edc_upgrade_env_is_private("PATH=/usr/bin"), "PATH is not private");
+    CHECK(!edc_upgrade_env_is_private("PROCESSOR_ARCHITECTURE=AMD64"),
+          "PROCESSOR_ARCHITECTURE is not private");
+    CHECK(!edc_upgrade_env_is_private("XEDGECLAW_A=b"),
+          "a name that merely contains the prefix is not private");
+    CHECK(edc_upgrade_env_is_private(NULL), "NULL is treated as private, not dereferenced");
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;
