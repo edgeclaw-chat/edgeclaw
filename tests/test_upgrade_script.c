@@ -11,9 +11,9 @@
  * the property under test is per-platform (a name, a mode, a claim), and a test that skips
  * the platform where the bug lives is the one that lets it back in.
  *
- * The .ps1 extension is not cosmetic: `powershell -File <path>` refuses any other extension
- * ("the file does not have a '.ps1' extension"), so a random name without it would fail one
- * step later than the bug being fixed here.
+ * The implementation is now one body with the four file calls spelled per platform, so this
+ * file measures the same logic on both -- the failure paths included, which is why they are
+ * exercised here rather than left to the one platform that would notice.
  */
 
 #include "edc_upgrade.h"
@@ -22,11 +22,12 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #if defined(_WIN32)
 #include <windows.h>
 #else
-#include <sys/stat.h>
+#include <stdlib.h>
 #include <unistd.h>
 #endif
 
@@ -45,14 +46,9 @@ static int g_failed = 0;
         }                                                                                                              \
     } while (0)
 
-/* Read the whole file. Returns the number of bytes read, or -1. */
 static long slurp(const char *path, char *buf, size_t cap)
 {
-#if defined(_WIN32)
     FILE *f = fopen(path, "rb");
-#else
-    FILE *f = fopen(path, "rb");
-#endif
     if (!f)
         return -1;
     const size_t n = fread(buf, 1, cap, f);
@@ -60,32 +56,21 @@ static long slurp(const char *path, char *buf, size_t cap)
     return (long)n;
 }
 
+/* Portable existence check: a file this code creates is a readable regular file, so opening it
+ * answers the question without <windows.h> or <unistd.h> in the way. */
 static bool file_exists(const char *path)
 {
-#if defined(_WIN32)
-    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
-#else
-    return access(path, F_OK) == 0;
-#endif
-}
-
-#if defined(_WIN32)
-/* Only the Windows name has a required suffix; see the assertion that uses this. Guarded so a
- * POSIX build does not carry an unused static (-Wunused-function). */
-static bool ends_with(const char *s, const char *suffix)
-{
-    const size_t ls = strlen(s), lx = strlen(suffix);
-    if (lx > ls)
+    FILE *f = fopen(path, "rb");
+    if (!f)
         return false;
-    return strcmp(s + ls - lx, suffix) == 0;
+    fclose(f);
+    return true;
 }
-#endif
 
 int main(void)
 {
     /* A body with a newline and the CRLF shape a fetched script actually has: a writer that
-     * treats the body as a C string would silently stop at the first NUL, and one that skips
-     * bytes would be caught by the length check rather than by a diff nobody reads. */
+     * skips bytes is caught by the length check rather than by a diff nobody reads. */
     const char *body = "Write-Host 'edgeclaw'\r\n\r\nexit 0\r\n";
 
     sds path = edc_upgrade_stage_script(body);
@@ -99,7 +84,8 @@ int main(void)
          * run as `sh <path>`, where an extension would only be misleading -- it is
          * install.sh, not a .ps1. Asserting this everywhere is what a Linux CI run caught
          * (the first version of this test did exactly that). */
-        CHECK(ends_with(path, ".ps1"),
+        const size_t lp = strlen(path);
+        CHECK(lp > 4 && strcmp(path + lp - 4, ".ps1") == 0,
               "the staged name ends in .ps1, which is what powershell -File accepts");
 #endif
 
@@ -116,15 +102,17 @@ int main(void)
             CHECK(0, "the staged bytes are the fetched bytes (length mismatch)");
         }
 
+        CHECK(strstr(path, "edgeclaw-install-") != NULL, "the staged name identifies its origin");
+
 #if !defined(_WIN32)
-        /* The POSIX name carries no extension on purpose (see above); what matters is that it
-         * is identifiable and private to this user. */
+        /* POSIX only: mkstemp used to hand out 0600 and the mode is now set by the create.
+         * What matters either way is that nobody else can rewrite the script between the
+         * write and the exec. */
         struct stat st;
         if (stat(path, &st) == 0)
-            CHECK((st.st_mode & 0777) == 0700, "the staged script is private (0700)");
+            CHECK((st.st_mode & 0777) == 0600, "the staged script is private (0600)");
         else
-            CHECK(0, "the staged script is private (0700)");
-        CHECK(strstr(path, "edgeclaw-install-") != NULL, "the staged name identifies its origin");
+            CHECK(0, "the staged script is private (0600)");
 #endif
 
         edc_upgrade_discard_script(path);
@@ -132,7 +120,8 @@ int main(void)
         /* Idempotent: a second removal (or a restart that retries teardown) must not abort. */
         edc_upgrade_discard_script(path);
         edc_upgrade_discard_script(NULL);
-        CHECK(1, "discarding again, or with NULL, is harmless");
+        edc_upgrade_discard_script("");
+        CHECK(1, "discarding again, with NULL, or with an empty path, is harmless");
         sdsfree(path);
     }
 
@@ -151,6 +140,49 @@ int main(void)
     /* Refusals, rather than a zero-byte executable in a temp directory. */
     CHECK(edc_upgrade_stage_script(NULL) == NULL, "no body, no file");
     CHECK(edc_upgrade_stage_script("") == NULL, "an empty body is refused");
+
+#if !defined(_WIN32)
+    /* The failure paths. They are the reason this belongs in a test rather than in a comment:
+     * before, "cannot write the installer to a temporary file" was reported by a branch that
+     * was never taken on the platform that could report it.
+     *
+     * A temp directory that does not exist: the create fails with something other than
+     * EEXIST, so the retry loop gives up immediately instead of trying 64 names. */
+    const char *real_tmp = getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp";
+    char saved[512];
+    snprintf(saved, sizeof(saved), "%s", real_tmp);
+
+    setenv("TMPDIR", "/nonexistent-edgeclaw-test-dir", 1);
+    CHECK(edc_upgrade_stage_script(body) == NULL, "an unusable temp directory yields no file");
+
+    /* And the default is used when TMPDIR says nothing, which is the path a stock machine
+     * takes. */
+    setenv("TMPDIR", "", 1);
+    sds d = edc_upgrade_stage_script(body);
+    CHECK(d != NULL, "an empty TMPDIR falls back to /tmp");
+    if (d)
+        CHECK(strncmp(d, "/tmp/", 5) == 0, "the fallback really is /tmp");
+    edc_upgrade_discard_script(d);
+    sdsfree(d);
+
+    setenv("TMPDIR", saved, 1);
+
+    /* Discarding something that is not a file: unlink fails with EISDIR/EPERM, which is the
+     * branch that logs instead of retrying. It must not crash, and must not remove the
+     * directory. */
+    char dirpath[] = "/tmp/edgeclaw-test-dir-XXXXXX";
+    if (mkdtemp(dirpath))
+    {
+        edc_upgrade_discard_script(dirpath);
+        struct stat dst;
+        CHECK(stat(dirpath, &dst) == 0 && S_ISDIR(dst.st_mode), "discarding a directory leaves it alone");
+        rmdir(dirpath);
+    }
+    else
+    {
+        CHECK(0, "could not create a scratch directory for the discard test");
+    }
+#endif
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;

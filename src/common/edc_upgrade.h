@@ -83,23 +83,22 @@ const char *edc_upgrade_installer_filename(void);
 
 /* Stage a copy of |body| in a private temporary file and return its path, or NULL.
  *
- * Both platforms need this file, for different reasons and with one requirement each:
- *
- *   - POSIX runs it as `sh <path>`, so the name does not matter and mkstemp's 0600 default
- *     is the point: nobody else may rewrite the script between the write and the exec.
- *   - Windows runs it as `powershell -File <path>`, and -File REFUSES a file whose name
- *     does not end in `.ps1` ("the file does not have a '.ps1' extension"). The name is
- *     therefore load-bearing there, and it is created with CREATE_NEW so a predictable name
- *     cannot be squatted on beforehand.
- *
  * A staging step rather than an argument passed straight to the shell, because the script
  * must be the exact bytes the release published -- a shell reading it from stdin would share
  * a stream with whatever else the child reads.
  *
- * Shared with the tests rather than kept private to the runner: this is the one step that
- * differs per platform, and the version that returned NULL on Windows ("there is no shell to
- * run the script anyway" -- true until the PowerShell installer existed) survived precisely
- * because no test ever wrote one. */
+ * Two things differ per platform, and only two: where a temporary file belongs (TMPDIR or
+ * /tmp; the variable GetTempPathA reads) and the name's extension. `powershell -File`
+ * REFUSES a file whose name does not end in `.ps1` ("the file does not have a '.ps1'
+ * extension"), so the name is load-bearing there; POSIX runs it as `sh <path>`, where an
+ * extension would only mislead -- that script is install.sh.
+ *
+ * Everything else is one body. It was two, and the Windows half returned NULL on the grounds
+ * that "there is no shell to run the script anyway" -- true until the PowerShell installer
+ * existed, and it stayed behind afterwards, so every Windows upgrade failed at this step.
+ * Sharing the body is also what makes the failure paths measurable: the coverage job runs on
+ * Linux only, so code behind `#ifdef _WIN32` is code nothing reports on, and the difference
+ * between "measured low" and "not measurable" is easy to lose. */
 sds edc_upgrade_stage_script(const char *body);
 
 /* Remove a staged installer. Tolerates NULL and a path that is already gone. */
