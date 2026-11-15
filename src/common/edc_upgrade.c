@@ -203,7 +203,14 @@ sds edc_upgrade_manual_hint(const char *tag)
      * with "The argument ... does not exist". Download first, then run the local copy --
      * which is also what makes the -Tag argument possible at all. Two statements on separate
      * lines rather than one -Command string, because quoting three levels deep is how the
-     * broken version got written. */
+     * broken version got written.
+     *
+     * `powershell -ExecutionPolicy Bypass -File`, not `& <script>`: the default policy on a
+     * stock Windows is Restricted, which refuses to load any .ps1 -- the & form dies with
+     * "cannot be loaded because running scripts is disabled on this system" before a single
+     * line of the installer runs. Bypass applies to this one process only, and it is what
+     * edc_upgrade_argv() below passes for the automated upgrade; a hint that demanded a
+     * machine-wide policy change first would be advice no default install could follow. */
     return sdscatprintf(sdsempty(),
                         "download %s from\n"
                         "  https://github.com/edgeclaw-chat/edgeclaw/releases/tag/%s\n"
@@ -211,7 +218,8 @@ sds edc_upgrade_manual_hint(const char *tag)
                         "  iwr -UseBasicParsing "
                         "https://raw.githubusercontent.com/edgeclaw-chat/edgeclaw/%s/tools/install.ps1 "
                         "-OutFile \"$env:TEMP\\edgeclaw-install.ps1\"\n"
-                        "  & \"$env:TEMP\\edgeclaw-install.ps1\" -Tag %s",
+                        "  powershell -NoProfile -ExecutionPolicy Bypass -File "
+                        "\"$env:TEMP\\edgeclaw-install.ps1\" -Tag %s",
                         t, t, t, t);
 #else
     return sdscatprintf(sdsempty(),
