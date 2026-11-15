@@ -195,45 +195,15 @@ static sds fetch_text(const char *cacert, const char *url, int timeout_ms)
     return result;
 }
 
-/* Write |body| to a 0700 temp file and return its path, or NULL. */
-static sds write_script(const sds body)
-{
-    const char *tmpdir = getenv("TMPDIR");
-    if (!tmpdir || !tmpdir[0])
-        tmpdir = "/tmp";
-
-#ifdef _WIN32
-    /* No mkstemp, and no shell to run the script anyway; the Windows path is refused before
-     * reaching here (see edc_upgrade_argv). */
-    (void)body;
-    return NULL;
-#else
-    char tmpl[512];
-    snprintf(tmpl, sizeof(tmpl), "%s/edgeclaw-install-XXXXXX", tmpdir);
-    const int fd = mkstemp(tmpl);
-    if (fd < 0)
-        return NULL;
-
-    size_t off = 0;
-    while (off < sdslen(body))
-    {
-        const ssize_t n = write(fd, body + off, sdslen(body) - off);
-        if (n <= 0)
-        {
-            close(fd);
-            unlink(tmpl);
-            return NULL;
-        }
-        off += (size_t)n;
-    }
-    /* 0700 already from mkstemp; make the intent explicit and make sure an inherited umask
-     * did not widen it. */
-    if (fchmod(fd, 0700) != 0)
-        log_warn("upgrade: cannot set permissions on %s: %s", tmpl, strerror(errno));
-    close(fd);
-    return sdsnew(tmpl);
-#endif
-}
+/* The staging step lives in edc_upgrade.c (edc_upgrade_stage_script), shared with the tests
+ * and with both platforms.
+ *
+ * It used to be private and local, and the Windows branch of it returned NULL
+ * unconditionally -- "no shell to run the script anyway", which was true until
+ * edc_upgrade_argv() grew a `powershell -File` branch. From then on every Windows upgrade
+ * fetched the installer successfully and then failed at this step, so /update could not work
+ * there at all. Kept in one place, and covered by a test that runs on Windows, because the
+ * two branches differ in a way nothing else exercises. */
 
 /* ── stage 2: run it ────────────────────────────────────────────────────── */
 
@@ -241,6 +211,11 @@ static void run_unref(edc_upgrade_run_t *run)
 {
     if (!run || --run->refs > 0)
         return;
+    /* The staged installer is a copy of a public script, but it is an executable file in a
+     * temp directory: left behind, it is one more thing accumulating there for no reason.
+     * Nothing reads it after the child is gone, and run_unref only runs once every handle
+     * has closed -- i.e. after the installer exited or was killed. */
+    edc_upgrade_discard_script(run->script_path);
     sdsfree(run->cacert);
     sdsfree(run->tag);
     sdsfree(run->script_url);
@@ -665,7 +640,7 @@ static void run_worker(void *arg)
         run->fetch_error = sdscatprintf(sdsempty(), "cannot fetch %s", run->script_url);
     else
     {
-        run->script_path = write_script(body);
+        run->script_path = edc_upgrade_stage_script(body);
         if (!run->script_path)
             run->fetch_error = sdsnew("cannot write the installer to a temporary file");
         sdsfree(body);
