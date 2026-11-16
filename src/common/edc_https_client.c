@@ -177,6 +177,11 @@ struct edc_https_request
     int redirects_left;
     bool redirecting;
     bool redirect_failed; /* the chain was abandoned (loop/limit/plaintext); ERROR was emitted */
+
+    /* Whether mbedtls_ssl_setup has already run on |ssl|. The context is set up per CONNECTION,
+     * not per request, because a handshake failure hands over to the next address -- and
+     * mbedtls_ssl_setup on an already-configured context leaks what it allocated. */
+    bool tls_started;
 };
 
 static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
@@ -677,6 +682,12 @@ static void edc_https_on_tcp_close(uv_handle_t *handle);
 /* Defined with the connect path further down; the close callback calls it to move on to the
  * next address after a failed connect. */
 static void try_next_address(struct edc_https_request *req);
+/* Same, for the state a failed attempt leaves behind: see its definition. */
+static void edc_https_drop_pending_io(struct edc_https_request *req);
+/* And for moving on after a HANDSHAKE failure, which happens after the connect succeeded
+ * (the connect callback is not involved, so these are declared here too). */
+static bool has_more_addresses(struct edc_https_request *req);
+static void retry_next_address(struct edc_https_request *req);
 /* Defined after the connect callback: the tunnel path reaches TLS through the same function. */
 static void edc_https_start_tls(struct edc_https_request *req);
 void edc_https_client_on_proxy_reply(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf);
@@ -768,6 +779,10 @@ static void edc_https_on_tcp_close(uv_handle_t *handle)
         {
             req->try_addr = NULL; /* cannot re-arm: report through the same path as none left */
         }
+        /* Whatever the failed attempt left behind belongs to that attempt, not the next one:
+         * unread ciphertext from the broken handshake would be fed to the new one, and the
+         * captured bytes would make the next failure's message describe the previous peer. */
+        edc_https_drop_pending_io(req);
         try_next_address(req);
         return;
     }
@@ -964,6 +979,24 @@ static bool edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
 
     if (ret != 0)
     {
+        /* Another address may be the one that speaks TLS.
+         *
+         * A handshake failure is not proof that the request is doomed: a name that resolves to
+         * several addresses can have one answering TLS and another answering something else
+         * entirely (measured: an internal gateway whose public address replies "HTTP/1.1 502 Bad
+         * Gateway" in the clear on 443, while its internal address serves the API perfectly). The
+         * connect succeeded in that case, so the retry has to start here rather than in the
+         * connect callback -- which is exactly the gap the address-list comment above describes.
+         *
+         * Not through a proxy: the addresses are the PROXY's, the tunnel is already open, and a
+         * TLS failure there is about the target's certificate. Retrying another proxy address
+         * would re-do the CONNECT and could hide a real verification error behind a success. */
+        if (!req->proxy_host && has_more_addresses(req))
+        {
+            retry_next_address(req);
+            return false;
+        }
+
         /* Name what actually happened when the peer did not speak TLS at all. A gateway,
          * captive portal or misconfigured load-balancer backend that answers plaintext HTTP on
          * a TLS port is common enough to be worth detecting, and mbedtls's own text for it
@@ -1123,6 +1156,61 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
 }
 
 static void edc_https_client_on_tcp_connect(uv_connect_t *conn, int status);
+
+/* Drop the IO state of an attempt that is being abandoned for the next address.
+ *
+ * The socket is closed and re-created for the retry, but the queues and the captured bytes are
+ * this request's own memory: mbedtls_recv_bufs holds ciphertext the failed attempt had already
+ * read, which the next handshake must not receive; and handshake_peek describes the peer that
+ * just failed, so keeping it would make a later failure quote the wrong server. */
+static void edc_https_drop_pending_io(struct edc_https_request *req)
+{
+    struct edc_https_buf_list *node = req->mbedtls_recv_bufs;
+    while (node)
+    {
+        struct edc_https_buf_list *next = node->next;
+        free(node->buf.base);
+        free(node);
+        node = next;
+    }
+    req->mbedtls_recv_bufs = NULL;
+
+    node = req->mbedtls_send_bufs;
+    while (node)
+    {
+        struct edc_https_buf_list *next = node->next;
+        free(node->buf.base);
+        free(node);
+        node = next;
+    }
+    req->mbedtls_send_bufs = NULL;
+    req->writing = false;
+
+    req->handshake_peek_len = 0;
+    req->handshake_done = false;
+}
+
+/* Whether try_next_address() would find another address to offer.
+ *
+ * Not just `try_addr != NULL`: the list is walked in two family passes, so an exhausted
+ * IPv6 pass with IPv4 addresses still untouched is another attempt waiting to happen. */
+static bool has_more_addresses(struct edc_https_request *req)
+{
+    if (req->try_addr)
+        return true;
+    return req->addr_phase == 0 && req->addrs != NULL;
+}
+
+/* Hand the next address to try_next_address(), via the socket's close callback.
+ *
+ * The socket cannot be reused for a different peer, so it is closed and re-created there (the
+ * same handover a failed connect uses, see edc_https_on_tcp_close). Only called when
+ * has_more_addresses() is true; when nothing is left the caller reports the error itself. */
+static void retry_next_address(struct edc_https_request *req)
+{
+    req->retry_pending = true;
+    edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
+}
 
 /* Connect to the next address in the list, or report that none of them worked.
  *
@@ -1321,7 +1409,16 @@ static void edc_https_start_tls(struct edc_https_request *req)
 
     /* The ssl context was initialized in edc_https_request_new (symmetric with
      * mbedtls_ssl_free at teardown); this only does setup -- a request failing before the
-     * handshake must still have a safely releasable context. */
+     * handshake must still have a safely releasable context.
+     *
+     * A second pass happens when a handshake failure handed over to the next address, so the
+     * context may already be configured: setup on a configured context leaks what it allocated,
+     * hence free+init first. */
+    if (req->tls_started)
+    {
+        mbedtls_ssl_free(&req->ssl);
+        mbedtls_ssl_init(&req->ssl);
+    }
     if (mbedtls_ssl_setup(&req->ssl, &client->ssl_conf) != 0)
     {
         sds err_message = sdscatprintf(sdsnew(NULL), "mbedtls ssl_setup failed");
@@ -1330,6 +1427,7 @@ static void edc_https_start_tls(struct edc_https_request *req)
         edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return;
     }
+    req->tls_started = true;
     /* The TARGET hostname, not the proxy: the certificate is the target's, and SNI must say so
      * or the proxy's own certificate would be what gets verified. */
     mbedtls_ssl_set_hostname(&req->ssl, req->url_parser.host);

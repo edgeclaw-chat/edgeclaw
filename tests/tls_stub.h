@@ -452,6 +452,46 @@ static int tls_stub_start(struct tls_stub *s, const char *cert_path, const char 
     return tls_stub_start_ex(s, cert_path, key_path, raw_response, /*as_proxy=*/false);
 }
 
+/* The same server on a port the caller chooses (0 = any, as usual).
+ *
+ * Needed to put a good TLS peer on 127.0.0.1:P while a bad one occupies [::1]:P: the two are
+ * separate port namespaces, so one hostname that resolves to both addresses then reaches a
+ * different behaviour per address -- which is the situation "retry the next address after a
+ * handshake failure" exists for. */
+static int tls_stub_start_on_port(struct tls_stub *s, const char *cert_path, const char *key_path,
+                                  const char *raw_response, int port)
+{
+    if (tls_stub_start_ex(s, cert_path, key_path, raw_response, /*as_proxy=*/false) != 0)
+        return -1;
+    if (port == 0)
+        return 0; /* the kernel-assigned port from the call above is fine */
+
+    /* Re-bind on the requested port: tls_stub_start_ex already started the thread, so stop it
+     * first rather than leaking it. */
+    uv_thread_join(&s->thread);
+    close(s->listen_fd);
+
+    struct sockaddr_in addr;
+    socklen_t alen = sizeof(addr);
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((uint16_t)port);
+    s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (s->listen_fd < 0)
+        return -1;
+    if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return -1;
+    if (listen(s->listen_fd, 4) != 0)
+        return -1;
+    if (getsockname(s->listen_fd, (struct sockaddr *)&addr, &alen) != 0)
+        return -1;
+    s->port = ntohs(addr.sin_port);
+    if (uv_thread_create(&s->thread, tls_stub_thread, s) != 0)
+        return -1;
+    return 0;
+}
+
 /* The same server, but it speaks the CONNECT preamble first (see `as_proxy`). */
 static int tls_stub_start_proxy(struct tls_stub *s, const char *cert_path, const char *key_path,
                                 const char *raw_response)
