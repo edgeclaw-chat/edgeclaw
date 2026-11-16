@@ -100,6 +100,11 @@ bool ChatWidget::NeedsRemeasure() const
     return list_ && list_->HasPendingWork();
 }
 
+size_t ChatWidget::LiveCount() const
+{
+    return list_ ? list_->LiveCount() : 0;
+}
+
 bool ChatWidget::ScrollToTop()
 {
     return scroll_view_->ScrollToTop();

@@ -1943,6 +1943,39 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+cc_test(
+    name = "test_chat_refs",
+    srcs = ["test_chat_refs.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_chat_window",
+    # P0: intentionally RED until the runtime wiring (P2) lands. Kept out of
+    # //tests:all so the baseline stays green; run it explicitly to see the
+    # defect it pins down. Remove this tag once the fix makes it pass.
+    tags = ["manual"],
+    srcs = ["test_chat_window.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
 
 cc_test(
     name = "test_llm_error_kind",

@@ -4,6 +4,9 @@
 #include "ftxui/screen/box.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <ctime>
+#include <memory>
+#include <string>
 #include <string_view>
 
 namespace edc
@@ -123,5 +126,13 @@ class ToolMessage : public Message
     ::ftxui::Element md_body_; /* lazy RenderMarkdown cache, only when markdown_ */
     ::ftxui::Box box_;
 };
+
+/* Build one chat bubble from a transcript/channel entry. Shared by the live
+ * channel path, the restart replay, and the windowed loader, so a bubble looks
+ * the same however it reached the screen. |kind| is user | tool | thought |
+ * reply | sys; |render_pref| is EDC_APP_RENDER_PLAIN / _MARKDOWN. */
+std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
+                                        const std::string &content, const std::string &task_id, int render_pref,
+                                        time_t ts);
 
 } // namespace edc

@@ -727,36 +727,14 @@ void TUIWindow::RequestTaskSnapshot()
     app_->RequestTaskSnapshot(session_model_->displayed_id());
 }
 
-// Build one chat bubble. Shared by the live channel path and the restart replay
-// so a message looks the same whether it just arrived or was re-derived from
-// session.json. |kind| is the bridge's tag: user | tool | thought | reply | sys.
+// Build one chat bubble. The factory lives in edc_message.cpp so the live
+// channel path, the restart replay and the windowed loader all construct the
+// same shape. |kind| is the bridge's tag: user | tool | thought | reply | sys.
 static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const std::string &header,
                                                const std::string &content, const std::string &task_id, int render_pref,
                                                time_t ts)
 {
-    if (kind == "user")
-        return std::make_shared<UserMessage>(content, ts, task_id);
-
-    if (kind == "tool")
-    {
-        // Rendering is entirely decided by the sender's render_pref:
-        //  - MARKDOWN: render the content as Markdown; keep ToolMessage's collapse
-        //    chrome when there is a header, otherwise use the plain md style;
-        //  - default/PLAIN (undeclared = plain text): a plain-text ToolMessage.
-        if (render_pref == EDC_APP_RENDER_MARKDOWN)
-        {
-            if (!header.empty())
-                return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
-            return std::make_shared<Message>(content, ts, task_id);
-        }
-        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
-    }
-
-    if (kind == "thought")
-        return std::make_shared<ThoughtMessage>(content, ts, task_id);
-
-    // "reply" | "sys"
-    return std::make_shared<Message>(content, ts, task_id);
+    return MakeChatBubble(kind, header, content, task_id, render_pref, ts);
 }
 
 bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed_session)

@@ -1,0 +1,288 @@
+#include "edc_chat_window.hpp"
+
+#include "edc_chat_transcript.hpp"
+#include "edc_message.hpp"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+
+namespace edc
+{
+namespace
+{
+
+uint8_t ClassifyKind(const std::string &kind)
+{
+    if (kind == "user")
+        return static_cast<uint8_t>(ChatBubbleKind::kUser);
+    if (kind == "tool")
+        return static_cast<uint8_t>(ChatBubbleKind::kTool);
+    if (kind == "thought")
+        return static_cast<uint8_t>(ChatBubbleKind::kThought);
+    if (kind == "reply")
+        return static_cast<uint8_t>(ChatBubbleKind::kReply);
+    return static_cast<uint8_t>(ChatBubbleKind::kSys);
+}
+
+/* The transcript escapes newlines inside fields, so one line == one bubble and
+ * the number of physical lines in a bubble is bounded by its preview chrome,
+ * not by its content. A collapsed ToolMessage shows kPreviewLines + a "..." line
+ * + a toggle; everything else is one (estimated) block of text. This is only a
+ * scroll-geometry estimate -- the exact height is measured when the item enters
+ * the window, and IScrollAnchor repairs the offset (see the proposal, §2.4). */
+uint16_t EstimateLines(uint8_t kind)
+{
+    /* ToolMessage::kPreviewLines == 14; +3 for the "...", toggle and border. */
+    return kind == static_cast<uint8_t>(ChatBubbleKind::kTool) ? 17 : 4;
+}
+
+/* Split the first four raw tabs of one encoded line, recording field spans
+ * WITHOUT decoding or copying the content. Mirrors DecodeLineView's splitting
+ * rule (only the first four tabs are separators). */
+bool SplitUnescaped(std::string_view line, std::string_view parts[5])
+{
+    if (!line.empty() && line.back() == '\n')
+        line.remove_suffix(1);
+    if (!line.empty() && line.back() == '\r')
+        line.remove_suffix(1);
+    if (line.empty())
+        return false;
+
+    size_t start = 0;
+    int field = 0;
+    for (size_t i = 0; i < line.size(); i++)
+    {
+        if (line[i] == '\t' && field < 4)
+        {
+            parts[field++] = line.substr(start, i - start);
+            start = i + 1;
+        }
+    }
+    if (field < 4)
+        return false;
+    parts[4] = line.substr(start);
+    return !parts[0].empty();
+}
+
+} // namespace
+
+size_t BuildChatBubbleRefs(const std::string &path, std::vector<ChatBubbleRef> *out)
+{
+    if (!out)
+        return 0;
+    out->clear();
+    if (path.empty())
+        return 0;
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return 0;
+
+    /* Read the file sequentially in bounded chunks. Only line boundaries are
+     * retained; the chunk is released as soon as it has been scanned, so the
+     * peak cost is one chunk plus the descriptors -- never the whole log. */
+    constexpr size_t kChunk = 256 * 1024;
+    std::string chunk;
+    chunk.resize(kChunk);
+    std::string carry;          /* bytes of the current, not-yet-terminated line */
+    uint64_t carry_start = 0;   /* absolute offset of carry's first byte */
+    uint64_t chunk_base = 0;    /* absolute offset of chunk[0] in the file */
+
+    while (file)
+    {
+        file.read(&chunk[0], static_cast<std::streamsize>(kChunk));
+        const size_t got = static_cast<size_t>(file.gcount());
+        if (got == 0)
+            break;
+
+        std::string_view view(chunk.data(), got);
+        size_t pos = 0;
+        while (pos < view.size())
+        {
+            const void *hit = std::memchr(view.data() + pos, '\n', view.size() - pos);
+            if (!hit)
+                break;
+            const size_t nl = static_cast<const char *>(hit) - view.data();
+            /* The whole line is carry + [pos, nl], and it began either where the
+             * carry began or at pos in this chunk when there was no carry. */
+            const uint64_t abs_start = carry.empty() ? chunk_base + pos : carry_start;
+            std::string line = carry;
+            line.append(view.data() + pos, nl - pos + 1);
+
+            std::string_view parts[5];
+            if (SplitUnescaped(line, parts))
+            {
+                ChatBubbleRef ref;
+                ref.offset = abs_start;
+                ref.length = static_cast<uint32_t>(line.size());
+                ref.kind = ClassifyKind(std::string(parts[0]));
+                ref.render_pref = static_cast<uint8_t>(std::atoi(std::string(parts[1]).c_str()));
+                ref.task_id_off = static_cast<uint32_t>(parts[0].size() + 1 + parts[1].size() + 1);
+                ref.task_id_len = static_cast<uint32_t>(parts[2].size());
+                ref.header_len = static_cast<uint32_t>(parts[3].size());
+                ref.content_len = static_cast<uint32_t>(parts[4].size());
+                ref.est_lines = EstimateLines(ref.kind);
+                out->push_back(ref);
+            }
+
+            pos = nl + 1;
+            carry.clear();
+            carry_start = chunk_base + pos;
+        }
+
+        /* Whatever is left has no newline yet: it is the start of the next line
+         * (possibly continued into the following chunk). */
+        if (pos < view.size())
+        {
+            if (carry.empty())
+                carry_start = chunk_base + pos;
+            carry.append(view.data() + pos, view.size() - pos);
+        }
+        chunk_base += got;
+    }
+    /* A trailing fragment without '\n' is dropped, exactly like LoadTranscript. */
+    return out->size();
+}
+
+bool DecodeChatBubbleAt(const std::string &path, const ChatBubbleRef &ref, std::string *kind, int *render_pref,
+                        std::string *task_id, std::string *header, std::string *content)
+{
+    if (path.empty() || ref.length == 0 || !kind || !render_pref || !task_id || !header || !content)
+        return false;
+
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return false;
+    file.seekg(static_cast<std::streamoff>(ref.offset), std::ios::beg);
+    if (!file)
+        return false;
+
+    std::string raw(ref.length, '\0');
+    file.read(&raw[0], static_cast<std::streamsize>(ref.length));
+    if (static_cast<size_t>(file.gcount()) != ref.length)
+        return false;
+
+    ChatTranscriptEntry entry;
+    if (!DecodeTranscriptLine(raw, &entry))
+        return false;
+
+    *kind = std::move(entry.kind);
+    *render_pref = entry.render_pref;
+    *task_id = std::move(entry.task_id);
+    *header = std::move(entry.header);
+    *content = std::move(entry.content);
+    return true;
+}
+
+MessageWindow::MessageWindow(std::string path, std::vector<ChatBubbleRef> *refs)
+    : path_(std::move(path)), refs_(refs)
+{
+}
+
+ChatBubbleRef *MessageWindow::Ref(size_t index)
+{
+    return (refs_ && index < refs_->size()) ? &(*refs_)[index] : nullptr;
+}
+
+const ChatBubbleRef *MessageWindow::Ref(size_t index) const
+{
+    return (refs_ && index < refs_->size()) ? &(*refs_)[index] : nullptr;
+}
+
+size_t MessageWindow::SetWindow(size_t first, size_t last, size_t prefetch)
+{
+    live_.clear();
+    if (!refs_ || refs_->empty())
+    {
+        first_ = last_ = 0;
+        return 0;
+    }
+
+    const size_t n = refs_->size();
+    first = std::min(first, n);
+    last = std::min(std::max(last, first), n);
+
+    /* Prefetch one screen on each side, but never more than the cap. */
+    size_t want_first = first > prefetch ? first - prefetch : 0;
+    size_t want_last = std::min(n, last + prefetch);
+    if (want_last - want_first > kMaxLive)
+    {
+        /* Keep the requested window intact; trim the prefetch symmetrically. */
+        const size_t requested = last - first;
+        if (requested >= kMaxLive)
+        {
+            want_first = first;
+            want_last = std::min(n, first + kMaxLive);
+        }
+        else
+        {
+            const size_t extra = kMaxLive - requested;
+            const size_t above = std::min(extra / 2, want_first);
+            want_first -= above;
+            want_last = std::min(n, want_last + (extra - above));
+            if (want_last - want_first > kMaxLive)
+                want_last = want_first + kMaxLive;
+        }
+    }
+
+    first_ = want_first;
+    last_ = want_last;
+    for (size_t i = want_first; i < want_last; i++)
+        Get(i); /* a malformed line is skipped by Get(); the rest still loads */
+    return live_.size();
+}
+
+std::shared_ptr<Message> MessageWindow::Get(size_t index)
+{
+    if (!refs_ || index >= refs_->size())
+        return nullptr;
+    auto it = live_.find(index);
+    if (it != live_.end())
+        return it->second;
+
+    const ChatBubbleRef &ref = (*refs_)[index];
+    std::string kind, task_id, header, content;
+    int render_pref = 0;
+    if (!DecodeChatBubbleAt(path_, ref, &kind, &render_pref, &task_id, &header, &content))
+        return nullptr;
+
+    /* ts is a view-only detail the transcript does not carry; the bubble's own
+     * timestamp was never persisted (LoadTranscriptTail used ::time(nullptr)
+     * on replay too), so the same convention applies here. */
+    std::shared_ptr<Message> bubble = MakeChatBubble(kind, header, content, task_id, render_pref, ::time(nullptr));
+    if (!bubble)
+        return nullptr;
+    if (live_.size() >= kMaxLive)
+    {
+        /* Evict the furthest live index from the current window. */
+        size_t victim = index;
+        size_t best = 0;
+        for (const auto &kv : live_)
+        {
+            const size_t d = kv.first > index ? kv.first - index : index - kv.first;
+            if (d > best)
+            {
+                best = d;
+                victim = kv.first;
+            }
+        }
+        live_.erase(victim);
+    }
+    live_.emplace(index, bubble);
+    return bubble;
+}
+
+void MessageWindow::Evict(size_t index)
+{
+    live_.erase(index);
+}
+
+void MessageWindow::Clear()
+{
+    live_.clear();
+    first_ = last_ = 0;
+}
+
+} // namespace edc

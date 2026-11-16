@@ -54,6 +54,10 @@ class ChatWidget : public ::ftxui::ComponentBase
     // the row map). The window keeps a throttled frame coming until this clears.
     bool NeedsRemeasure() const;
 
+    /* Resident Message instances (the list's whole log until windowing lands).
+     * Read-only probe for the windowing regression tests. */
+    size_t LiveCount() const;
+
     // Deliberately NOT keyboard focusable (↑/↓ belong to the message editor); it
     // still scrolls with the wheel.
     bool Scroll(int delta);

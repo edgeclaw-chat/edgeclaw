@@ -54,6 +54,15 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
         return items_.empty();
     }
 
+    /* Resident Message instances. Until windowing lands this is the whole log
+     * (items_.size()), which is exactly what the P0 regression test measures.
+     * After the runtime wiring is in place it becomes the bounded window count.
+     * Read-only probe -- see docs/tui-windowing-proposal.md. */
+    size_t LiveCount() const
+    {
+        return items_.size();
+    }
+
     // True while the list still owes work to finish a resize: some heights are
     // still estimates from an older width, or a height measured while drawing has
     // not been folded back into the row map yet. The window keeps a (throttled)
