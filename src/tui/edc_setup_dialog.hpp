@@ -152,6 +152,11 @@ class SetupDialog : public Widget
     std::vector<size_t> provider_view_;      /* index into provider_ids_ per row */
     int provider_sel_ = 0;
 
+    /* The model field's placeholder. The same input serves both paths: on the catalog path it
+     * filters the list below it, and on the custom path the text IS the model id. One shared
+     * string, referenced by the input, so the wording follows the path (see CommitProvider). */
+    std::string model_placeholder_ = "Search models...";
+
     std::vector<std::string> model_ids_; /* the provider's chat-capable models */
     std::string model_filter_;
     std::vector<std::string> model_rows_;

@@ -37,6 +37,27 @@ class ModalOverlayNode : public ::ftxui::Node
         children_[1]->SetBox(panel_box);
     }
 
+    void ComputeRequirement() override
+    {
+        ::ftxui::Node::ComputeRequirement();
+
+        /* The panel owns the terminal caret while it is up.
+         *
+         * ftxui puts the caret where |requirement().focused| says, and its propagation between
+         * siblings (Node::ComputeRequirement / Requirement::Focused::Prefer) settles a tie between
+         * two focused components by keeping whichever came FIRST. The backdrop is the whole
+         * window, whose chat input never stops reporting focus -- it is still the window's active
+         * child while a modal is open -- so the tie was always won by the input BEHIND the dialog,
+         * and every field in the dialog looked cursor-less: the caret was blinking at the bottom
+         * of the screen the whole time.
+         *
+         * A modal is the exception to "first wins": while one is up, the only thing the user can
+         * type into is the panel. Taking its focus requirement unconditionally is what says so. */
+        const auto &panel = children_[1]->requirement().focused;
+        if (panel.enabled)
+            requirement_.focused = panel;
+    }
+
     void Render(::ftxui::Screen &screen) override
     {
         /* 1. The transcript, with its own backgrounds replaced by one colour. Only the

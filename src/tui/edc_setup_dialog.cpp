@@ -134,7 +134,9 @@ SetupDialog::SetupDialog(port::IAppFacade *facade, std::function<void()> on_done
     ::ftxui::InputOption mfilter = field_option();
     mfilter.on_change = [this] { ApplyModelFilter(); };
     mfilter.cursor_position = &model_cursor_;
-    model_filter_input_ = ::ftxui::Input(&model_filter_, "Search models...", mfilter);
+    /* The placeholder references the member, so the wording can follow the path (see
+     * model_placeholder_). */
+    model_filter_input_ = ::ftxui::Input(&model_filter_, ::ftxui::StringRef(&model_placeholder_), mfilter);
 
     ::ftxui::InputOption copt = field_option();
     copt.on_change = [this] { context_bad_ = false; };
@@ -316,11 +318,14 @@ void SetupDialog::CommitProvider()
             url_ = trimmed(provider_filter_);
         endpoint_bad_ = false;
         endpoint_cursor_ = static_cast<int>(url_.size());
+        /* Nothing to search on this path: the text IS the id. */
+        model_placeholder_ = "Model id";
         step_ = STEP_ENDPOINT;
         return;
     }
 
     custom_ = false;
+    model_placeholder_ = "Search models...";
     const std::string &pid = provider_ids_[row];
     std::string api = facade_ ? facade_->ProviderApi(pid) : "";
     if (!api.empty())

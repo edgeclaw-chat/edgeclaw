@@ -756,6 +756,8 @@ static void test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typ
     Enter(*f.dialog); // key
     const std::string model_step = Frame(*f.dialog);
     CHECK(Has(model_step, "Model id"), "then the model id, typed rather than picked");
+    CHECK(!Has(model_step, "Search models..."),
+          "and its placeholder follows the path: a typed id, not a search over a list that is not there");
     CHECK(Has(model_step, "Step 4/5"), "which is step four");
 
     Text(*f.dialog, "gw-large-1");
@@ -764,7 +766,6 @@ static void test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typ
     CHECK(Has(window_step, "Context window"), "then the window the catalog would have supplied");
     CHECK(Has(window_step, "Step 5/5"), "which is the last step");
     CHECK(Has(window_step, "128000"), "and it opens on a usable default, not the 1 MiB config one");
-
     Enter(*f.dialog); // context window
 
     CHECK(!f.dialog->IsOpen(), "the wizard closed");

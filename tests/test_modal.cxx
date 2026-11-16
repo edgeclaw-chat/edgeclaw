@@ -19,6 +19,7 @@
 #include "edc_setup_dialog.hpp"
 #include "edc_style.hpp"
 
+#include "ftxui/component/component.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 
@@ -264,6 +265,41 @@ int main(void)
         CHECK(panel_cells > 0, "the panel is on screen (its background identifies it)");
         CHECK(bleed == 0, "no backdrop character is left anywhere inside the panel");
         CHECK(AnyRowHas(Rows(screen), "API endpoint"), "and the panel's own text is still drawn");
+    }
+
+    printf("\n── the modal owns the caret ──\n");
+    {
+        /* The reported symptom: no dialog field showed a cursor. ftxui puts the caret where
+         * requirement().focused says, and its tie-break between two focused components keeps
+         * whichever came FIRST. The window's chat input below the modal never stops reporting
+         * focus, so the caret blinked at the bottom of the screen -- behind the dialog -- and
+         * every field in the dialog looked inert.
+         *
+         * The backdrop here holds a real ftxui Input for exactly that reason: it reproduces the
+         * tie. The assertion reads the caret's CELL, so it does not depend on layout arithmetic:
+         * the caret is on the modal when the cell under it is the panel's background. */
+        const auto &pal = edc::style::palette();
+
+        std::string chat_text;
+        auto chat_input = ::ftxui::Input(&chat_text, "Type a message...");
+
+        edc::ui::SetupDialog dialog(nullptr);
+        edc::port::SetupConfig seed;
+        dialog.Open(seed);
+
+        auto screen =
+            ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(100), ::ftxui::Dimension::Fixed(24));
+        ::ftxui::Render(screen, edc::ModalOverlay(
+                                    ::ftxui::vbox({::ftxui::filler(), chat_input->Render()}),
+                                    dialog.Render(), edc::ui::SetupDialog::PanelWidth(), pal.window_bg,
+                                    pal.dialog_bg));
+
+        const auto caret = screen.cursor();
+        printf("    caret at (%d,%d)\n", caret.x, caret.y);
+        CHECK(caret.y >= 0 && caret.y < 24 && caret.x >= 0 && caret.x < 100, "the caret is on screen");
+        CHECK(screen.CellAt(caret.x, caret.y).background_color == pal.dialog_bg,
+              "the caret sits on the dialog, not on the input behind it");
+        CHECK(caret.y != 23, "and specifically not on the chat input's row");
     }
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);

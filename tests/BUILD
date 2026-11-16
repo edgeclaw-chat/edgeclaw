@@ -2122,3 +2122,4 @@ cc_test(
     linkopts = TUI_TEST_LINK_OPTS,
     target_compatible_with = POSIX_ONLY,
 )
+
