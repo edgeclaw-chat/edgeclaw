@@ -122,14 +122,14 @@ SetupDialog::SetupDialog(port::IAppFacade *facade, std::function<void()> on_done
 
     ::ftxui::InputOption keyopt = field_option();
     keyopt.cursor_position = &key_cursor_;
-    key_input_ = ::ftxui::Input(&key_, "API key", keyopt);
+    key_input_ = ::ftxui::Input(&key_, ::ftxui::StringRef(&key_placeholder_), keyopt);
 
     /* A rejected value is only a complaint about what was there; the next keystroke is the
      * user answering it, so it clears the complaint (see CommitEndpoint / CommitContext). */
     ::ftxui::InputOption eopt = field_option();
     eopt.on_change = [this] { endpoint_bad_ = false; };
     eopt.cursor_position = &endpoint_cursor_;
-    endpoint_input_ = ::ftxui::Input(&url_, "https://host/v1", eopt);
+    endpoint_input_ = ::ftxui::Input(&endpoint_, "https://host/v1", eopt);
 
     ::ftxui::InputOption mfilter = field_option();
     mfilter.on_change = [this] { ApplyModelFilter(); };
@@ -314,10 +314,14 @@ void SetupDialog::CommitProvider()
          * custom install reopens with its own endpoint in the field instead of an empty box
          * that would overwrite the config on the next Enter. */
         custom_ = true;
+        /* A URL typed into the search box IS the endpoint; otherwise the step starts empty
+         * unless the config already points at one (see endpoint_ in the header). */
         if (looks_like_url(provider_filter_))
-            url_ = trimmed(provider_filter_);
+            endpoint_ = trimmed(provider_filter_);
+        else
+            endpoint_ = config_is_custom_ ? url_ : "";
         endpoint_bad_ = false;
-        endpoint_cursor_ = static_cast<int>(url_.size());
+        endpoint_cursor_ = static_cast<int>(endpoint_.size());
         /* Nothing to search on this path: the text IS the id. */
         model_placeholder_ = "Model id";
         step_ = STEP_ENDPOINT;
@@ -336,12 +340,14 @@ void SetupDialog::CommitProvider()
 
 void SetupDialog::CommitEndpoint()
 {
-    if (!looks_like_url(url_))
+    const std::string typed = trimmed(endpoint_);
+    if (!looks_like_url(typed))
     {
         endpoint_bad_ = true; /* stay: nothing was accepted, so nothing may move on */
         return;
     }
     endpoint_bad_ = false;
+    url_ = typed; /* the endpoint step is where the URL is decided, for both paths */
     step_ = STEP_KEY;
 }
 
@@ -425,7 +431,14 @@ void SetupDialog::Exit()
 void SetupDialog::Open(const port::SetupConfig &initial)
 {
     url_ = initial.api_url;
-    key_ = initial.api_key;
+    /* The key starts EMPTY, always. A stored key is a secret: seeding the field with it prints
+     * it on screen for anyone looking at the terminal (and in a screen share, a recording, a
+     * scrollback). The wizard only needs to know that one exists, which is what
+     * has_stored_key_ is for -- and an empty submission already means "keep it", because both
+     * writers skip an empty key. */
+    key_.clear();
+    has_stored_key_ = initial.has_stored_key;
+    key_placeholder_ = has_stored_key_ ? "leave empty to keep the stored key" : "API key";
     current_api_ = initial.api_url; /* ticked in the provider list */
     current_model_ = initial.model; /* ticked in the model list */
     provider_filter_.clear();
@@ -446,10 +459,12 @@ void SetupDialog::Open(const port::SetupConfig &initial)
     const int offered_window =
         (config_is_custom_ && configured_window > 0) ? configured_window : kDefaultCustomContextWindow;
     context_text_ = std::to_string(offered_window);
-    /* Park each caret at the END of its value: the user is editing an existing value and
-     * the next keystroke should append (the API key is pre-filled from the config). */
+    endpoint_ = ""; /* see endpoint_: the step is seeded when the path is chosen (CommitProvider) */
+    /* Park each caret at the END of its value: the user is editing an existing value and the
+     * next keystroke should append. (The key field is empty by design -- see Open -- so its
+     * caret is simply at 0.) */
     provider_cursor_ = static_cast<int>(provider_filter_.size());
-    endpoint_cursor_ = static_cast<int>(url_.size());
+    endpoint_cursor_ = static_cast<int>(endpoint_.size());
     key_cursor_ = static_cast<int>(key_.size());
     model_cursor_ = static_cast<int>(model_filter_.size());
     context_cursor_ = static_cast<int>(context_text_.size());
@@ -638,9 +653,16 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     }
     else if (step_ == STEP_KEY)
     {
-        /* Just the field: the base URL is bound to the provider, and a nav hint would be
-         * noise on a single-field step. */
-        body = field(key_input_);
+        /* Just the field, plus -- when a key is already stored -- one line saying how an empty
+         * field will be read. The line is the point: the field is empty on purpose, and without
+         * it "empty" looks like "the key was lost". */
+        if (has_stored_key_)
+            body = vbox({
+                field(key_input_),
+                text("  a key is already stored; leave this empty to keep it") | color(pal.text_dim),
+            });
+        else
+            body = field(key_input_);
     }
     else if (step_ == STEP_MODEL && custom_)
     {

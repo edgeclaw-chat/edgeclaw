@@ -178,7 +178,22 @@ class SetupDialog : public Widget
     bool custom_ = false;
 
     std::string url_;
+    /* What the endpoint STEP edits. Separate from url_ on purpose: url_ is seeded from the
+     * config (and from a chosen provider), but a first-run install's seed is the built-in
+     * default URL -- pre-filling the step with it means the caret sits at the end of a value
+     * the user did not type, and their URL gets appended to it. So the field starts empty
+     * unless the config ALREADY points at a custom endpoint (re-configuring an install keeps
+     * its own URL, which is the case where pre-filling is right). */
+    std::string endpoint_;
+    /* What the user typed in this run. Never seeded from the config: a stored key is a secret,
+     * and putting it in a field prints it on screen. Empty therefore means "leave the stored
+     * key alone" (both writers skip an empty key) -- which is exactly what has_stored_key_
+     * lets the key step say. */
     std::string key_;
+    bool has_stored_key_ = false;
+    /* The key field's placeholder, referenced (not copied) so the wording can depend on
+     * has_stored_key_ without rebuilding the input. */
+    std::string key_placeholder_ = "API key";
     int context_window_ = 0;
     /* The typed context window, as text: it is a free field (ftxui's Input is a string), so
      * it is only an int once CommitContext has parsed and validated it. */

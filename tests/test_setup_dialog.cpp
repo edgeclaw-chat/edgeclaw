@@ -113,6 +113,12 @@ class FakeFacade : public edc::port::IAppFacade
         return true;
     }
 
+    /* What the wizard is allowed to know: whether one exists. */
+    bool HasApiKey() const override
+    {
+        return !config_api_key.empty();
+    }
+
     bool SandboxEnabled() const override
     {
         return true;
@@ -442,7 +448,9 @@ struct Fixture
         edc::port::SetupConfig seed;
         seed.api_url = facade.config_api_url;
         seed.model = facade.config_model;
-        seed.api_key = facade.config_api_key;
+        /* The stored key is NOT seeded -- only its existence is reported, which is what the
+         * host does too (see SetupConfig in edc_app_facade.hpp). */
+        seed.has_stored_key = facade.HasApiKey();
         return seed;
     }
 
@@ -568,21 +576,91 @@ static void test_enter_on_the_provider_step_moves_to_the_key_step()
 
 // ── Step 2: the API key ─────────────────────────────────────────────────────
 
-static void test_the_key_step_types_where_the_caret_was_left()
+static void test_the_key_step_never_shows_the_stored_key()
 {
-    TEST("the key field appends to the seeded value instead of overwriting it");
+    TEST("the key field starts empty: a stored key is never put on screen");
+    Fixture f;
+    f.facade.config_api_key = "sk-live-SECRET-0123456789";
+    f.Open();
+    Enter(*f.dialog); // -> key step
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Has(frame, "sk-live-SECRET"), "the stored key is not rendered anywhere on the step");
+    CHECK(!Has(frame, "SECRET"), "not even a fragment of it");
+    CHECK(Has(frame, "leave empty to keep the stored key"),
+          "and the empty field says what submitting it empty will do");
+}
+
+static void test_a_key_handed_to_the_dialog_is_still_not_shown_or_submitted()
+{
+    TEST("even if a caller seeds the key, the wizard neither draws it nor sends it back");
+    /* Belt and braces for the layer above: the host is supposed to pass has_stored_key only
+     * (see SetupConfig), but this is the property that must hold either way -- a secret handed
+     * to this dialog must never reach the screen, and must not be echoed back as if it were
+     * newly typed. Without this case, re-seeding the field in TUIWindow would go unnoticed. */
+    Fixture f;
+    f.facade.config_api_key = "sk-live-SECRET-0123456789";
+
+    edc::port::SetupConfig seed = f.Seed();
+    seed.api_key = "sk-live-SECRET-0123456789"; // a caller that does the wrong thing
+    f.dialog->Open(seed);
+
+    Enter(*f.dialog); // -> key step
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Has(frame, "sk-live-SECRET"), "a seeded key is not drawn");
+    CHECK(!Has(frame, "SECRET"), "not even a fragment of it");
+
+    Enter(*f.dialog); // key step untouched
+    Enter(*f.dialog); // model -> finish
+    CHECK(f.facade.last_setup.api_key.empty(),
+          "and an untouched step submits no key (which means 'keep the stored one'): got '%s'",
+          f.facade.last_setup.api_key.c_str());
+}
+
+static void test_an_untouched_key_step_leaves_the_stored_key_alone()
+{
+    TEST("submitting the key step empty sends no key, which both writers read as 'keep it'");
+    Fixture f;
+    f.facade.config_api_key = "sk-already-stored";
+    f.Open();
+    Enter(*f.dialog); // provider
+    Enter(*f.dialog); // key step, untouched
+    Enter(*f.dialog); // model -> finish
+
+    CHECK(f.facade.set_setup_calls == 1, "the wizard finished");
+    CHECK(f.facade.last_setup.api_key.empty(),
+          "an empty key was submitted -- edc_app_set_llm_config / edc_config_update_llm both skip "
+          "an empty key, so the stored one survives: got '%s'", f.facade.last_setup.api_key.c_str());
+}
+
+static void test_a_new_key_is_typed_into_an_empty_field()
+{
+    TEST("typing replaces the key from scratch, because the field starts empty");
     Fixture f;
     f.facade.config_api_key = "sk-old";
     f.Open();
-    Enter(*f.dialog); // -> key step, caret parked at the end of "sk-old"
+    Enter(*f.dialog); // -> key step
 
-    Text(*f.dialog, "X");
+    Text(*f.dialog, "sk-new");
     Enter(*f.dialog); // -> model step
     Enter(*f.dialog); // finish
 
     CHECK(f.facade.set_setup_calls == 1, "the wizard finished");
-    CHECK(f.facade.last_setup.api_key == "sk-oldX", "one keystroke appends: got '%s'",
+    CHECK(f.facade.last_setup.api_key == "sk-new",
+          "exactly what was typed, not appended to the old key: got '%s'",
           f.facade.last_setup.api_key.c_str());
+}
+
+static void test_a_first_run_key_step_says_nothing_about_a_stored_key()
+{
+    TEST("with no stored key the step is just the field");
+    Fixture f; // the fixture's config_api_key is empty
+    f.Open();
+    Enter(*f.dialog);
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(Has(frame, "API key"), "the placeholder names the field");
+    CHECK(!Has(frame, "already stored"), "and there is nothing to say about a stored key");
 }
 
 // ── Step 3: choose a model ──────────────────────────────────────────────────
@@ -647,9 +725,10 @@ static void test_finishing_persists_the_whole_setup_and_closes()
     Fixture f;
     f.facade.config_api_key = "sk-seed";
     f.Open();
-    Enter(*f.dialog); // provider: anthropic
-    Enter(*f.dialog); // key
-    Enter(*f.dialog); // model: claude-sonnet
+    Enter(*f.dialog);          // provider: anthropic
+    Text(*f.dialog, "sk-typed"); // the key field starts empty; this is what replaces the stored one
+    Enter(*f.dialog);          // key
+    Enter(*f.dialog);          // model: claude-sonnet
 
     CHECK(!f.dialog->IsOpen(), "the dialog closed");
     CHECK(f.facade.set_setup_calls == 1, "SetSetup ran exactly once");
@@ -657,7 +736,7 @@ static void test_finishing_persists_the_whole_setup_and_closes()
           "the provider's base URL is what gets persisted: got '%s'", f.facade.last_setup.api_url.c_str());
     CHECK(f.facade.last_setup.model == "claude-sonnet", "the chosen model: got '%s'",
           f.facade.last_setup.model.c_str());
-    CHECK(f.facade.last_setup.api_key == "sk-seed", "the key as typed: got '%s'",
+    CHECK(f.facade.last_setup.api_key == "sk-typed", "the key as typed: got '%s'",
           f.facade.last_setup.api_key.c_str());
     CHECK(f.facade.last_setup.context_window == 200000,
           "the catalog's context window travels with it: got %d", f.facade.last_setup.context_window);
@@ -752,7 +831,7 @@ static void test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typ
     CHECK(Has(endpoint_step, "Enter submit  |  Esc exit"), "a field step submits");
 
     Enter(*f.dialog); // endpoint
-    CHECK(Has(Frame(*f.dialog), "Step 3/5"), "then the API key");
+    Text(*f.dialog, "sk-custom"); // the key field starts empty (the stored key is never shown)
     Enter(*f.dialog); // key
     const std::string model_step = Frame(*f.dialog);
     CHECK(Has(model_step, "Model id"), "then the model id, typed rather than picked");
@@ -774,7 +853,7 @@ static void test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typ
           f.facade.last_setup.api_url.c_str());
     CHECK(f.facade.last_setup.model == "gw-large-1", "the typed model id: got '%s'",
           f.facade.last_setup.model.c_str());
-    CHECK(f.facade.last_setup.api_key == "sk-new", "the seeded key: got '%s'",
+    CHECK(f.facade.last_setup.api_key == "sk-custom", "the key typed on the key step: got '%s'",
           f.facade.last_setup.api_key.c_str());
     CHECK(f.facade.last_setup.context_window == 128000, "the typed window: got %d",
           f.facade.last_setup.context_window);
@@ -785,7 +864,10 @@ static void test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint()
 {
     TEST("typing 'custom' reveals the row, and it keeps the endpoint the config already holds");
     Fixture f;
-    f.facade.config_api_url = "https://my-gw.example.com/v1"; // no catalog provider matches
+    /* A genuine custom install: neither the URL nor the model belongs to any catalog provider
+     * (the fixture's own model would otherwise match Anthropic and mark this as catalog-backed). */
+    f.facade.config_api_url = "https://my-gw.example.com/v1";
+    f.facade.config_model = "gw-model";
     f.Open();
 
     Text(*f.dialog, "custom");
@@ -800,14 +882,42 @@ static void test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint()
 
     Enter(*f.dialog); // accept the endpoint
     Enter(*f.dialog); // key
-    Text(*f.dialog, "gw-model");
+    Text(*f.dialog, "gw-model-2");
     Enter(*f.dialog); // model id
     Enter(*f.dialog); // window
 
     CHECK(f.facade.last_setup.api_url == "https://my-gw.example.com/v1",
           "the pre-filled endpoint survived: got '%s'", f.facade.last_setup.api_url.c_str());
-    CHECK(f.facade.last_setup.model == "gw-model", "and the typed model reached SetSetup: got '%s'",
+    CHECK(f.facade.last_setup.model == "gw-model-2", "and the typed model reached SetSetup: got '%s'",
           f.facade.last_setup.model.c_str());
+}
+
+static void test_a_first_run_endpoint_step_starts_empty()
+{
+    TEST("on a first run the endpoint field is empty, so a typed URL is not appended to a default");
+    /* The seeded api_url on a fresh install is the build's default (e.g. the default
+     * provider's), and putting it in the field means the caret sits at the end of a value the
+     * user never typed -- measured end to end: typing produced
+     * "https://api.deepseek.comhttps://gw.example.com/v1". */
+    Fixture f;
+    f.facade.config_api_url.clear(); /* nothing configured yet */
+    f.facade.config_model.clear();
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    Enter(*f.dialog);
+    CHECK(Has(Frame(*f.dialog), "API endpoint"), "the endpoint step is up");
+
+    Text(*f.dialog, "https://gw.example.com/v1");
+    Enter(*f.dialog); // endpoint
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model");
+    Enter(*f.dialog);
+    Enter(*f.dialog); // window
+
+    CHECK(f.facade.last_setup.api_url == "https://gw.example.com/v1",
+          "the URL is exactly what was typed, not appended to anything: got '%s'",
+          f.facade.last_setup.api_url.c_str());
 }
 
 static void test_a_custom_endpoint_without_a_scheme_is_refused()
@@ -1119,7 +1229,11 @@ int main()
     test_a_provider_filter_with_no_match_leaves_only_the_custom_row();
     test_the_cursor_moves_and_clamps_at_both_ends();
     test_enter_on_the_provider_step_moves_to_the_key_step();
-    test_the_key_step_types_where_the_caret_was_left();
+    test_the_key_step_never_shows_the_stored_key();
+    test_a_key_handed_to_the_dialog_is_still_not_shown_or_submitted();
+    test_an_untouched_key_step_leaves_the_stored_key_alone();
+    test_a_new_key_is_typed_into_an_empty_field();
+    test_a_first_run_key_step_says_nothing_about_a_stored_key();
     test_the_model_list_hides_models_that_are_not_chat_capable();
     test_a_model_row_shows_the_display_name_and_the_wire_id();
     test_a_model_filter_narrows_by_id_and_by_name();
@@ -1129,6 +1243,7 @@ int main()
     test_provider_without_an_api_url_keeps_the_seeded_one();
     test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typed();
     test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint();
+    test_a_first_run_endpoint_step_starts_empty();
     test_a_custom_endpoint_without_a_scheme_is_refused();
     test_a_custom_model_id_must_not_be_empty();
     test_a_custom_context_window_must_be_a_positive_number();
