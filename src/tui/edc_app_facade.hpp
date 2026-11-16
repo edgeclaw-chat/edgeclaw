@@ -91,7 +91,14 @@ struct SetupConfig
 {
     std::string api_url;
     std::string model;
+    /* The key the user just typed. Deliberately NOT seeded with the stored one: the wizard
+     * never needs to know it, and putting it in a field renders it on screen. Empty means
+     * "leave the stored key alone" -- both writers skip an empty key (see
+     * edc_config_update_llm / edc_app_set_llm_config). */
     std::string api_key;
+    /* Whether a key is already stored, so the wizard can say how an empty field is read
+     * without ever learning the key itself. */
+    bool has_stored_key = false;
     int context_window = 0; /* the catalog limit; 0 = leave the configured window alone */
 };
 
@@ -117,7 +124,11 @@ class IAppFacade
     // ── config reads ─────────────────────────────────────────────
     virtual bool ConfigModel(std::string *out) const = 0;
     virtual bool ConfigApiUrl(std::string *out) const = 0;
+    /* The stored API key. NOT for showing anywhere: the setup wizard only asks whether a key
+     * exists (HasApiKey) so that it can leave the field empty and say so. */
     virtual bool ConfigApiKey(std::string *out) const = 0;
+    // Whether a usable API key is stored (false when there is none / the app is not ready).
+    virtual bool HasApiKey() const = 0;
     virtual bool SandboxEnabled() const = 0;
     // Whether the shell-like input syntax is on (see /shell). Read per frame so the input
     // line can say how the current line will be read -- /shell flips it while the TUI runs.
@@ -238,6 +249,7 @@ class AppFacade : public IAppFacade
     bool ConfigModel(std::string *out) const override;
     bool ConfigApiUrl(std::string *out) const override;
     bool ConfigApiKey(std::string *out) const override;
+    bool HasApiKey() const override;
     bool SandboxEnabled() const override;
     bool ShellSyntax() const override;
     edc_input_mode InputMode(const std::string &text) const override;

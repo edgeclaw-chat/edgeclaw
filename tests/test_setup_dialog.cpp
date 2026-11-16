@@ -75,6 +75,8 @@ class FakeFacade : public edc::port::IAppFacade
     std::string config_model;
     std::string config_api_url;
     std::string config_api_key;
+    // The configured context window (SetupDialog offers it back for a custom endpoint).
+    int config_context_window = 0;
 
     // Outcomes, and what the dialog asked for.
     bool set_setup_ok = true;
@@ -111,6 +113,12 @@ class FakeFacade : public edc::port::IAppFacade
         return true;
     }
 
+    /* What the wizard is allowed to know: whether one exists. */
+    bool HasApiKey() const override
+    {
+        return !config_api_key.empty();
+    }
+
     bool SandboxEnabled() const override
     {
         return true;
@@ -125,7 +133,7 @@ class FakeFacade : public edc::port::IAppFacade
     }
     int ContextWindow() const override
     {
-        return 0;
+        return config_context_window;
     }
 
     bool Onboarded() const override
@@ -308,12 +316,19 @@ void AddModel(FakeFacade &f, const std::string &provider_id, const std::string &
 
 // Drop the standard two-provider catalog: the scroll cases need a list whose length is the
 // whole story, and the fixture's own providers would shift every row index.
+//
+// The seeded config goes with it. A config whose URL and model match no provider is a CUSTOM
+// install (see WantsCustomRow), and the provider step then grows the synthetic custom row --
+// which would move the row indices these cases are about. A case that wants that row seeds a
+// config that belongs to its own catalog, or none at all.
 void ClearCatalog(FakeFacade &f)
 {
     f.provider_order.clear();
     f.provider_name.clear();
     f.provider_api.clear();
     f.provider_models.clear();
+    f.config_api_url.clear();
+    f.config_model.clear();
 }
 
 // ── Reading a frame ─────────────────────────────────────────────────────────
@@ -433,7 +448,9 @@ struct Fixture
         edc::port::SetupConfig seed;
         seed.api_url = facade.config_api_url;
         seed.model = facade.config_model;
-        seed.api_key = facade.config_api_key;
+        /* The stored key is NOT seeded -- only its existence is reported, which is what the
+         * host does too (see SetupConfig in edc_app_facade.hpp). */
+        seed.has_stored_key = facade.HasApiKey();
         return seed;
     }
 
@@ -473,38 +490,43 @@ static void test_open_lands_on_step_1_and_ticks_the_configured_provider()
 static void test_provider_filter_matches_both_the_name_and_the_id()
 {
     TEST("the provider filter matches the display name and the id");
+    /* The assertions name the full row ("name  (id)"), not just "OpenAI": the custom row's
+     * label carries "OpenAI-compatible", so a bare substring cannot tell the two apart. */
     {
         Fixture f;
         f.Open();
         Text(*f.dialog, "anth");
         const std::string frame = Frame(*f.dialog);
-        CHECK(Has(frame, "Anthropic"), "typing part of the NAME keeps that provider");
-        CHECK(!Has(frame, "OpenAI"), "and drops the ones that do not match");
+        CHECK(Has(frame, "Anthropic  (anthropic)"), "typing part of the NAME keeps that provider");
+        CHECK(!Has(frame, "OpenAI  (openai)"), "and drops the ones that do not match");
     }
     {
         Fixture f;
         f.Open();
         Text(*f.dialog, "opena"); // matches the id, not the display name "OpenAI"
         const std::string frame = Frame(*f.dialog);
-        CHECK(Has(frame, "OpenAI"), "typing part of the ID keeps that provider");
-        CHECK(!Has(frame, "Anthropic"), "and drops the rest");
+        CHECK(Has(frame, "OpenAI  (openai)"), "typing part of the ID keeps that provider");
+        CHECK(!Has(frame, "Anthropic  (anthropic)"), "and drops the rest");
     }
 }
 
-static void test_a_provider_filter_with_no_match_says_so_and_enter_does_nothing()
+static void test_a_provider_filter_with_no_match_leaves_only_the_custom_row()
 {
-    TEST("no provider matches: the list says so, and Enter cannot commit");
+    TEST("no catalog provider matches: the custom row is all that is left, and Enter takes it");
     Fixture f;
     f.Open();
     Text(*f.dialog, "zzzz");
 
-    const std::string empty = Frame(*f.dialog);
-    CHECK(Has(empty, "(no match)"), "an empty result is spelled out, not a blank box");
-    CHECK(!Has(empty, "Anthropic"), "no provider row survives the filter");
+    const std::string filtered = Frame(*f.dialog);
+    CHECK(!Has(filtered, "Anthropic  (anthropic)"), "no catalog provider survives the filter");
+    /* The list is never empty, so it never needs "(no match)": the way out of a list that
+     * does not contain your provider is always on offer. */
+    CHECK(!Has(filtered, "(no match)"), "the provider list never reads as empty");
+    CHECK(Has(filtered, "Custom endpoint (OpenAI-compatible)"), "the custom row is still there");
 
-    CHECK(Enter(*f.dialog), "Enter is still consumed by the step");
-    CHECK(Has(Frame(*f.dialog), "Choose a provider"), "but the step does not advance");
-    CHECK(Has(Frame(*f.dialog), "Step 1/3"), "still on step 1");
+    CHECK(Enter(*f.dialog), "Enter is consumed by the step");
+    CHECK(Has(Frame(*f.dialog), "API endpoint"), "and it takes the custom row");
+    CHECK(Has(Frame(*f.dialog), "Step 2/5"), "which is the longer path");
 }
 
 static void test_the_cursor_moves_and_clamps_at_both_ends()
@@ -521,13 +543,21 @@ static void test_the_cursor_moves_and_clamps_at_both_ends()
     Fixture g;
     g.Open();
     Down(*g.dialog, 1); // -> openai
-    Down(*g.dialog, 5); // past the bottom: clamps to openai
     Enter(*g.dialog);
     Enter(*g.dialog);
     const std::string frame = Frame(*g.dialog);
     CHECK(Has(frame, "gpt-4o"), "Down selects the second provider");
     CHECK(!Has(frame, "claude-sonnet"), "and the first provider's models are gone");
     CHECK(Has(frame, "Choose a model"), "which means we reached step 3");
+
+    /* The bottom of the list IS the custom row, so that is where an overshoot lands. */
+    Fixture h;
+    h.Open();
+    Down(*h.dialog, 20); // far past the end: clamps
+    const std::string last = Frame(*h.dialog);
+    Enter(*h.dialog);
+    CHECK(Has(Frame(*h.dialog), "API endpoint"), "Down past the bottom clamps at the custom row");
+    (void)last;
 }
 
 static void test_enter_on_the_provider_step_moves_to_the_key_step()
@@ -546,21 +576,95 @@ static void test_enter_on_the_provider_step_moves_to_the_key_step()
 
 // ── Step 2: the API key ─────────────────────────────────────────────────────
 
-static void test_the_key_step_types_where_the_caret_was_left()
+static void test_the_key_step_never_shows_the_stored_key()
 {
-    TEST("the key field appends to the seeded value instead of overwriting it");
+    TEST("the key field starts empty: a stored key is never put on screen");
+    Fixture f;
+    f.facade.config_api_key = "sk-live-SECRET-0123456789";
+    f.Open();
+    Enter(*f.dialog); // -> key step
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Has(frame, "sk-live-SECRET"), "the stored key is not rendered anywhere on the step");
+    CHECK(!Has(frame, "SECRET"), "not even a fragment of it");
+    /* The mask is a PLACEHOLDER, so it marks the presence of a key without being its value --
+     * and without the sentence the earlier version needed to explain an empty field. */
+    CHECK(Has(frame, "sk-*****"), "a stored key shows as the mask in the field");
+    CHECK(!Has(frame, "already stored"), "and no explanatory line is needed any more");
+    CHECK(!Has(frame, "leave empty"), "no instruction line either");
+}
+
+static void test_a_key_handed_to_the_dialog_is_still_not_shown_or_submitted()
+{
+    TEST("even if a caller seeds the key, the wizard neither draws it nor sends it back");
+    /* Belt and braces for the layer above: the host is supposed to pass has_stored_key only
+     * (see SetupConfig), but this is the property that must hold either way -- a secret handed
+     * to this dialog must never reach the screen, and must not be echoed back as if it were
+     * newly typed. Without this case, re-seeding the field in TUIWindow would go unnoticed. */
+    Fixture f;
+    f.facade.config_api_key = "sk-live-SECRET-0123456789";
+
+    edc::port::SetupConfig seed = f.Seed();
+    seed.api_key = "sk-live-SECRET-0123456789"; // a caller that does the wrong thing
+    f.dialog->Open(seed);
+
+    Enter(*f.dialog); // -> key step
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Has(frame, "sk-live-SECRET"), "a seeded key is not drawn");
+    CHECK(!Has(frame, "SECRET"), "not even a fragment of it");
+
+    Enter(*f.dialog); // key step untouched
+    Enter(*f.dialog); // model -> finish
+    CHECK(f.facade.last_setup.api_key.empty(),
+          "and an untouched step submits no key (which means 'keep the stored one'): got '%s'",
+          f.facade.last_setup.api_key.c_str());
+}
+
+static void test_an_untouched_key_step_leaves_the_stored_key_alone()
+{
+    TEST("submitting the key step empty sends no key, which both writers read as 'keep it'");
+    Fixture f;
+    f.facade.config_api_key = "sk-already-stored";
+    f.Open();
+    Enter(*f.dialog); // provider
+    Enter(*f.dialog); // key step, untouched
+    Enter(*f.dialog); // model -> finish
+
+    CHECK(f.facade.set_setup_calls == 1, "the wizard finished");
+    CHECK(f.facade.last_setup.api_key.empty(),
+          "an empty key was submitted -- edc_app_set_llm_config / edc_config_update_llm both skip "
+          "an empty key, so the stored one survives: got '%s'", f.facade.last_setup.api_key.c_str());
+}
+
+static void test_a_new_key_is_typed_into_an_empty_field()
+{
+    TEST("typing replaces the key from scratch, because the field starts empty");
     Fixture f;
     f.facade.config_api_key = "sk-old";
     f.Open();
-    Enter(*f.dialog); // -> key step, caret parked at the end of "sk-old"
+    Enter(*f.dialog); // -> key step
 
-    Text(*f.dialog, "X");
+    Text(*f.dialog, "sk-new");
     Enter(*f.dialog); // -> model step
     Enter(*f.dialog); // finish
 
     CHECK(f.facade.set_setup_calls == 1, "the wizard finished");
-    CHECK(f.facade.last_setup.api_key == "sk-oldX", "one keystroke appends: got '%s'",
+    CHECK(f.facade.last_setup.api_key == "sk-new",
+          "exactly what was typed, not appended to the old key: got '%s'",
           f.facade.last_setup.api_key.c_str());
+}
+
+static void test_a_first_run_key_step_says_nothing_about_a_stored_key()
+{
+    TEST("with no stored key the field is simply empty, with the plain hint");
+    Fixture f; // the fixture's config_api_key is empty
+    f.Open();
+    Enter(*f.dialog);
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(Has(frame, "API key"), "the placeholder names the field");
+    CHECK(!Has(frame, "sk-*****"), "no mask: there is no stored key to stand for");
+    CHECK(!Has(frame, "already stored"), "and nothing to say about a stored key");
 }
 
 // ── Step 3: choose a model ──────────────────────────────────────────────────
@@ -625,9 +729,10 @@ static void test_finishing_persists_the_whole_setup_and_closes()
     Fixture f;
     f.facade.config_api_key = "sk-seed";
     f.Open();
-    Enter(*f.dialog); // provider: anthropic
-    Enter(*f.dialog); // key
-    Enter(*f.dialog); // model: claude-sonnet
+    Enter(*f.dialog);          // provider: anthropic
+    Text(*f.dialog, "sk-typed"); // the key field starts empty; this is what replaces the stored one
+    Enter(*f.dialog);          // key
+    Enter(*f.dialog);          // model: claude-sonnet
 
     CHECK(!f.dialog->IsOpen(), "the dialog closed");
     CHECK(f.facade.set_setup_calls == 1, "SetSetup ran exactly once");
@@ -635,7 +740,7 @@ static void test_finishing_persists_the_whole_setup_and_closes()
           "the provider's base URL is what gets persisted: got '%s'", f.facade.last_setup.api_url.c_str());
     CHECK(f.facade.last_setup.model == "claude-sonnet", "the chosen model: got '%s'",
           f.facade.last_setup.model.c_str());
-    CHECK(f.facade.last_setup.api_key == "sk-seed", "the key as typed: got '%s'",
+    CHECK(f.facade.last_setup.api_key == "sk-typed", "the key as typed: got '%s'",
           f.facade.last_setup.api_key.c_str());
     CHECK(f.facade.last_setup.context_window == 200000,
           "the catalog's context window travels with it: got %d", f.facade.last_setup.context_window);
@@ -695,6 +800,326 @@ static void test_provider_without_an_api_url_keeps_the_seeded_one()
           f.facade.last_setup.model.c_str());
 }
 
+// ── The custom endpoint path (an endpoint the catalog does not know) ──────────
+//
+// A catalog provider knows its base URL and its models, so the wizard only asks for a key
+// and a pick. Anything else has to be typed: base URL, model id, context window. These
+// cases pin that the typed values are what gets persisted, that a refused value keeps the
+// user on its step, and that the extra row only exists when something asked for it.
+
+// Type a URL into the provider search box and take the synthetic row it reveals.
+static void PickCustomByUrl(Fixture &f, const std::string &url)
+{
+    Text(*f.dialog, url);
+    Enter(*f.dialog); // the "Use this endpoint" row
+}
+
+static void test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typed()
+{
+    TEST("a pasted URL turns into the custom row, and url / model / window are typed and persisted");
+    Fixture f;
+    f.facade.config_api_key = "sk-new";
+    f.Open();
+
+    const std::string url = "https://gw.example.com/v1";
+    Text(*f.dialog, url);
+    const std::string listed = Frame(*f.dialog);
+    CHECK(Has(listed, "Use this endpoint: " + url), "the typed URL is offered as the endpoint");
+    CHECK(!Has(listed, "Anthropic"), "and the catalog rows, which cannot match a URL, are gone");
+
+    CHECK(Enter(*f.dialog), "Enter takes the row");
+    const std::string endpoint_step = Frame(*f.dialog);
+    CHECK(Has(endpoint_step, "API endpoint"), "the endpoint step is next");
+    CHECK(Has(endpoint_step, "Step 2/5"), "a custom endpoint walks five steps");
+    CHECK(Has(endpoint_step, url), "the pasted URL is pre-filled, ready to edit");
+    CHECK(Has(endpoint_step, "Enter submit  |  Esc exit"), "a field step submits");
+
+    Enter(*f.dialog); // endpoint
+    Text(*f.dialog, "sk-custom"); // the key field starts empty (the stored key is never shown)
+    Enter(*f.dialog); // key
+    const std::string model_step = Frame(*f.dialog);
+    CHECK(Has(model_step, "Model id"), "then the model id, typed rather than picked");
+    CHECK(!Has(model_step, "Search models..."),
+          "and its placeholder follows the path: a typed id, not a search over a list that is not there");
+    CHECK(Has(model_step, "Step 4/5"), "which is step four");
+
+    Text(*f.dialog, "gw-large-1");
+    Enter(*f.dialog); // model id
+    const std::string window_step = Frame(*f.dialog);
+    CHECK(Has(window_step, "Context window"), "then the window the catalog would have supplied");
+    CHECK(Has(window_step, "Step 5/5"), "which is the last step");
+    CHECK(Has(window_step, "128000"), "and it opens on a usable default, not the 1 MiB config one");
+    Enter(*f.dialog); // context window
+
+    CHECK(!f.dialog->IsOpen(), "the wizard closed");
+    CHECK(f.facade.set_setup_calls == 1, "SetSetup ran once");
+    CHECK(f.facade.last_setup.api_url == url, "the typed URL is what was persisted: got '%s'",
+          f.facade.last_setup.api_url.c_str());
+    CHECK(f.facade.last_setup.model == "gw-large-1", "the typed model id: got '%s'",
+          f.facade.last_setup.model.c_str());
+    CHECK(f.facade.last_setup.api_key == "sk-custom", "the key typed on the key step: got '%s'",
+          f.facade.last_setup.api_key.c_str());
+    CHECK(f.facade.last_setup.context_window == 128000, "the typed window: got %d",
+          f.facade.last_setup.context_window);
+    CHECK(f.done_calls == 1, "the host was told to refresh");
+}
+
+static void test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint()
+{
+    TEST("typing 'custom' reveals the row, and it keeps the endpoint the config already holds");
+    Fixture f;
+    /* A genuine custom install: neither the URL nor the model belongs to any catalog provider
+     * (the fixture's own model would otherwise match Anthropic and mark this as catalog-backed). */
+    f.facade.config_api_url = "https://my-gw.example.com/v1";
+    f.facade.config_model = "gw-model";
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    CHECK(Has(Frame(*f.dialog), "Custom endpoint (OpenAI-compatible)"), "the row is reachable by name");
+
+    Enter(*f.dialog);
+    const std::string endpoint_step = Frame(*f.dialog);
+    CHECK(Has(endpoint_step, "API endpoint"), "Enter takes the row");
+    // The seeded URL, not an empty box: an existing custom install must not lose its
+    // endpoint by pressing Enter on a pre-filled step.
+    CHECK(Has(endpoint_step, "https://my-gw.example.com/v1"), "the config's own endpoint is pre-filled");
+
+    Enter(*f.dialog); // accept the endpoint
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model-2");
+    Enter(*f.dialog); // model id
+    Enter(*f.dialog); // window
+
+    CHECK(f.facade.last_setup.api_url == "https://my-gw.example.com/v1",
+          "the pre-filled endpoint survived: got '%s'", f.facade.last_setup.api_url.c_str());
+    CHECK(f.facade.last_setup.model == "gw-model-2", "and the typed model reached SetSetup: got '%s'",
+          f.facade.last_setup.model.c_str());
+}
+
+static void test_a_first_run_endpoint_step_starts_empty()
+{
+    TEST("on a first run the endpoint field is empty, so a typed URL is not appended to a default");
+    /* The seeded api_url on a fresh install is the build's default (e.g. the default
+     * provider's), and putting it in the field means the caret sits at the end of a value the
+     * user never typed -- measured end to end: typing produced
+     * "https://api.deepseek.comhttps://gw.example.com/v1". */
+    Fixture f;
+    f.facade.config_api_url.clear(); /* nothing configured yet */
+    f.facade.config_model.clear();
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    Enter(*f.dialog);
+    CHECK(Has(Frame(*f.dialog), "API endpoint"), "the endpoint step is up");
+
+    Text(*f.dialog, "https://gw.example.com/v1");
+    Enter(*f.dialog); // endpoint
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model");
+    Enter(*f.dialog);
+    Enter(*f.dialog); // window
+
+    CHECK(f.facade.last_setup.api_url == "https://gw.example.com/v1",
+          "the URL is exactly what was typed, not appended to anything: got '%s'",
+          f.facade.last_setup.api_url.c_str());
+}
+
+static void test_a_field_step_has_no_blank_line_below_it_until_something_is_refused()
+{
+    TEST("a single-field step ends at the field: the complaint line only exists when there is one");
+    /* Measured on the endpoint step: it used to reserve a row for text("") under the field,
+     * which left an unexplained blank line between the field and the separator on every
+     * normal visit. The row count is the assertion, because "a line is empty" is exactly what
+     * a frame cannot otherwise tell apart from "a line is absent". */
+    Fixture f;
+    f.facade.config_api_url.clear();
+    f.facade.config_model.clear();
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    Enter(*f.dialog); // -> endpoint step, nothing refused yet
+    CHECK(Has(Frame(*f.dialog), "API endpoint"), "on the endpoint step");
+
+    auto rows_between = [](const std::string &frame, const std::string &field_text) {
+        /* Rows from the field's own line to the separator below it: 1 means "no extra line". */
+        const auto lines = [&] {
+            std::vector<std::string> out;
+            std::string cur;
+            for (char c : frame)
+            {
+                if (c == '\n')
+                {
+                    out.push_back(cur);
+                    cur.clear();
+                }
+                else
+                    cur += c;
+            }
+            out.push_back(cur);
+            return out;
+        }();
+        int field_row = -1;
+        for (size_t i = 0; i < lines.size(); i++)
+            if (lines[i].find(field_text) != std::string::npos)
+                field_row = static_cast<int>(i);
+        if (field_row < 0)
+            return -1;
+        for (size_t i = static_cast<size_t>(field_row) + 1; i < lines.size(); i++)
+            if (lines[i].find("─") != std::string::npos)
+                return static_cast<int>(i) - field_row;
+        return -2;
+    };
+
+    /* The field is empty here, so its placeholder ("https://host/v1") is what identifies it. */
+    const int quiet = rows_between(Frame(*f.dialog), "https://host/v1");
+    CHECK(quiet == 1, "the field is directly above the separator (no reserved blank row): got %d", quiet);
+
+    Text(*f.dialog, "gw.example.com"); // no scheme -> refused
+    Enter(*f.dialog);
+    const std::string refused = Frame(*f.dialog);
+    CHECK(Has(refused, "must start with http"), "the reason appears when there is one");
+    /* Now the typed value identifies the field row (the placeholder is gone). */
+    const int complaining = rows_between(refused, "gw.example.com");
+    CHECK(complaining == 2, "and then there IS one extra row for it: got %d", complaining);
+}
+
+static void test_a_custom_endpoint_without_a_scheme_is_refused()
+{
+    TEST("an endpoint without http(s):// does not advance, and typing clears the complaint");
+    Fixture f;
+    f.facade.config_api_url.clear(); // the field starts empty, so what is typed is all there is
+    f.facade.config_model.clear();
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    Enter(*f.dialog); // the custom row
+    Text(*f.dialog, "gw.example.com/v1"); // no scheme
+    Enter(*f.dialog);
+
+    const std::string refused = Frame(*f.dialog);
+    CHECK(Has(refused, "API endpoint"), "still on the endpoint step");
+    CHECK(Has(refused, "Step 2/5"), "and the counter did not move");
+    CHECK(Has(refused, "must start with http"), "the reason is shown under the field");
+
+    Text(*f.dialog, "x"); // any keystroke is the user answering it
+    CHECK(!Has(Frame(*f.dialog), "must start with http"), "typing clears the complaint");
+}
+
+static void test_a_custom_model_id_must_not_be_empty()
+{
+    TEST("the custom model step refuses an empty id");
+    Fixture f;
+    f.Open();
+    PickCustomByUrl(f, "https://gw.example.com/v1");
+    Enter(*f.dialog); // endpoint
+    Enter(*f.dialog); // key
+
+    CHECK(Has(Frame(*f.dialog), "Model id"), "on the model step");
+    CHECK(Enter(*f.dialog), "Enter is consumed");
+    CHECK(Has(Frame(*f.dialog), "Model id"), "but an empty id does not advance");
+    CHECK(f.facade.set_setup_calls == 0, "and nothing was persisted");
+}
+
+static void test_a_custom_context_window_must_be_a_positive_number()
+{
+    TEST("the window step refuses a non-number, and a correction finishes with the typed value");
+    Fixture f;
+    f.Open();
+    PickCustomByUrl(f, "https://gw.example.com/v1");
+    Enter(*f.dialog); // endpoint
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model");
+    Enter(*f.dialog); // model id
+    CHECK(Has(Frame(*f.dialog), "Context window"), "on the window step");
+
+    Text(*f.dialog, "abc"); // "128000abc" is not a number
+    Enter(*f.dialog);
+    const std::string refused = Frame(*f.dialog);
+    CHECK(Has(refused, "Context window"), "still on the window step");
+    CHECK(Has(refused, "positive number of tokens"), "the reason is shown");
+    CHECK(f.facade.set_setup_calls == 0, "nothing was persisted");
+
+    for (int i = 0; i < 3; i++)
+        f.dialog->OnEvent(::ftxui::Event::Backspace); // back to "128000"
+    Enter(*f.dialog);
+    CHECK(f.facade.set_setup_calls == 1, "the correction finished the wizard");
+    CHECK(f.facade.last_setup.context_window == 128000, "with the surviving value: got %d",
+          f.facade.last_setup.context_window);
+}
+
+static void test_the_custom_row_is_always_the_last_row()
+{
+    TEST("the custom row is always offered, last, whatever the catalog and filter say");
+    {
+        Fixture f;
+        f.Open();
+        const std::string frame = Frame(*f.dialog);
+        CHECK(Has(frame, "Custom endpoint (OpenAI-compatible)"), "a plain open offers it");
+        /* Last means below every catalog row: the tick on the configured provider is what
+         * tells the two apart, so compare the drawn order instead of the text. */
+        const std::string rows = LineOf(frame, "Anthropic") + "\n" + LineOf(frame, "OpenAI") + "\n" +
+                                 LineOf(frame, "Custom endpoint");
+        CHECK(rows.find("Anthropic") < rows.find("Custom endpoint") &&
+                  rows.find("OpenAI") < rows.find("Custom endpoint"),
+              "it is drawn after the catalog rows");
+    }
+    {
+        Fixture f;
+        ClearCatalog(f.facade); // an empty catalog: it is the ONLY row
+        f.Open();
+        const std::string frame = Frame(*f.dialog);
+        CHECK(Has(frame, "Custom endpoint (OpenAI-compatible)"), "an empty catalog still offers it");
+        CHECK(!Has(frame, "(no match)"), "and the list never reads as empty");
+        Enter(*f.dialog);
+        CHECK(Has(Frame(*f.dialog), "API endpoint"), "Enter on it starts the custom path");
+    }
+}
+
+static void test_a_custom_install_ticks_the_custom_row()
+{
+    TEST("a config that points outside the catalog is ticked on the custom row, and reuses its window");
+    Fixture f;
+    f.facade.config_api_url = "https://my-gw.example.com/v1";
+    f.facade.config_model = "gw-model";      // in no provider's model list
+    f.facade.config_context_window = 200000; // a real choice, so it is offered back
+    f.Open();
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(Has(frame, "Custom endpoint (OpenAI-compatible)"), "the custom row is listed for a custom install");
+    CHECK(Ticked(frame, "Custom endpoint"), "and it carries the tick, so the current choice is visible");
+    CHECK(Has(frame, "Anthropic  (anthropic)"), "the catalog rows are still there to switch to");
+
+    Enter(*f.dialog); // the cursor starts on the ticked row
+    CHECK(Has(Frame(*f.dialog), "https://my-gw.example.com/v1"), "Enter opens its endpoint");
+    Enter(*f.dialog);
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model-2");
+    Enter(*f.dialog); // model id
+    CHECK(Has(Frame(*f.dialog), "200000"), "the configured window is offered, not the fallback default");
+
+    Enter(*f.dialog);
+    CHECK(f.facade.last_setup.context_window == 200000, "and it is what gets persisted: got %d",
+          f.facade.last_setup.context_window);
+}
+
+static void test_an_unconfigured_install_ticks_nothing()
+{
+    TEST("with no configured provider or model, no row is ticked -- the custom row included");
+    /* The custom row's slot in the view is a sentinel (SIZE_MAX), and SIZE_MAX cast to int is
+     * -1 -- which is also "no catalog provider matched". An unguarded comparison therefore
+     * ticked the custom row for every unconfigured install and parked the cursor on it. */
+    Fixture f;
+    f.facade.config_api_url.clear();
+    f.facade.config_model.clear();
+    f.Open();
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Ticked(frame, "Anthropic"), "the first provider is not ticked");
+    CHECK(!Ticked(frame, "OpenAI"), "nor the second");
+    CHECK(!Ticked(frame, "Custom endpoint"), "nor the custom row");
+    CHECK(frame.find("\u2713") == std::string::npos, "nothing on the page carries a tick at all");
+}
+
 // ── Escape, close, reopen ───────────────────────────────────────────────────
 
 static void test_escape_marks_the_wizard_done()
@@ -741,29 +1166,33 @@ static void test_reopening_starts_over_and_ticks_by_model_when_the_url_differs()
 
 static void test_the_list_scrolls_to_keep_the_cursor_visible()
 {
-    TEST("a list longer than 12 rows scrolls, and clamps at both ends");
+    TEST("the catalog part scrolls in 11 lines, and the custom row stays pinned below it");
     Fixture f;
-    ClearCatalog(f.facade); // exactly 20 rows: the window's arithmetic is the assertion
+    ClearCatalog(f.facade); // 20 catalog rows + the pinned custom row: the arithmetic is the assertion
     for (int i = 0; i < 20; i++)
         AddProvider(f.facade, "p" + std::to_string(i), "Prov " + std::to_string(i), "");
 
     f.Open();
     const std::string top = Frame(*f.dialog);
     CHECK(Has(top, "Prov 0"), "at the top the first row is drawn");
-    CHECK(Has(top, "Prov 11"), "and the 12-row window is full");
-    CHECK(!Has(top, "Prov 12"), "but not beyond it");
+    CHECK(Has(top, "Prov 10"), "and the catalog window is full (11 lines: 12 minus the pinned row)");
+    CHECK(!Has(top, "Prov 11"), "but not beyond it");
+    CHECK(Has(top, "Custom endpoint"), "the custom row is visible without scrolling -- the point of pinning it");
 
-    Down(*f.dialog, 9); // -> row 9, window starts at 3
+    Down(*f.dialog, 9); // -> row 9, catalog window starts at 4
     const std::string middle = Frame(*f.dialog);
     CHECK(!Has(middle, "Prov 0"), "scrolling drops the rows above the window");
-    CHECK(Has(middle, "Prov 3"), "the window is re-anchored");
-    CHECK(Has(middle, "Prov 14"), "and still holds 12 rows");
+    CHECK(Has(middle, "Prov 4"), "the window is re-anchored");
+    CHECK(Has(middle, "Prov 14"), "and still holds 11 catalog rows");
+    CHECK(Has(middle, "Custom endpoint"), "while the custom row does not scroll away");
 
-    Down(*f.dialog, 20); // clamp at the last row
+    Down(*f.dialog, 20); // clamp at the last row, which is the pinned custom row
     const std::string bottom = Frame(*f.dialog);
-    CHECK(Has(bottom, "Prov 19"), "the last row is reachable");
+    CHECK(Has(bottom, "Prov 19"), "the last catalog row is reachable");
+    CHECK(Has(bottom, "Custom endpoint"), "and the custom row is still there");
     CHECK(!Has(bottom, "Prov 7"), "and the window clamped to the end");
-    CHECK(Has(bottom, "Prov 8"), "the window's first row is n-12: got the row above it");
+    CHECK(Has(bottom, "Prov 9"), "the catalog window's first row is n-11: got the row above it");
+    CHECK(!Has(bottom, "Prov 8"), "and nothing above it");
 }
 
 static void test_the_model_cursor_moves_and_clamps_at_both_ends()
@@ -849,7 +1278,7 @@ static void test_a_dialog_without_a_facade_still_opens_and_exits()
     edc::port::SetupConfig seed;
     dialog.Open(seed);
     CHECK(dialog.IsOpen(), "it opened");
-    CHECK(Has(Frame(dialog), "(no match)"), "with an empty catalog, which it says");
+    CHECK(Has(Frame(dialog), "Custom endpoint"), "with no catalog, the custom row is all there is");
     CHECK(dialog.OnEvent(::ftxui::Event::Escape), "Esc is consumed");
     CHECK(!dialog.IsOpen(), "and closes it");
 }
@@ -860,10 +1289,14 @@ int main()
 {
     test_open_lands_on_step_1_and_ticks_the_configured_provider();
     test_provider_filter_matches_both_the_name_and_the_id();
-    test_a_provider_filter_with_no_match_says_so_and_enter_does_nothing();
+    test_a_provider_filter_with_no_match_leaves_only_the_custom_row();
     test_the_cursor_moves_and_clamps_at_both_ends();
     test_enter_on_the_provider_step_moves_to_the_key_step();
-    test_the_key_step_types_where_the_caret_was_left();
+    test_the_key_step_never_shows_the_stored_key();
+    test_a_key_handed_to_the_dialog_is_still_not_shown_or_submitted();
+    test_an_untouched_key_step_leaves_the_stored_key_alone();
+    test_a_new_key_is_typed_into_an_empty_field();
+    test_a_first_run_key_step_says_nothing_about_a_stored_key();
     test_the_model_list_hides_models_that_are_not_chat_capable();
     test_a_model_row_shows_the_display_name_and_the_wire_id();
     test_a_model_filter_narrows_by_id_and_by_name();
@@ -871,6 +1304,16 @@ int main()
     test_a_rejected_setup_leaves_the_wizard_open();
     test_enter_with_no_model_does_not_finish();
     test_provider_without_an_api_url_keeps_the_seeded_one();
+    test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typed();
+    test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint();
+    test_a_first_run_endpoint_step_starts_empty();
+    test_a_field_step_has_no_blank_line_below_it_until_something_is_refused();
+    test_a_custom_endpoint_without_a_scheme_is_refused();
+    test_a_custom_model_id_must_not_be_empty();
+    test_a_custom_context_window_must_be_a_positive_number();
+    test_the_custom_row_is_always_the_last_row();
+    test_a_custom_install_ticks_the_custom_row();
+    test_an_unconfigured_install_ticks_nothing();
     test_escape_marks_the_wizard_done();
     test_a_closed_dialog_ignores_events();
     test_reopening_starts_over_and_ticks_by_model_when_the_url_differs();

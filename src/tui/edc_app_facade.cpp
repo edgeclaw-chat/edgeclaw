@@ -64,6 +64,20 @@ bool AppFacade::ConfigApiKey(std::string *out) const
     return true;
 }
 
+bool AppFacade::HasApiKey() const
+{
+    /* Asks the app whether a key exists without handing one to the caller, and the buffer is
+     * wiped before returning: the wizard only needs the yes/no (it must not put a stored
+     * secret into a field the user can see). */
+    if (!app_)
+        return false;
+    char buf[4096];
+    const bool has = edc_app_config_api_key(app_, buf, sizeof(buf));
+    for (size_t i = 0; i < sizeof(buf); i++)
+        buf[i] = 0;
+    return has;
+}
+
 bool AppFacade::SandboxEnabled() const
 {
     return app_ && edc_app_sandbox_enabled(app_);
