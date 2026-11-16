@@ -304,8 +304,8 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
         std::string s;
         if (App()->ConfigApiUrl(&s))
             seed.api_url = s;
-        if (App()->ConfigApiKey(&s))
-            seed.api_key = s;
+        /* Whether a key exists, never the key itself (see SetupConfig). */
+        seed.has_stored_key = App()->HasApiKey();
         if (App()->ConfigModel(&s))
             seed.model = s; /* ticks the config's current provider/model in the lists */
         setup_dialog_->Open(seed);
@@ -563,13 +563,13 @@ void TUIWindow::TickInterruptHint(std::chrono::steady_clock::time_point now)
 void TUIWindow::OpenConnect()
 {
     // Seed the setup wizard from the persisted config (the same seed the first-run
-    // auto-open uses); the model ticks the config's current choice in the lists.
+    // auto-open uses); the model ticks the config's current choice in the lists. The API key
+    // is only reported as present/absent -- an existing key is never put into the field.
     port::SetupConfig seed;
     std::string s;
     if (app_->ConfigApiUrl(&s))
         seed.api_url = s;
-    if (app_->ConfigApiKey(&s))
-        seed.api_key = s;
+    seed.has_stored_key = app_->HasApiKey();
     if (app_->ConfigModel(&s))
         seed.model = s;
     setup_dialog_->Open(seed);

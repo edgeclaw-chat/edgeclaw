@@ -278,7 +278,17 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "at that index -- so that one row would cost `/model search` its completion. One row per completable "
      "subcommand word."},
     {"General", "/model search <q>", "search chat models across all providers", NULL},
-    {"General", "/connect", "guided setup: choose a provider, API key, and model", NULL},
+    {"General", "/connect", "guided setup: choose a provider, API key, and model",
+     "Three steps for a provider in the built-in catalog -- it knows the base URL and the "
+     "models, so only the key and the pick are asked for. Below the provider list, pinned so "
+     "it never scrolls out of view, sits a \"Custom endpoint\" row for anything else (a "
+     "gateway, a self-hosted server, a provider newer than this build's catalog): taking it "
+     "walks five steps and asks for the base URL, the API key, the model id and the model's "
+     "context window, all typed. Pasting a base URL into the provider search box carries it "
+     "straight through -- the row then reads \"Use this endpoint\".\n\n"
+     "The context window is the one value nothing can infer for an unknown endpoint, and it "
+     "must be the endpoint's real window: a larger one postpones folding past the provider's "
+     "own limit, and the error that produces comes from the provider, not from here."},
     {"General", "/update", "install a newer release, if one is available",
      "Shows the version on offer and what updating costs: the database is upgraded on first "
      "start of the new build, and an older version will refuse it afterwards -- an update "
@@ -401,7 +411,7 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"General", "/help", "show this list, or one command's detail", NULL},
     {"General", "/whoami", "show the current session, model and foreground task", NULL},
     {"General", "/model", "list / switch / search models", NULL},
-    {"General", "/connect", "guided setup: provider, API key, model", NULL},
+    {"General", "/connect", "guided setup: provider, API key, model (or a custom endpoint)", NULL},
     {"General", "/update", "install a newer release when one is available", NULL},
     {"General", "/encrypt", "turn encryption back on after choosing not to", NULL},
     {"General", "/prompt", "list and run prompt templates", NULL},

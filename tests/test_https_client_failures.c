@@ -231,6 +231,7 @@ struct plain_server
     int port;
     uv_thread_t thread;
     int served;
+    const char *payload; /* borrowed; what the peer sends instead of a TLS record */
 };
 
 static void plain_server_thread(void *arg)
@@ -239,18 +240,18 @@ static void plain_server_thread(void *arg)
     const int fd = accept(s->listen_fd, NULL, NULL);
     if (fd >= 0)
     {
-        const char *plain = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
-        if (send(fd, plain, strlen(plain), 0) > 0)
+        if (send(fd, s->payload, strlen(s->payload), 0) > 0)
             s->served = 1;
         close(fd);
     }
 }
 
-static int plain_server_start(struct plain_server *s)
+static int plain_server_start(struct plain_server *s, const char *payload)
 {
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
     memset(s, 0, sizeof(*s));
+    s->payload = payload;
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0)
         return -1;
@@ -272,9 +273,11 @@ static int plain_server_start(struct plain_server *s)
 
 static void test_handshake_failure()
 {
-    TEST("a plain-text server where TLS is expected fails the handshake, and says so");
+    TEST("a plain-text server where TLS is expected fails the handshake, and says what it got");
     struct plain_server srv;
-    if (plain_server_start(&srv) != 0)
+    /* The shape measured against the real endpoint: an intercepting gateway answering a 502
+     * page in the clear on port 443. */
+    if (plain_server_start(&srv, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") != 0)
     {
         CHECK(false, "could not start the plain-text server");
         return;
@@ -286,9 +289,177 @@ static void test_handshake_failure()
     struct seen s;
     const bool closed = run(url, &s);
     CHECK(closed, "the request completed instead of hanging");
-    CHECK(strstr(s.error, "handshake") != NULL,
-          "the error names the handshake: %.90s", s.error);
+    /* The message must name what actually happened. mbedtls's own text for this ("record layer
+     * failure" / "wrong version number") reads like a certificate problem, and that is where it
+     * sends the reader -- measured against a real endpoint whose gateway intermittently answered
+     * `HTTP/1.1 502 Bad Gateway` on port 443. */
+    CHECK(strstr(s.error, "plaintext HTTP") != NULL,
+          "the error says the peer answered plaintext HTTP: %.120s", s.error);
+    CHECK(strstr(s.error, "HTTP/1.1 502 Bad Gateway") != NULL,
+          "and quotes the status line it got instead of a TLS record: %.120s", s.error);
+    CHECK(strstr(s.error, "not a certificate problem") != NULL,
+          "and rules out the wrong diagnosis explicitly: %.120s", s.error);
+    /* WHICH address was broken: with a name that resolves to several addresses this is the
+     * fact that decides what to do next (pin the good one, report the bad one). */
+    CHECK(strstr(s.error, "at 127.0.0.1") != NULL,
+          "and names the address it actually connected to: %.140s", s.error);
     CHECK(s.status == 0, "no status line was ever parsed, got %d", s.status);
+    free_seen(&s);
+
+    uv_thread_join(&srv.thread);
+    close(srv.listen_fd);
+}
+
+/* The same "speaks the wrong protocol" peer, on [::1] with a caller-chosen port, so it can sit
+ * on the IPv6 address of a name whose IPv4 address is served by a good TLS stub. The client
+ * offers IPv6 first, so this is the address that must fail and hand over. */
+static void plain_server6_thread(void *arg)
+{
+    struct plain_server *s = arg;
+    const int fd = accept(s->listen_fd, NULL, NULL);
+    if (fd >= 0)
+    {
+        if (send(fd, s->payload, strlen(s->payload), 0) > 0)
+            s->served = 1;
+        close(fd);
+    }
+}
+
+static int plain_server6_start(struct plain_server *s, const char *payload, int port)
+{
+    struct sockaddr_in6 addr;
+    socklen_t alen = sizeof(addr);
+    memset(s, 0, sizeof(*s));
+    s->payload = payload;
+    s->listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    if (s->listen_fd < 0)
+        return -1;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_loopback;
+    addr.sin6_port = htons((uint16_t)port);
+    if (bind(s->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        return -1;
+    if (listen(s->listen_fd, 4) != 0)
+        return -1;
+    if (getsockname(s->listen_fd, (struct sockaddr *)&addr, &alen) != 0)
+        return -1;
+    s->port = ntohs(addr.sin6_port);
+    if (uv_thread_create(&s->thread, plain_server6_thread, s) != 0)
+        return -1;
+    return 0;
+}
+
+static void test_handshake_failure_tries_the_next_address()
+{
+    TEST("a handshake failure moves on to the next address; the good one answers");
+    /* The reported case: one name, several addresses, one of them answering something that is
+     * not TLS (a gateway serving a plaintext 502 on 443 while the API itself is fine). The
+     * connect SUCCEEDS in that case, so the retry has to start at the handshake -- the address
+     * list was only ever walked when connect() itself failed.
+     *
+     * localhost.localdomain resolves to both ::1 and 127.0.0.1 (unlike `localhost`, which is
+     * only 127.0.0.1 here), and the client offers IPv6 first. So: a plaintext peer on [::1]:P
+     * and a real TLS stub on 127.0.0.1:P. IPv4 and IPv6 are separate port namespaces, so one
+     * port number serves both.
+     */
+    char cert[600];
+    char key[600];
+    snprintf(cert, sizeof(cert), "%s/next-addr-cert.pem", g_dir);
+    snprintf(key, sizeof(key), "%s/next-addr-key.pem", g_dir);
+    if (tls_stub_cert_named(cert, key, "localhost.localdomain") != 0)
+    {
+        CHECK(false, "could not generate a certificate for localhost.localdomain");
+        return;
+    }
+
+    char raw[512];
+    tls_stub_response(raw, sizeof(raw), "200 OK", "{\"ok\":true}");
+
+    struct tls_stub good;
+    if (tls_stub_start(&good, cert, key, raw) != 0)
+    {
+        CHECK(false, "could not start the TLS stub");
+        return;
+    }
+
+    struct plain_server bad;
+    if (plain_server6_start(&bad, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            good.port) != 0)
+    {
+        printf("    (skipped: cannot listen on [::1] here)\n");
+        tls_stub_stop(&good);
+        return;
+    }
+
+    char url[160];
+    snprintf(url, sizeof(url), "https://localhost.localdomain:%d/chat/completions", good.port);
+
+    /* The self-signed stub certificate is also the CA, so this case builds its own client
+     * rather than using run() (which trusts g_cert, the localhost certificate). */
+    struct seen s;
+    memset(&s, 0, sizeof(s));
+    uv_sem_init(&s.done, 0);
+
+    struct edc_https_client *client = edc_https_client_new(cert);
+    CHECK(client != NULL, "the client was created");
+    if (client)
+    {
+        CHECK(edc_https_client_connect(client, url, on_event, &s) == 0, "connect() accepted the request");
+
+        uv_thread_t dog;
+        const bool dog_ok = uv_thread_create(&dog, watchdog, &s) == 0;
+        uv_sem_wait(&s.done);
+        if (dog_ok)
+            uv_thread_join(&dog);
+
+        CHECK(s.closed && !s.timed_out, "the request completed rather than hanging");
+        CHECK(s.error[0] == '\0', "no error was reported: the second address worked (%.90s)", s.error);
+        CHECK(s.status == 200, "the TLS peer's answer arrived: status %d", s.status);
+        CHECK(s.body && strstr(s.body, "\"ok\":true") != NULL, "with its body: %.60s",
+              s.body ? s.body : "(none)");
+        CHECK(s.events[0] == EDC_HTTPS_EVENT_HS, "the caller only saw the successful handshake");
+        CHECK(bad.served == 1, "the plaintext peer on [::1] WAS tried first and handed over");
+
+        edc_https_client_free(client);
+    }
+    uv_sem_destroy(&s.done);
+    free_seen(&s);
+
+    tls_stub_stop(&good);
+    uv_thread_join(&bad.thread);
+    close(bad.listen_fd);
+}
+
+static void test_handshake_failure_with_a_non_http_peer()
+{
+    TEST("a peer that answers something else keeps mbedtls's own handshake error");
+    /* The new wording must not swallow the ordinary case: bytes that are not an HTTP status
+     * line still report the mbedtls reason, so a real protocol mismatch is not mislabelled as
+     * a gateway page. */
+    struct plain_server srv;
+    /* Deliberately not a TLS record AND not an HTTP status line. (The first version of this
+     * fixture started with a real record header and a NUL byte: strlen truncated it to a
+     * partial handshake record, so mbedtls simply waited for more and the socket close
+     * produced a CLOSE with no ERROR at all -- a different path than the one under test.) */
+    if (plain_server_start(&srv, "NOT-A-TLS-RECORD-nor-http-0123456789") != 0)
+    {
+        CHECK(false, "could not start the peer");
+        return;
+    }
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://localhost:%d/chat/completions", srv.port);
+
+    struct seen s;
+    const bool closed = run(url, &s);
+    CHECK(closed, "the request completed");
+    CHECK(strstr(s.error, "plaintext HTTP") == NULL,
+          "this peer did not answer HTTP, so that wording must not appear: %.120s", s.error);
+    CHECK(strstr(s.error, "mbedtls handshake error") != NULL,
+          "the mbedtls reason is kept: %.120s", s.error);
+    CHECK(strstr(s.error, "at 127.0.0.1") != NULL,
+          "and it still names the address: %.140s", s.error);
     free_seen(&s);
 
     uv_thread_join(&srv.thread);
@@ -858,6 +1029,8 @@ int main(void)
     test_free_at_every_stage();
     test_reaches_a_host_that_only_has_ipv6();
     test_handshake_failure();
+    test_handshake_failure_tries_the_next_address();
+    test_handshake_failure_with_a_non_http_peer();
     test_timeout();
     test_success_event_sequence();
     test_status_only_bodyless();
