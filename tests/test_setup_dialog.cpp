@@ -75,6 +75,8 @@ class FakeFacade : public edc::port::IAppFacade
     std::string config_model;
     std::string config_api_url;
     std::string config_api_key;
+    // The configured context window (SetupDialog offers it back for a custom endpoint).
+    int config_context_window = 0;
 
     // Outcomes, and what the dialog asked for.
     bool set_setup_ok = true;
@@ -125,7 +127,7 @@ class FakeFacade : public edc::port::IAppFacade
     }
     int ContextWindow() const override
     {
-        return 0;
+        return config_context_window;
     }
 
     bool Onboarded() const override
@@ -308,12 +310,19 @@ void AddModel(FakeFacade &f, const std::string &provider_id, const std::string &
 
 // Drop the standard two-provider catalog: the scroll cases need a list whose length is the
 // whole story, and the fixture's own providers would shift every row index.
+//
+// The seeded config goes with it. A config whose URL and model match no provider is a CUSTOM
+// install (see WantsCustomRow), and the provider step then grows the synthetic custom row --
+// which would move the row indices these cases are about. A case that wants that row seeds a
+// config that belongs to its own catalog, or none at all.
 void ClearCatalog(FakeFacade &f)
 {
     f.provider_order.clear();
     f.provider_name.clear();
     f.provider_api.clear();
     f.provider_models.clear();
+    f.config_api_url.clear();
+    f.config_model.clear();
 }
 
 // ── Reading a frame ─────────────────────────────────────────────────────────
@@ -695,6 +704,200 @@ static void test_provider_without_an_api_url_keeps_the_seeded_one()
           f.facade.last_setup.model.c_str());
 }
 
+// ── The custom endpoint path (an endpoint the catalog does not know) ──────────
+//
+// A catalog provider knows its base URL and its models, so the wizard only asks for a key
+// and a pick. Anything else has to be typed: base URL, model id, context window. These
+// cases pin that the typed values are what gets persisted, that a refused value keeps the
+// user on its step, and that the extra row only exists when something asked for it.
+
+// Type a URL into the provider search box and take the synthetic row it reveals.
+static void PickCustomByUrl(Fixture &f, const std::string &url)
+{
+    Text(*f.dialog, url);
+    Enter(*f.dialog); // the "Use this endpoint" row
+}
+
+static void test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typed()
+{
+    TEST("a pasted URL turns into the custom row, and url / model / window are typed and persisted");
+    Fixture f;
+    f.facade.config_api_key = "sk-new";
+    f.Open();
+
+    const std::string url = "https://gw.example.com/v1";
+    Text(*f.dialog, url);
+    const std::string listed = Frame(*f.dialog);
+    CHECK(Has(listed, "Use this endpoint: " + url), "the typed URL is offered as the endpoint");
+    CHECK(!Has(listed, "Anthropic"), "and the catalog rows, which cannot match a URL, are gone");
+
+    CHECK(Enter(*f.dialog), "Enter takes the row");
+    const std::string endpoint_step = Frame(*f.dialog);
+    CHECK(Has(endpoint_step, "API endpoint"), "the endpoint step is next");
+    CHECK(Has(endpoint_step, "Step 2/5"), "a custom endpoint walks five steps");
+    CHECK(Has(endpoint_step, url), "the pasted URL is pre-filled, ready to edit");
+    CHECK(Has(endpoint_step, "Enter submit  |  Esc exit"), "a field step submits");
+
+    Enter(*f.dialog); // endpoint
+    CHECK(Has(Frame(*f.dialog), "Step 3/5"), "then the API key");
+    Enter(*f.dialog); // key
+    const std::string model_step = Frame(*f.dialog);
+    CHECK(Has(model_step, "Model id"), "then the model id, typed rather than picked");
+    CHECK(Has(model_step, "Step 4/5"), "which is step four");
+
+    Text(*f.dialog, "gw-large-1");
+    Enter(*f.dialog); // model id
+    const std::string window_step = Frame(*f.dialog);
+    CHECK(Has(window_step, "Context window"), "then the window the catalog would have supplied");
+    CHECK(Has(window_step, "Step 5/5"), "which is the last step");
+    CHECK(Has(window_step, "128000"), "and it opens on a usable default, not the 1 MiB config one");
+
+    Enter(*f.dialog); // context window
+
+    CHECK(!f.dialog->IsOpen(), "the wizard closed");
+    CHECK(f.facade.set_setup_calls == 1, "SetSetup ran once");
+    CHECK(f.facade.last_setup.api_url == url, "the typed URL is what was persisted: got '%s'",
+          f.facade.last_setup.api_url.c_str());
+    CHECK(f.facade.last_setup.model == "gw-large-1", "the typed model id: got '%s'",
+          f.facade.last_setup.model.c_str());
+    CHECK(f.facade.last_setup.api_key == "sk-new", "the seeded key: got '%s'",
+          f.facade.last_setup.api_key.c_str());
+    CHECK(f.facade.last_setup.context_window == 128000, "the typed window: got %d",
+          f.facade.last_setup.context_window);
+    CHECK(f.done_calls == 1, "the host was told to refresh");
+}
+
+static void test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint()
+{
+    TEST("typing 'custom' reveals the row, and it keeps the endpoint the config already holds");
+    Fixture f;
+    f.facade.config_api_url = "https://my-gw.example.com/v1"; // no catalog provider matches
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    CHECK(Has(Frame(*f.dialog), "Custom endpoint (OpenAI-compatible)"), "the row is reachable by name");
+
+    Enter(*f.dialog);
+    const std::string endpoint_step = Frame(*f.dialog);
+    CHECK(Has(endpoint_step, "API endpoint"), "Enter takes the row");
+    // The seeded URL, not an empty box: an existing custom install must not lose its
+    // endpoint by pressing Enter on a pre-filled step.
+    CHECK(Has(endpoint_step, "https://my-gw.example.com/v1"), "the config's own endpoint is pre-filled");
+
+    Enter(*f.dialog); // accept the endpoint
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model");
+    Enter(*f.dialog); // model id
+    Enter(*f.dialog); // window
+
+    CHECK(f.facade.last_setup.api_url == "https://my-gw.example.com/v1",
+          "the pre-filled endpoint survived: got '%s'", f.facade.last_setup.api_url.c_str());
+    CHECK(f.facade.last_setup.model == "gw-model", "and the typed model reached SetSetup: got '%s'",
+          f.facade.last_setup.model.c_str());
+}
+
+static void test_a_custom_endpoint_without_a_scheme_is_refused()
+{
+    TEST("an endpoint without http(s):// does not advance, and typing clears the complaint");
+    Fixture f;
+    f.facade.config_api_url.clear(); // the field starts empty, so what is typed is all there is
+    f.facade.config_model.clear();
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    Enter(*f.dialog); // the custom row
+    Text(*f.dialog, "gw.example.com/v1"); // no scheme
+    Enter(*f.dialog);
+
+    const std::string refused = Frame(*f.dialog);
+    CHECK(Has(refused, "API endpoint"), "still on the endpoint step");
+    CHECK(Has(refused, "Step 2/5"), "and the counter did not move");
+    CHECK(Has(refused, "must start with http"), "the reason is shown under the field");
+
+    Text(*f.dialog, "x"); // any keystroke is the user answering it
+    CHECK(!Has(Frame(*f.dialog), "must start with http"), "typing clears the complaint");
+}
+
+static void test_a_custom_model_id_must_not_be_empty()
+{
+    TEST("the custom model step refuses an empty id");
+    Fixture f;
+    f.Open();
+    PickCustomByUrl(f, "https://gw.example.com/v1");
+    Enter(*f.dialog); // endpoint
+    Enter(*f.dialog); // key
+
+    CHECK(Has(Frame(*f.dialog), "Model id"), "on the model step");
+    CHECK(Enter(*f.dialog), "Enter is consumed");
+    CHECK(Has(Frame(*f.dialog), "Model id"), "but an empty id does not advance");
+    CHECK(f.facade.set_setup_calls == 0, "and nothing was persisted");
+}
+
+static void test_a_custom_context_window_must_be_a_positive_number()
+{
+    TEST("the window step refuses a non-number, and a correction finishes with the typed value");
+    Fixture f;
+    f.Open();
+    PickCustomByUrl(f, "https://gw.example.com/v1");
+    Enter(*f.dialog); // endpoint
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model");
+    Enter(*f.dialog); // model id
+    CHECK(Has(Frame(*f.dialog), "Context window"), "on the window step");
+
+    Text(*f.dialog, "abc"); // "128000abc" is not a number
+    Enter(*f.dialog);
+    const std::string refused = Frame(*f.dialog);
+    CHECK(Has(refused, "Context window"), "still on the window step");
+    CHECK(Has(refused, "positive number of tokens"), "the reason is shown");
+    CHECK(f.facade.set_setup_calls == 0, "nothing was persisted");
+
+    for (int i = 0; i < 3; i++)
+        f.dialog->OnEvent(::ftxui::Event::Backspace); // back to "128000"
+    Enter(*f.dialog);
+    CHECK(f.facade.set_setup_calls == 1, "the correction finished the wizard");
+    CHECK(f.facade.last_setup.context_window == 128000, "with the surviving value: got %d",
+          f.facade.last_setup.context_window);
+}
+
+static void test_the_custom_row_is_absent_unless_something_asks_for_it()
+{
+    TEST("the plain provider list keeps no custom row: an empty filter over a catalog config");
+    Fixture f;
+    f.Open();
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Has(frame, "Custom endpoint"), "no custom row without a reason for one");
+    CHECK(!Has(frame, "Use this endpoint"), "and no URL row either");
+    CHECK(Ticked(frame, "Anthropic"), "the plain list is otherwise unchanged");
+}
+
+static void test_a_custom_install_ticks_the_custom_row()
+{
+    TEST("a config that points outside the catalog is ticked on the custom row, and reuses its window");
+    Fixture f;
+    f.facade.config_api_url = "https://my-gw.example.com/v1";
+    f.facade.config_model = "gw-model";      // in no provider's model list
+    f.facade.config_context_window = 200000; // a real choice, so it is offered back
+    f.Open();
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(Has(frame, "Custom endpoint (OpenAI-compatible)"), "the custom row is listed for a custom install");
+    CHECK(Ticked(frame, "Custom endpoint"), "and it carries the tick, so the current choice is visible");
+    CHECK(Has(frame, "Anthropic  (anthropic)"), "the catalog rows are still there to switch to");
+
+    Enter(*f.dialog); // the cursor starts on the ticked row
+    CHECK(Has(Frame(*f.dialog), "https://my-gw.example.com/v1"), "Enter opens its endpoint");
+    Enter(*f.dialog);
+    Enter(*f.dialog); // key
+    Text(*f.dialog, "gw-model-2");
+    Enter(*f.dialog); // model id
+    CHECK(Has(Frame(*f.dialog), "200000"), "the configured window is offered, not the fallback default");
+
+    Enter(*f.dialog);
+    CHECK(f.facade.last_setup.context_window == 200000, "and it is what gets persisted: got %d",
+          f.facade.last_setup.context_window);
+}
+
 // ── Escape, close, reopen ───────────────────────────────────────────────────
 
 static void test_escape_marks_the_wizard_done()
@@ -871,6 +1074,13 @@ int main()
     test_a_rejected_setup_leaves_the_wizard_open();
     test_enter_with_no_model_does_not_finish();
     test_provider_without_an_api_url_keeps_the_seeded_one();
+    test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typed();
+    test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint();
+    test_a_custom_endpoint_without_a_scheme_is_refused();
+    test_a_custom_model_id_must_not_be_empty();
+    test_a_custom_context_window_must_be_a_positive_number();
+    test_the_custom_row_is_absent_unless_something_asks_for_it();
+    test_a_custom_install_ticks_the_custom_row();
     test_escape_marks_the_wizard_done();
     test_a_closed_dialog_ignores_events();
     test_reopening_starts_over_and_ticks_by_model_when_the_url_differs();

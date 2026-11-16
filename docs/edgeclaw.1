@@ -452,7 +452,15 @@ COMMAND REFERENCE
                                    cached system prompt (a skill or AGENTS.md
                                    edited on disk takes effect; config.json
                                    still needs a restart).
-     /connect                      Guided setup (provider, API key, model).
+     /connect                      Guided setup (provider, API key, model).  For
+                                   an endpoint the catalog does not list, type a
+                                   base URL into the provider search box (or type
+                                   "custom"): a Custom endpoint row appears and
+                                   the wizard asks for base URL, API key, model
+                                   id and context window instead (five steps).
+                                   A base URL and a full .../chat/completions
+                                   endpoint are both accepted; the window must
+                                   be the endpoint's real one.
      /update                       Install a newer release, if one is available.
                                    Shows the version and what updating costs,
                                    then runs the installer.  Only a copy the
