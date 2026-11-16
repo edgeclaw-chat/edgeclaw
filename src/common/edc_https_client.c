@@ -81,6 +81,14 @@ struct edc_https_request
     struct edc_https_buf_list *mbedtls_send_bufs;
     bool writing;
 
+    /* The first bytes the peer sent before the handshake completed, kept so a failure can say
+     * WHAT it got instead of naming mbedtls. A gateway or captive portal that answers plaintext
+     * HTTP on a TLS port is a common failure, and "handshake error" sends the reader looking for
+     * the wrong thing (a CA problem) -- see edc_https_client_drive_mbedtls_hs. */
+    char handshake_peek[64];
+    size_t handshake_peek_len;
+    bool handshake_done;
+
     llhttp_t parser;
     llhttp_settings_t parser_settings;
 
@@ -956,15 +964,41 @@ static bool edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
 
     if (ret != 0)
     {
-        char buf[1024];
-        mbedtls_strerror(ret, buf, sizeof(buf));
-        sds message = sdscatprintf(sdsnew(NULL), "mbedtls handshake error: %s", buf);
+        /* Name what actually happened when the peer did not speak TLS at all. A gateway,
+         * captive portal or misconfigured load-balancer backend that answers plaintext HTTP on
+         * a TLS port is common enough to be worth detecting, and mbedtls's own text for it
+         * ("record layer failure", "wrong version number") reads like a certificate problem --
+         * which is where it sends the reader. Measured on exactly this: an endpoint that
+         * intermittently answered `HTTP/1.1 502 Bad Gateway` on 443 produced a handshake error
+         * that looked like a CA issue. */
+        sds message = NULL;
+        if (req->handshake_peek_len >= 5 && memcmp(req->handshake_peek, "HTTP/", 5) == 0)
+        {
+            /* The status line, up to the CR: enough to identify the page without dumping a body. */
+            size_t end = 0;
+            while (end < req->handshake_peek_len && req->handshake_peek[end] != '\r' &&
+                   req->handshake_peek[end] != '\n')
+                end++;
+            sds status = sdsnewlen(req->handshake_peek, end);
+            message = sdscatprintf(sdsnew(NULL),
+                                   "the server answered plaintext HTTP instead of TLS (\"%s\") -- "
+                                   "a gateway, proxy or wrong port, not a certificate problem",
+                                   status);
+            sdsfree(status);
+        }
+        else
+        {
+            char buf[1024];
+            mbedtls_strerror(ret, buf, sizeof(buf));
+            message = sdscatprintf(sdsnew(NULL), "mbedtls handshake error: %s", buf);
+        }
         req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
         sdsfree(message);
         edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
         return false;
     }
 
+    req->handshake_done = true;
     req->fn(req, EDC_HTTPS_EVENT_HS, NULL);
     return true;
 }
@@ -1070,6 +1104,17 @@ void edc_https_client_on_tcp_read(uv_stream_t *stream, ssize_t nread, const uv_b
     }
     else
     {
+        /* Remember the first bytes of the CONNECTION, before mbedtls consumes them: if the
+         * handshake then fails, those bytes are what says why (a plaintext HTTP gateway page is
+         * the common case -- see the failure branch in drive_mbedtls_hs). */
+        if (!req->handshake_done && req->handshake_peek_len < sizeof(req->handshake_peek))
+        {
+            const size_t room = sizeof(req->handshake_peek) - req->handshake_peek_len;
+            const size_t copy = ((size_t)nread < room) ? (size_t)nread : room;
+            memcpy(req->handshake_peek + req->handshake_peek_len, buf->base, copy);
+            req->handshake_peek_len += copy;
+        }
+
         uv_buf_t actual = uv_buf_init(buf->base, (unsigned int)nread);
         EDC_LL_APPEND(struct edc_https_buf_list, req->mbedtls_recv_bufs,
                       edc_https_buf_list_node(&actual, 0));

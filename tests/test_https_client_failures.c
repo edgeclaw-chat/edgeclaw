@@ -231,6 +231,7 @@ struct plain_server
     int port;
     uv_thread_t thread;
     int served;
+    const char *payload; /* borrowed; what the peer sends instead of a TLS record */
 };
 
 static void plain_server_thread(void *arg)
@@ -239,18 +240,18 @@ static void plain_server_thread(void *arg)
     const int fd = accept(s->listen_fd, NULL, NULL);
     if (fd >= 0)
     {
-        const char *plain = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi";
-        if (send(fd, plain, strlen(plain), 0) > 0)
+        if (send(fd, s->payload, strlen(s->payload), 0) > 0)
             s->served = 1;
         close(fd);
     }
 }
 
-static int plain_server_start(struct plain_server *s)
+static int plain_server_start(struct plain_server *s, const char *payload)
 {
     struct sockaddr_in addr;
     socklen_t alen = sizeof(addr);
     memset(s, 0, sizeof(*s));
+    s->payload = payload;
     s->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (s->listen_fd < 0)
         return -1;
@@ -272,9 +273,11 @@ static int plain_server_start(struct plain_server *s)
 
 static void test_handshake_failure()
 {
-    TEST("a plain-text server where TLS is expected fails the handshake, and says so");
+    TEST("a plain-text server where TLS is expected fails the handshake, and says what it got");
     struct plain_server srv;
-    if (plain_server_start(&srv) != 0)
+    /* The shape measured against the real endpoint: an intercepting gateway answering a 502
+     * page in the clear on port 443. */
+    if (plain_server_start(&srv, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") != 0)
     {
         CHECK(false, "could not start the plain-text server");
         return;
@@ -286,9 +289,50 @@ static void test_handshake_failure()
     struct seen s;
     const bool closed = run(url, &s);
     CHECK(closed, "the request completed instead of hanging");
-    CHECK(strstr(s.error, "handshake") != NULL,
-          "the error names the handshake: %.90s", s.error);
+    /* The message must name what actually happened. mbedtls's own text for this ("record layer
+     * failure" / "wrong version number") reads like a certificate problem, and that is where it
+     * sends the reader -- measured against a real endpoint whose gateway intermittently answered
+     * `HTTP/1.1 502 Bad Gateway` on port 443. */
+    CHECK(strstr(s.error, "plaintext HTTP") != NULL,
+          "the error says the peer answered plaintext HTTP: %.120s", s.error);
+    CHECK(strstr(s.error, "HTTP/1.1 502 Bad Gateway") != NULL,
+          "and quotes the status line it got instead of a TLS record: %.120s", s.error);
+    CHECK(strstr(s.error, "not a certificate problem") != NULL,
+          "and rules out the wrong diagnosis explicitly: %.120s", s.error);
     CHECK(s.status == 0, "no status line was ever parsed, got %d", s.status);
+    free_seen(&s);
+
+    uv_thread_join(&srv.thread);
+    close(srv.listen_fd);
+}
+
+static void test_handshake_failure_with_a_non_http_peer()
+{
+    TEST("a peer that answers something else keeps mbedtls's own handshake error");
+    /* The new wording must not swallow the ordinary case: bytes that are not an HTTP status
+     * line still report the mbedtls reason, so a real protocol mismatch is not mislabelled as
+     * a gateway page. */
+    struct plain_server srv;
+    /* Deliberately not a TLS record AND not an HTTP status line. (The first version of this
+     * fixture started with a real record header and a NUL byte: strlen truncated it to a
+     * partial handshake record, so mbedtls simply waited for more and the socket close
+     * produced a CLOSE with no ERROR at all -- a different path than the one under test.) */
+    if (plain_server_start(&srv, "NOT-A-TLS-RECORD-nor-http-0123456789") != 0)
+    {
+        CHECK(false, "could not start the peer");
+        return;
+    }
+
+    char url[128];
+    snprintf(url, sizeof(url), "https://localhost:%d/chat/completions", srv.port);
+
+    struct seen s;
+    const bool closed = run(url, &s);
+    CHECK(closed, "the request completed");
+    CHECK(strstr(s.error, "plaintext HTTP") == NULL,
+          "this peer did not answer HTTP, so that wording must not appear: %.120s", s.error);
+    CHECK(strstr(s.error, "mbedtls handshake error") != NULL,
+          "the mbedtls reason is kept: %.120s", s.error);
     free_seen(&s);
 
     uv_thread_join(&srv.thread);
@@ -858,6 +902,7 @@ int main(void)
     test_free_at_every_stage();
     test_reaches_a_host_that_only_has_ipv6();
     test_handshake_failure();
+    test_handshake_failure_with_a_non_http_peer();
     test_timeout();
     test_success_event_sequence();
     test_status_only_bodyless();
