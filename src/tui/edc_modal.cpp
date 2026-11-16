@@ -90,11 +90,19 @@ class ModalOverlayNode : public ::ftxui::Node
 ::ftxui::Element ModalOverlay(::ftxui::Element backdrop, ::ftxui::Element panel, int panel_width,
                               ::ftxui::Color ground, ::ftxui::Color panel_bg)
 {
-    /* Centred vertically by ftxui's fillers rather than by the node: the panel's height depends on
+    /* |clear_under| is load-bearing, not decoration: |bgcolor| sets only the BACKGROUND of the
+     * cells in the panel's box, so any cell the panel does not write a character to -- the filler
+     * gap on the title row, a right-aligned hint's left side, an empty line -- keeps the glyph
+     * the backdrop put there, and the chat text shows straight through the dialog. clear_under
+     * blanks those cells before the panel draws. (The pre-ModalOverlay code had it as
+     * `dialog | clear_under | center`; moving to this node dropped it.)
+     *
+     * Centred vertically by ftxui's fillers rather than by the node: the panel's height depends on
      * its content and on how many rows the failure page's output took, so it is not a number the
      * host can supply. Horizontally the node narrows the box, which is what puts the left edge at
      * a column it can compute. */
-    auto centred = ::ftxui::vbox({::ftxui::filler(), std::move(panel), ::ftxui::filler()});
+    auto centred = ::ftxui::vbox({::ftxui::filler(), std::move(panel) | ::ftxui::clear_under,
+                                  ::ftxui::filler()});
     return std::make_shared<ModalOverlayNode>(std::move(backdrop), std::move(centred), panel_width, ground, panel_bg);
 }
 

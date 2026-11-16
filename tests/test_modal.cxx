@@ -16,6 +16,7 @@
  */
 
 #include "edc_modal.hpp"
+#include "edc_setup_dialog.hpp"
 #include "edc_style.hpp"
 
 #include "ftxui/dom/elements.hpp"
@@ -161,6 +162,15 @@ std::vector<std::string> RenderRows(int prefix)
     return rows;
 }
 
+/* Whether any row contains |needle|. */
+bool AnyRowHas(const std::vector<std::string> &rows, const std::string &needle)
+{
+    for (const std::string &row : rows)
+        if (row.find(needle) != std::string::npos)
+            return true;
+    return false;
+}
+
 } // namespace
 
 int main(void)
@@ -210,6 +220,50 @@ int main(void)
                     others++;
         });
         CHECK(others == 0, "every cell of a row outside the panel is the ground colour");
+    }
+
+    printf("\n── the panel is opaque: no backdrop glyph survives inside it ──\n");
+    {
+        /* The reported symptom: on the wizard's custom-endpoint step the chat behind the dialog
+         * showed straight through it. bgcolor() sets only the BACKGROUND, so every cell the panel
+         * does not write a character to -- the filler gap on the title row, a right-aligned hint's
+         * left side, an empty line -- kept the backdrop's glyph. Measured cell by cell: cell
+         * characters, not ToString(), because a wide character makes that output skip a cell.
+         *
+         * The backdrop is a field of '#' (a glyph no panel text uses), so any '#' left inside the
+         * panel's rectangle is literally a backdrop character showing through. */
+        const auto &pal = edc::style::palette();
+
+        edc::ui::SetupDialog dialog(nullptr);
+        edc::port::SetupConfig seed;
+        dialog.Open(seed);
+        dialog.OnEvent(::ftxui::Event::Return); /* empty catalog -> Enter takes the custom row */
+
+        ::ftxui::Elements rows;
+        for (int i = 0; i < 20; i++)
+            rows.push_back(::ftxui::text(std::string(100, '#')));
+
+        auto screen =
+            ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(100), ::ftxui::Dimension::Fixed(24));
+        ::ftxui::Render(screen, edc::ModalOverlay(::ftxui::vbox(std::move(rows)), dialog.Render(),
+                                                  edc::ui::SetupDialog::PanelWidth(), pal.window_bg,
+                                                  pal.dialog_bg));
+
+        int bleed = 0;
+        int panel_cells = 0;
+        for (int y = 0; y < 24; y++)
+            for (int x = 0; x < 100; x++)
+            {
+                if (screen.CellAt(x, y).background_color != pal.dialog_bg)
+                    continue; /* outside the panel */
+                panel_cells++;
+                if (screen.CellAt(x, y).character == "#")
+                    bleed++;
+            }
+
+        CHECK(panel_cells > 0, "the panel is on screen (its background identifies it)");
+        CHECK(bleed == 0, "no backdrop character is left anywhere inside the panel");
+        CHECK(AnyRowHas(Rows(screen), "API endpoint"), "and the panel's own text is still drawn");
     }
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
