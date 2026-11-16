@@ -438,7 +438,11 @@ void SetupDialog::Open(const port::SetupConfig &initial)
      * writers skip an empty key. */
     key_.clear();
     has_stored_key_ = initial.has_stored_key;
-    key_placeholder_ = has_stored_key_ ? "leave empty to keep the stored key" : "API key";
+    /* The mask is a PLACEHOLDER, never the field's value: it says a key is configured without
+     * printing (or even handing this dialog) any part of it, and leaving it untouched submits
+     * nothing -- which both writers read as "keep the stored key". No stored key: the field is
+     * simply empty, with the plain "API key" hint. */
+    key_placeholder_ = has_stored_key_ ? "sk-*****" : "API key";
     current_api_ = initial.api_url; /* ticked in the provider list */
     current_model_ = initial.model; /* ticked in the model list */
     provider_filter_.clear();
@@ -655,16 +659,10 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     }
     else if (step_ == STEP_KEY)
     {
-        /* Just the field, plus -- when a key is already stored -- one line saying how an empty
-         * field will be read. The line is the point: the field is empty on purpose, and without
-         * it "empty" looks like "the key was lost". */
-        if (has_stored_key_)
-            body = vbox({
-                field(key_input_),
-                text("  a key is already stored; leave this empty to keep it") | color(pal.text_dim),
-            });
-        else
-            body = field(key_input_);
+        /* Just the field. A stored key shows as the mask in its PLACEHOLDER (see Open), which
+         * says "one is configured" without printing it and without needing a sentence: an
+         * untouched field submits nothing, which both writers read as "keep the stored key". */
+        body = field(key_input_);
     }
     else if (step_ == STEP_MODEL && custom_)
     {

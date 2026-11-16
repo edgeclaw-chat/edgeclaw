@@ -587,8 +587,11 @@ static void test_the_key_step_never_shows_the_stored_key()
     const std::string frame = Frame(*f.dialog);
     CHECK(!Has(frame, "sk-live-SECRET"), "the stored key is not rendered anywhere on the step");
     CHECK(!Has(frame, "SECRET"), "not even a fragment of it");
-    CHECK(Has(frame, "leave empty to keep the stored key"),
-          "and the empty field says what submitting it empty will do");
+    /* The mask is a PLACEHOLDER, so it marks the presence of a key without being its value --
+     * and without the sentence the earlier version needed to explain an empty field. */
+    CHECK(Has(frame, "sk-*****"), "a stored key shows as the mask in the field");
+    CHECK(!Has(frame, "already stored"), "and no explanatory line is needed any more");
+    CHECK(!Has(frame, "leave empty"), "no instruction line either");
 }
 
 static void test_a_key_handed_to_the_dialog_is_still_not_shown_or_submitted()
@@ -653,14 +656,15 @@ static void test_a_new_key_is_typed_into_an_empty_field()
 
 static void test_a_first_run_key_step_says_nothing_about_a_stored_key()
 {
-    TEST("with no stored key the step is just the field");
+    TEST("with no stored key the field is simply empty, with the plain hint");
     Fixture f; // the fixture's config_api_key is empty
     f.Open();
     Enter(*f.dialog);
 
     const std::string frame = Frame(*f.dialog);
     CHECK(Has(frame, "API key"), "the placeholder names the field");
-    CHECK(!Has(frame, "already stored"), "and there is nothing to say about a stored key");
+    CHECK(!Has(frame, "sk-*****"), "no mask: there is no stored key to stand for");
+    CHECK(!Has(frame, "already stored"), "and nothing to say about a stored key");
 }
 
 // ── Step 3: choose a model ──────────────────────────────────────────────────

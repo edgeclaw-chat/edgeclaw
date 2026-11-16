@@ -187,12 +187,13 @@ class SetupDialog : public Widget
     std::string endpoint_;
     /* What the user typed in this run. Never seeded from the config: a stored key is a secret,
      * and putting it in a field prints it on screen. Empty therefore means "leave the stored
-     * key alone" (both writers skip an empty key) -- which is exactly what has_stored_key_
-     * lets the key step say. */
+     * key alone" (both writers skip an empty key). */
     std::string key_;
     bool has_stored_key_ = false;
-    /* The key field's placeholder, referenced (not copied) so the wording can depend on
-     * has_stored_key_ without rebuilding the input. */
+    /* The key field's placeholder, referenced (not copied) so it can depend on
+     * has_stored_key_ without rebuilding the input: the mask "sk-*****" when a key is stored,
+     * the plain hint when there is none. A placeholder is not the field's value -- it marks the
+     * presence of a key without printing any part of it, and submitting it sends nothing. */
     std::string key_placeholder_ = "API key";
     int context_window_ = 0;
     /* The typed context window, as text: it is a free field (ftxui's Input is a string), so
