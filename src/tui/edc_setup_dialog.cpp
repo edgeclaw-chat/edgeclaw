@@ -630,9 +630,14 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     /* A 2-column left gutter, matching the list's "✓ "/"  " prefix, so the title, the
      * inputs and the list rows all share one text margin. */
     auto field = [&](const Component &input) { return hbox({text("  "), input->Render() | flex}); };
-    /* A single-field step that had its value refused says why, under the field. */
-    auto complaint = [&](bool bad, const char *why) {
-        return bad ? text("  " + std::string(why)) | color(pal.text_dim) : text("");
+    /* A single-field step that had its value refused says why, under the field. The line is
+     * pushed only when there IS a complaint: text("") still occupies a row in a vbox, which
+     * left an unexplained blank line under the field on every normal visit. */
+    auto body_of = [&](const Component &input, bool bad, const char *why) {
+        Elements rows = {field(input)};
+        if (bad)
+            rows.push_back(text("  " + std::string(why)) | color(pal.text_dim));
+        return vbox(std::move(rows));
     };
 
     Element body;
@@ -646,10 +651,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     }
     else if (step_ == STEP_ENDPOINT)
     {
-        body = vbox({
-            field(endpoint_input_),
-            complaint(endpoint_bad_, "the endpoint must start with http:// or https://"),
-        });
+        body = body_of(endpoint_input_, endpoint_bad_, "the endpoint must start with http:// or https://");
     }
     else if (step_ == STEP_KEY)
     {
@@ -683,10 +685,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     }
     else
     {
-        body = vbox({
-            field(context_input_),
-            complaint(context_bad_, "the context window must be a positive number of tokens"),
-        });
+        body = body_of(context_input_, context_bad_, "the context window must be a positive number of tokens");
     }
 
     const char *title = step_ == STEP_PROVIDER   ? "Choose a provider"

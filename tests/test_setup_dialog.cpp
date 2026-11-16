@@ -920,6 +920,65 @@ static void test_a_first_run_endpoint_step_starts_empty()
           f.facade.last_setup.api_url.c_str());
 }
 
+static void test_a_field_step_has_no_blank_line_below_it_until_something_is_refused()
+{
+    TEST("a single-field step ends at the field: the complaint line only exists when there is one");
+    /* Measured on the endpoint step: it used to reserve a row for text("") under the field,
+     * which left an unexplained blank line between the field and the separator on every
+     * normal visit. The row count is the assertion, because "a line is empty" is exactly what
+     * a frame cannot otherwise tell apart from "a line is absent". */
+    Fixture f;
+    f.facade.config_api_url.clear();
+    f.facade.config_model.clear();
+    f.Open();
+
+    Text(*f.dialog, "custom");
+    Enter(*f.dialog); // -> endpoint step, nothing refused yet
+    CHECK(Has(Frame(*f.dialog), "API endpoint"), "on the endpoint step");
+
+    auto rows_between = [](const std::string &frame, const std::string &field_text) {
+        /* Rows from the field's own line to the separator below it: 1 means "no extra line". */
+        const auto lines = [&] {
+            std::vector<std::string> out;
+            std::string cur;
+            for (char c : frame)
+            {
+                if (c == '\n')
+                {
+                    out.push_back(cur);
+                    cur.clear();
+                }
+                else
+                    cur += c;
+            }
+            out.push_back(cur);
+            return out;
+        }();
+        int field_row = -1;
+        for (size_t i = 0; i < lines.size(); i++)
+            if (lines[i].find(field_text) != std::string::npos)
+                field_row = static_cast<int>(i);
+        if (field_row < 0)
+            return -1;
+        for (size_t i = static_cast<size_t>(field_row) + 1; i < lines.size(); i++)
+            if (lines[i].find("─") != std::string::npos)
+                return static_cast<int>(i) - field_row;
+        return -2;
+    };
+
+    /* The field is empty here, so its placeholder ("https://host/v1") is what identifies it. */
+    const int quiet = rows_between(Frame(*f.dialog), "https://host/v1");
+    CHECK(quiet == 1, "the field is directly above the separator (no reserved blank row): got %d", quiet);
+
+    Text(*f.dialog, "gw.example.com"); // no scheme -> refused
+    Enter(*f.dialog);
+    const std::string refused = Frame(*f.dialog);
+    CHECK(Has(refused, "must start with http"), "the reason appears when there is one");
+    /* Now the typed value identifies the field row (the placeholder is gone). */
+    const int complaining = rows_between(refused, "gw.example.com");
+    CHECK(complaining == 2, "and then there IS one extra row for it: got %d", complaining);
+}
+
 static void test_a_custom_endpoint_without_a_scheme_is_refused()
 {
     TEST("an endpoint without http(s):// does not advance, and typing clears the complaint");
@@ -1244,6 +1303,7 @@ int main()
     test_a_pasted_url_becomes_the_custom_endpoint_and_every_value_is_typed();
     test_typing_custom_reveals_the_row_and_keeps_the_seeded_endpoint();
     test_a_first_run_endpoint_step_starts_empty();
+    test_a_field_step_has_no_blank_line_below_it_until_something_is_refused();
     test_a_custom_endpoint_without_a_scheme_is_refused();
     test_a_custom_model_id_must_not_be_empty();
     test_a_custom_context_window_must_be_a_positive_number();
