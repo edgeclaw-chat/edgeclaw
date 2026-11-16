@@ -299,6 +299,10 @@ static void test_handshake_failure()
           "and quotes the status line it got instead of a TLS record: %.120s", s.error);
     CHECK(strstr(s.error, "not a certificate problem") != NULL,
           "and rules out the wrong diagnosis explicitly: %.120s", s.error);
+    /* WHICH address was broken: with a name that resolves to several addresses this is the
+     * fact that decides what to do next (pin the good one, report the bad one). */
+    CHECK(strstr(s.error, "at 127.0.0.1") != NULL,
+          "and names the address it actually connected to: %.140s", s.error);
     CHECK(s.status == 0, "no status line was ever parsed, got %d", s.status);
     free_seen(&s);
 
@@ -454,6 +458,8 @@ static void test_handshake_failure_with_a_non_http_peer()
           "this peer did not answer HTTP, so that wording must not appear: %.120s", s.error);
     CHECK(strstr(s.error, "mbedtls handshake error") != NULL,
           "the mbedtls reason is kept: %.120s", s.error);
+    CHECK(strstr(s.error, "at 127.0.0.1") != NULL,
+          "and it still names the address: %.140s", s.error);
     free_seen(&s);
 
     uv_thread_join(&srv.thread);

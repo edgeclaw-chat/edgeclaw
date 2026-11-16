@@ -182,6 +182,13 @@ struct edc_https_request
      * not per request, because a handshake failure hands over to the next address -- and
      * mbedtls_ssl_setup on an already-configured context leaks what it allocated. */
     bool tls_started;
+
+    /* The numeric address the current attempt is connected to, for error messages. A name with
+     * several addresses can have one that is broken, and "which one" is the first thing anyone
+     * needs to know -- measured on a host whose DNS rotated between a working gateway and one
+     * answering plaintext HTTP on 443. */
+    char peer_addr[64];
+    int peer_port;
 };
 
 static int edc_https_on_header_field(llhttp_t *http, const char *at, size_t len)
@@ -1014,16 +1021,17 @@ static bool edc_https_client_drive_mbedtls_hs(struct edc_https_request *req)
                 end++;
             sds status = sdsnewlen(req->handshake_peek, end);
             message = sdscatprintf(sdsnew(NULL),
-                                   "the server answered plaintext HTTP instead of TLS (\"%s\") -- "
+                                   "the server answered plaintext HTTP instead of TLS (\"%s\")%s%s -- "
                                    "a gateway, proxy or wrong port, not a certificate problem",
-                                   status);
+                                   status, req->peer_addr[0] ? " at " : "", req->peer_addr);
             sdsfree(status);
         }
         else
         {
             char buf[1024];
             mbedtls_strerror(ret, buf, sizeof(buf));
-            message = sdscatprintf(sdsnew(NULL), "mbedtls handshake error: %s", buf);
+            message = sdscatprintf(sdsnew(NULL), "mbedtls handshake error%s%s: %s",
+                                   req->peer_addr[0] ? " at " : "", req->peer_addr, buf);
         }
         req->fn(req, EDC_HTTPS_EVENT_ERROR, message);
         sdsfree(message);
@@ -1230,6 +1238,22 @@ static void try_next_address(struct edc_https_request *req)
         req->try_addr = ai->ai_next;
         if (ai->ai_family != want)
             continue;
+        /* Remember which peer this attempt is for: the error messages report it, and with
+         * several addresses behind one name that is the fact that identifies the broken one. */
+        req->peer_addr[0] = '\0';
+        req->peer_port = 0;
+        if (ai->ai_family == AF_INET)
+        {
+            const struct sockaddr_in *in4 = (const struct sockaddr_in *)ai->ai_addr;
+            if (uv_ip4_name(in4, req->peer_addr, sizeof(req->peer_addr)) == 0)
+                req->peer_port = ntohs(in4->sin_port);
+        }
+        else if (ai->ai_family == AF_INET6)
+        {
+            const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)ai->ai_addr;
+            if (uv_ip6_name(in6, req->peer_addr, sizeof(req->peer_addr)) == 0)
+                req->peer_port = ntohs(in6->sin6_port);
+        }
         if (uv_tcp_connect(&req->conn, &req->socket, ai->ai_addr, edc_https_client_on_tcp_connect) == 0)
             return;
         /* A synchronous failure is one more address that did not work; keep going. */
@@ -1245,7 +1269,10 @@ static void try_next_address(struct edc_https_request *req)
     }
 
     /* Every address failed before even reaching the network. */
-    sds err_message = sdsnew("tcp connect failed: no usable address");
+    sds err_message = req->peer_addr[0]
+                          ? sdscatprintf(sdsnew(NULL), "tcp connect failed: no usable address (last tried %s)",
+                                         req->peer_addr)
+                          : sdsnew("tcp connect failed: no usable address");
     req->fn(req, EDC_HTTPS_EVENT_ERROR, err_message);
     sdsfree(err_message);
     edc_https_close_once((uv_handle_t *)req, edc_https_on_tcp_close);
