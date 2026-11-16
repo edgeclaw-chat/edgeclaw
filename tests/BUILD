@@ -1958,10 +1958,6 @@ cc_test(
 )
 cc_test(
     name = "test_chat_window",
-    # P0: intentionally RED until the runtime wiring (P2) lands. Kept out of
-    # //tests:all so the baseline stays green; run it explicitly to see the
-    # defect it pins down. Remove this tag once the fix makes it pass.
-    tags = ["manual"],
     srcs = ["test_chat_window.cpp"],
     deps = [
         "//src/tui:tui",
@@ -2163,4 +2159,3 @@ cc_test(
     linkopts = TUI_TEST_LINK_OPTS,
     target_compatible_with = POSIX_ONLY,
 )
-

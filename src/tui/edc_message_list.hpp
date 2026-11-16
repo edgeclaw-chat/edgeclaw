@@ -63,6 +63,7 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
         return items_.size();
     }
 
+
     // True while the list still owes work to finish a resize: some heights are
     // still estimates from an older width, or a height measured while drawing has
     // not been folded back into the row map yet. The window keeps a (throttled)

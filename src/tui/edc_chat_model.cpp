@@ -4,6 +4,13 @@
 #include <ctime>
 #include <utility>
 
+#include "edc_api.h"
+
+namespace
+{
+constexpr size_t kPrimeWindow = 40;
+} // namespace
+
 namespace edc::model
 {
 
@@ -30,38 +37,28 @@ void ChatModel::AddMessage(std::shared_ptr<Message> message)
 {
     if (!message)
         return;
+    if (!window_)
+        window_ = std::make_unique<MessageWindow>();
 
-    // The log keeps everything; the filter only decides what is drawn.
-    all_.push_back(message);
+    /* An in-process bubble becomes a kMemory entry. NOTHING is written to the
+     * transcript: command replies and interface feedback stay in memory, are
+     * evicted when they scroll away, and are rebuilt from this snapshot when
+     * they come back. */
+    ChatTranscriptEntry entry;
+    entry.kind = message->KindName();
+    entry.render_pref = message->RenderPref();
+    entry.task_id = message->TaskId();
+    entry.header = message->Header();
+    entry.content = message->Content();
+    const size_t index = window_->AddMemoryBubble(entry);
 
-    if (Visible(*message))
+    std::shared_ptr<Message> proxy = window_->Proxy(index);
+    all_.push_back(proxy);
+    if (Visible(*proxy))
     {
-        visible_.push_back(message);
-        Notify(Change{message});
+        visible_.push_back(proxy);
+        Notify(Change{proxy});
     }
-    // Hidden: nothing on screen changes, so no notification.
-}
-
-void ChatModel::PrependMessages(std::vector<std::shared_ptr<Message>> messages)
-{
-    messages.erase(std::remove(messages.begin(), messages.end(), nullptr), messages.end());
-    if (messages.empty())
-        return;
-
-    // The log keeps everything; the filter only decides what is drawn.
-    all_.insert(all_.begin(), messages.begin(), messages.end());
-
-    if (filter_)
-    {
-        // A filtered view is derived from all_ + task inputs, so rebuild it rather
-        // than splice (rare: the backfill runs at session load, before any filter).
-        Rebuild();
-        Notify(Change{});
-        return;
-    }
-
-    visible_.insert(visible_.begin(), messages.begin(), messages.end());
-    Notify(Change{nullptr, std::move(messages)});
 }
 
 void ChatModel::Clear()
@@ -69,7 +66,38 @@ void ChatModel::Clear()
     all_.clear();
     visible_.clear();
     input_shown_.clear();
+    window_.reset();
+    refs_holder_.reset();
     Notify(Change{});
+}
+
+void ChatModel::LoadTranscript(const std::string &path)
+{
+    refs_holder_ = std::make_unique<std::vector<ChatBubbleRef>>();
+    BuildChatBubbleRefs(path, refs_holder_.get());
+    window_ = std::make_unique<MessageWindow>(path, refs_holder_.get());
+
+    all_.clear();
+    all_.reserve(window_->RefCount());
+    for (size_t i = 0; i < window_->RefCount(); i++)
+        all_.push_back(window_->Proxy(i));
+    /* Prime the tail window now, before the first frame: ftxui measures items
+     * during layout, which is earlier than ChatWidget::OnRender can drive us. */
+    const size_t n = all_.size();
+    window_->SetWindow(n > kPrimeWindow ? n - kPrimeWindow : 0, n, /*prefetch=*/40);
+    Rebuild();
+    Notify(Change{});
+}
+
+void ChatModel::SetWindow(size_t first, size_t last, size_t prefetch)
+{
+    if (window_)
+        window_->SetWindow(first, last, prefetch);
+}
+
+size_t ChatModel::LiveCount() const
+{
+    return window_ ? window_->LiveCount() : 0;
 }
 void ChatModel::SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label)
 {

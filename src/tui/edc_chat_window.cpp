@@ -2,10 +2,13 @@
 
 #include "edc_chat_transcript.hpp"
 #include "edc_message.hpp"
+#include "ftxui/component/event.hpp"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 
 namespace edc
@@ -66,6 +69,46 @@ bool SplitUnescaped(std::string_view line, std::string_view parts[5])
     return !parts[0].empty();
 }
 
+/* Undo the four escapes the transcript format uses; only the task id needs it
+ * at index time (filtering matches on it). Content is never decoded here. */
+std::string UnescapeSmall(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); i++)
+    {
+        if (in[i] == '\\' && i + 1 < in.size())
+        {
+            const char c = in[++i];
+            switch (c)
+            {
+            case 'n': out.push_back('\n'); break;
+            case 'r': out.push_back('\r'); break;
+            case 't': out.push_back('\t'); break;
+            default: out.push_back(c); break;
+            }
+        }
+        else
+            out.push_back(in[i]);
+    }
+    return out;
+}
+
+ChatBubbleRef MakeMemoryRef(const ChatTranscriptEntry &entry, uint32_t mem_index)
+{
+    ChatBubbleRef ref;
+    ref.source = ChatBubbleSource::kMemory;
+    ref.mem_index = mem_index;
+    ref.kind = ClassifyKind(entry.kind);
+    ref.render_pref = static_cast<uint8_t>(entry.render_pref);
+    ref.task_id = entry.task_id;
+    ref.task_id_len = static_cast<uint32_t>(entry.task_id.size());
+    ref.header_len = static_cast<uint32_t>(entry.header.size());
+    ref.content_len = static_cast<uint32_t>(entry.content.size());
+    ref.est_lines = EstimateLines(ref.kind);
+    return ref;
+}
+
 } // namespace
 
 size_t BuildChatBubbleRefs(const std::string &path, std::vector<ChatBubbleRef> *out)
@@ -117,10 +160,12 @@ size_t BuildChatBubbleRefs(const std::string &path, std::vector<ChatBubbleRef> *
                 ChatBubbleRef ref;
                 ref.offset = abs_start;
                 ref.length = static_cast<uint32_t>(line.size());
+                ref.source = ChatBubbleSource::kFile;
                 ref.kind = ClassifyKind(std::string(parts[0]));
                 ref.render_pref = static_cast<uint8_t>(std::atoi(std::string(parts[1]).c_str()));
+                ref.task_id = UnescapeSmall(parts[2]);
                 ref.task_id_off = static_cast<uint32_t>(parts[0].size() + 1 + parts[1].size() + 1);
-                ref.task_id_len = static_cast<uint32_t>(parts[2].size());
+                ref.task_id_len = static_cast<uint32_t>(ref.task_id.size());
                 ref.header_len = static_cast<uint32_t>(parts[3].size());
                 ref.content_len = static_cast<uint32_t>(parts[4].size());
                 ref.est_lines = EstimateLines(ref.kind);
@@ -181,6 +226,10 @@ MessageWindow::MessageWindow(std::string path, std::vector<ChatBubbleRef> *refs)
 {
 }
 
+MessageWindow::MessageWindow() : refs_owned_(new std::vector<ChatBubbleRef>()), refs_(refs_owned_)
+{
+}
+
 ChatBubbleRef *MessageWindow::Ref(size_t index)
 {
     return (refs_ && index < refs_->size()) ? &(*refs_)[index] : nullptr;
@@ -191,11 +240,30 @@ const ChatBubbleRef *MessageWindow::Ref(size_t index) const
     return (refs_ && index < refs_->size()) ? &(*refs_)[index] : nullptr;
 }
 
+size_t MessageWindow::AddMemoryBubble(const ChatTranscriptEntry &entry)
+{
+    if (!refs_)
+        return 0;
+    const uint32_t mem_index = static_cast<uint32_t>(memory_.size());
+    memory_.push_back(entry);
+    const size_t index = refs_->size();
+    refs_->push_back(MakeMemoryRef(entry, mem_index));
+    return index;
+}
+
+std::shared_ptr<Message> MessageWindow::Proxy(size_t index)
+{
+    const ChatBubbleRef *ref = Ref(index);
+    if (!ref)
+        return nullptr;
+    return std::make_shared<LazyBubble>(this, index, ref->task_id);
+}
+
 size_t MessageWindow::SetWindow(size_t first, size_t last, size_t prefetch)
 {
-    live_.clear();
     if (!refs_ || refs_->empty())
     {
+        live_.clear();
         first_ = last_ = 0;
         return 0;
     }
@@ -204,12 +272,10 @@ size_t MessageWindow::SetWindow(size_t first, size_t last, size_t prefetch)
     first = std::min(first, n);
     last = std::min(std::max(last, first), n);
 
-    /* Prefetch one screen on each side, but never more than the cap. */
     size_t want_first = first > prefetch ? first - prefetch : 0;
     size_t want_last = std::min(n, last + prefetch);
     if (want_last - want_first > kMaxLive)
     {
-        /* Keep the requested window intact; trim the prefetch symmetrically. */
         const size_t requested = last - first;
         if (requested >= kMaxLive)
         {
@@ -229,9 +295,37 @@ size_t MessageWindow::SetWindow(size_t first, size_t last, size_t prefetch)
 
     first_ = want_first;
     last_ = want_last;
+    for (auto it = live_.begin(); it != live_.end();)
+    {
+        if (it->first < want_first || it->first >= want_last)
+            it = live_.erase(it);
+        else
+            ++it;
+    }
     for (size_t i = want_first; i < want_last; i++)
-        Get(i); /* a malformed line is skipped by Get(); the rest still loads */
+        Get(i);
     return live_.size();
+}
+
+bool MessageWindow::Fields(size_t index, std::string *kind, int *render_pref, std::string *task_id,
+                           std::string *header, std::string *content)
+{
+    if (!refs_ || index >= refs_->size())
+        return false;
+    const ChatBubbleRef &ref = (*refs_)[index];
+    if (ref.source == ChatBubbleSource::kMemory)
+    {
+        if (ref.mem_index >= memory_.size())
+            return false;
+        const ChatTranscriptEntry &e = memory_[ref.mem_index];
+        *kind = e.kind;
+        *task_id = e.task_id;
+        *header = e.header;
+        *content = e.content;
+        *render_pref = e.render_pref;
+        return true;
+    }
+    return DecodeChatBubbleAt(path_, ref, kind, render_pref, task_id, header, content);
 }
 
 std::shared_ptr<Message> MessageWindow::Get(size_t index)
@@ -242,21 +336,19 @@ std::shared_ptr<Message> MessageWindow::Get(size_t index)
     if (it != live_.end())
         return it->second;
 
-    const ChatBubbleRef &ref = (*refs_)[index];
     std::string kind, task_id, header, content;
     int render_pref = 0;
-    if (!DecodeChatBubbleAt(path_, ref, &kind, &render_pref, &task_id, &header, &content))
+    if (!Fields(index, &kind, &render_pref, &task_id, &header, &content))
         return nullptr;
+    const ChatBubbleRef &ref = (*refs_)[index];
 
-    /* ts is a view-only detail the transcript does not carry; the bubble's own
-     * timestamp was never persisted (LoadTranscriptTail used ::time(nullptr)
-     * on replay too), so the same convention applies here. */
     std::shared_ptr<Message> bubble = MakeChatBubble(kind, header, content, task_id, render_pref, ::time(nullptr));
     if (!bubble)
         return nullptr;
+    if (ref.expanded)
+        bubble->SetExpanded(true); /* P4: state lives on the descriptor */
     if (live_.size() >= kMaxLive)
     {
-        /* Evict the furthest live index from the current window. */
         size_t victim = index;
         size_t best = 0;
         for (const auto &kv : live_)
@@ -283,6 +375,58 @@ void MessageWindow::Clear()
 {
     live_.clear();
     first_ = last_ = 0;
+}
+
+/* ── LazyBubble: the O(n) small proxy, not the O(n) message ───────────── */
+
+LazyBubble::LazyBubble(MessageWindow *window, size_t index, std::string task_id)
+    : Message("", 0, task_id), window_(window), index_(index)
+{
+}
+
+::ftxui::Element LazyBubble::OnRender()
+{
+    if (!window_)
+        return ::ftxui::text("");
+    std::shared_ptr<Message> real = window_->Get(index_);
+    if (!real)
+        return ::ftxui::text("");
+
+    /* Let the correctly-typed bubble (ToolMessage / ThoughtMessage / ...) build
+     * its tree, then CACHE it here. Caching on the proxy is what makes ftxui's
+     * measure pass and draw pass see the same Node even if the window evicts and
+     * rebuilds the real instance between frames. Delegating through
+     * ComponentBase::Render() (or returning a transient tree) left the frame
+     * blank after a scroll. */
+    real->SetRenderWidth(render_width_);
+    if (!body_)
+        body_ = real->OnRender();
+    return body_;
+}
+
+bool LazyBubble::OnEvent(::ftxui::Event event)
+{
+    if (!window_)
+        return false;
+    std::shared_ptr<Message> real = window_->Get(index_);
+    if (!real)
+        return false;
+    const bool handled = real->OnEvent(event);
+    if (ChatBubbleRef *ref = window_->Ref(index_))
+        ref->expanded = real->Expanded(); /* P4 */
+    /* The toggle changed the real bubble's shape; drop the proxy's cached tree
+     * so the next frame renders the new collapsed/expanded form. MessageList
+     * also invalidates the row height through InvalidateHeight(). */
+    body_ = nullptr;
+    return handled;
+}
+
+void LazyBubble::SetRenderWidth(int cols)
+{
+    if (cols == render_width_)
+        return;
+    render_width_ = cols;
+    body_ = nullptr; /* the cached tree was wrapped for the old width */
 }
 
 } // namespace edc

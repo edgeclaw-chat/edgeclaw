@@ -10,10 +10,17 @@
 // matter how many bubbles the log holds. On the pre-windowing implementation
 // this fails (LiveCount() == the whole log), which is the point -- a regression
 // test that has never been red has proved nothing.
+#include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
+#include "edc_message.hpp"
+#include "ftxui/component/event.hpp"
+#include "ftxui/dom/elements.hpp"
+#include "ftxui/screen/screen.hpp"
 #include "edc_message.hpp"
 
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <ctime>
 #include <memory>
 #include <string>
@@ -57,22 +64,26 @@ constexpr size_t kMaxLive = 200;
  * empty strings that an optimizer or a shortcut could collapse. */
 constexpr size_t kHistory = 1000;
 
-/* Feed a long history the same way the startup backfill does: one batch of
- * already-built bubbles, oldest first. This is the path that makes a long
- * transcript resident today (TUIWindow::PumpTranscriptBackfill -> PrependMessages),
- * so it is the path the windowing work must bound. */
+/* Feed a long history the way startup does: a transcript file, loaded in one
+ * shot. This is the path that must stay O(viewport) resident. */
+std::string WriteLog(const std::string &tag, size_t n)
+{
+    const std::string path = "/tmp/edc_chat_window_" + tag + ".jsonl";
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    for (size_t i = 0; i < n; i++)
+    {
+        edc::ChatTranscriptEntry e;
+        e.kind = "sys";
+        e.content = "bubble " + std::to_string(i) + " — a line of chat text that must be rendered";
+        out << edc::EncodeTranscriptLine(e);
+    }
+    return path;
+}
+
 std::shared_ptr<edc::ChatWidget> FillLog(size_t n)
 {
     auto chat = std::make_shared<edc::ChatWidget>();
-    const time_t now = ::time(nullptr);
-    std::vector<std::shared_ptr<edc::Message>> history;
-    history.reserve(n);
-    for (size_t i = 0; i < n; i++)
-    {
-        const std::string body = "bubble " + std::to_string(i) + " — a line of chat text that must be rendered";
-        history.push_back(std::make_shared<edc::Message>(body, now));
-    }
-    chat->PrependMessages(std::move(history));
+    chat->model()->LoadTranscript(WriteLog("fill" + std::to_string(n), n));
     return chat;
 }
 
@@ -121,12 +132,52 @@ static void test_live_count_does_not_grow_with_history(void)
     PASS();
 }
 
+
+/* Draw one frame and return its plain text (terminal escapes stripped enough
+ * for substring checks). */
+std::string Frame(const std::shared_ptr<edc::ChatWidget> &chat)
+{
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(100), ftxui::Dimension::Fixed(25));
+    ftxui::Render(screen, chat->Render() | ftxui::flex);
+    return screen.ToString();
+}
+
+/* Regression for the windowing render bug: after scrolling from the tail to the
+ * head and back, EVERY frame must still draw the bubbles at that end. The
+ * geometry (prefix_/total_/visible range) was correct while the frame was
+ * blank, so a residency-only assertion does not catch it -- the text has to be
+ * on screen. Verified RED against a build where LazyBubble delegated through
+ * ComponentBase::Render() (the measure/draw passes saw different Nodes). */
+static void test_scrolling_keeps_both_ends_rendered(void)
+{
+    TEST("scrolling to head and back keeps both ends rendered");
+    auto chat = FillLog(400);
+
+    std::string start = Frame(chat);
+    ASSERT(start.find("bubble 399") != std::string::npos, "tail blank on the first frame");
+
+    for (int i = 0; i < 2000; i++)
+        chat->OnEvent(ftxui::Event::ArrowUp);
+    std::string top = Frame(chat);
+    ASSERT(top.find("bubble 0") != std::string::npos, "head blank after scrolling to the top");
+
+    for (int i = 0; i < 2000; i++)
+        chat->OnEvent(ftxui::Event::ArrowDown);
+    std::string bottom = Frame(chat);
+    ASSERT(bottom.find("bubble 399") != std::string::npos, "tail blank after scrolling back down");
+
+    /* Vacuous-pass guard: the log really is long and residency really is bounded. */
+    ASSERT(chat->LiveCount() > 0 && chat->LiveCount() <= kMaxLive, "probe is vacuous: live=%zu", chat->LiveCount());
+    PASS();
+}
+
 } // namespace
 
 int main(void)
 {
     test_live_count_is_bounded_by_history_length();
     test_live_count_does_not_grow_with_history();
+    test_scrolling_keeps_both_ends_rendered();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

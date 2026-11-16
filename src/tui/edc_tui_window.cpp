@@ -120,18 +120,6 @@ constexpr long long kSpinnerFrameMs = 33;
 // only has to keep them coming until the log's scroll geometry has settled.
 constexpr long long kRemeasureFrameMs = 33;
 
-// Startup transcript backfill. The newest kTranscriptInitialEntries bubbles are
-// painted at once (a replay of the whole log is what made startup jank once a
-// session's transcript grew); the older history is decoded on a worker thread and
-// prepended kTranscriptBackfillBatch at a time from TickAnimations. Both bound one
-// step's work (a bubble's measure costs ~0.15ms), so neither the first paint nor a
-// backfill frame stalls; the rest converges over the next frames. A batch also stops
-// at kTranscriptBackfillBytes so a run of huge tool outputs (a measure is linear in
-// the rendered rows) cannot land in a single frame.
-constexpr size_t kTranscriptInitialEntries = 200;
-constexpr size_t kTranscriptBackfillBatch = 100;
-constexpr size_t kTranscriptBackfillBytes = 64 * 1024;
-
 // Todo sidebar content: the foreground group's active task -- its id and its own
 // todo list, which is part of the task state (todowrite attaches it to the task
 // that called it). The snapshot already says which task is active, so it is the
@@ -787,141 +775,13 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
 
 void TUIWindow::LoadChatTranscriptFile(const std::string &path)
 {
-    // A new session (or a return from the history view): abandon any backfill still
-    // filling the previous log.
-    CancelTranscriptBackfill();
-
-    // Paint only the newest bubbles now. Replaying the whole log at startup is what
-    // made it jank once a session's transcript grew (decode + measure, both linear
-    // in the entry count); the older history is backfilled below.
-    size_t prefix_end = 0;
-    std::vector<ChatTranscriptEntry> tail;
-    transcript_->ReplayTail(path, kTranscriptInitialEntries, &prefix_end,
-                            [&tail](const ChatTranscriptEntry &entry) { tail.push_back(entry); });
-
-    for (const ChatTranscriptEntry &entry : tail)
-    {
-        const std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
-                                                               entry.render_pref, ::time(nullptr));
-        if (widget)
-            chat_widget_->AddMessage(widget);
-    }
-    if (!tail.empty())
-        chat_widget_->ScrollToBottom();
-
-    // Anything older: decode it off the UI thread and prepend it progressively.
-    if (prefix_end > 0)
-        StartTranscriptBackfill(path, prefix_end);
-}
-
-void TUIWindow::StartTranscriptBackfill(const std::string &path, size_t prefix_end)
-{
-    // Make sure no previous worker is alive before reusing the state (the caller
-    // normally reached here through CancelTranscriptBackfill already).
-    CancelTranscriptBackfill();
-
-    std::lock_guard<std::mutex> lock(backfill_mutex_);
-    backfill_cancel_.store(false, std::memory_order_relaxed);
-    backfill_ready_.store(false, std::memory_order_relaxed);
-    // The worker captures |this|, but it is always joined before destruction (see
-    // CancelTranscriptBackfill) and is the only writer of |backfill_result_|; it
-    // publishes that vector with the release store below. The decode polls
-    // |backfill_cancel_| so an abandoned run returns within a batch of lines.
-    backfill_thread_ = std::thread([this, path, prefix_end]() {
-        std::vector<ChatTranscriptEntry> decoded;
-        decoded.reserve(1024);
-        LoadTranscriptPrefix(path, prefix_end, &decoded,
-                             [this]() { return backfill_cancel_.load(std::memory_order_relaxed); });
-        if (backfill_cancel_.load(std::memory_order_relaxed))
-            return; // abandoned: publish nothing (avoids a stale/partial history)
-        backfill_result_ = std::move(decoded);
-        backfill_ready_.store(true, std::memory_order_release); // publishes |backfill_result_|
-    });
-}
-
-void TUIWindow::PumpTranscriptBackfill()
-{
-    std::vector<ChatTranscriptEntry> batch;
-    {
-        std::lock_guard<std::mutex> lock(backfill_mutex_);
-        // Take the worker's result once. The acquire load pairs with the worker's
-        // release store, so reading |backfill_result_| here is safe.
-        if (backfill_remaining_ == 0 && backfill_queue_.empty() && backfill_ready_.load(std::memory_order_acquire))
-        {
-            backfill_queue_ = std::move(backfill_result_);
-            backfill_remaining_ = backfill_queue_.size();
-            backfill_result_.clear();
-            backfill_ready_.store(false, std::memory_order_relaxed);
-        }
-        if (backfill_remaining_ == 0)
-            return;
-
-        const size_t batch_max = std::min(backfill_remaining_, kTranscriptBackfillBatch);
-        // Take entries from the newest end of what is left, stopping early on a byte
-        // budget so a run of huge tool outputs is spread over several frames (one
-        // entry still goes no matter how large -- it has to land somewhere).
-        size_t count = 0;
-        size_t bytes = 0;
-        while (count < batch_max && bytes < kTranscriptBackfillBytes)
-        {
-            bytes += backfill_queue_[backfill_remaining_ - 1 - count].content.size();
-            count++;
-        }
-        const size_t start = backfill_remaining_ - count;
-        batch.reserve(count);
-        for (size_t i = start; i < backfill_remaining_; i++)
-            batch.push_back(std::move(backfill_queue_[i]));
-        backfill_queue_.resize(start);
-        backfill_remaining_ = start;
-        if (backfill_remaining_ == 0)
-            ReleaseBackfillWorkerLocked(); // fully drained: join the worker, release its state
-    }
-
-    // Build the widgets and prepend them outside the lock: ftxui/model work that is
-    // UI-thread-only anyway.
-    std::vector<std::shared_ptr<Message>> messages;
-    messages.reserve(batch.size());
-    for (const ChatTranscriptEntry &entry : batch)
-    {
-        std::shared_ptr<Message> widget = MakeChatWidget(entry.kind, entry.header, entry.content, entry.task_id,
-                                                         entry.render_pref, ::time(nullptr));
-        if (widget)
-            messages.push_back(std::move(widget));
-    }
-    chat_widget_->PrependMessages(std::move(messages));
-    if (screen_)
-        screen_->RequestAnimationFrame();
-}
-
-void TUIWindow::CancelTranscriptBackfill()
-{
-    std::lock_guard<std::mutex> lock(backfill_mutex_);
-    backfill_cancel_.store(true, std::memory_order_relaxed);
-    ReleaseBackfillWorkerLocked();
-    backfill_cancel_.store(false, std::memory_order_relaxed);
-}
-
-bool TUIWindow::TranscriptBackfillActive() const
-{
-    std::lock_guard<std::mutex> lock(backfill_mutex_);
-    // The worker is joinable from Start until it is released (on drain or cancel);
-    // |backfill_remaining_| covers the window after it published but before the last
-    // batch was prepended.
-    return backfill_thread_.joinable() || backfill_remaining_ > 0;
-}
-
-void TUIWindow::ReleaseBackfillWorkerLocked()
-{    // The worker polls |backfill_cancel_| while decoding, so it bails out within a
-    // batch of lines; the join is bounded and prompt, and it is what makes reusing
-    // (or destroying) the members below safe.
-    if (backfill_thread_.joinable())
-        backfill_thread_.join();
-    backfill_result_.clear();
-    backfill_result_.shrink_to_fit();
-    backfill_queue_.clear();
-    backfill_queue_.shrink_to_fit();
-    backfill_remaining_ = 0;
-    backfill_ready_.store(false, std::memory_order_relaxed);
+    /* Build the descriptor index once and load the log from the transcript
+     * file. The old progressive backfill (a worker thread decoding the history,
+     * prepending a batch per frame) is gone: the model now materializes only the
+     * viewport window, so a long log costs neither startup jank nor O(history)
+     * resident messages. See docs/tui-windowing-proposal.md. */
+    chat_model_->LoadTranscript(path);
+    chat_widget_->ScrollToBottom();
 }
 
 void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
@@ -977,20 +837,6 @@ void TUIWindow::TickAnimations()
     const auto now = std::chrono::steady_clock::now();
     // Expire the "press Ctrl+C again to quit" hint (and keep repainting while it is up).
     TickInterruptHint(now);
-
-    // Fill in the older transcript a bounded batch at a time (startup backfill).
-    // Runs every iteration, so it advances whether or not anything else is animating.
-    PumpTranscriptBackfill();
-
-    // "Loading earlier history…" reports a load that lands *above what the reader
-    // is looking at*, so it belongs to the reader who has scrolled up past the
-    // bubbles painted at startup, into the older history the backfill is still
-    // filling in. Merely scrolling up a notch (the first screenful is already
-    // there) says nothing is missing, and neither does sitting at the tail; the
-    // hint stays down and fades out on its own once the reader comes back.
-    if (TranscriptBackfillActive() && chat_widget_ && !chat_widget_->StickingToBottom() &&
-        chat_widget_->ReadingBackfilledHistory())
-        backfill_hint_.Raise(now);
 
     // The sidebar's breathing (a processing task's marker) runs on the working
     // bar's tempo. Feed it the clock here, off the render path; a run that starts
@@ -1118,14 +964,6 @@ void TUIWindow::TickAnimations()
 
     // The "Loading earlier history…" hint reuses the clipboard chip's look and corner
     // while the startup backfill is still filling the older history in.
-    if (backfill_hint_.Visible(toast_now))
-    {
-        chat = ::ftxui::dbox({std::move(chat), ToastChipElement(" Loading earlier history… ",
-                                                                backfill_hint_.Fade(toast_now),
-                                                                rows_below_banner)});
-        if (screen_)
-            screen_->RequestAnimationFrame();
-    }
 
     // The "Fetching the pasted block…" / "Pasted block is gone": same chip, same corner.
     if (paste_hint_.Visible(toast_now))
@@ -1618,9 +1456,6 @@ void TUIWindow::RecomputeCommandPalette()
 
 TUIWindow::~TUIWindow()
 {
-    // Abandon a backfill still decoding: the worker touches no window state, so this
-    // only drops the shared objects (see StartTranscriptBackfill).
-    CancelTranscriptBackfill();
     // app_ (a member) frees the edc_app: "destroy = persist" lives inside
     // AppFacade's destructor, which runs right after this body.
     if (bracketed_paste_on_)
@@ -1782,7 +1617,6 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
     cJSON_Delete(root);
 
     /* History view: this replaces the chat pane; live output stops until Esc. */
-    CancelTranscriptBackfill(); // a running backfill would pollute the filtered view
     chat_widget_->Clear();
     for (const auto &bubble : bubbles)
         chat_widget_->AddMessage(bubble);

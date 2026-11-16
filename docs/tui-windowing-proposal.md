@@ -1,18 +1,40 @@
 # TUI 聊天记录窗口化（对象层）方案 — 待评审
 
-状态：**P0–P1 已落地，P2–P5 待做（分批提交）**。目标是把 RSS 从 O(历史条数) 降到 O(视口)，且不破坏现有语义。
+状态：**P0–P5 全部完成**。目标（RSS 从 O(历史条数) 降到 O(视口)）已达成，且不破坏「界面反馈不落盘」语义。
 
-**进度快照（第一批提交）**
-- P0 ✅：`tests/test_chat_window`（`tags = ["manual"]`，故意留红）测「常驻实例数必须有界」，
-  在旧实现上实测 `live=1000 > cap 200`，失败信息精确指向 O(history)；带防空洞守卫。
-  按项目约定标 manual，避免把 `//tests:all` 染红；P2 完成后去掉该 tag。
-- P1 数据层 ✅：`src/tui/edc_chat_window.{hpp,cpp}` 提供 `ChatBubbleRef` 索引（单次顺序扫、
+**第二批提交（P2–P5，最终形态）**
+- 删掉 progressive backfill（线程 + `backfill_*` 成员 + `ReplayTail` + "Loading earlier history" 提示）与
+  `PrependMessages` / `Change::prepended` / `TopIsBackfilled()`；`TUIWindow::LoadChatTranscriptFile`
+  改为一次性 `ChatModel::LoadTranscript(path)`。
+- `ChatBubbleRef` 支持 `kFile | kMemory` 双源：历史从 transcript 按 offset 解码；本次进程产生的气泡
+  （含界面反馈）只存内存快照，**不写文件**，滚走即释放、滚回可重建。
+- `ChatModel::all_/visible_` 改为 `LazyBubble` 轻量代理（无正文、无渲染树），真实 `Message`
+  只在 `MessageWindow::live_`（≤ 200）；`MessageList` 渲染/几何/锚定代码几乎未动。
+- 展开态与实测高度存在 descriptor 上（P4），窗口滑动不丢。
+- `test_chat_window` 去掉 `manual`：**常驻有界断言转绿**，并新增「滚到头/尾帧不空白」回归测试
+  （已验证在旧渲染委托方式下真的红）。
+- `test_message_list` 的 3 个 prepend 断言迁到 transcript 驱动；`CountingMessage` 计数断言改为
+  直接断言 `LiveCount() <= 200`（窗口化后语义更强）。`test_scroll_regression` 删掉已不存在的
+  backfill-hint 门控测试。
+
+**根因记录（滚动端点帧空白）**：`LazyBubble` 最初通过 `real->Render()`（ComponentBase 包装）或
+返回临时 Element 委托给游离的真实气泡；ftxui 的测量阶段与绘制阶段必须看到同一个缓存 Node，
+否则滚到头/尾后整帧留白（几何 `total_/prefix_/可见区间/hits_` 全部正确）。最终修法：由
+正确子类的 `real->OnRender()` 生成树，**缓存在 proxy 自己的 `body_` 上**，`SetRenderWidth` 变更时
+失效；点击 toggle 后清空缓存，展开态写回 descriptor。
+
+**验证**：`bazel test //tests:all` 154/154；`bazel build //tests:all`；`gen_notices.py --check`
+19 files；`check_portability.py` 271 files。
+
+**进度快照（第一批提交，已被第二批取代）**
+- P0：`tests/test_chat_window` 测「常驻实例数必须有界」，在旧实现上实测
+  `live=1000 > cap 200`，失败信息精确指向 O(history)；带防空洞守卫。第一批按项目约定标
+  `manual` 避免染红全量，**P2 完成后已去掉该 tag 并转绿**。
+- P1 数据层：`src/tui/edc_chat_window.{hpp,cpp}` 提供 `ChatBubbleRef` 索引（单次顺序扫、
   offset/length 精确寻址、跨 256 KiB chunk 正确）、`MessageWindow`（`kMaxLive=200`、滑动淘汰、
   状态在 ref 上）。`tests/test_chat_refs` 6/6 通过。
-- 共享工厂 ✅：`MakeChatBubble()` 提到 `edc_message.cpp`，`TUIWindow` 的 replay / live path 共用。
-- `ChatWidget::LiveCount()` / `MessageList::LiveCount()` 只读探针，当前返回 `items_.size()`。
-- **P2–P5 未做**：`SetSource` 接线、删 backfill、窗口外估计高度、expanded 状态上提、删
-  `PrependMessages`。
+- 共享工厂：`MakeChatBubble()` 提到 `edc_message.cpp`，各路径共用。
+- 第二批见开头的「P0–P5 全部完成」一节。
 
 **B 方案遗留的设计缺口（P2 开工前必须补设计）**：`MessageWindow::Get(i)` 从 transcript 行
 解码，但 B 方案明确「界面反馈气泡（task N finished / interrupted hint）不落盘」，

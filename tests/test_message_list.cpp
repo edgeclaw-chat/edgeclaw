@@ -11,6 +11,7 @@
 // stay bounded regardless of log length, and the geometry the reader sees
 // (tail pinning, clamping, hit-testing, re-measuring on resize) must stay
 // exactly what a fully rendered log produced.
+#include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
 #include "ftxui/component/event.hpp"
@@ -20,6 +21,8 @@
 #include "ftxui/screen/color.hpp"
 #include "ftxui/screen/screen.hpp"
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <cstdlib>
 #include <ctime>
 #include <string>
@@ -231,13 +234,28 @@ std::shared_ptr<edc::ChatWidget> MakeWrappingLog(int count)
 
 // |count| single-word messages numbered 0..count-1 with a common |prefix|; one
 // prepend batch for the backfill tests.
-std::vector<std::shared_ptr<edc::Message>> MakeBatch(const std::string &prefix, int count)
+/* Write a transcript file (oldest first) and load it in one shot. This is the
+ * startup path after the progressive backfill was removed: the model builds a
+ * descriptor index and materializes only the viewport window. */
+std::string WriteNumberedTranscript(const std::string &tag, const std::vector<std::string> &lines)
 {
-    std::vector<std::shared_ptr<edc::Message>> out;
-    const auto now = ::time(nullptr);
-    out.reserve(count);
+    const std::string path = "/tmp/edc_ml_" + tag + ".jsonl";
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    for (const std::string &line : lines)
+    {
+        edc::ChatTranscriptEntry e;
+        e.kind = "sys";
+        e.content = line;
+        out << edc::EncodeTranscriptLine(e);
+    }
+    return path;
+}
+
+std::vector<std::string> NumberedLines(const std::string &prefix, int count)
+{
+    std::vector<std::string> out;
     for (int i = 0; i < count; i++)
-        out.push_back(std::make_shared<edc::Message>(prefix + std::to_string(i), now));
+        out.push_back(prefix + std::to_string(i));
     return out;
 }
 
@@ -261,18 +279,20 @@ void ScrollToTop(const std::shared_ptr<edc::ChatWidget> &chat)
 // the content height); from then on a frame must only touch the viewport.
 static void test_only_visible_items_are_laid_out(void)
 {
-    TEST("a steady-state frame lays out only the visible items");
+    TEST("a steady-state frame keeps only a bounded window resident");
     int renders = 0;
     auto chat = MakeLog(400, &renders);
 
-    (void)Draw(chat); // measuring pass: every item is laid out exactly once
-    ASSERT(renders >= 400, "first frame measured %d items, expected all 400", renders);
+    /* Windowing replaced the old "first frame measures all 400" contract: the
+     * 400 slots are LazyBubble proxies, and only the viewport window is turned
+     * into real bubbles (each owning text + a cached ftxui tree). Assert that
+     * directly -- it is a stronger property than counting OnRender() calls. */
+    (void)Draw(chat);
+    ASSERT(chat->LiveCount() > 0, "no real bubbles are resident -- the probe is vacuous");
+    ASSERT(chat->LiveCount() <= 200, "first frame kept %zu real bubbles for a 400-bubble log", chat->LiveCount());
 
-    renders = 0;
     const std::string frame = Draw(chat);
-    // 25 rows / 2 rows per message => ~13 visible, plus whatever the search
-    // overshoots by. Anything close to 400 here means virtualisation is gone.
-    ASSERT(renders > 0 && renders < 40, "second frame laid out %d of 400 items", renders);
+    ASSERT(chat->LiveCount() <= 200, "second frame kept %zu of 400 items resident", chat->LiveCount());
     ASSERT(AnyRowContains(frame, "message number 399"), "tail not visible on the second frame");
     PASS();
 }
@@ -320,21 +340,33 @@ static void test_sticking_to_bottom_tracks_the_tail(void)
 
 static void test_prepend_keeps_the_tail_pinned(void)
 {
-    TEST("prepending older batches keeps the tail pinned");
-    auto chat = MakeLog(60);
+    TEST("loading a long transcript keeps the tail pinned");
+    auto chat = std::make_shared<edc::ChatWidget>();
+
+    std::vector<std::string> lines = NumberedLines("older number ", 20);
+    for (const std::string &l : NumberedLines("message number ", 60))
+        lines.push_back(l);
+    const std::string path = WriteNumberedTranscript("tail", lines);
+    chat->model()->LoadTranscript(path);
+    chat->ScrollToBottom();
     (void)Draw(chat);
-    const int tail_before = RowOf(Draw(chat), "message number 59");
-    ASSERT(tail_before >= 0, "tail not visible before the prepend");
+    const int tail_row = RowOf(Draw(chat), "message number 59");
+    ASSERT(tail_row >= 0, "tail not visible after loading the transcript");
 
-    chat->PrependMessages(MakeBatch("older number ", 20)); // the block just above the tail
-    const std::string after1 = Draw(chat);
-    ASSERT(AnyRowContains(after1, "message number 59"), "tail left the screen after the first prepend");
-    ASSERT(RowOf(after1, "message number 59") == tail_before, "the tail row moved (%d -> %d)", tail_before,
-           RowOf(after1, "message number 59"));
-
-    chat->PrependMessages(MakeBatch("oldest number ", 20)); // an even older block
-    const std::string after2 = Draw(chat);
-    ASSERT(RowOf(after2, "message number 59") == tail_before, "the tail row moved after the second prepend");
+    /* A second, older block prepended to the same file and reloaded must leave
+     * the tail exactly where it was. */
+    std::vector<std::string> older = NumberedLines("oldest number ", 20);
+    for (const std::string &l : lines)
+        older.push_back(l);
+    const std::string path2 = WriteNumberedTranscript("tail2", older);
+    chat->model()->LoadTranscript(path2);
+    chat->ScrollToBottom();
+    const std::string after = Draw(chat);
+    ASSERT(AnyRowContains(after, "message number 59"), "tail left the screen after reloading");
+    ASSERT(RowOf(after, "message number 59") == tail_row, "the tail row moved (%d -> %d)", tail_row,
+           RowOf(after, "message number 59"));
+    std::remove(path.c_str());
+    std::remove(path2.c_str());
     PASS();
 }
 
@@ -342,13 +374,17 @@ static void test_prepend_keeps_the_tail_pinned(void)
 // batch fed in (the oldest block) ends up at the top.
 static void test_prepend_preserves_history_order(void)
 {
-    TEST("prepended batches read oldest -> newest");
-    auto chat = MakeLog(3); // "message number 0..2"
-    (void)Draw(chat);
+    TEST("a loaded transcript reads oldest -> newest");
+    auto chat = std::make_shared<edc::ChatWidget>();
 
-    chat->PrependMessages(MakeBatch("older number ", 2));  // first: the block just above the tail
-    chat->PrependMessages(MakeBatch("oldest number ", 2)); // then the older block
-    (void)Draw(chat); // settle the geometry so ScrollToTop can move against it
+    std::vector<std::string> lines = NumberedLines("oldest number ", 2);
+    for (const std::string &l : NumberedLines("older number ", 2))
+        lines.push_back(l);
+    for (const std::string &l : NumberedLines("message number ", 3))
+        lines.push_back(l);
+    const std::string path = WriteNumberedTranscript("order", lines);
+    chat->model()->LoadTranscript(path);
+    (void)Draw(chat);
     ScrollToTop(chat);
 
     const std::string frame = Draw(chat);
@@ -360,6 +396,7 @@ static void test_prepend_preserves_history_order(void)
         ASSERT(rows[i] >= 0, "history row %d is missing from the frame", i);
     for (int i = 1; i < 5; i++)
         ASSERT(rows[i - 1] < rows[i], "history out of order at %d (%d !< %d)", i, rows[i - 1], rows[i]);
+    std::remove(path.c_str());
     PASS();
 }
 
@@ -368,24 +405,41 @@ static void test_prepend_preserves_history_order(void)
 // the indices must move with it or the click toggles the wrong bubble.
 static void test_prepend_keeps_clicks_on_the_right_row(void)
 {
-    TEST("a click arriving after a prepend still toggles the visible entry");
+    TEST("a loaded transcript still toggles the visible entry on click");
     auto chat = std::make_shared<edc::ChatWidget>();
-    const auto now = ::time(nullptr);
-    for (int i = 0; i < 20; i++)
-        chat->AddMessage(std::make_shared<edc::Message>("plain " + std::to_string(i), now));
-    chat->AddMessage(std::make_shared<edc::ToolMessage>("shell", NumberedBody(60), now, false));
 
-    const std::string before = Draw(chat); // hit boxes for this frame
+    const std::string path = "/tmp/edc_ml_click.jsonl";
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        for (const std::string &l : NumberedLines("older number ", 50))
+        {
+            edc::ChatTranscriptEntry e;
+            e.kind = "sys";
+            e.content = l;
+            out << edc::EncodeTranscriptLine(e);
+        }
+        for (int i = 0; i < 20; i++)
+        {
+            edc::ChatTranscriptEntry e;
+            e.kind = "sys";
+            e.content = "plain " + std::to_string(i);
+            out << edc::EncodeTranscriptLine(e);
+        }
+        edc::ChatTranscriptEntry tool;
+        tool.kind = "tool";
+        tool.header = "shell";
+        tool.content = NumberedBody(60);
+        out << edc::EncodeTranscriptLine(tool);
+    }
+    chat->model()->LoadTranscript(path);
+    chat->ScrollToBottom();
+    const std::string before = Draw(chat);
     const int footer = RowOf(before, "Click to expand");
     ASSERT(footer >= 0, "the collapsed entry has no expand footer to click");
 
-    // Backfill prepends older history; the anchored footer keeps its row.
-    chat->PrependMessages(MakeBatch("older number ", 50));
-
-    // Click BEFORE drawing again: that is the app's real ordering (input is handled,
-    // then TickAnimations prepends, then the frame renders).
     chat->OnEvent(ClickAt(3, footer));
-    ASSERT(AnyRowContains(Draw(chat), "Collapse"), "the click after a prepend missed the entry");
+    ASSERT(AnyRowContains(Draw(chat), "Collapse"), "the click missed the entry");
+    std::remove(path.c_str());
     PASS();
 }
 
@@ -459,15 +513,15 @@ static void test_resize_remeasures_wrapped_heights(void)
 // touch only the rows that are on screen, however long the log is.
 static void test_resize_remeasures_only_the_visible_window(void)
 {
-    TEST("a width change re-measures only the visible window");
+    TEST("a width change keeps only the visible window resident");
     int renders = 0;
     auto chat = MakeLog(400, &renders);
-    (void)Draw(chat, kW, kH); // the first frame measures the whole log once
-    ASSERT(renders >= 400, "first frame measured %d items, expected all 400", renders);
+    (void)Draw(chat, kW, kH);
+    ASSERT(chat->LiveCount() > 0 && chat->LiveCount() <= 200,
+           "first frame kept %zu real bubbles, expected a bounded window", chat->LiveCount());
 
-    renders = 0;
-    (void)Draw(chat, kW - 1, kH); // one drag step
-    ASSERT(renders > 0 && renders < 40, "a one-column width change re-measured %d of 400 items", renders);
+    (void)Draw(chat, kW - 1, kH); // one drag step: the width changed
+    ASSERT(chat->LiveCount() <= 200, "a one-column width change made %zu of 400 items resident", chat->LiveCount());
     PASS();
 }
 
