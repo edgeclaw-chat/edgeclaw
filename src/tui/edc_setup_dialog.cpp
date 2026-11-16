@@ -59,23 +59,6 @@ bool looks_like_url(const std::string &s)
     return starts_with("http://") || starts_with("https://");
 }
 
-bool contains_ci(const std::string &hay, const char *needle)
-{
-    const size_t n = strlen(needle);
-    if (n == 0 || hay.size() < n)
-        return false;
-    for (size_t i = 0; i + n <= hay.size(); i++)
-    {
-        size_t j = 0;
-        while (j < n && tolower(static_cast<unsigned char>(hay[i + j])) ==
-                           tolower(static_cast<unsigned char>(needle[j])))
-            j++;
-        if (j == n)
-            return true;
-    }
-    return false;
-}
-
 std::string trimmed(const std::string &s)
 {
     static const char *ws = " \t\r\n";
@@ -101,6 +84,16 @@ int parse_context_window(const std::string &text)
         return 0;
     return static_cast<int>(v);
 }
+
+/* The synthetic row's label. |filter|, when it is a URL, is the endpoint the row would
+ * commit -- say which one, since the search box above it is already full of it. */
+std::string custom_row_label(const std::string &filter)
+{
+    if (looks_like_url(filter))
+        return "Use this endpoint: " + trimmed(filter);
+    return "Custom endpoint (OpenAI-compatible)";
+}
+
 
 /* Field look: the palette's own foreground, placeholder dimmed. (ftxui's default
  * `inverted` fill paints a full-width slab that hides the terminal caret.) */
@@ -163,28 +156,22 @@ void SetupDialog::ReloadProviders()
     if (facade_)
         facade_->Providers(&provider_ids_);
     ApplyProviderFilter();
+    /* Start the cursor on the config's current choice. With nothing configured there is no
+     * ticked row, and the cursor must NOT default to the pinned custom row at the bottom --
+     * Enter would then walk the custom path for a user who only pressed Enter. The first
+     * CATALOG row is the natural default; the custom row is one Up away, or 0 when the
+     * catalog is empty (it is then the only row there is). */
     if (provider_current_row_ >= 0)
-        provider_sel_ = provider_current_row_; /* start the cursor on the current choice */
-}
-
-bool SetupDialog::WantsCustomRow() const
-{
-    if (looks_like_url(provider_filter_))
-        return true; /* a pasted URL IS the custom endpoint; the row commits what was typed */
-    /* "custom" / "other": how someone looks up what the catalog does not offer. Only a
-     * non-empty filter can ask, or every list would grow a row nobody asked for. */
-    if (!provider_filter_.empty() && (contains_ci(provider_filter_, "custom") || contains_ci(provider_filter_, "other")))
-        return true;
-    /* The config already points outside the catalog: its current choice needs a row. */
-    return config_is_custom_;
+        provider_sel_ = provider_current_row_;
+    else if (!provider_view_.empty())
+        provider_sel_ = 0;
 }
 
 void SetupDialog::ApplyProviderFilter()
 {
     /* Which provider the config currently uses (by base URL, else by containing the
      * current model). No match means the config points at an endpoint the catalog does not
-     * know -- a CUSTOM install -- which is what gives its current choice a row to be ticked
-     * in (see WantsCustomRow). */
+     * know -- a CUSTOM install -- whose current choice is then ticked on the custom row. */
     int match = -1;
     if (facade_ && !current_api_.empty())
     {
@@ -224,32 +211,38 @@ void SetupDialog::ApplyProviderFilter()
             provider_view_.push_back(i);
         }
     }
-    /* The synthetic row, last so a catalog list keeps its order. When it is there because a
-     * URL was typed, the row repeats that URL: it is the value Enter is about to commit, and
-     * naming it is what makes "use what I typed" a choice rather than a guess. */
-    if (WantsCustomRow())
-    {
-        provider_rows_.push_back(looks_like_url(provider_filter_) ? "Use this endpoint: " + trimmed(provider_filter_)
-                                                                 : "Custom endpoint (OpenAI-compatible)");
-        provider_view_.push_back(kCustomRow);
-    }
+    /* The custom row is ALWAYS the last row: it is the answer to "my provider is not in this
+     * list", and a row that only appears once you already know the magic word is not
+     * discoverable. It is unaffected by the filter -- a filter narrows the catalog, not the
+     * ways out of it. */
+    const size_t catalog_rows = provider_view_.size();
+    provider_rows_.push_back(custom_row_label(provider_filter_));
+    provider_view_.push_back(kCustomRow);
+
     if (provider_sel_ >= static_cast<int>(provider_view_.size()))
-        provider_sel_ = provider_view_.empty() ? 0 : static_cast<int>(provider_view_.size()) - 1;
+    {
+        /* The list shrank under the cursor. Land on the last CATALOG row when one survived:
+         * the custom row is not what a filter for a catalog provider is looking for, so a
+         * narrowed list must not silently move the cursor onto it (Enter would then commit
+         * custom). With no catalog row left, the custom row is the only choice there is. */
+        provider_sel_ = catalog_rows > 0 ? static_cast<int>(catalog_rows) - 1
+                                         : static_cast<int>(provider_view_.size()) - 1;
+    }
 
     provider_current_row_ = -1;
-    for (size_t r = 0; r < provider_view_.size(); r++)
-        if (static_cast<int>(provider_view_[r]) == match)
-        {
-            provider_current_row_ = static_cast<int>(r);
-            break;
-        }
-    if (config_is_custom_)
+    /* |match| is a catalog index, and -1 means "none". Comparing it against the view must
+     * therefore skip the custom row: kCustomRow is SIZE_MAX, whose int cast is -1, so an
+     * unguarded comparison would make "no provider matches" tick the custom row -- the exact
+     * opposite of what -1 means. */
+    if (match >= 0)
         for (size_t r = 0; r < provider_view_.size(); r++)
-            if (provider_view_[r] == kCustomRow)
+            if (provider_view_[r] != kCustomRow && static_cast<int>(provider_view_[r]) == match)
             {
                 provider_current_row_ = static_cast<int>(r);
                 break;
             }
+    if (config_is_custom_)
+        provider_current_row_ = static_cast<int>(provider_view_.size()) - 1;
 }
 
 void SetupDialog::ReloadModels()
@@ -528,6 +521,16 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
     return false;
 }
 
+::ftxui::Element SetupDialog::RowElement(const std::string &label, bool selected, bool ticked) const
+{
+    using namespace ::ftxui;
+    const auto &pal = style::palette();
+    auto row = text((ticked ? "\u2713 " : "  ") + label);
+    /* The cursor is a background fill (not a font colour); the tick marks the config's
+     * current choice. */
+    return selected ? (row | bold | bgcolor(pal.accent) | color(pal.dialog_bg)) : (row | color(pal.text));
+}
+
 ::ftxui::Element SetupDialog::ListElement(const std::vector<std::string> &rows, int sel, int current_row,
                                           int max_rows) const
 {
@@ -548,19 +551,51 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
             first = n - max_rows;
     }
 
-    /* Only the rows that exist (at most max_rows). The keyboard cursor is the highlight
-     * colour; the config's current choice carries a tick. */
+    /* Only the rows that exist (at most max_rows). */
     Elements lines;
     for (int i = first; i < n && i < first + max_rows; i++)
-    {
-        bool cur = (i == sel);
-        std::string prefix = (i == current_row) ? "\u2713 " : "  ";
-        auto row = text(prefix + rows[i]);
-        /* The cursor is a background fill (not a font colour); the tick marks the config's
-         * current choice. */
-        lines.push_back(cur ? (row | bold | bgcolor(pal.accent) | color(pal.dialog_bg)) : (row | color(pal.text)));
-    }
+        lines.push_back(RowElement(rows[i], i == sel, i == current_row));
     return vbox(std::move(lines));
+}
+
+::ftxui::Element SetupDialog::ProviderListElement() const
+{
+    using namespace ::ftxui;
+    const auto &pal = style::palette();
+
+    /* The custom row is the last entry of provider_view_ / provider_rows_ (see
+     * ApplyProviderFilter), so the catalog part is everything before it. */
+    const int catalog_n = static_cast<int>(provider_rows_.size()) - 1;
+    const int window = kListRows - 1; /* one line is the pinned custom row */
+
+    int first = 0;
+    if (provider_sel_ == catalog_n)
+    {
+        /* The cursor is on the pinned row: show the tail of the catalog above it. */
+        first = catalog_n > window ? catalog_n - window : 0;
+    }
+    else if (catalog_n > window)
+    {
+        first = provider_sel_ - window / 2;
+        if (first < 0)
+            first = 0;
+        if (first > catalog_n - window)
+            first = catalog_n - window;
+    }
+
+    Elements lines;
+    for (int i = first; i < catalog_n && i < first + window; i++)
+        lines.push_back(RowElement(provider_rows_[i], i == provider_sel_, i == provider_current_row_));
+
+    /* The pinned row, always drawn: the catalog can never push it out of view. A separator
+     * above it says it is not part of the list above (it is not a provider). */
+    const bool custom_selected = (provider_sel_ == catalog_n);
+    const bool custom_ticked = (provider_current_row_ == catalog_n);
+    return vbox({
+        vbox(std::move(lines)),
+        separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg),
+        RowElement(provider_rows_[catalog_n], custom_selected, custom_ticked),
+    });
 }
 
 ::ftxui::Element SetupDialog::Draw(const Frame &)
@@ -586,7 +621,7 @@ bool SetupDialog::OnEvent(::ftxui::Event event)
         body = vbox({
             field(provider_filter_input_), /* the search box itself: its placeholder reads as the prompt */
             separator() | color(pal.line_dim) | bgcolor(pal.dialog_bg),
-            ListElement(provider_rows_, provider_sel_, provider_current_row_, kListRows),
+            ProviderListElement(),
         });
     }
     else if (step_ == STEP_ENDPOINT)

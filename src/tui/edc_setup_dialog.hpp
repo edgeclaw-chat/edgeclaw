@@ -15,9 +15,11 @@
 //
 // The custom path is how an endpoint outside the embedded catalog is configured -- a
 // gateway, a self-hosted vLLM, a provider added after the catalog was generated. It is
-// reached from the provider step's synthetic "custom" row (see WantsCustomRow), and every
-// value it needs is typed: base URL, model id, context window. Nothing here talks to the
-// network: a wrong endpoint surfaces on the first message, not as a wizard that hangs.
+// reached from the provider step's synthetic last row ("Custom endpoint"), which is always
+// offered: it is the only route to a provider the catalog does not list, so it cannot depend
+// on the user already knowing what to type. Every value it needs is typed: base URL, model id,
+// context window. Nothing here talks to the network: a wrong endpoint surfaces on the first
+// message, not as a wizard that hangs.
 //
 // The catalog (edc_models) and persistence are read/written through IAppFacade; the
 // dialog owns only its step state, rendering and events. The custom path needs no facade
@@ -104,13 +106,10 @@ class SetupDialog : public Widget
     void ReloadModels();
     void ApplyModelFilter();
 
-    /* Whether the provider list gets the synthetic custom row. True when the user typed a
-     * base URL into the search box, typed "custom"/"other" (how you look for something the
-     * list does not offer), or when the config already points somewhere the catalog does not
-     * know -- the last case so that a custom install's current choice has a row to be ticked
-     * in. An empty filter with a catalog-backed config matches none of them, which is what
-     * leaves the plain provider list exactly as it was. */
-    bool WantsCustomRow() const;
+    /* Whether the provider list keeps the synthetic custom row. It always does -- the row is
+     * the only way to configure an endpoint the catalog does not list, so it cannot hinge on
+     * the user already knowing what to type; ApplyProviderFilter appends it unconditionally,
+     * last, and unaffected by the filter. */
 
     void CommitProvider(); /* step 0 -> 1 (custom) or -> 2: set the base URL, load the models */
     void CommitEndpoint(); /* custom step 1 -> 2: validate the URL */
@@ -128,6 +127,18 @@ class SetupDialog : public Widget
     /* A scrolling list: |sel| is the keyboard cursor (highlighted), |current_row| is the
      * item the config currently uses (marked with a tick), -1 for none. */
     ::ftxui::Element ListElement(const std::vector<std::string> &rows, int sel, int current_row, int max_rows) const;
+
+    /* One row: the cursor is a background fill (not a font colour); the tick marks the
+     * config's current choice. Both lists draw their rows through this. */
+    ::ftxui::Element RowElement(const std::string &label, bool selected, bool ticked) const;
+
+    /* The provider list. The catalog part scrolls inside kListRows-1 lines; the custom row
+     * is PINNED as the last line and never scrolls. Pinning is the point: the catalog has
+     * nearly thirty providers and the panel shows a dozen, so a custom row that took part in
+     * the scrolling -- whether first or last in the data -- would sit off screen exactly for
+     * the user who needs it (they have no reason to scroll a list that "obviously" does not
+     * contain their provider). */
+    ::ftxui::Element ProviderListElement() const;
 
     port::IAppFacade *facade_;
     std::function<void()> on_done_; /* host refresh after a successful Finish */

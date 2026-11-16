@@ -482,38 +482,43 @@ static void test_open_lands_on_step_1_and_ticks_the_configured_provider()
 static void test_provider_filter_matches_both_the_name_and_the_id()
 {
     TEST("the provider filter matches the display name and the id");
+    /* The assertions name the full row ("name  (id)"), not just "OpenAI": the custom row's
+     * label carries "OpenAI-compatible", so a bare substring cannot tell the two apart. */
     {
         Fixture f;
         f.Open();
         Text(*f.dialog, "anth");
         const std::string frame = Frame(*f.dialog);
-        CHECK(Has(frame, "Anthropic"), "typing part of the NAME keeps that provider");
-        CHECK(!Has(frame, "OpenAI"), "and drops the ones that do not match");
+        CHECK(Has(frame, "Anthropic  (anthropic)"), "typing part of the NAME keeps that provider");
+        CHECK(!Has(frame, "OpenAI  (openai)"), "and drops the ones that do not match");
     }
     {
         Fixture f;
         f.Open();
         Text(*f.dialog, "opena"); // matches the id, not the display name "OpenAI"
         const std::string frame = Frame(*f.dialog);
-        CHECK(Has(frame, "OpenAI"), "typing part of the ID keeps that provider");
-        CHECK(!Has(frame, "Anthropic"), "and drops the rest");
+        CHECK(Has(frame, "OpenAI  (openai)"), "typing part of the ID keeps that provider");
+        CHECK(!Has(frame, "Anthropic  (anthropic)"), "and drops the rest");
     }
 }
 
-static void test_a_provider_filter_with_no_match_says_so_and_enter_does_nothing()
+static void test_a_provider_filter_with_no_match_leaves_only_the_custom_row()
 {
-    TEST("no provider matches: the list says so, and Enter cannot commit");
+    TEST("no catalog provider matches: the custom row is all that is left, and Enter takes it");
     Fixture f;
     f.Open();
     Text(*f.dialog, "zzzz");
 
-    const std::string empty = Frame(*f.dialog);
-    CHECK(Has(empty, "(no match)"), "an empty result is spelled out, not a blank box");
-    CHECK(!Has(empty, "Anthropic"), "no provider row survives the filter");
+    const std::string filtered = Frame(*f.dialog);
+    CHECK(!Has(filtered, "Anthropic  (anthropic)"), "no catalog provider survives the filter");
+    /* The list is never empty, so it never needs "(no match)": the way out of a list that
+     * does not contain your provider is always on offer. */
+    CHECK(!Has(filtered, "(no match)"), "the provider list never reads as empty");
+    CHECK(Has(filtered, "Custom endpoint (OpenAI-compatible)"), "the custom row is still there");
 
-    CHECK(Enter(*f.dialog), "Enter is still consumed by the step");
-    CHECK(Has(Frame(*f.dialog), "Choose a provider"), "but the step does not advance");
-    CHECK(Has(Frame(*f.dialog), "Step 1/3"), "still on step 1");
+    CHECK(Enter(*f.dialog), "Enter is consumed by the step");
+    CHECK(Has(Frame(*f.dialog), "API endpoint"), "and it takes the custom row");
+    CHECK(Has(Frame(*f.dialog), "Step 2/5"), "which is the longer path");
 }
 
 static void test_the_cursor_moves_and_clamps_at_both_ends()
@@ -530,13 +535,21 @@ static void test_the_cursor_moves_and_clamps_at_both_ends()
     Fixture g;
     g.Open();
     Down(*g.dialog, 1); // -> openai
-    Down(*g.dialog, 5); // past the bottom: clamps to openai
     Enter(*g.dialog);
     Enter(*g.dialog);
     const std::string frame = Frame(*g.dialog);
     CHECK(Has(frame, "gpt-4o"), "Down selects the second provider");
     CHECK(!Has(frame, "claude-sonnet"), "and the first provider's models are gone");
     CHECK(Has(frame, "Choose a model"), "which means we reached step 3");
+
+    /* The bottom of the list IS the custom row, so that is where an overshoot lands. */
+    Fixture h;
+    h.Open();
+    Down(*h.dialog, 20); // far past the end: clamps
+    const std::string last = Frame(*h.dialog);
+    Enter(*h.dialog);
+    CHECK(Has(Frame(*h.dialog), "API endpoint"), "Down past the bottom clamps at the custom row");
+    (void)last;
 }
 
 static void test_enter_on_the_provider_step_moves_to_the_key_step()
@@ -860,15 +873,32 @@ static void test_a_custom_context_window_must_be_a_positive_number()
           f.facade.last_setup.context_window);
 }
 
-static void test_the_custom_row_is_absent_unless_something_asks_for_it()
+static void test_the_custom_row_is_always_the_last_row()
 {
-    TEST("the plain provider list keeps no custom row: an empty filter over a catalog config");
-    Fixture f;
-    f.Open();
-    const std::string frame = Frame(*f.dialog);
-    CHECK(!Has(frame, "Custom endpoint"), "no custom row without a reason for one");
-    CHECK(!Has(frame, "Use this endpoint"), "and no URL row either");
-    CHECK(Ticked(frame, "Anthropic"), "the plain list is otherwise unchanged");
+    TEST("the custom row is always offered, last, whatever the catalog and filter say");
+    {
+        Fixture f;
+        f.Open();
+        const std::string frame = Frame(*f.dialog);
+        CHECK(Has(frame, "Custom endpoint (OpenAI-compatible)"), "a plain open offers it");
+        /* Last means below every catalog row: the tick on the configured provider is what
+         * tells the two apart, so compare the drawn order instead of the text. */
+        const std::string rows = LineOf(frame, "Anthropic") + "\n" + LineOf(frame, "OpenAI") + "\n" +
+                                 LineOf(frame, "Custom endpoint");
+        CHECK(rows.find("Anthropic") < rows.find("Custom endpoint") &&
+                  rows.find("OpenAI") < rows.find("Custom endpoint"),
+              "it is drawn after the catalog rows");
+    }
+    {
+        Fixture f;
+        ClearCatalog(f.facade); // an empty catalog: it is the ONLY row
+        f.Open();
+        const std::string frame = Frame(*f.dialog);
+        CHECK(Has(frame, "Custom endpoint (OpenAI-compatible)"), "an empty catalog still offers it");
+        CHECK(!Has(frame, "(no match)"), "and the list never reads as empty");
+        Enter(*f.dialog);
+        CHECK(Has(Frame(*f.dialog), "API endpoint"), "Enter on it starts the custom path");
+    }
 }
 
 static void test_a_custom_install_ticks_the_custom_row()
@@ -896,6 +926,24 @@ static void test_a_custom_install_ticks_the_custom_row()
     Enter(*f.dialog);
     CHECK(f.facade.last_setup.context_window == 200000, "and it is what gets persisted: got %d",
           f.facade.last_setup.context_window);
+}
+
+static void test_an_unconfigured_install_ticks_nothing()
+{
+    TEST("with no configured provider or model, no row is ticked -- the custom row included");
+    /* The custom row's slot in the view is a sentinel (SIZE_MAX), and SIZE_MAX cast to int is
+     * -1 -- which is also "no catalog provider matched". An unguarded comparison therefore
+     * ticked the custom row for every unconfigured install and parked the cursor on it. */
+    Fixture f;
+    f.facade.config_api_url.clear();
+    f.facade.config_model.clear();
+    f.Open();
+
+    const std::string frame = Frame(*f.dialog);
+    CHECK(!Ticked(frame, "Anthropic"), "the first provider is not ticked");
+    CHECK(!Ticked(frame, "OpenAI"), "nor the second");
+    CHECK(!Ticked(frame, "Custom endpoint"), "nor the custom row");
+    CHECK(frame.find("\u2713") == std::string::npos, "nothing on the page carries a tick at all");
 }
 
 // ── Escape, close, reopen ───────────────────────────────────────────────────
@@ -944,29 +992,33 @@ static void test_reopening_starts_over_and_ticks_by_model_when_the_url_differs()
 
 static void test_the_list_scrolls_to_keep_the_cursor_visible()
 {
-    TEST("a list longer than 12 rows scrolls, and clamps at both ends");
+    TEST("the catalog part scrolls in 11 lines, and the custom row stays pinned below it");
     Fixture f;
-    ClearCatalog(f.facade); // exactly 20 rows: the window's arithmetic is the assertion
+    ClearCatalog(f.facade); // 20 catalog rows + the pinned custom row: the arithmetic is the assertion
     for (int i = 0; i < 20; i++)
         AddProvider(f.facade, "p" + std::to_string(i), "Prov " + std::to_string(i), "");
 
     f.Open();
     const std::string top = Frame(*f.dialog);
     CHECK(Has(top, "Prov 0"), "at the top the first row is drawn");
-    CHECK(Has(top, "Prov 11"), "and the 12-row window is full");
-    CHECK(!Has(top, "Prov 12"), "but not beyond it");
+    CHECK(Has(top, "Prov 10"), "and the catalog window is full (11 lines: 12 minus the pinned row)");
+    CHECK(!Has(top, "Prov 11"), "but not beyond it");
+    CHECK(Has(top, "Custom endpoint"), "the custom row is visible without scrolling -- the point of pinning it");
 
-    Down(*f.dialog, 9); // -> row 9, window starts at 3
+    Down(*f.dialog, 9); // -> row 9, catalog window starts at 4
     const std::string middle = Frame(*f.dialog);
     CHECK(!Has(middle, "Prov 0"), "scrolling drops the rows above the window");
-    CHECK(Has(middle, "Prov 3"), "the window is re-anchored");
-    CHECK(Has(middle, "Prov 14"), "and still holds 12 rows");
+    CHECK(Has(middle, "Prov 4"), "the window is re-anchored");
+    CHECK(Has(middle, "Prov 14"), "and still holds 11 catalog rows");
+    CHECK(Has(middle, "Custom endpoint"), "while the custom row does not scroll away");
 
-    Down(*f.dialog, 20); // clamp at the last row
+    Down(*f.dialog, 20); // clamp at the last row, which is the pinned custom row
     const std::string bottom = Frame(*f.dialog);
-    CHECK(Has(bottom, "Prov 19"), "the last row is reachable");
+    CHECK(Has(bottom, "Prov 19"), "the last catalog row is reachable");
+    CHECK(Has(bottom, "Custom endpoint"), "and the custom row is still there");
     CHECK(!Has(bottom, "Prov 7"), "and the window clamped to the end");
-    CHECK(Has(bottom, "Prov 8"), "the window's first row is n-12: got the row above it");
+    CHECK(Has(bottom, "Prov 9"), "the catalog window's first row is n-11: got the row above it");
+    CHECK(!Has(bottom, "Prov 8"), "and nothing above it");
 }
 
 static void test_the_model_cursor_moves_and_clamps_at_both_ends()
@@ -1052,7 +1104,7 @@ static void test_a_dialog_without_a_facade_still_opens_and_exits()
     edc::port::SetupConfig seed;
     dialog.Open(seed);
     CHECK(dialog.IsOpen(), "it opened");
-    CHECK(Has(Frame(dialog), "(no match)"), "with an empty catalog, which it says");
+    CHECK(Has(Frame(dialog), "Custom endpoint"), "with no catalog, the custom row is all there is");
     CHECK(dialog.OnEvent(::ftxui::Event::Escape), "Esc is consumed");
     CHECK(!dialog.IsOpen(), "and closes it");
 }
@@ -1063,7 +1115,7 @@ int main()
 {
     test_open_lands_on_step_1_and_ticks_the_configured_provider();
     test_provider_filter_matches_both_the_name_and_the_id();
-    test_a_provider_filter_with_no_match_says_so_and_enter_does_nothing();
+    test_a_provider_filter_with_no_match_leaves_only_the_custom_row();
     test_the_cursor_moves_and_clamps_at_both_ends();
     test_enter_on_the_provider_step_moves_to_the_key_step();
     test_the_key_step_types_where_the_caret_was_left();
@@ -1079,8 +1131,9 @@ int main()
     test_a_custom_endpoint_without_a_scheme_is_refused();
     test_a_custom_model_id_must_not_be_empty();
     test_a_custom_context_window_must_be_a_positive_number();
-    test_the_custom_row_is_absent_unless_something_asks_for_it();
+    test_the_custom_row_is_always_the_last_row();
     test_a_custom_install_ticks_the_custom_row();
+    test_an_unconfigured_install_ticks_nothing();
     test_escape_marks_the_wizard_done();
     test_a_closed_dialog_ignores_events();
     test_reopening_starts_over_and_ticks_by_model_when_the_url_differs();

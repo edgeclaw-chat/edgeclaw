@@ -280,11 +280,12 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"General", "/model search <q>", "search chat models across all providers", NULL},
     {"General", "/connect", "guided setup: choose a provider, API key, and model",
      "Three steps for a provider in the built-in catalog -- it knows the base URL and the "
-     "models, so only the key and the pick are asked for. For anything else (a gateway, a "
-     "self-hosted server, a provider newer than this build's catalog) type a base URL into "
-     "the provider search box, or type `custom`, and the wizard offers a \"Custom endpoint\" "
-     "row instead: it then walks five steps and asks for the base URL, the API key, the model "
-     "id and the model's context window, all typed.\n\n"
+     "models, so only the key and the pick are asked for. Below the provider list, pinned so "
+     "it never scrolls out of view, sits a \"Custom endpoint\" row for anything else (a "
+     "gateway, a self-hosted server, a provider newer than this build's catalog): taking it "
+     "walks five steps and asks for the base URL, the API key, the model id and the model's "
+     "context window, all typed. Pasting a base URL into the provider search box carries it "
+     "straight through -- the row then reads \"Use this endpoint\".\n\n"
      "The context window is the one value nothing can infer for an unknown endpoint, and it "
      "must be the endpoint's real window: a larger one postpones folding past the provider's "
      "own limit, and the error that produces comes from the provider, not from here."},

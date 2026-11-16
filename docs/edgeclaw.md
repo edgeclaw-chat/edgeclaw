@@ -28,15 +28,18 @@ model — and applies the choice immediately (it writes the base URL, key, model
 model's context window).
 
 A provider the catalog does not list — a gateway, a self-hosted server, something newer
-than this build — is set up the same way: type its base URL into the provider search box
-(or type `custom`) and a **Custom endpoint** row appears. That path asks for the four
-values nothing else can supply: the base URL (must start with `http://` or `https://`; a
-base like `https://host/v1` and a full `…/chat/completions` endpoint are both accepted),
-the API key, the model id the endpoint answers to, and that model's context window in
-tokens. The window is the one value that cannot be inferred and must be the endpoint's
-real one: too large a value postpones context folding past the provider's own limit, and
-the error then comes from the provider. The wizard never calls the network, so a wrong
-endpoint shows up on the first message rather than as a page that hangs.
+than this build — is set up the same way: below the provider list, pinned so it never
+scrolls out of view, sits a **Custom endpoint** row. Taking it asks for the four values
+nothing else can supply: the base
+URL (must start with `http://` or `https://`; a base like `https://host/v1` and a full
+`…/chat/completions` endpoint are both accepted), the API key, the model id the endpoint
+answers to, and that model's context window in tokens. Pasting a URL into the provider
+search box skips the first of those: the row then reads `Use this endpoint: <url>` and
+Enter carries the URL through. The window is the one value that cannot be inferred and
+must be the endpoint's real one: too large a value postpones context folding past the
+provider's own limit, and the error then comes from the provider. The wizard never calls
+the network, so a wrong endpoint shows up on the first message rather than as a page that
+hangs.
 
 Command-line options, all answered before the configuration or the database is touched —
 so they work even when the binary cannot start: `--version` (version, schema, build time
@@ -600,7 +603,7 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/skill` | List the skills — ours, plus any found in a `.claude` / `.agents` / `.pi` / `.opencode` skills directory |
 | `/skill <name> [args…]` | Run a skill directly: its `SKILL.md` body goes into this task wrapped in a `<skill name=… location=…>` block (so the model knows where the skill's relative paths hang off); the args are substituted, or appended after the closing tag when the body has none. Same as a prompt body, the text is a **document**: one task, verbatim. `--new-group` / `--group <id>` place it, exactly as for `/prompt` |
 | `/reload` | Re-read the resource files and rebuild the cached system prompt (a skill or AGENTS.md edited on disk takes effect; `config.json` still needs a restart) |
-| `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard). For an endpoint the catalog does not list, type a base URL into the provider search box (or type `custom`): a **Custom endpoint** row appears and the wizard instead asks for base URL, API key, model id and context window (five steps) |
+| `/connect` | Guided setup: choose a provider, API key, and model (three-step wizard). Below the provider list, pinned so it never scrolls out of view, a **Custom endpoint** row covers an endpoint the catalog does not list: the wizard then asks for base URL, API key, model id and context window (five steps). Pasting a base URL into the provider search box carries it straight through |
 | `/update` | Install a newer release, if one is available: shows the version and what updating costs, then runs the installer. Only a copy the installer put there can update itself; anything else gets the command to run by hand. The app never restarts itself |
 | `/encrypt` | Turn encryption back on after choosing "no encryption" at setup: prompts for a passphrase and re-encrypts the stored API key. Refuses when a key is already loaded |
 | `/sandbox [on\|off]` | Enable/disable the filesystem sandbox |
