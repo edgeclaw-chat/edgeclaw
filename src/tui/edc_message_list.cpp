@@ -327,6 +327,35 @@ void MessageList::OnFrameBegin()
     // inside one frame).
     catch_up_budget_ = kCatchUpItems;
     width_moved_this_frame_ = false;
+
+    /* A LazyBubble caches its real bubble's ftxui tree on ITSELF (see
+     * LazyBubble::OnRender), and the proxy is never evicted from
+     * ChatModel::all_. Left alone, every row ever measured keeps a tree and
+     * the log is O(history) in RAM even though MessageWindow bounds the real
+     * Message instances to kMaxLive. DHAT measured ~296 MiB peak after the
+     * first windowing merge on an 8.2 MB / 7943-line transcript, barely
+     * below the un-windowed 323 MiB.
+     *
+     * This is the true frame boundary (the ScrollNode is rebuilt every frame),
+     * BEFORE any layout/measure/draw pass: drop trees outside last frame's
+     * window, with a generous margin so a row about to scroll in is kept.
+     * Heights are deliberately NOT touched -- the row map must stay exact.
+     * A visible row whose tree was dropped is rebuilt by EnsureItemMeasured
+     * before it is drawn. */
+    if (visible_known_ && !items_.empty())
+    {
+        /* Keep kMaxLive/2 rows on each side of the window: the retained set is
+         * at most kMaxLive + the handful of rows actually on screen. */
+        constexpr size_t kMargin = 100;
+        const size_t keep_first = visible_first_ > kMargin ? visible_first_ - kMargin : 0;
+        const size_t keep_last = std::min(items_.size(), visible_last_ + kMargin + 1);
+        for (size_t i = 0; i < items_.size(); i++)
+        {
+            if (i >= keep_first && i < keep_last)
+                continue;
+            items_[i]->ClearCachedTree();
+        }
+    }
 }
 
 int MessageList::TakeOffsetAdjustment()
@@ -344,6 +373,15 @@ int MessageList::TakeOffsetAdjustment()
 
 int MessageList::EnsureItemMeasured(size_t index, int width)
 {
+    /* A row whose cached tree was pruned at the frame boundary still has a
+     * valid height, but no Node to draw with. Rebuild it here (this also runs
+     * ComputeRequirement) so the draw pass sees a laid-out tree. No Rebuild():
+     * the height is unchanged, so the row map and scroll offset stay put. */
+    if (!items_[index]->HasCachedTree())
+    {
+        MeasureItem(index, width);
+        return heights_[index];
+    }
     if (heights_[index] == kUnmeasured || stale_[index])
     {
         MeasureAt(index, width);

@@ -59,6 +59,10 @@ class ChatModel
 
     /* Resident REAL Message count (proxies do not count). */
     size_t LiveCount() const;
+
+    /* How many proxies still pin a cached ftxui element tree. Read-only
+     * probe for the regression test / diagnostics. */
+    size_t CachedTreeCount() const;
     size_t size() const
     {
         return all_.size();

@@ -49,6 +49,20 @@ class Message : public ::ftxui::ComponentBase
         return 0;
     }
 
+    /* Read-only probe for the windowing regression test: does this object
+     * still pin a cached ftxui element tree? LiveCount() cannot see this. */
+    bool HasCachedTree() const
+    {
+        return body_ != nullptr;
+    }
+
+    /* Drop the cached tree so the object is cheap again. Called at the frame
+     * boundary for windowed proxies whose real bubble is off screen. */
+    void ClearCachedTree()
+    {
+        body_ = nullptr;
+    }
+
     /* Collapsible state lives on the descriptor (ChatBubbleRef::expanded). */
     virtual bool Expanded() const
     {

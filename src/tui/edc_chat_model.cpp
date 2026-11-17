@@ -99,6 +99,15 @@ size_t ChatModel::LiveCount() const
 {
     return window_ ? window_->LiveCount() : 0;
 }
+
+size_t ChatModel::CachedTreeCount() const
+{
+    size_t n = 0;
+    for (const std::shared_ptr<Message> &message : all_)
+        if (message && message->HasCachedTree())
+            n++;
+    return n;
+}
 void ChatModel::SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label)
 {
     filter_ = std::move(allowed);

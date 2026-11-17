@@ -142,6 +142,64 @@ std::string Frame(const std::shared_ptr<edc::ChatWidget> &chat)
     return screen.ToString();
 }
 
+/* P6: the residency test above only counts REAL Message instances in
+ * MessageWindow::live_. That is not the whole story: LazyBubble::OnRender()
+ * caches the real bubble's element tree on the PROXY (its inherited body_),
+ * and the proxy is never evicted. MessageList::EnsureMeasured used to measure
+ * every proxy on the first frame, so a 1000-bubble log ended up with 1000
+ * cached ftxui trees -- DHAT measured ~296 MiB at the global peak after the
+ * first windowing merge, barely below the un-windowed 323 MiB.
+ *
+ * Count the trees, not the instances. This assertion is RED before the fix
+ * (and stays RED for any "fix" that merely spreads the full measurement over
+ * several frames via the catch-up budget). */
+static void test_cached_trees_stay_bounded(void)
+{
+    TEST("cached render trees stay bounded, not one per history bubble");
+    auto chat = FillLog(kHistory);
+
+    /* Vacuous-pass guards: the log really is long and the frame really drew
+     * something (so a no-op implementation cannot pass by rendering nothing). */
+    ASSERT(chat->model()->LiveCount() > 0, "no real bubbles are resident -- probe is vacuous");
+    ASSERT(chat->model()->size() == kHistory, "log holds %zu bubbles, expected %zu", chat->model()->size(), kHistory);
+
+    /* Several frames: the catch-up work (64 stale rows/frame) must not creep
+     * back into a full-log measurement either. */
+    for (int frame = 0; frame < 30; frame++)
+        (void)Frame(chat);
+
+    /* Then scroll through the WHOLE log in page steps, drawing every frame so
+     * each slice really gets measured. A proxy that once entered the viewport
+     * keeps its body_ unless something evicts it, so a long read session is
+     * the case most likely to regress back to O(history). Guard against a
+     * vacuous pass: the head must actually have been reached. */
+    std::string head;
+    for (int i = 0; i < 2000; i++)
+    {
+        chat->OnEvent(ftxui::Event::PageUp);
+        head = Frame(chat);
+        if (head.find("bubble 0") != std::string::npos)
+            break;
+    }
+    ASSERT(head.find("bubble 0") != std::string::npos, "never reached the head -- scroll guard is vacuous");
+    for (int i = 0; i < 2000; i++)
+    {
+        chat->OnEvent(ftxui::Event::PageDown);
+        (void)Frame(chat);
+        if (chat->StickingToBottom())
+            break;
+    }
+
+    /* The retained set is the resident window (kMaxLive) plus the few rows
+     * actually on screen, not the whole kHistory log. 32 is a generous
+     * viewport bound for the fixed 25-row test screen. */
+    const size_t trees = chat->model()->CachedTreeCount();
+    const size_t bound = kMaxLive + 32;
+    ASSERT(trees <= bound, "cached trees=%zu exceeds the bound %zu for a %zu-bubble log (O(history) RSS)",
+           trees, bound, kHistory);
+    PASS();
+}
+
 /* Regression for the windowing render bug: after scrolling from the tail to the
  * head and back, EVERY frame must still draw the bubbles at that end. The
  * geometry (prefix_/total_/visible range) was correct while the frame was
@@ -177,6 +235,7 @@ int main(void)
 {
     test_live_count_is_bounded_by_history_length();
     test_live_count_does_not_grow_with_history();
+    test_cached_trees_stay_bounded();
     test_scrolling_keeps_both_ends_rendered();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
