@@ -615,23 +615,28 @@ static bool apply_pragmas(sqlite3 *db)
     if (!exec_sql(db, "PRAGMA journal_mode=WAL", "PRAGMA journal_mode"))
         return false;
 
-    /* The page cache is the session cache. This is the answer to "if writing to disk is
-     * slow, make the cache bigger instead of building a second copy of the database in
-     * C": the message rows the runtime re-reads (the live tail of a conversation) stay
-     * resident as PAGES, and every reader -- fold, token accounting, request assembly --
-     * sees them through the same cache. 64 MiB is ~16k pages, comfortably more than the
-     * live tail of a long session (a 40k-message session is ~45k pages in total, and the
-     * unfolded tail is a fraction of that).
+    /* The page cache is the session cache: the message rows the runtime re-reads
+     * (the live tail of a conversation) stay resident as PAGES, and every reader --
+     * fold, token accounting, request assembly -- sees them through the same cache.
+     * 8 MiB is ~2k pages, enough for the unfolded tail of a long session: the corpus
+     * is read a bounded slice at a time, never the whole table.
      *
-     * Negative = KiB and per-connection, so this never rewrites a persisted setting into
-     * somebody's database file. */
-    if (!exec_sql(db, "PRAGMA cache_size=-65536", "PRAGMA cache_size"))
+     * Negative = KiB and per-connection, so this never rewrites a persisted setting
+     * into somebody's database file. */
+    if (!exec_sql(db, "PRAGMA cache_size=-8192", "PRAGMA cache_size"))
         return false;
 
-    /* Memory-map the read path. Read-only mapping: writes still go through the WAL, so
-     * this cannot bypass the durability story above. 512 MiB ceiling; SQLite clamps it to
-     * the file size, so a small database maps only what exists. */
-    if (!exec_sql(db, "PRAGMA mmap_size=536870912", "PRAGMA mmap_size"))
+    /* Memory-mapping the read path was the single largest resident-memory cost:
+     * SQLite clamps mmap_size to the file size, so on a workspace whose DB has
+     * grown to ~116 MiB the ENTIRE database stayed mapped (measured 119 MiB RSS,
+     * ~25% of the process) even though only the live tail is ever read. The OS page
+     * cache already caches those pages for us without pinning them into our RSS,
+     * so leave mmap off and let SQLite use the bounded page cache above.
+     *
+     * Measured with tests/probe_sqlite_rss.c on a 33k-message DB (full scan of
+     * messages.body): 512M/64M -> 119.3 MiB, 0/8M -> 12.2 MiB, i.e. ~106 MiB
+     * saved. Writes still go through the WAL either way. */
+    if (!exec_sql(db, "PRAGMA mmap_size=0", "PRAGMA mmap_size"))
         return false;
 
     /* Verify instead of trusting: on a filesystem that cannot do WAL, SQLite keeps the

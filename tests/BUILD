@@ -2131,3 +2131,10 @@ cc_test(
     target_compatible_with = POSIX_ONLY,
 )
 
+
+cc_binary(
+    name = "probe_sqlite_rss",
+    srcs = ["probe_sqlite_rss.c"],
+    deps = ["@sqlite3//:sqlite3"],
+    tags = ["manual"],
+)
