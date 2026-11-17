@@ -2160,6 +2160,18 @@ cc_test(
     target_compatible_with = POSIX_ONLY,
 )
 
+cc_test(
+    name = "test_chat_bubbles",
+    srcs = ["test_chat_bubbles.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 cc_binary(
     name = "probe_sqlite_rss",
     srcs = ["probe_sqlite_rss.c"],

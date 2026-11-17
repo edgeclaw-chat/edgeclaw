@@ -99,7 +99,10 @@ struct edc_scheduler;
  *     memo_baseline_done = (memo_seen_seq > 0) -- a task that had already consumed
  *     events has necessarily been through the index -- and leaves changed = 0, which is
  *     the documented "unknown, render the content" value, not a guess. */
-#define EDC_DB_VERSION 8
+/* v9: chat_bubbles -- the TUI's durable, paged view state (was chat.jsonl).
+ * Migration step_v8_to_v9 creates the table/index and nothing else: no existing
+ * table is altered, so a v8 database migrates with zero data rewrite. */
+#define EDC_DB_VERSION 9
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
@@ -387,6 +390,43 @@ bool edc_state_store_has_session(int64_t session_id);
  *
  * Returns -1 when the store is closed or the pragma yields no row. */
 int edc_state_store_pragma_int(const char *pragma_name);
+
+/* ── chat_bubbles: the TUI's view state (v9) ──────────────────────────────────
+ * THE SAME THREAD INVARIANT AS THE REST OF THIS HEADER: these may only be called
+ * from the scheduler actor thread. The UI thread asks for a page through the
+ * channel actor and receives the rows back as a channel message; it never opens
+ * or touches this store itself. See docs/chat-bubbles-in-db.md.
+ *
+ * `line` is an ENCODED transcript line (EncodeTranscriptLine), stored verbatim.
+ * `session_id` is the frontend's string identity (e.g. "1"), not an INTEGER. */
+
+struct edc_chat_bubble_row
+{
+    int64_t seq;
+    char *line; /* malloc'd; freed by edc_chat_bubble_rows_free */
+};
+
+/* Append one bubble. `out_seq` (optional) receives the assigned seq.
+ * seq is per-session, monotonically increasing, computed under the store's
+ * single-writer guarantee. */
+bool edc_chat_bubble_append(const char *session_id, const char *line, int64_t *out_seq);
+
+/* Read up to `limit` rows with seq < `before_seq`, in ASCENDING seq order.
+ * INT64_MAX means "the newest page". Returns false only on a real DB error;
+ * an empty result is a valid page (*n = 0, *out = NULL). */
+bool edc_chat_bubble_page(const char *session_id, int64_t before_seq, int limit,
+                          struct edc_chat_bubble_row **out, int *n);
+void edc_chat_bubble_rows_free(struct edc_chat_bubble_row *rows, int n);
+int64_t edc_chat_bubble_count(const char *session_id);
+
+/* One-time importer for legacy <workspace>/<sid>/chat.jsonl files. Called from
+ * the scheduler actor thread at startup. Idempotent: INSERT OR IGNORE with a
+ * deterministic seq (line number), and a <path>.imported marker file makes a
+ * successful import cheap to skip on the next start. The chat.jsonl itself is
+ * NEVER renamed or deleted: a downgrade to v8 can still read it, and keeping the
+ * bytes is the rollback path. Returns the number of rows inserted (0 when the
+ * marker says it was already imported), or -1 on failure. */
+int64_t edc_chat_bubble_import_file(const char *session_id, const char *path);
 
 #ifdef __cplusplus
 }
