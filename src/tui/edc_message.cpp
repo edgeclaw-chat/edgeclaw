@@ -1,4 +1,5 @@
 #include "edc_message.hpp"
+#include "edc_api.h" /* EDC_APP_RENDER_MARKDOWN */
 #include "edc_style.hpp"
 #include "edc_text_util.hpp"
 #include "edc_token_style.hpp"
@@ -351,6 +352,35 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     body_ =
         ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
     return body_;
+}
+
+std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
+                                        const std::string &content, const std::string &task_id, int render_pref,
+                                        time_t ts)
+{
+    if (kind == "user")
+        return std::make_shared<UserMessage>(content, ts, task_id);
+
+    if (kind == "tool")
+    {
+        /* Rendering is decided entirely by the sender's render_pref:
+         * MARKDOWN with a header keeps ToolMessage's collapse chrome, MARKDOWN
+         * without one uses the plain md style; PLAIN (the default) is a plain
+         * text ToolMessage. */
+        if (render_pref == EDC_APP_RENDER_MARKDOWN)
+        {
+            if (!header.empty())
+                return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
+            return std::make_shared<Message>(content, ts, task_id);
+        }
+        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
+    }
+
+    if (kind == "thought")
+        return std::make_shared<ThoughtMessage>(content, ts, task_id);
+
+    /* "reply" | "sys" */
+    return std::make_shared<Message>(content, ts, task_id);
 }
 
 } // namespace edc

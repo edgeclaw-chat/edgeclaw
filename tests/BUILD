@@ -1943,6 +1943,35 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+cc_test(
+    name = "test_chat_refs",
+    srcs = ["test_chat_refs.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_chat_window",
+    srcs = ["test_chat_window.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
 
 cc_test(
     name = "test_llm_error_kind",
@@ -2130,7 +2159,6 @@ cc_test(
     linkopts = TUI_TEST_LINK_OPTS,
     target_compatible_with = POSIX_ONLY,
 )
-
 
 cc_binary(
     name = "probe_sqlite_rss",

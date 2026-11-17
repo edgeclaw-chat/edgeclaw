@@ -15,6 +15,7 @@
 // Compat: ChatWidget still exposes AddMessage / Clear / SetFilter / SetTaskInputs
 // (delegating to the model).
 
+#include "edc_chat_window.hpp"
 #include "edc_message.hpp"
 
 #include <functional>
@@ -36,7 +37,6 @@ class ChatModel
     struct Change
     {
         std::shared_ptr<Message> appended;               // one visible bubble appended (view appends it)
-        std::vector<std::shared_ptr<Message>> prepended; // older bubbles prepended, file order (view prepends them)
     };
     using Listener = std::function<void(const Change &)>;
 
@@ -47,13 +47,22 @@ class ChatModel
     // only learns about it when it is visible.
     void AddMessage(std::shared_ptr<Message> message);
 
-    // Insert older bubbles (file order: oldest first) above the current head. The
-    // startup backfill uses it to fill the history in without a full blocking
-    // replay.
-    void PrependMessages(std::vector<std::shared_ptr<Message>> messages);
-
     // Drop every message (the log was re-pointed at another session).
     void Clear();
+
+    /* Point the log at a transcript file: build the descriptor index once and
+     * fill the log with LazyBubble proxies. This is the ONLY history path. */
+    void LoadTranscript(const std::string &path);
+
+    /* Drive the resident window from the list's visible index range. */
+    void SetWindow(size_t first, size_t last, size_t prefetch);
+
+    /* Resident REAL Message count (proxies do not count). */
+    size_t LiveCount() const;
+    size_t size() const
+    {
+        return all_.size();
+    }
 
     // Point the log at a group's / task's history: only bubbles whose TaskId() is
     // in |allowed| are visible. nullptr = no filter. |label| names the selection
@@ -95,7 +104,11 @@ class ChatModel
     void Rebuild();
     void Notify(const Change &change);
 
-    std::vector<std::shared_ptr<Message>> all_;
+    /* Owns the descriptor vector and the ONLY real Message instances. */
+    std::unique_ptr<std::vector<ChatBubbleRef>> refs_holder_;
+    std::unique_ptr<MessageWindow> window_;
+
+    std::vector<std::shared_ptr<Message>> all_;   /* LazyBubble proxies */
     std::vector<std::shared_ptr<Message>> visible_;
     std::shared_ptr<const std::map<std::string, std::string>> task_inputs_;
     std::set<std::string> input_shown_;
