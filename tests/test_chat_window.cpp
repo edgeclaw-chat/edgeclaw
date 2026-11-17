@@ -142,6 +142,31 @@ std::string Frame(const std::shared_ptr<edc::ChatWidget> &chat)
     return screen.ToString();
 }
 
+/* P7: the FIRST frame is what DHAT's "At t-gmax" measures. The existing
+ * pruning runs at the next frame boundary, so a long transcript can still
+ * build one cached ftxui tree per proxy during the first layout pass and
+ * peak at O(history) bytes before anything is released -- exactly the
+ * ~296 MiB the profiler saw. Assert the peak directly: after ONE frame the
+ * number of retained trees must already be O(viewport), not O(history). */
+static void test_first_frame_cached_trees_are_bounded(void)
+{
+    TEST("first frame does not cache one render tree per history bubble");
+    auto chat = FillLog(kHistory);
+
+    ASSERT(chat->model()->size() == kHistory, "log holds %zu bubbles, expected %zu", chat->model()->size(), kHistory);
+
+    const std::string frame = Frame(chat);
+    /* Vacuous-pass guards: the frame really rendered the tail, and the log
+     * really is long enough that an O(history) result would be unmistakable. */
+    ASSERT(frame.find("bubble 999") != std::string::npos, "tail blank -- first frame did not render");
+    ASSERT(kHistory > kMaxLive * 2, "fixture too short to distinguish O(history) from a bounded window");
+
+    const size_t trees = chat->model()->CachedTreeCount();
+    ASSERT(trees <= kMaxLive + 32, "first frame cached %zu trees for %zu bubbles (peak is O(history))",
+           trees, kHistory);
+    PASS();
+}
+
 /* P6: the residency test above only counts REAL Message instances in
  * MessageWindow::live_. That is not the whole story: LazyBubble::OnRender()
  * caches the real bubble's element tree on the PROXY (its inherited body_),
@@ -235,6 +260,7 @@ int main(void)
 {
     test_live_count_is_bounded_by_history_length();
     test_live_count_does_not_grow_with_history();
+    test_first_frame_cached_trees_are_bounded();
     test_cached_trees_stay_bounded();
     test_scrolling_keeps_both_ends_rendered();
 

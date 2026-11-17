@@ -23,6 +23,13 @@ constexpr int kLayoutIterationCap = 20;
 // so the catch-up can never grow back into the whole-log stall a resize used to
 // be; a drag frame does no catch-up at all (the width is still changing).
 constexpr int kCatchUpItems = 64;
+
+// Rows kept cached during the first-frame measurement sweep. The transcript
+// loader primes the tail window before the first layout, and a screen holds a
+// few dozen rows at most; keeping a generous tail means the visible rows (and
+// the ones a small scroll would reveal) already have their tree when drawing
+// starts. Everything older is rebuilt on demand when it scrolls into view.
+constexpr size_t kFirstFrameKeep = 200;
 } // namespace
 
 // Draws the items of a MessageList that overlap the viewport the enclosing
@@ -439,12 +446,25 @@ bool MessageList::EnsureMeasured(int width)
 
     // An item with no height at all (first frame, a cleared log, an entry that
     // just expanded) has no estimate to fall back on: measure it now.
+    //
+    // A windowed transcript arrives as thousands of LazyBubble proxies. Each
+    // MeasureAt() makes the proxy cache a real ftxui tree on ITSELF; left in
+    // place until the next frame boundary that is one tree per history row
+    // alive at the same instant, which is exactly the O(history) peak DHAT
+    // measured (~296 MiB on an 8.2 MB / 7943-line transcript). Release the
+    // tree immediately after measuring rows that are off screen, so the peak
+    // is bounded from the very first frame. Heights stay exact: the row map
+    // is independent of the cached Node, and EnsureItemMeasured() rebuilds a
+    // tree before any row that actually gets drawn.
+    const size_t keep_from = items_.size() > kFirstFrameKeep ? items_.size() - kFirstFrameKeep : 0;
     for (size_t i = 0; i < items_.size(); i++)
     {
         if (heights_[i] == kUnmeasured)
         {
             MeasureAt(i, width);
             measured = true;
+            if (i < keep_from)
+                items_[i]->ClearCachedTree();
         }
     }
 
