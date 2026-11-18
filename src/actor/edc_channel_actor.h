@@ -52,6 +52,10 @@ struct edc_channel_message
      * folded -- the ordinary case, and the reason no code needs to test for null
      * everywhere but the two places that care. Owned by this message. */
     struct edc_payload *payload;
+    bool interface_feedback;      /* A command reply / startup hint: ALWAYS shown on the
+                                    * current tab, even though it is not an active task's
+                                    * output. With every bubble now carrying session_id,
+                                    * "empty session" can no longer identify this case. */
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is

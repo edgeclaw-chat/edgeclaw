@@ -186,6 +186,7 @@ extern const char *edc_app_message_mid(const struct edc_channel_message *message
 /* True for the MESSAGE_PAYLOAD reply above. */
 extern int edc_app_message_is_message_payload(const struct edc_channel_message *message);
 extern int edc_app_message_is_chat_bubble_page(const struct edc_channel_message *message);
+extern int edc_app_message_is_interface_feedback(const struct edc_channel_message *message);
 
 /* Request a task tree: built on the scheduler thread, answered as a TASK_SNAPSHOT
  * message. */

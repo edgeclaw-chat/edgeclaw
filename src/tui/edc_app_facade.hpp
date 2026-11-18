@@ -68,6 +68,7 @@ struct ChatMessageEvent
     std::string session_id;
     int render_pref = 0; /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
     bool from_active_task = false;
+    bool interface_feedback = false;
     time_t ts = 0;
 };
 

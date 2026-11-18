@@ -45,6 +45,7 @@ void edc_commands_reply(struct edc_reply_to to, const char *text)
         edc_channel_message_new(EDC_COMMANDS_CHANNEL, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
     if (to.session_id && *to.session_id)
         reply->session_id = sdsnew(to.session_id);
+    reply->interface_feedback = true;
     edc_actor_send(to.channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, to.actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));

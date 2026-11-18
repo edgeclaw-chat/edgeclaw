@@ -138,8 +138,8 @@ void ChannelDispatcher::OnChatMessage(const port::ChatMessageEvent &event)
 
     // Display gate (moved from core to the frontend): the displayed session shows
     // only its active task's output -- a non-active task's output is silent.
-    if (route_.Route(event.session_id, event.from_active_task, session_.displayed_id()) ==
-        domain::OutputRoute::Silent)
+    if (route_.Route(event.session_id, event.from_active_task, session_.displayed_id(),
+                     event.interface_feedback) == domain::OutputRoute::Silent)
         return;
 
     // The todowrite TOOL message stays out of the chat: TODO state is shown by the

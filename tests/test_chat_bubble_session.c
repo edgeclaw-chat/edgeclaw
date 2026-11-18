@@ -48,6 +48,7 @@ static int g_passed = 0, g_failed = 0;
 static uv_mutex_t g_lock;
 static uv_cond_t g_cond;
 static sds g_last_sid = NULL; /* copy of the last reply's session_id, "" when absent */
+static int g_last_feedback = 0; /* interface_feedback of the last reply */
 static int g_replies = 0;
 
 static void on_channel_send(void *instance, struct edc_channel_message *msg)
@@ -57,6 +58,7 @@ static void on_channel_send(void *instance, struct edc_channel_message *msg)
     if (g_last_sid)
         sdsfree(g_last_sid);
     g_last_sid = sdsnew(msg && msg->session_id ? msg->session_id : "");
+    g_last_feedback = (msg && msg->interface_feedback) ? 1 : 0;
     g_replies++;
     uv_cond_signal(&g_cond);
     uv_mutex_unlock(&g_lock);
@@ -83,6 +85,14 @@ static sds last_sid(void)
     return out;
 }
 
+static int last_feedback(void)
+{
+    uv_mutex_lock(&g_lock);
+    int out = g_last_feedback;
+    uv_mutex_unlock(&g_lock);
+    return out;
+}
+
 int main(void)
 {
     uv_mutex_init(&g_lock);
@@ -103,6 +113,11 @@ int main(void)
         sds sid = last_sid();
         CHECK(strcmp(sid, "s7") == 0, "the reply carries session_id 's7' (got '%s')", sid);
         sdsfree(sid);
+        /* Regression: with session_id now mandatory, a command reply can no
+         * longer be identified by an empty one. It declares itself as
+         * interface feedback so OutputRoutingPolicy still shows it -- otherwise
+         * /task output, /help and every slash command go silent. */
+        CHECK(last_feedback() == 1, "the command reply declares interface_feedback");
     }
 
     printf("-- no owner: honest absence, never a guessed display session --\n");

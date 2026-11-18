@@ -107,6 +107,11 @@ int edc_app_message_is_task_history(const struct edc_channel_message *message)
 }
 
 /* A pull REPLY: one page of the durable chat log (header = session_id). */
+int edc_app_message_is_interface_feedback(const struct edc_channel_message *message)
+{
+    return message ? (message->interface_feedback ? 1 : 0) : 0;
+}
+
 int edc_app_message_is_chat_bubble_page(const struct edc_channel_message *message)
 {
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE : 0;

@@ -572,6 +572,7 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
     event.session_id = session_id_c ? session_id_c : "";
     event.render_pref = edc_app_message_render_pref(message);
     event.from_active_task = edc_app_message_from_active_task(message) != 0;
+    event.interface_feedback = edc_app_message_is_interface_feedback(message) != 0;
     event.ts = ::time(nullptr);
 
     IChannelSink *sink = sink_;

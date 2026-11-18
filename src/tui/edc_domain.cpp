@@ -40,10 +40,10 @@ class ForegroundOnlyRouting : public OutputRoutingPolicy
 {
   public:
     OutputRoute Route(const std::string &session_id, bool from_active_task,
-                      const std::string &displayed_session) const override
+                      const std::string &displayed_session, bool interface_feedback) const override
     {
-        if (session_id.empty())
-            return OutputRoute::Shown; // not a task's output (command reply)
+        if (interface_feedback || session_id.empty())
+            return OutputRoute::Shown; // command reply: always visible
         if (session_id != displayed_session)
             return OutputRoute::OtherSession;
         return from_active_task ? OutputRoute::Shown : OutputRoute::Silent;
