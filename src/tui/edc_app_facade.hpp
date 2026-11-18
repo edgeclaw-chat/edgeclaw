@@ -21,6 +21,8 @@
 // synchronously.
 
 #include "edc_api.h" /* struct edc_channel_message + message_* read-only views + EDC_APP_RENDER_* */
+#include <condition_variable>
+#include <mutex>
 #include "edc_command_palette.hpp" /* model::CommandFact (the completion popup's rows) */
 
 #include <cstddef>
@@ -210,6 +212,20 @@ class IAppFacade
         (void)limit;
     }
 
+    /* Synchronous first-frame request: send the page request, then block until
+     * the actor's reply arrives (or a short timeout). Returns the reply JSON,
+     * or "" when nothing came back. Only the startup path uses it; all later
+     * pages go through the async RequestChatBubblePage. */
+    virtual std::string FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
+                                                int timeout_ms)
+    {
+        (void)session_id;
+        (void)before_seq;
+        (void)limit;
+        (void)timeout_ms;
+        return "";
+    }
+
     // ── paths / files the frontend owns ──────────────────────────
     virtual bool HistoryPath(std::string *out) const = 0;
     virtual bool ChatLogPathFor(const std::string &session_id, std::string *out) const = 0;
@@ -299,6 +315,8 @@ class AppFacade : public IAppFacade
     void RequestTaskSnapshot(const std::string &session_id) override;
     void RequestMessagePayload(const std::string &mid) override;
     void RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit) override;
+    std::string FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
+                                        int timeout_ms) override;
 
     bool HistoryPath(std::string *out) const override;
     bool ChatLogPathFor(const std::string &session_id, std::string *out) const override;
@@ -333,6 +351,20 @@ class AppFacade : public IAppFacade
     // pointer plus void*, and this object is that void*.
     std::function<void(std::string)> update_observer_;
     std::function<void(bool, std::string)> upgrade_done_;
+
+    /* Startup-only synchronous page handoff. The channel actor runs on the
+     * runner thread and fills these; the UI thread waits in
+     * FetchChatBubblePageSync. Guarded, never polled. */
+    std::mutex page_sync_mutex_;
+    std::condition_variable page_sync_cv_;
+    std::string page_sync_sid_;
+    std::string page_sync_payload_;
+    bool page_sync_waiting_ = false;
+    bool page_sync_done_ = false;
+
+    /* Called from TranslateAndDispatch (channel-actor thread) ONLY when a
+     * synchronous fetch is in flight. */
+    bool DeliverPageSync(const std::string &session_id, const std::string &payload);
 };
 
 } // namespace edc::port

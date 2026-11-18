@@ -146,6 +146,16 @@ class MessageListNode : public ::ftxui::Node
         if (any)
         {
             list_.visible_first_ = first;
+            /* Ask for an older page exactly once per "arrival at the top". */
+            if (first == 0 && !list_.reached_top_fired_ && list_.reached_top_cb_)
+            {
+                list_.reached_top_fired_ = true;
+                list_.reached_top_cb_();
+            }
+            else if (first > 0)
+            {
+                list_.reached_top_fired_ = false;
+            }
             list_.visible_last_ = last;
             list_.visible_known_ = true;
             // ...and it is the anchor the scroll offset is tied to: item |first| sits
@@ -196,6 +206,12 @@ class MessageListNode : public ::ftxui::Node
     MessageList &list_;
     bool remeasured_ = false;
 };
+
+void MessageList::SetReachedTopCallback(std::function<void()> cb)
+{
+    reached_top_cb_ = std::move(cb);
+    reached_top_fired_ = false;
+}
 
 void MessageList::AddMessage(std::shared_ptr<Message> message)
 {
@@ -281,6 +297,7 @@ void MessageList::Clear()
     anchor_known_ = false;
     catch_up_budget_ = 0;
     width_moved_this_frame_ = false;
+    reached_top_fired_ = false;
 }
 
 int MessageList::MeasureItem(size_t index, int width)

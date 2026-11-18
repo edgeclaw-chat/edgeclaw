@@ -112,6 +112,7 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void PresentHistory(const std::string &payload) override;
     // A payload pull came back: header = the mid it answers ("" = that message is gone).
     void PresentMessagePayload(const std::string &mid, const std::string &payload_json) override;
+    void ApplyChatBubblePage(const std::string &session_id, const std::string &payload) override;
     void RequestTaskSnapshot() override;
     void RequestFrame() override;
 

@@ -54,6 +54,13 @@ class IChannelHost
     virtual void PresentHistory(const std::string &payload) = 0;
     // A folded-paste payload came back for |mid| ("" = the message is gone).
     virtual void PresentMessagePayload(const std::string &mid, const std::string &payload_json) = 0;
+    /* An older page of the durable chat log came back from the actor thread.
+     * Default no-op so test hosts that do not care about paging stay concrete. */
+    virtual void ApplyChatBubblePage(const std::string &session_id, const std::string &payload)
+    {
+        (void)session_id;
+        (void)payload;
+    }
 
     virtual void RequestTaskSnapshot() = 0;
     virtual void RequestFrame() = 0;
@@ -73,6 +80,7 @@ class ChannelDispatcher : public port::IChannelSink
     void OnTaskSnapshot(const std::string &json) override;
     void OnTreeChanged(const std::string &session_id, const std::string &reason) override;
     void OnTaskHistory(const std::string &payload) override;
+    void OnChatBubblePage(const std::string &session_id, const std::string &payload_json) override;
     void OnMessagePayload(const std::string &mid, const std::string &payload_json) override;
 
   private:

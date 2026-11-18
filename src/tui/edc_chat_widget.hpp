@@ -5,6 +5,7 @@
 #include "edc_message_list.hpp"
 #include "edc_scroll_view.hpp"
 #include "ftxui/component/component_base.hpp"
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -66,6 +67,9 @@ class ChatWidget : public ::ftxui::ComponentBase
     // True while the log is pinned to its tail (the reader has not scrolled up).
     // Used to tell "reading the newest" from "browsing older history".
     bool StickingToBottom() const;
+
+    /* The list reached its oldest loaded row: ask for an older DB page. */
+    void SetReachedTopCallback(std::function<void()> cb);
 
 
   private:

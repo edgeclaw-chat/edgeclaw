@@ -106,6 +106,12 @@ bool ChatWidget::StickingToBottom() const
     return scroll_view_->StickingToBottom();
 }
 
+void ChatWidget::SetReachedTopCallback(std::function<void()> cb)
+{
+    if (list_)
+        list_->SetReachedTopCallback(std::move(cb));
+}
+
 bool ChatWidget::OnEvent(::ftxui::Event event)
 {
     return scroll_view_->OnEvent(event);

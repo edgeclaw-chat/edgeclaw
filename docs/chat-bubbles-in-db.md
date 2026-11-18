@@ -1,55 +1,41 @@
 # chat_bubbles：把 TUI 视图状态迁进 edgeclaw.db（B1 + 分页加载 A）
 
-状态：**第一阶段（DB/v9/导入器）、第二阶段（跨线程分页协议）、第三阶段上半（描述符层支持 DB 行）已实现并验证；ChatModel 异步分页 + 写路径迁移留待下一轮。**
+状态：**全部四阶段已实现并验证。chat.jsonl 不再是权威：TUI 首帧从 DB 同步取
+最后一页，新气泡由 channel actor 写 DB，启动时一次性导入旧文件。**
 
-第三阶段上半（本提交，纯增量、零行为变化）：
-- `ChatBubbleRef` 新增 `kDatabase` source + `seq` / `line`（编码原始行内联）；
-  `kFile` 保留给一次性导入器与 `test_chat_refs.cpp` 的旧夹具，不用推倒重写；
-- `BuildChatBubbleRefsFromPage(seqs, lines, n, out)` 从一页 DB 行构造描述符；
-  `MessageWindow::Fields()` 的 `kDatabase` 分支用 `DecodeTranscriptLine` 解码，
-  不碰文件、不需要第二次 DB 读；
-- `tests/test_chat_bubble_refs_db.cpp` 12/12：真实 tab 分隔 vs 字段内 `\n`/`\t`/`\\`
-  转义逐字节往返、`seq`/`task_id`/`source`、越界拒绝；RED 实证有效。
-- `bazel test //tests:all` 158/158。
+## 落地结果（2026-11-18）
 
-第二阶段（本提交）：
-- `BC_ACTOR_MSG_CHAT_BUBBLE_PAGE` / `EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE`；
-- `edc_chat_bubble_page.hpp/.cpp` 的请求/回包 JSON 编解码（`std::string`，因为
-  sds.h 不能进 C++）；`tests/test_chat_bubble_page.cpp` 14/14 + RED 实证；
-- TUI→actor：`IAppFacade::RequestChatBubblePage` → `AppFacade` →
-  `edc_app_request_chat_bubble_page` → scheduler handler 分支 →
-  `sched_handle_pull_chat_bubble_page`：在 actor 线程调 `edc_chat_bubble_page`，
-  多取一条判断 `has_more`，回包只带 `limit` 条；
-- actor→TUI：`edc_channel_cb_chat_bubble_page` → `channel message` →
-  `AppFacade::TranslateAndDispatch` → `IChannelSink::OnChatBubblePage` →
-  `Dispatcher::Post`。两个新虚方法都带默认空实现，避免打破 FakeFacade；
-- `tests/test_chat_bubble_channel.c` 13/13：真实 `actor->handler` 驱动，
-  钉住「最新页 / 游标页 / 末页 / 未知会话 / 畸形请求」；RED 实证有效。
-  该测试还抓到并修掉一个真的悬垂指针（回包回调引用了已 `cJSON_Delete` 的
-  `session_id` 字符串）。
-- `bazel test //tests:all` 157/157。
+- **写路径**：`edc_channel_actor_handle`（runner 单线程，与 store 同线程）是唯一
+  收口。5 种气泡类型（user/tool/thought/reply/sys）经共享 C 编码器
+  `edc_chat_bubble_line.{c,h}` 拼成 transcript 行后 `edc_chat_bubble_append()`；
+  控制消息（snapshot / tree-changed / history / page reply / payload）按白名单排除。
+  `session_id` 补成必填：`edc_reply_to` 新增字段，3 个构造点填入，
+  `edc_commands_reply` / `send_history` 给回包带上；无 owner 的气泡拒绝写入并
+  记警告，绝不猜 UI 当前显示哪个 tab。UI 线程的 `AppendChatTranscript*` 改成
+  no-op，**不再写 chat.jsonl**。
+- **读路径**：启动时 `edc_app_new` 在 store 打开后、runner 启动前遍历所有会话
+  调 `import_file`（幂等、`.imported` marker、保留源文件供 v8 降级）。
+  首帧 `AppFacade::FetchChatBubblePageSync` 发请求后由条件变量等 actor 回包
+  （实测 `done=1 len=247838`），`ChatModel::LoadFromPage` 建 DB 描述符；
+  滚到顶由 `MessageList` 回调触发 `RequestChatBubblePage(oldest_seq)`，
+  `ApplyOlderPage` 前插并重建代理（描述符保留、expanded 状态在 ref 上不丢）。
+  已加载页描述符留在内存，渲染树仍由 `kMaxLive=200` + `OnFrameBegin` 清理管住。
+- **测试**：`test_chat_bubble_session` 6/6、`test_chat_bubble_write` 10/10
+  （两者均 RED 实证），加上此前的 `test_chat_bubbles` 33/33、
+  `test_chat_bubble_page` 14/14、`test_chat_bubble_channel` 13/13、
+  `test_chat_bubble_refs_db` 12/12；`bazel test //tests:all` **160/160**。
+- **端到端**：真实 8.2 MB / 7943 行 `.diag_dhat` 隔离 HOME：v8→v9 迁移
+  （备份仍 v8、旧表行数不变）、导入 7943+30 行、marker 写出、
+  `chat.jsonl` 大小不变（8496121 字节，未增长）、首帧显示尾部内容、
+  同步回包成功、RSS ~90 MB 量级。
 
-**行为仍未改变**：`chat.jsonl` 仍是 TUI 权威、仍由 UI 线程写，新协议没有任何
-UI 侧调用方（`RequestChatBubblePage` / `OnChatBubblePage` 的默认实现都是空）。
-下一轮才把它们接进 `ChatModel`。
+## 已知边界
 
-第一阶段（已提交 10a0404）：
-- `chat_bubbles` 表、`EDC_DB_VERSION` 8 → 9、`step_v8_to_v9`、`EDC_EXPECTED_TABLES`；
-- `edc_chat_bubble_append / page / rows_free / count / import_file`；
-- `tests/test_chat_bubbles.c`（33/33，含 RED 变异验证）、`test_state_migrate` 更新到 v9（64/64）；
-- `bazel test //tests:all` 155/155。
-
-老库下次启动会安全地补建表（`v8 → v9` 纯 DDL，零数据重写），数据不动。
-
-下一轮（第三阶段）：
-- 把 6 处 `AppendChatTranscript*` 从 UI 线程移到 scheduler actor：在事件生成点
-  顺带 `edc_chat_bubble_append()`，`ChatMessageEvent` 只负责展示；
-- 启动时在 actor 线程遍历 `<workspace>/<sid>/chat.jsonl` 调 `import_file`；
-- `ChatBubbleRef` 的 `offset/length` 改为 `seq/line`，`DecodeChatBubbleAt` 改
-  `DecodeTranscriptLine`（`test_chat_refs.cpp` 的 7 个夹具需重写）；
-- `ChatModel::LoadTranscript(session_id)` 改为请求最后一页 + `ApplyPage`；
-  滚到顶触发 `LoadOlderPage` 前插 + `TakeOffsetAdjustment` 锚定；
-- TUI 测试（分页、滚到顶可见更早、旧页不重查）+ 真实 8.2 MB 端到端。
+- 老 v8 二进制不认识 `chat_bubbles` 表，会继续写 `chat.jsonl`；降级后需重新导入。
+- `FetchChatBubblePageSync` 有 3s 超时，超时会回退到旧的 `LoadTranscript(path)`
+  （读文件）以保证首帧不空白；正常路径实测无超时。
+- `chat_bubbles` 表目前只增不删；历史无限增长时行数会线性上升（每行是轻量
+  TEXT，不是渲染树），需要时再加归档。
 
 ## 已确认的架构决策（用户拍板）
 

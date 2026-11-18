@@ -5,6 +5,7 @@
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/screen/box.hpp"
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -39,6 +40,10 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
     MessageList &operator=(MessageList const &) = delete;
 
     void AddMessage(std::shared_ptr<Message> message);
+
+    /* Called once when the reader has scrolled to the very top of the loaded
+     * log. The chat widget uses it to ask the actor for an older page. */
+    void SetReachedTopCallback(std::function<void()> cb);
 
     // Insert |messages| (file order: oldest first) above the current head. Used by
     // the startup backfill to fill the older history in without blocking: the
@@ -153,6 +158,9 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
     // clears its highlight only in ComputeRequirement, which a steady frame skips,
     // so the next frame clears these before painting the new selection.
     std::vector<size_t> highlighted_;
+
+    std::function<void()> reached_top_cb_;
+    bool reached_top_fired_ = false;
 
     // Lay one item out at |width|, returning its own body height; the blank row
     // between messages is a stride added in Rebuild.

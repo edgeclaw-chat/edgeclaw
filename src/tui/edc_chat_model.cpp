@@ -1,4 +1,5 @@
 #include "edc_chat_model.hpp"
+#include "edc_chat_bubble_page.hpp"
 
 #include <algorithm>
 #include <ctime>
@@ -87,6 +88,86 @@ void ChatModel::LoadTranscript(const std::string &path)
     window_->SetWindow(n > kPrimeWindow ? n - kPrimeWindow : 0, n, /*prefetch=*/40);
     Rebuild();
     Notify(Change{});
+}
+
+
+bool ChatModel::LoadFromPage(const std::string &session_id, const std::string &payload)
+{
+    ChatBubblePageReply reply;
+    if (!DecodeChatBubblePageReply(session_id.c_str(), payload.c_str(), &reply))
+        return false;
+    if (!reply.session_id.empty() && reply.session_id != session_id)
+        return false; /* a late reply for a session the reader left */
+
+    refs_holder_ = std::make_unique<std::vector<ChatBubbleRef>>();
+    std::vector<const char *> lines;
+    std::vector<int64_t> seqs;
+    lines.reserve(reply.rows.size());
+    seqs.reserve(reply.rows.size());
+    for (const auto &row : reply.rows)
+    {
+        lines.push_back(row.line.c_str());
+        seqs.push_back(row.seq);
+    }
+    BuildChatBubbleRefsFromPage(seqs.data(), lines.data(), lines.size(), refs_holder_.get());
+    window_ = std::make_unique<MessageWindow>("", refs_holder_.get());
+
+    all_.clear();
+    all_.reserve(window_->RefCount());
+    for (size_t i = 0; i < window_->RefCount(); i++)
+        all_.push_back(window_->Proxy(i));
+
+    session_id_ = session_id;
+    has_more_ = reply.has_more;
+    oldest_seq_ = all_.empty() ? 0 : (*refs_holder_)[0].seq;
+    const size_t n = all_.size();
+    window_->SetWindow(n > kPrimeWindow ? n - kPrimeWindow : 0, n, /*prefetch=*/40);
+    Rebuild();
+    Notify(Change{});
+    return true;
+}
+
+bool ChatModel::ApplyOlderPage(const std::string &session_id, const std::string &payload)
+{
+    ChatBubblePageReply reply;
+    if (!DecodeChatBubblePageReply(session_id.c_str(), payload.c_str(), &reply))
+        return false;
+    if (reply.session_id != session_id || reply.rows.empty() || !refs_holder_ || !window_)
+        return false;
+
+    std::vector<ChatBubbleRef> older;
+    std::vector<const char *> lines;
+    std::vector<int64_t> seqs;
+    for (const auto &row : reply.rows)
+    {
+        lines.push_back(row.line.c_str());
+        seqs.push_back(row.seq);
+    }
+    BuildChatBubbleRefsFromPage(seqs.data(), lines.data(), lines.size(), &older);
+    if (older.empty())
+        return false;
+
+    /* Prepend in file order. A LazyBubble stores its position, so ALL proxies
+     * must be rebuilt after the insert (they are cheap; the descriptors and the
+     * expanded flags live in refs_holder_ and survive). Rebuilding also drops
+     * the resident live_ instances, which are keyed by the old positions. */
+    refs_holder_->insert(refs_holder_->begin(), older.begin(), older.end());
+    window_->Clear(); /* drops live_ keyed by the old indices */
+    all_.clear();
+    all_.reserve(window_->RefCount());
+    for (size_t i = 0; i < window_->RefCount(); i++)
+        all_.push_back(window_->Proxy(i));
+
+    oldest_seq_ = (*refs_holder_)[0].seq;
+    has_more_ = reply.has_more;
+    Rebuild();
+    Notify(Change{});
+    return true;
+}
+
+int64_t ChatModel::oldest_seq() const
+{
+    return oldest_seq_;
 }
 
 void ChatModel::SetWindow(size_t first, size_t last, size_t prefetch)

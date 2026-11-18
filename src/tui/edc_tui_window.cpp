@@ -1,4 +1,5 @@
 #include "edc_tui_window.hpp"
+#include "edc_chat_bubble_page.hpp"
 #include "edc_api.h" /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_widget.hpp"
@@ -255,6 +256,14 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     // adapter (translating C messages into typed events, handed to |dispatcher_|
     // as IChannelSink and marshalled through this window as IUiDispatcher), and
     // frees it in its destructor.
+    /* Scrolling to the oldest loaded row asks the actor for the previous page.
+     * The model owns the cursor; the UI only reports that it reached the top. */
+    chat_widget_->SetReachedTopCallback([this]() {
+        if (!app_ || !app_->Ready() || !chat_model_ || !chat_model_->has_more())
+            return;
+        app_->RequestChatBubblePage(chat_model_->session_id(), chat_model_->oldest_seq(), 200);
+    });
+
     app_ = std::make_unique<port::AppFacade>(sandbox_override, this, dispatcher_.get());
 
     // AppFacade is not Ready() (after logging the reason) when the app cannot
@@ -619,6 +628,17 @@ bool TUIWindow::RequestPayloadForDraft()
     return asked;
 }
 
+void TUIWindow::ApplyChatBubblePage(const std::string &session_id, const std::string &payload)
+{
+    if (!chat_model_)
+        return;
+    if (!chat_model_->ApplyOlderPage(session_id, payload))
+        return;
+    /* ApplyOlderPage already rebuilt visible_ and notified the widget; one
+     * more frame draws the settled geometry. */
+    RequestFrame();
+}
+
 void TUIWindow::PresentMessagePayload(const std::string &mid, const std::string &payload_json)
 {
     struct edc_payload *payload = edc_payload_from_json(payload_json.c_str());
@@ -770,7 +790,22 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
         transcript_->PathFor(id, &path);
     session_model_->Reset(id, path);
 
-    LoadChatTranscriptFile(session_model_->chat_log_path());
+    /* First frame is synchronous: ask the actor for the newest page and wait
+     * for its reply, so the tail is on screen from the very first draw. The
+     * store read happens on the actor thread; this thread only renders. */
+    if (!id.empty() && app_ && app_->Ready())
+    {
+        const std::string payload = app_->FetchChatBubblePageSync(id, INT64_MAX, 200, 3000);
+        if (!payload.empty())
+            chat_model_->LoadFromPage(id, payload);
+        else
+            chat_model_->LoadTranscript(session_model_->chat_log_path()); /* legacy fallback */
+    }
+    else
+    {
+        chat_model_->LoadTranscript(session_model_->chat_log_path());
+    }
+    chat_widget_->ScrollToBottom();
 }
 
 void TUIWindow::LoadChatTranscriptFile(const std::string &path)
@@ -787,22 +822,28 @@ void TUIWindow::LoadChatTranscriptFile(const std::string &path)
 void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
                                      const std::string &task_id, int render_pref)
 {
-    AppendChatTranscriptTo(session_model_->chat_log_path(), kind, header, content, task_id, render_pref);
+    /* The channel actor persists every bubble exactly once (DB write on the
+     * actor thread). The UI thread must NOT also write, or every bubble would
+     * be duplicated on replay. */
+    (void)kind;
+    (void)header;
+    (void)content;
+    (void)task_id;
+    (void)render_pref;
 }
 
 void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
                                        const std::string &content, const std::string &task_id, int render_pref)
 {
-    ChatTranscriptEntry entry;
-    entry.kind = kind;
-    entry.render_pref = render_pref;
-    entry.task_id = task_id;
-    entry.header = header;
-    entry.content = content;
-
-    // The store owns the file details: parent dir, the half-written-line repair,
-    // and the symlink-safe append (see TranscriptStore::Append).
-    transcript_->Append(path, entry);
+    /* See AppendChatTranscript: persistence is the channel actor's job now.
+     * Background-session output keeps its own session_id on the channel
+     * message, so the actor writes it to the right log without UI help. */
+    (void)path;
+    (void)kind;
+    (void)header;
+    (void)content;
+    (void)task_id;
+    (void)render_pref;
 }
 
 void TUIWindow::SyncWorkingFromSnapshot(const TaskSnapshot *snap)

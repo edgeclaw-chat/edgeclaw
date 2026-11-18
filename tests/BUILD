@@ -2177,6 +2177,35 @@ cc_test(
 )
 
 cc_test(
+    name = "test_chat_bubble_write",
+    srcs = ["test_chat_bubble_write.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_session",
+    srcs = ["test_chat_bubble_session.c"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_chat_bubble_refs_db",
     srcs = ["test_chat_bubble_refs_db.cpp"],
     deps = [

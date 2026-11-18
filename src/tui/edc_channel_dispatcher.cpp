@@ -73,6 +73,13 @@ void ChannelDispatcher::OnTaskHistory(const std::string &payload)
     host_.PresentHistory(payload);
 }
 
+void ChannelDispatcher::OnChatBubblePage(const std::string &session_id, const std::string &payload_json)
+{
+    /* Late replies for a session the reader has left are dropped downstream by
+     * ChatModel::ApplyOlderPage (it compares session_id). */
+    host_.ApplyChatBubblePage(session_id, payload_json);
+}
+
 void ChannelDispatcher::OnTreeChanged(const std::string &session_id, const std::string &reason)
 {
     // A tree-changed event (P3 ①b) is a control message: "session X's tree

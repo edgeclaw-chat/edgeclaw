@@ -54,6 +54,19 @@ class ChatModel
      * fill the log with LazyBubble proxies. This is the ONLY history path. */
     void LoadTranscript(const std::string &path);
 
+    /* Replace the log with one chat_bubbles page (startup / session switch).
+     * |payload| is the CHAT_BUBBLE_PAGE reply JSON read on the actor thread. */
+    bool LoadFromPage(const std::string &session_id, const std::string &payload);
+
+    /* Prepend an older page (scrolling to the top). Returns false when the
+     * payload belongs to another session or there is nothing more to add. */
+    bool ApplyOlderPage(const std::string &session_id, const std::string &payload);
+
+    /* The seq of the oldest loaded row, and whether an older page exists. */
+    int64_t oldest_seq() const;
+    bool has_more() const { return has_more_; }
+    const std::string &session_id() const { return session_id_; }
+
     /* Drive the resident window from the list's visible index range. */
     void SetWindow(size_t first, size_t last, size_t prefetch);
 
@@ -118,6 +131,11 @@ class ChatModel
     std::set<std::string> input_shown_;
     std::shared_ptr<const std::set<std::string>> filter_;
     std::string filter_label_;
+
+    /* Paged log state (chat_bubbles). Kept in the model, never in the UI. */
+    std::string session_id_;
+    int64_t oldest_seq_ = 0;
+    bool has_more_ = false;
 
     std::map<int, Listener> listeners_;
     int next_id_ = 0;
