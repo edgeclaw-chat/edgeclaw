@@ -62,6 +62,24 @@ class ChatModel
      * payload belongs to another session or there is nothing more to add. */
     bool ApplyOlderPage(const std::string &session_id, const std::string &payload);
 
+    /* A whole-model snapshot, used while the history view temporarily replaces
+     * the chat pane. The history view used to be undone by replaying the
+     * transcript file; with the DB as the authority that replay would drop the
+     * live bubbles that arrived before the view was opened, so the caller now
+     * saves/restores the model itself. */
+    struct Snapshot
+    {
+        std::unique_ptr<std::vector<ChatBubbleRef>> refs;
+        std::unique_ptr<MessageWindow> window;
+        std::vector<std::shared_ptr<Message>> all;
+        std::vector<std::shared_ptr<Message>> visible;
+        std::string session_id;
+        int64_t oldest_seq = 0;
+        bool has_more = false;
+    };
+    Snapshot TakeSnapshot();
+    void RestoreSnapshot(Snapshot snap);
+
     /* The seq of the oldest loaded row, and whether an older page exists. */
     int64_t oldest_seq() const;
     bool has_more() const { return has_more_; }

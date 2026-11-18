@@ -1880,7 +1880,13 @@ static void sched_handle_pull_chat_bubble_page(struct edc_scheduler *sched, cons
      * leave `sid->valuestring` dangling before the reply callback runs. */
     char session_id[256];
     snprintf(session_id, sizeof(session_id), "%s", sid->valuestring);
-    const int64_t before_seq = (int64_t)before->valuedouble;
+    /* The wire cursor is 0 for "newest page" and a positive seq otherwise.
+     * JSON numbers are doubles: clamp anything non-positive or too large to
+     * INT64_MAX (the DB layer's "no upper bound" sentinel) instead of casting
+     * an out-of-range double, which is UB and differs across architectures. */
+    const double raw_before = before->valuedouble;
+    const int64_t requested_before = (raw_before > 0 && raw_before < 9.0e18) ? (int64_t)raw_before : 0;
+    const int64_t before_seq = requested_before > 0 ? requested_before : INT64_MAX;
     const int want = limit->valueint;
 
     /* Ask for one extra row: if it comes back, there is an older page still to
@@ -1898,7 +1904,7 @@ static void sched_handle_pull_chat_bubble_page(struct edc_scheduler *sched, cons
 
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddStringToObject(reply, "session_id", session_id);
-    cJSON_AddNumberToObject(reply, "before_seq", (double)before_seq);
+    cJSON_AddNumberToObject(reply, "before_seq", (double)requested_before);
     cJSON_AddBoolToObject(reply, "has_more", has_more);
     cJSON *arr = cJSON_AddArrayToObject(reply, "rows");
     /* rows are in ASCENDING seq order; a page answered for cursor C contains

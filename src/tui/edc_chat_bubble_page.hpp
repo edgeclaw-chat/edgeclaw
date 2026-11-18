@@ -24,7 +24,12 @@ namespace edc
 struct ChatBubblePageRequest
 {
     std::string session_id;
-    int64_t before_seq = INT64_MAX; /* INT64_MAX = newest page */
+    /* 0 (or any non-positive value) means "the newest page". A positive
+     * seq is an exclusive cursor: return rows with seq < before_seq.
+     * Never use INT64_MAX here: the wire format encodes numbers as JSON
+     * doubles, and (double)INT64_MAX rounds to 2^63 -- casting that back to
+     * int64_t is UB and saturates differently on amd64 vs aarch64. */
+    int64_t before_seq = 0;
     int limit = 200;
 };
 

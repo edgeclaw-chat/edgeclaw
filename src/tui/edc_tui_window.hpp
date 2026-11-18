@@ -134,6 +134,8 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // True while the chat pane shows a pulled task history; live output then
     // neither renders nor is written to the transcript.
     bool history_view_ = false;
+    /* The live chat model while the history view is showing its own bubbles. */
+    std::unique_ptr<model::ChatModel::Snapshot> chat_snapshot_;
 
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the setup wizard instead of sending anything.

@@ -38,7 +38,10 @@ bool DecodeChatBubblePageRequest(const char *json, ChatBubblePageRequest *out)
     if (ok)
     {
         out->session_id = sid->valuestring;
-        out->before_seq = (int64_t)before->valuedouble;
+        const double raw = before->valuedouble;
+        /* Clamp instead of relying on a giant sentinel that cannot survive a
+         * double round-trip. Non-positive = newest page. */
+        out->before_seq = (raw > 0 && raw < 9.0e18) ? (int64_t)raw : 0;
         out->limit = limit->valueint;
     }
     cJSON_Delete(root);
@@ -87,7 +90,10 @@ bool DecodeChatBubblePageReply(const char *header, const char *json, ChatBubbleP
     const cJSON *more = cJSON_GetObjectItem(root, "has_more");
     const cJSON *arr = cJSON_GetObjectItem(root, "rows");
     if (cJSON_IsNumber(before))
-        out->before_seq = (int64_t)before->valuedouble;
+    {
+        const double raw = before->valuedouble;
+        out->before_seq = (raw > 0 && raw < 9.0e18) ? (int64_t)raw : 0;
+    }
     if (cJSON_IsBool(more))
         out->has_more = cJSON_IsTrue(more);
     if (cJSON_IsArray(arr))

@@ -170,6 +170,41 @@ int64_t ChatModel::oldest_seq() const
     return oldest_seq_;
 }
 
+
+ChatModel::Snapshot ChatModel::TakeSnapshot()
+{
+    Snapshot snap;
+    snap.refs = std::move(refs_holder_);
+    snap.window = std::move(window_);
+    snap.all = std::move(all_);
+    snap.visible = std::move(visible_);
+    snap.session_id = std::move(session_id_);
+    snap.oldest_seq = oldest_seq_;
+    snap.has_more = has_more_;
+    /* Leave this model empty but usable: RenderTaskHistory will AddMessage()
+     * into it, and AddMessage() creates a fresh MessageWindow when window_ is
+     * null. The saved window keeps owning the saved refs (raw pointer stays
+     * valid because the vector object itself does not move). */
+    input_shown_.clear();
+    filter_label_.clear();
+    oldest_seq_ = 0;
+    has_more_ = false;
+    return snap;
+}
+
+void ChatModel::RestoreSnapshot(Snapshot snap)
+{
+    refs_holder_ = std::move(snap.refs);
+    window_ = std::move(snap.window);
+    all_ = std::move(snap.all);
+    visible_ = std::move(snap.visible);
+    session_id_ = std::move(snap.session_id);
+    oldest_seq_ = snap.oldest_seq;
+    has_more_ = snap.has_more;
+    Rebuild();
+    Notify(Change{});
+}
+
 void ChatModel::SetWindow(size_t first, size_t last, size_t prefetch)
 {
     if (window_)

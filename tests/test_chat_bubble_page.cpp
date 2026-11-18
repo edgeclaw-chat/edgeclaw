@@ -75,6 +75,25 @@ int main(void)
         }
     }
 
+    printf("-- a giant cursor must not survive a double round trip --\n");
+    {
+        /* A previous version used INT64_MAX as the "newest page" sentinel.
+         * cJSON stores numbers as doubles: (double)INT64_MAX rounds up to
+         * 2^63, and casting that back to int64_t is UB -- on amd64 it becomes
+         * INT64_MIN, so the DB query `seq < before` returns ZERO rows.
+         * The wire now uses 0 for "newest" and clamps anything unrepresentable. */
+        edc::ChatBubblePageRequest req;
+        req.session_id = "s1";
+        req.before_seq = INT64_MAX; /* an old caller / malformed input */
+        req.limit = 10;
+        std::string json = edc::EncodeChatBubblePageRequest(req);
+        edc::ChatBubblePageRequest got;
+        CHECK(edc::DecodeChatBubblePageRequest(json.c_str(), &got), "the giant cursor still decodes");
+        CHECK(got.before_seq == 0, "the giant cursor clamps to 0 (newest page), got %lld",
+              (long long)got.before_seq);
+        CHECK(got.before_seq >= 0, "no negative cursor can reach the DB query");
+    }
+
     printf("-- empty / degenerate replies --\n");
     {
         std::string json = edc::EncodeChatBubblePageReply("s", INT64_MAX, nullptr, nullptr, 0, false);

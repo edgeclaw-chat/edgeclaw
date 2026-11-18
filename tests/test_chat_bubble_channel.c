@@ -139,7 +139,7 @@ int main(void)
 
     printf("-- newest page --\n");
     {
-        char *json = request_json(sid, (int64_t)INT64_MAX, 10);
+        char *json = request_json(sid, 0, 10);
         drive(sched, json);
         free(json);
         CHECK(g_replies == 1, "handler produced a reply, got %d", g_replies);
@@ -174,7 +174,7 @@ int main(void)
         CHECK(n == 5 && !more, "last page has 5 rows and has_more is false, got %d/%d", n, more);
 
         int before = g_replies;
-        json = request_json("never-existed", (int64_t)INT64_MAX, 10);
+        json = request_json("never-existed", 0, 10);
         drive(sched, json);
         free(json);
         CHECK(g_replies == before + 1, "an unknown session still gets an honest empty page");

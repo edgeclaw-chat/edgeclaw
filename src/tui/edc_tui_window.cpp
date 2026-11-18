@@ -795,7 +795,7 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
      * store read happens on the actor thread; this thread only renders. */
     if (!id.empty() && app_ && app_->Ready())
     {
-        const std::string payload = app_->FetchChatBubblePageSync(id, INT64_MAX, 200, 3000);
+        const std::string payload = app_->FetchChatBubblePageSync(id, 0, 200, 3000);
         if (!payload.empty())
             chat_model_->LoadFromPage(id, payload);
         else
@@ -1602,9 +1602,25 @@ void TUIWindow::ExitHistoryView()
     if (!history_view_)
         return;
     history_view_ = false;
-    chat_widget_->Clear();
-    const std::string id = session_model_->displayed_id();
-    LoadChatTranscript(id.empty() ? nullptr : id.c_str());
+    /* Restore the live chat model exactly as it was before the history view
+     * replaced the pane. Replaying the transcript (the old behaviour) would
+     * drop bubbles that arrived while the reader was still on the live tab,
+     * because the DB page is a snapshot of persisted history, not the current
+     * in-process view. */
+    if (chat_snapshot_)
+    {
+        model::ChatModel::Snapshot snap = std::move(*chat_snapshot_);
+        chat_snapshot_.reset();
+        chat_widget_->Clear();
+        chat_model_->RestoreSnapshot(std::move(snap));
+        chat_widget_->ScrollToBottom();
+    }
+    else
+    {
+        chat_widget_->Clear();
+        const std::string id = session_model_->displayed_id();
+        LoadChatTranscript(id.empty() ? nullptr : id.c_str());
+    }
     if (screen_)
         screen_->RequestAnimationFrame();
 }
@@ -1657,7 +1673,10 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
     }
     cJSON_Delete(root);
 
-    /* History view: this replaces the chat pane; live output stops until Esc. */
+    /* History view: this replaces the chat pane; live output stops until Esc.
+     * Save the live model first so Esc can put it back without a DB replay. */
+    if (!chat_snapshot_)
+        chat_snapshot_ = std::make_unique<model::ChatModel::Snapshot>(chat_model_->TakeSnapshot());
     chat_widget_->Clear();
     for (const auto &bubble : bubbles)
         chat_widget_->AddMessage(bubble);
