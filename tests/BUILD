@@ -2177,6 +2177,16 @@ cc_test(
 )
 
 cc_test(
+    name = "test_chat_bubble_refs_db",
+    srcs = ["test_chat_bubble_refs_db.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
     name = "test_chat_bubble_page",
     srcs = ["test_chat_bubble_page.cpp"],
     deps = [

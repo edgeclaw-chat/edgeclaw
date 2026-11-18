@@ -1,6 +1,16 @@
 # chat_bubbles：把 TUI 视图状态迁进 edgeclaw.db（B1 + 分页加载 A）
 
-状态：**第一阶段（DB 层 + v9 迁移 + 导入器）与第二阶段（跨线程分页协议）已实现并验证；写路径迁移与 TUI 数据层改造留待下一轮。**
+状态：**第一阶段（DB/v9/导入器）、第二阶段（跨线程分页协议）、第三阶段上半（描述符层支持 DB 行）已实现并验证；ChatModel 异步分页 + 写路径迁移留待下一轮。**
+
+第三阶段上半（本提交，纯增量、零行为变化）：
+- `ChatBubbleRef` 新增 `kDatabase` source + `seq` / `line`（编码原始行内联）；
+  `kFile` 保留给一次性导入器与 `test_chat_refs.cpp` 的旧夹具，不用推倒重写；
+- `BuildChatBubbleRefsFromPage(seqs, lines, n, out)` 从一页 DB 行构造描述符；
+  `MessageWindow::Fields()` 的 `kDatabase` 分支用 `DecodeTranscriptLine` 解码，
+  不碰文件、不需要第二次 DB 读；
+- `tests/test_chat_bubble_refs_db.cpp` 12/12：真实 tab 分隔 vs 字段内 `\n`/`\t`/`\\`
+  转义逐字节往返、`seq`/`task_id`/`source`、越界拒绝；RED 实证有效。
+- `bazel test //tests:all` 158/158。
 
 第二阶段（本提交）：
 - `BC_ACTOR_MSG_CHAT_BUBBLE_PAGE` / `EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE`；

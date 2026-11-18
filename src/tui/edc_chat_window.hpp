@@ -31,14 +31,18 @@ namespace edc
  *            MessageWindow::memory_, never written to the transcript. */
 enum class ChatBubbleSource : uint8_t
 {
-    kFile = 0,
-    kMemory = 1,
+    kFile = 0,     /* legacy: a line in chat.jsonl, addressed by offset/length.
+                    * Kept for the one-time importer and its regression tests. */
+    kMemory = 1,   /* this process only, deliberately not persisted */
+    kDatabase = 2, /* a chat_bubbles row, addressed by seq, line stored inline */
 };
 
 struct ChatBubbleRef
 {
-    uint64_t offset = 0;
-    uint32_t length = 0;
+    uint64_t offset = 0;   /* kFile only */
+    uint32_t length = 0;   /* kFile only */
+    int64_t seq = 0;       /* kDatabase only: the row's per-session seq */
+    std::string line;      /* kDatabase only: the ENCODED transcript row, verbatim */
     uint32_t mem_index = 0;
     ChatBubbleSource source = ChatBubbleSource::kFile;
     uint8_t kind = 0;        /* ChatBubbleKind */
@@ -68,6 +72,12 @@ enum class ChatBubbleKind : uint8_t
  * copied into a Message. A trailing line without '\n' is dropped, matching
  * DecodeTranscriptLine/LoadTranscript. This is the ONLY full-file pass. */
 size_t BuildChatBubbleRefs(const std::string &path, std::vector<ChatBubbleRef> *out);
+
+/* Build descriptors from one chat_bubbles page (seq + encoded line). The line is
+ * decoded once here for the cheap index fields, and kept verbatim so Fields()
+ * never needs a second DB read when the row scrolls into view. */
+size_t BuildChatBubbleRefsFromPage(const int64_t *seqs, const char *const *lines, size_t n,
+                                   std::vector<ChatBubbleRef> *out);
 
 /* Decode one indexed line into the five transcript fields. */
 bool DecodeChatBubbleAt(const std::string &path, const ChatBubbleRef &ref, std::string *kind,

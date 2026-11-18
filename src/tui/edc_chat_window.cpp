@@ -111,6 +111,32 @@ ChatBubbleRef MakeMemoryRef(const ChatTranscriptEntry &entry, uint32_t mem_index
 
 } // namespace
 
+size_t BuildChatBubbleRefsFromPage(const int64_t *seqs, const char *const *lines, size_t n,
+                                   std::vector<ChatBubbleRef> *out)
+{
+    if (!out)
+        return 0;
+    out->clear();
+    out->reserve(n);
+    std::string_view parts[5];
+    for (size_t i = 0; i < n; i++)
+    {
+        const std::string line = lines[i] ? lines[i] : "";
+        if (line.empty() || !SplitUnescaped(line, parts))
+            continue;
+        ChatBubbleRef ref;
+        ref.source = ChatBubbleSource::kDatabase;
+        ref.seq = seqs[i];
+        ref.line = line;
+        ref.kind = ClassifyKind(std::string(parts[0]));
+        ref.render_pref = static_cast<uint8_t>(std::atoi(std::string(parts[1]).c_str()));
+        ref.task_id = UnescapeSmall(parts[2]);
+        ref.est_lines = EstimateLines(ref.kind);
+        out->push_back(std::move(ref));
+    }
+    return out->size();
+}
+
 size_t BuildChatBubbleRefs(const std::string &path, std::vector<ChatBubbleRef> *out)
 {
     if (!out)
@@ -313,6 +339,18 @@ bool MessageWindow::Fields(size_t index, std::string *kind, int *render_pref, st
     if (!refs_ || index >= refs_->size())
         return false;
     const ChatBubbleRef &ref = (*refs_)[index];
+    if (ref.source == ChatBubbleSource::kDatabase)
+    {
+        ChatTranscriptEntry entry;
+        if (!DecodeTranscriptLine(ref.line, &entry))
+            return false;
+        *kind = std::move(entry.kind);
+        *task_id = std::move(entry.task_id);
+        *header = std::move(entry.header);
+        *content = std::move(entry.content);
+        *render_pref = entry.render_pref;
+        return true;
+    }
     if (ref.source == ChatBubbleSource::kMemory)
     {
         if (ref.mem_index >= memory_.size())
