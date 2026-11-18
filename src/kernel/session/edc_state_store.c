@@ -2081,17 +2081,30 @@ static void load_detach_from_groups(struct edc_session *session, struct edc_task
     {
         if (only_group && g != only_group)
             continue;
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
+        /* Do the unlink by hand: LL_DELETE2 (UTLIST_RS variant) rewrites
+         * g->members while walking, which corrupts a concurrent
+         * LL_FOREACH2 over the same head. Keeping prev/next explicit also
+         * guarantees the task really leaves this group, so it cannot be
+         * attached to two groups and freed twice at teardown. */
+        struct edc_task *prev = NULL;
+        struct edc_task *t = g->members;
+        while (t && t != task)
         {
-            if (t != task)
-                continue;
-            LL_DELETE2(g->members, t, group_next);
+            prev = t;
+            t = t->group_next;
+        }
+        if (t == task)
+        {
+            if (prev)
+                prev->group_next = task->group_next;
+            else
+                g->members = task->group_next;
+            task->group_next = NULL;
+            task->group = NULL; /* add_task() uses this as its "already a member" test */
             if (g->member_count > 0)
                 g->member_count--;
             log_warn("load: task %" PRId64 " detached from group %" PRId64 " (a task belongs to one group only)",
                      (int64_t)task_id, (int64_t)g->group_id);
-            break;
         }
     }
 }
@@ -2471,7 +2484,11 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                         struct edc_task *mt = load_task_get(task_map, mid);
                         if (!mt)
                             continue;
-                        load_detach_from_groups(session, mt, mid, group);
+                        /* Detach from EVERY group, including the one we are
+                         * about to attach to: a task already on a stale chain
+                         * must be unlinked before add_task() appends it, or
+                         * it ends up on two lists and is freed twice. */
+                        load_detach_from_groups(session, mt, mid, NULL);
                         edc_task_group_add_task(group, mt);
                     }
                 }

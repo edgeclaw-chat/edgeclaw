@@ -242,6 +242,64 @@ static void test_import_is_idempotent(void)
     free_config(cfg);
 }
 
+
+static void test_import_long_line(void)
+{
+    printf("\n-- importer grows its buffer for one long line --\n");
+    reset_dir();
+    struct edc_config *cfg = make_config();
+    CHECK(edc_state_store_open(cfg), "store opens");
+
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/1/chat.jsonl", g_dir);
+    {
+        char cmd[2048];
+        snprintf(cmd, sizeof(cmd), "mkdir -p '%s/1'", g_dir);
+        test_sh(cmd);
+    }
+    FILE *f = fopen(path, "wb");
+    CHECK(f != NULL, "long-line fixture created");
+    if (f)
+    {
+        /* One bubble whose content is far larger than the importer's initial
+         * 4096-byte read buffer, with escapes inside it. */
+        fputs("tool\t0\tt1\thdr\t", f);
+        /* Escaped newlines INSIDE the field (two bytes \ + n), never a
+         * real newline: the physical line terminator is the single one at
+         * the end. Real newlines here would make 126 separate bubbles. */
+        for (int i = 0; i < 12000; i++)
+        {
+            if (i % 97 == 0)
+            {
+                fputc('\\', f);
+                fputc('n', f);
+            }
+            else
+                fputc('X', f);
+        }
+        fputc('\n', f);
+        fputs("sys\t0\t\t\tafter the long line\n", f);
+        fclose(f);
+    }
+
+    int64_t n = edc_chat_bubble_import_file("1", path);
+    CHECK(n == 2, "both the long line and the following line imported, got %" PRId64, n);
+    CHECK(edc_chat_bubble_count("1") == 2, "count == 2");
+
+    struct edc_chat_bubble_row *rows = NULL;
+    int cnt = 0;
+    CHECK(edc_chat_bubble_page("1", INT64_MAX, 10, &rows, &cnt) && cnt == 2, "page reads 2 rows");
+    if (cnt == 2)
+    {
+        CHECK(strlen(rows[0].line) > 12000, "the long line was stored whole (%zu bytes)",
+              strlen(rows[0].line));
+        CHECK(strcmp(rows[1].line, "sys\t0\t\t\tafter the long line") == 0,
+              "the following line is intact (no spilled bytes)");
+    }
+    edc_chat_bubble_rows_free(rows, cnt);
+    free_config(cfg);
+}
+
 int main(void)
 {
     const char *tmp = getenv("TMPDIR");
@@ -255,6 +313,7 @@ int main(void)
     test_append_and_page();
     test_paging_boundaries();
     test_import_is_idempotent();
+    test_import_long_line();
     edc_state_store_close();
     {
         char cmd[4096];
