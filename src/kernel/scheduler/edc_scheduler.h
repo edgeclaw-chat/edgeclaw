@@ -55,6 +55,10 @@ typedef void (*edc_scheduler_message_payload_fn)(struct edc_scheduler *sched, co
  *  pulls what it displays. `reason` is trace-only. */
 typedef void (*edc_scheduler_snapshot_changed_fn)(struct edc_scheduler *sched, const char *session_id,
                                                   const char *reason);
+/** Answer to a chat-bubble page pull: |session_id| names the log, |payload| is the
+ *  page JSON. The store is read here (scheduler thread); the UI only renders. */
+typedef void (*edc_scheduler_chat_bubble_page_fn)(struct edc_scheduler *sched, const char *session_id,
+                                                  sds payload);
 
 /** One "tree changed" entry; `reason` is a static literal, not owned. */
 struct edc_sched_dirty
@@ -112,6 +116,7 @@ struct edc_scheduler
     edc_scheduler_command_fn handle_command;
     edc_scheduler_snapshot_fn snapshot_reply;
     edc_scheduler_message_payload_fn message_payload_reply;
+    edc_scheduler_chat_bubble_page_fn chat_bubble_page_reply;
     edc_scheduler_snapshot_changed_fn snapshot_changed;
 
     /* Raw text of the input being handled (not owned, valid during the message);

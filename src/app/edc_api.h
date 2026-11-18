@@ -185,10 +185,17 @@ extern void edc_app_request_message_payload(struct edc_app *app, const char *mid
 extern const char *edc_app_message_mid(const struct edc_channel_message *message);
 /* True for the MESSAGE_PAYLOAD reply above. */
 extern int edc_app_message_is_message_payload(const struct edc_channel_message *message);
+extern int edc_app_message_is_chat_bubble_page(const struct edc_channel_message *message);
 
 /* Request a task tree: built on the scheduler thread, answered as a TASK_SNAPSHOT
  * message. */
 extern void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id);
+
+/* Ask the scheduler actor for one page of the durable chat log. |request_json| is
+ * the EncodedChatBubblePageRequest JSON (session_id, before_seq, limit); it is
+ * copied, so the caller may free it immediately. The answer arrives as a
+ * CHAT_BUBBLE_PAGE channel message. The UI never reads the store itself. */
+extern void edc_app_request_chat_bubble_page(struct edc_app *app, const char *request_json);
 /* Write a frontend-owned file (transcript / command history): under_workspace
  * requires the path to be under config.workspace and rejects symlink targets (see
  * edc_file_fopen_safe). */

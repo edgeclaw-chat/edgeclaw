@@ -332,6 +332,14 @@ static void edc_channel_cb_message_payload(struct edc_scheduler *sched, const ch
     edc_channel_publish_keyed(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE), mid, payload);
 }
 
+/* The page reply names its session in `header`, so the UI can drop a late reply
+ * for a session the reader has since switched away from. */
+static void edc_channel_cb_chat_bubble_page(struct edc_scheduler *sched, const char *session_id, sds payload)
+{
+    edc_channel_publish_keyed(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE), session_id,
+                              payload);
+}
+
 void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched)
 {
     if (!actor || !sched)
@@ -343,4 +351,5 @@ void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *
     sched->snapshot_reply = edc_channel_cb_snapshot_reply;
     sched->snapshot_changed = edc_channel_cb_snapshot_changed;
     sched->message_payload_reply = edc_channel_cb_message_payload;
+    sched->chat_bubble_page_reply = edc_channel_cb_chat_bubble_page;
 }

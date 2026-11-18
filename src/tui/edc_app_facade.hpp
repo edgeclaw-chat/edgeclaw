@@ -83,6 +83,15 @@ class IChannelSink
     virtual void OnTaskHistory(const std::string &payload) = 0;
     // The folded-paste payload of the user message named by |mid| ("" = gone for good).
     virtual void OnMessagePayload(const std::string &mid, const std::string &payload_json) = 0;
+
+    /* One page of the durable chat log, read on the scheduler actor thread.
+     * Default no-op so test fakes that do not care about paging stay concrete
+     * (adding a pure virtual here would break every FakeFacade). */
+    virtual void OnChatBubblePage(const std::string &session_id, const std::string &payload_json)
+    {
+        (void)session_id;
+        (void)payload_json;
+    }
 };
 
 // The config submitted by the first-run setup page (the wizard): the LLM settings plus
@@ -192,6 +201,15 @@ class IAppFacade
     // Ask the scheduler thread for that payload (the store is not ours to read).
     virtual void RequestMessagePayload(const std::string &mid) = 0;
 
+    /* Ask the scheduler actor for a page of durable chat bubbles. Default no-op
+     * for the same reason as OnChatBubblePage above. */
+    virtual void RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit)
+    {
+        (void)session_id;
+        (void)before_seq;
+        (void)limit;
+    }
+
     // ── paths / files the frontend owns ──────────────────────────
     virtual bool HistoryPath(std::string *out) const = 0;
     virtual bool ChatLogPathFor(const std::string &session_id, std::string *out) const = 0;
@@ -280,6 +298,7 @@ class AppFacade : public IAppFacade
                          const std::string &payload_json, const std::string &mid) override;
     void RequestTaskSnapshot(const std::string &session_id) override;
     void RequestMessagePayload(const std::string &mid) override;
+    void RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit) override;
 
     bool HistoryPath(std::string *out) const override;
     bool ChatLogPathFor(const std::string &session_id, std::string *out) const override;

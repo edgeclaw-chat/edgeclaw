@@ -1,21 +1,45 @@
 # chat_bubbles：把 TUI 视图状态迁进 edgeclaw.db（B1 + 分页加载 A）
 
-状态：**第一阶段已实现并验证（DB 层 + v9 迁移 + 一次性导入器），跨线程通道与 TUI 改造留待下一轮。**
+状态：**第一阶段（DB 层 + v9 迁移 + 导入器）与第二阶段（跨线程分页协议）已实现并验证；写路径迁移与 TUI 数据层改造留待下一轮。**
 
-第一阶段（本提交）：
+第二阶段（本提交）：
+- `BC_ACTOR_MSG_CHAT_BUBBLE_PAGE` / `EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE`；
+- `edc_chat_bubble_page.hpp/.cpp` 的请求/回包 JSON 编解码（`std::string`，因为
+  sds.h 不能进 C++）；`tests/test_chat_bubble_page.cpp` 14/14 + RED 实证；
+- TUI→actor：`IAppFacade::RequestChatBubblePage` → `AppFacade` →
+  `edc_app_request_chat_bubble_page` → scheduler handler 分支 →
+  `sched_handle_pull_chat_bubble_page`：在 actor 线程调 `edc_chat_bubble_page`，
+  多取一条判断 `has_more`，回包只带 `limit` 条；
+- actor→TUI：`edc_channel_cb_chat_bubble_page` → `channel message` →
+  `AppFacade::TranslateAndDispatch` → `IChannelSink::OnChatBubblePage` →
+  `Dispatcher::Post`。两个新虚方法都带默认空实现，避免打破 FakeFacade；
+- `tests/test_chat_bubble_channel.c` 13/13：真实 `actor->handler` 驱动，
+  钉住「最新页 / 游标页 / 末页 / 未知会话 / 畸形请求」；RED 实证有效。
+  该测试还抓到并修掉一个真的悬垂指针（回包回调引用了已 `cJSON_Delete` 的
+  `session_id` 字符串）。
+- `bazel test //tests:all` 157/157。
+
+**行为仍未改变**：`chat.jsonl` 仍是 TUI 权威、仍由 UI 线程写，新协议没有任何
+UI 侧调用方（`RequestChatBubblePage` / `OnChatBubblePage` 的默认实现都是空）。
+下一轮才把它们接进 `ChatModel`。
+
+第一阶段（已提交 10a0404）：
 - `chat_bubbles` 表、`EDC_DB_VERSION` 8 → 9、`step_v8_to_v9`、`EDC_EXPECTED_TABLES`；
 - `edc_chat_bubble_append / page / rows_free / count / import_file`；
 - `tests/test_chat_bubbles.c`（33/33，含 RED 变异验证）、`test_state_migrate` 更新到 v9（64/64）；
 - `bazel test //tests:all` 155/155。
 
-**行为尚未改变**：`chat.jsonl` 仍是 TUI 的权威、仍由 UI 线程写；新表只是先建好、
-新 API 只是先备好，没有任何调用方。因此这次提交对用户是完全无感的：老库下次
-启动会安全地补建表（`v8 → v9` 纯 DDL，零数据重写），数据不动。
+老库下次启动会安全地补建表（`v8 → v9` 纯 DDL，零数据重写），数据不动。
 
-下一轮：新增 `BC_ACTOR_MSG_CHAT_BUBBLE_PAGE` / `EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE`
-/ `IChannelSink::OnChatBubblePage` 跨线程通道，把 6 处 `AppendChatTranscript*` 从
-UI 线程移到 scheduler actor，改 `ChatBubbleRef` 的 `offset/length` 为 `seq/line`，
-`ChatModel` 分页加载 + 滚到顶 `LoadOlderPage`，启动时调 `import_file`，补 TUI 测试。
+下一轮（第三阶段）：
+- 把 6 处 `AppendChatTranscript*` 从 UI 线程移到 scheduler actor：在事件生成点
+  顺带 `edc_chat_bubble_append()`，`ChatMessageEvent` 只负责展示；
+- 启动时在 actor 线程遍历 `<workspace>/<sid>/chat.jsonl` 调 `import_file`；
+- `ChatBubbleRef` 的 `offset/length` 改为 `seq/line`，`DecodeChatBubbleAt` 改
+  `DecodeTranscriptLine`（`test_chat_refs.cpp` 的 7 个夹具需重写）；
+- `ChatModel::LoadTranscript(session_id)` 改为请求最后一页 + `ApplyPage`；
+  滚到顶触发 `LoadOlderPage` 前插 + `TakeOffsetAdjustment` 锚定；
+- TUI 测试（分页、滚到顶可见更早、旧页不重查）+ 真实 8.2 MB 端到端。
 
 ## 已确认的架构决策（用户拍板）
 

@@ -2161,6 +2161,33 @@ cc_test(
 )
 
 cc_test(
+    name = "test_chat_bubble_channel",
+    srcs = ["test_chat_bubble_channel.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/app:api",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_page",
+    srcs = ["test_chat_bubble_page.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@cjson//:cjson",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
     name = "test_chat_bubbles",
     srcs = ["test_chat_bubbles.c", "test_fs_util.h"],
     deps = [

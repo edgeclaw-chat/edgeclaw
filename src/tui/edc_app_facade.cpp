@@ -1,6 +1,7 @@
 #include "edc_app_facade.hpp"
 
 #include "edc_app.h"
+#include "edc_chat_bubble_page.hpp"
 
 #include <utility>
 
@@ -366,6 +367,18 @@ void AppFacade::RequestMessagePayload(const std::string &mid)
         edc_app_request_message_payload(app_, mid.c_str());
 }
 
+void AppFacade::RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit)
+{
+    if (!app_ || session_id.empty() || limit <= 0)
+        return;
+    edc::ChatBubblePageRequest request;
+    request.session_id = session_id;
+    request.before_seq = before_seq;
+    request.limit = limit;
+    const std::string json = edc::EncodeChatBubblePageRequest(request);
+    edc_app_request_chat_bubble_page(app_, json.c_str());
+}
+
 void AppFacade::RequestTaskSnapshot(const std::string &session_id)
 {
     if (app_)
@@ -438,6 +451,19 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         const std::string payload = content ? content : "";
         IChannelSink *sink = sink_;
         dispatcher_->Post([sink, mid, payload]() { sink->OnMessagePayload(mid, payload); });
+        return;
+    }
+
+    // A page of the durable chat log: header = session_id, content = page JSON.
+    // The store read already happened on the scheduler thread; this thread only
+    // parses and renders.
+    if (edc_app_message_is_chat_bubble_page(message))
+    {
+        const char *sid_c = edc_app_message_header(message);
+        const std::string sid = sid_c ? sid_c : "";
+        const std::string payload = content ? content : "";
+        IChannelSink *sink = sink_;
+        dispatcher_->Post([sink, sid, payload]() { sink->OnChatBubblePage(sid, payload); });
         return;
     }
 

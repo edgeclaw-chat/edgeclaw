@@ -28,6 +28,7 @@ cc_library(
     srcs = [
         "edc_app_facade.cpp",
         "edc_channel_dispatcher.cpp",
+        "edc_chat_bubble_page.cpp",
         "edc_chat_model.cpp",
         "edc_chat_transcript.cpp",
         "edc_chat_widget.cpp",
@@ -62,6 +63,7 @@ cc_library(
     hdrs = [
         "edc_app_facade.hpp",
         "edc_channel_dispatcher.hpp",
+        "edc_chat_bubble_page.hpp",
         "edc_chat_model.hpp",
         "edc_session_model.hpp",
         "edc_chat_transcript.hpp",

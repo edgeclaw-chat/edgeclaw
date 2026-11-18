@@ -35,6 +35,11 @@ typedef enum
     BC_ACTOR_MSG_SERVICE_PUMP,    /* host service timer -> scheduler: at least one service is
                                    * due (data = NULL). Deferred into the scheduler handler so
                                    * the timer callback never mutates state itself. */
+    BC_ACTOR_MSG_CHAT_BUBBLE_PAGE, /* TUI asks for one page of its durable chat log.
+                                    * data = malloc'd JSON request (session_id,
+                                    * before_seq, limit); answered as a
+                                    * CHAT_BUBBLE_PAGE channel message. The store
+                                    * lives on this thread, so the UI never reads it. */
 } edc_actor_msg_type_t;
 
 typedef void (*edc_actor_data_free_fn)(void *);
