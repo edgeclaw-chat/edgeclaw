@@ -1767,7 +1767,15 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
             if (rec && rec->status != TOOL_CALL_EXECUTING)
                 continue; /* PENDING: let the drive section really dispatch; do not fake a response */
             if (task_turn_has_tool_response(turn, n, id->valuestring))
+            {
+                /* The result IS on disk, so this call is finished -- yet the ledger can
+                 * still hold a stale EXECUTING row (an old flush never deleted rows that
+                 * left RAM). Drop it here: leaving it makes has_pending_tool_calls()
+                 * route START into redispatch, which rebuilds 0 requests and fails the
+                 * task with a bogus "no toolbox port" on every resume (task 549). */
+                edc_task_tool_call_remove(task, id->valuestring);
                 continue; /* already has a result (idempotent) */
+            }
 
             cJSON *fn = cJSON_GetObjectItem(tc, "function");
             cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;

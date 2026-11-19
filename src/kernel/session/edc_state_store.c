@@ -1371,6 +1371,13 @@ static void bind_dep(sqlite3_stmt *st, void *ctx)
 static const char *INSERT_TOOL_CALL =
     "INSERT OR REPLACE INTO task_tool_calls(task_id,ord,call_id,name,args,status) VALUES(?,?,?,?,?,?)";
 
+/* The ledger is positionally keyed by (task_id, ord), so a removed record cannot be
+ * expressed as an upsert: clear this task's rows before writing the current list. */
+static void bind_task_id(sqlite3_stmt *st, void *ctx)
+{
+    sqlite3_bind_int64(st, 1, *(const int64_t *)ctx);
+}
+
 struct tool_call_bind
 {
     int64_t task_id;
@@ -1646,8 +1653,16 @@ static bool flush_task(sqlite3 *db, int64_t session_id, const struct edc_task *t
         }
     }
 
-    /* the incomplete-tool-call ledger */
+    /* the incomplete-tool-call ledger. Replace the whole list, not just the rows
+     * still present: tool_done() removes a record as soon as its result lands, and
+     * an INSERT-only flush leaves the old `executing` row behind. On the next load
+     * that row comes back as an unfinished tool, redispatch rebuilds 0 requests and
+     * every resume fails with "no toolbox port" (task 549). ord is the list position,
+     * so a shortened list must also drop the tail. */
     {
+        int64_t tid = t->task_id;
+        if (!run_stmt(db, "DELETE FROM task_tool_calls WHERE task_id=?", "tool_call clear", bind_task_id, &tid))
+            return false;
         int i = 0;
         for (const struct edc_tool_call_record *c = t->tool_calls; c; c = c->next)
         {

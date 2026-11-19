@@ -625,6 +625,86 @@ static void test_memo_removals_persist(void)
     edc_config_free(cfg);
 }
 
+/* ── The resume ledger must not resurrect completed calls ───────────────────
+ * Regression for task 549: a tool finished, its result IS in the turn, and
+ * tool_done() removed the record from task->tool_calls. flush_task() used to
+ * INSERT OR REPLACE the ledger without ever deleting rows that disappeared, so
+ * the old `executing` row stayed on disk. On the next load it came back, and
+ * resume's START found "an unfinished tool chain" whose redispatch rebuilt 0
+ * requests (only PENDING is rebuilt) -- every resume then failed with
+ * "[failed: the tool chain could not be re-dispatched (no toolbox port)]".
+ *
+ * Shape mirrors test_memo_removals_persist: write, remove in RAM, write again,
+ * reload into a fresh object. The assertions are absolute (no ledger at all),
+ * not a before/after dump comparison. */
+static void test_completed_tool_calls_do_not_resurrect(void)
+{
+    printf("\n── completed tool calls stay gone after a reload (task 549) ──\n");
+
+    struct edc_config *cfg = g_new0(struct edc_config, 1);
+    cfg->workspace = sdsnew(g_dir);
+
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-ledger-stale"), "LedgerStale");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_sessions(sched, s);
+
+    struct edc_task *t = edc_task_new(edc_test_id("ls-1"), s->session_id, edc_test_id("ls-g"), "task 549",
+                                      edc_channel_adapter);
+    t->is_group_leader = 1;
+    t->step = EDC_TASKSTEP_DONE;
+    t->life = EDC_LIFE_COMPLETED;
+    edc_queue_init(&t->turns);
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+    struct edc_turn *turn = edc_turn_new();
+    add_msg(turn, "user", "hello", "ls-m1");
+    add_msg(turn, "assistant", "running the tool", "ls-m2");
+    add_msg(turn, "tool", "the real result", "ls-m3");
+    edc_task_add_turn(t, turn);
+
+    /* The exact state at the moment the tool was dispatched: one EXECUTING record. */
+    edc_task_tool_call_add(t, "call-finished", "exec_shell", NULL);
+    edc_task_tool_call_mark_executing(t, "call-finished");
+    CHECK(edc_state_store_flush(s, sched), "第一次 flush（executing 记录落盘）");
+
+    /* tool_done(): the result arrived, so the record leaves the ledger in RAM. */
+    CHECK(edc_task_tool_call_remove(t, "call-finished"), "tool_done removes the record in RAM");
+    CHECK(!edc_task_has_pending_tool_calls(t), "ledger empty after the tool result");
+    CHECK(edc_state_store_flush(s, sched), "第二次 flush（结果已落盘）");
+
+    /* Restart: a fresh object loading the very same rows. */
+    struct edc_session *back = edc_session_new(cfg, edc_test_session_id("s-ledger-stale"), "LedgerStale");
+    struct edc_scheduler *bsched = edc_scheduler_new(cfg);
+    install_sessions(bsched, back);
+    CHECK(edc_state_store_load(back, bsched), "重启后 load");
+
+    struct edc_task *rt = NULL;
+    struct edc_task_group *rg;
+    DL_FOREACH(back->groups, rg)
+    {
+        struct edc_task *it;
+        LL_FOREACH2(rg->members, it, group_next)
+        {
+            if (it->task_id == edc_test_id("ls-1"))
+                rt = it;
+        }
+    }
+    CHECK(rt != NULL, "任务读回来了");
+    CHECK(rt && !edc_task_has_pending_tool_calls(rt), "已完成的工具没有复活成待办");
+    CHECK(rt && edc_task_tool_call_find(rt, "call-finished") == NULL, "那条 executing 记录不在账本里");
+    CHECK(rt && rt->turns.tail - rt->turns.head == 1, "真实工具结果仍在那一个 turn 里");
+
+    /* And the row itself, not just the in-memory view: a third flush must not
+     * re-insert what a later load would read. */
+    CHECK(edc_state_store_flush(back, bsched), "第三次 flush 仍不写回旧行");
+
+    edc_session_free(back);
+    edc_scheduler_free(bsched);
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 /* ── New session: no rows, not an error ──────────────────────────────────── */
 static void test_absent_session(void)
 {
@@ -696,6 +776,7 @@ int main(void)
     test_roundtrip();
     test_flush_is_idempotent();
     test_memo_removals_persist();
+    test_completed_tool_calls_do_not_resurrect();
     test_normalization();
     test_absent_session();
     test_forget_and_lookup();
