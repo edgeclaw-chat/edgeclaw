@@ -337,13 +337,7 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
     /* The check reports here, on the UI thread (the facade marshals it). Record the tag and
      * ask for a frame: the screen is idle by the time the check lands, so without the request
      * the banner would only appear at the user's next keystroke. */
-    app_->SetUpdateObserver([this](std::string tag) {
-        if (tag.empty())
-            return;
-        update_tag_ = std::move(tag);
-        if (screen_)
-            screen_->RequestAnimationFrame();
-    });
+    app_->SetUpdateObserver([this](std::string tag) { OnUpdateFound(std::move(tag)); });
 
     // The transcript store owns the chat-log file I/O (path, append, replay); it
     // needs the app port for the workspace path and the symlink-safe writes.
@@ -1740,6 +1734,15 @@ void TUIWindow::MarkReadFromInput(const std::string &line)
         }
         return;
     }
+}
+
+void TUIWindow::OnUpdateFound(std::string tag)
+{
+    if (tag.empty())
+        return;
+    update_tag_ = std::move(tag);
+    if (screen_)
+        screen_->RequestAnimationFrame();
 }
 
 void TUIWindow::RequestFrame()

@@ -383,12 +383,21 @@ void AppFacade::RequestChatBubblePage(const std::string &session_id, int64_t bef
 bool AppFacade::DeliverPageSync(const std::string &session_id, const std::string &payload)
 {
     std::lock_guard<std::mutex> lock(page_sync_mutex_);
-    if (!page_sync_waiting_ || page_sync_sid_ != session_id)
-        return false; /* a late/foreign page goes through the async sink */
-    page_sync_payload_ = payload;
-    page_sync_done_ = true;
-    page_sync_cv_.notify_all();
-    return true;
+    if (page_sync_waiting_ && page_sync_sid_ == session_id)
+    {
+        page_sync_payload_ = payload;
+        page_sync_done_ = true;
+        page_sync_cv_.notify_all();
+        return true;
+    }
+    /* A reply to a fetch that already timed out: consume and DROP it. Posting
+     * it to the sink would apply a stale page on the actor thread. */
+    if (!page_sync_late_sid_.empty() && page_sync_late_sid_ == session_id)
+    {
+        page_sync_late_sid_.clear();
+        return true;
+    }
+    return false; /* a genuine async page -> the sink */
 }
 
 std::string AppFacade::FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
@@ -417,6 +426,8 @@ std::string AppFacade::FetchChatBubblePageSync(const std::string &session_id, in
             page_sync_cv_.wait(lock, [this] { return page_sync_done_; });
         if (page_sync_done_)
             out = page_sync_payload_;
+        else
+            page_sync_late_sid_ = session_id; /* discard the in-flight reply */
         page_sync_waiting_ = false;
         page_sync_done_ = false;
     }
@@ -584,6 +595,14 @@ void AppFacade::SetUpdateObserver(std::function<void(std::string tag)> observer)
     update_observer_ = std::move(observer);
     if (app_)
         edc_app_set_update_observer(app_, &AppFacade::UpdateFoundTrampoline, this);
+}
+
+void AppFacade::EmitUpdateFoundForTest(const std::string &tag)
+{
+    /* Same static callback the update service invokes on the loop thread. It
+     * copies the tag, marshals through IUiDispatcher::Post and then asks for a
+     * frame, so the harness covers that path without a worker thread. */
+    UpdateFoundTrampoline(tag.c_str(), this);
 }
 
 void AppFacade::UpdateFoundTrampoline(const char *tag, void *ud)

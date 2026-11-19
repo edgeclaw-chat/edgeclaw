@@ -16,6 +16,7 @@
 #include "ftxui/component/event.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
+#include "test_fs_util.h"
 #include "edc_message.hpp"
 
 #include <cstdio>
@@ -68,7 +69,7 @@ constexpr size_t kHistory = 1000;
  * shot. This is the path that must stay O(viewport) resident. */
 std::string WriteLog(const std::string &tag, size_t n)
 {
-    const std::string path = "/tmp/edc_chat_window_" + tag + ".jsonl";
+    const std::string path = test_tmp_file_path(("edc_chat_window_" + tag + ".jsonl").c_str());
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     for (size_t i = 0; i < n; i++)
     {

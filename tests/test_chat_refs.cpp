@@ -6,6 +6,7 @@
 // is the authority; a descriptor is only an (offset, length) plus small metadata.
 #include "edc_chat_transcript.hpp"
 #include "edc_chat_window.hpp"
+#include "test_fs_util.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -45,7 +46,7 @@ namespace
 
 std::string TmpPath(const char *tag)
 {
-    return std::string("/tmp/edc_chat_refs_") + tag + ".jsonl";
+    return test_tmp_file_path((std::string("edc_chat_refs_") + tag + ".jsonl").c_str());
 }
 
 /* Write `n` encoded lines, with escaped newlines/tabs inside content and a
@@ -190,7 +191,8 @@ static void test_empty_and_missing_files(void)
 {
     TEST("missing/empty transcript produces an empty, safe index");
     std::vector<edc::ChatBubbleRef> refs;
-    ASSERT(edc::BuildChatBubbleRefs("/tmp/edc_chat_refs_no_such_file.jsonl", &refs) == 0, "missing file built refs");
+    const char *missing_path = test_tmp_file_path("edc_chat_refs_no_such_file.jsonl");
+    ASSERT(edc::BuildChatBubbleRefs(missing_path, &refs) == 0, "missing file built refs");
     ASSERT(refs.empty(), "missing file left refs behind");
 
     const std::string path = TmpPath("empty");

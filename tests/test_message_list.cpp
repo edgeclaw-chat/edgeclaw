@@ -20,6 +20,7 @@
 #include "ftxui/dom/selection.hpp"
 #include "ftxui/screen/color.hpp"
 #include "ftxui/screen/screen.hpp"
+#include "test_fs_util.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -239,7 +240,7 @@ std::shared_ptr<edc::ChatWidget> MakeWrappingLog(int count)
  * descriptor index and materializes only the viewport window. */
 std::string WriteNumberedTranscript(const std::string &tag, const std::vector<std::string> &lines)
 {
-    const std::string path = "/tmp/edc_ml_" + tag + ".jsonl";
+    const std::string path = test_tmp_file_path(("edc_ml_" + tag + ".jsonl").c_str());
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     for (const std::string &line : lines)
     {
@@ -408,7 +409,7 @@ static void test_prepend_keeps_clicks_on_the_right_row(void)
     TEST("a loaded transcript still toggles the visible entry on click");
     auto chat = std::make_shared<edc::ChatWidget>();
 
-    const std::string path = "/tmp/edc_ml_click.jsonl";
+    const std::string path = test_tmp_file_path("edc_ml_click.jsonl");
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         for (const std::string &l : NumberedLines("older number ", 50))

@@ -132,7 +132,19 @@ bool ChatModel::ApplyOlderPage(const std::string &session_id, const std::string 
     ChatBubblePageReply reply;
     if (!DecodeChatBubblePageReply(session_id.c_str(), payload.c_str(), &reply))
         return false;
-    if (reply.session_id != session_id || reply.rows.empty() || !refs_holder_ || !window_)
+    if (reply.session_id != session_id || reply.session_id != session_id_ || reply.rows.empty() ||
+        !refs_holder_ || !window_)
+        return false;
+    /* The scheduler echoes the requested cursor in before_seq. Only the page
+     * we actually asked for may be prepended. Two stale replies must be refused:
+     *   - cursor 0 is the STARTUP ("newest") page, echoed by a synchronous
+         fetch that may have timed out under a slow sanitizer build. It must
+     *     never be prepended to a log that has since taken live bubbles.
+     *   - a cursor that is no longer oldest_seq_ answers a request the reader
+     *     has already moved past (session switch, a faster second scroll).
+     * An older-page request always carries a POSITIVE seq, so rejecting 0
+     * cannot hide a legitimate page. */
+    if (reply.before_seq <= 0 || reply.before_seq != oldest_seq_)
         return false;
 
     std::vector<ChatBubbleRef> older;

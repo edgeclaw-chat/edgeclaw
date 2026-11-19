@@ -277,6 +277,33 @@ static void test_mkdtemp_under_the_scratch_root(void)
     CHECK(made && made2 && strcmp(made, made2) != 0, "and it is a distinct directory");
 }
 
+/* ── 6. a scratch FILE path must be writable on this platform ─────────────────────────────
+ * The three windowed-chat tests once wrote "/tmp/edc_*.jsonl" literally. On Windows that
+ * means "\tmp" on the current drive, which a fresh runner does not have, and std::ofstream
+ * does not create parents -- so every fixture write failed and the tests never reached an
+ * assertion (CI: 3 FAILED targets, "fixture write failed" / "0 bubbles"). The helper has
+ * to point at a directory that exists (Bazel's TEST_TMPDIR, else the platform temp root). */
+static void test_scratch_file_is_writable(void)
+{
+    TEST("test_tmp_file_path yields a writable file, not a POSIX /tmp literal");
+
+    const char *path = test_tmp_file_path("compat_shims_scratch_file.jsonl");
+    CHECK(path && *path, "the helper returns a path: %s", path ? path : "(null)");
+#ifdef _WIN32
+    CHECK(strncmp(path, "/tmp/", 5) != 0 && strncmp(path, "\\tmp", 4) != 0,
+          "on Windows it must not be the bare /tmp literal: %s", path);
+#endif
+
+    FILE *f = fopen(path, "wb");
+    CHECK(f != NULL, "the scratch file can be created: %s", path);
+    if (f)
+    {
+        CHECK(fputs("one line\n", f) >= 0, "and written to");
+        fclose(f);
+        remove(path);
+    }
+}
+
 int main(void)
 {
     printf("platform shim contracts\n");
@@ -293,6 +320,7 @@ int main(void)
     test_mkdir_two_arguments();
     test_lstat_sees_links();
     test_mkdtemp_under_the_scratch_root();
+    test_scratch_file_is_writable();
 
     test_rm_rf(g_dir);
 

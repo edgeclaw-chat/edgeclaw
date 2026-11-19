@@ -1585,10 +1585,7 @@ cc_test(
         "@ftxui//:dom",
         "@ftxui//:screen",
         "@sds//:sds",
-    ] + select({
-        "//:windows": [],
-        "//conditions:default": [":fake_release"],
-    }),
+    ],
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,
     # 这个 harness 会真起一个 app（临时 HOME + 最小 config），比纯渲染测试慢。
@@ -1929,7 +1926,7 @@ cc_test(
 )
 cc_test(
     name = "test_message_list",
-    srcs = ["test_message_list.cpp"],
+    srcs = ["test_message_list.cpp", "test_fs_util.h"],
     deps = [
         "//src/tui:tui",
         "@ftxui//:component",
@@ -1945,7 +1942,7 @@ cc_test(
 )
 cc_test(
     name = "test_chat_refs",
-    srcs = ["test_chat_refs.cpp"],
+    srcs = ["test_chat_refs.cpp", "test_fs_util.h"],
     deps = [
         "//src/tui:tui",
     ],
@@ -1958,7 +1955,7 @@ cc_test(
 )
 cc_test(
     name = "test_chat_window",
-    srcs = ["test_chat_window.cpp"],
+    srcs = ["test_chat_window.cpp", "test_fs_util.h"],
     deps = [
         "//src/tui:tui",
         "@ftxui//:component",
@@ -2210,6 +2207,17 @@ cc_test(
     srcs = ["test_chat_bubble_refs_db.cpp"],
     deps = [
         "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_page_model",
+    srcs = ["test_chat_bubble_page_model.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@cjson//:cjson",
     ],
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,

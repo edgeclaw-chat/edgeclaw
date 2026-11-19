@@ -250,6 +250,14 @@ class IAppFacade
      * (the facade's trampoline pops through the dispatcher and requests a frame). */
     virtual void SetUpdateObserver(std::function<void(std::string tag)> observer) = 0;
 
+    /* Deterministic harness seam: fire the update-found trampoline right now.
+     * Default no-op so FakeFacade implementations stay concrete; only AppFacade
+     * (which owns the real trampoline) implements it. */
+    virtual void EmitUpdateFoundForTest(const std::string &tag)
+    {
+        (void)tag;
+    }
+
     /* Whether this copy can replace itself: the installer put it there and the platform has
      * one. False means the dialog shows the manual command instead of a button that would
      * fail. */
@@ -327,6 +335,9 @@ class AppFacade : public IAppFacade
     void HandleChannelMessage(struct edc_channel_message *message) override;
 
     void SetUpdateObserver(std::function<void(std::string tag)> observer) override;
+    /* Deterministic harness seam: run the update-found trampoline with |tag|
+     * right now, on this thread. No worker, no network, no timing. */
+    void EmitUpdateFoundForTest(const std::string &tag) override;
     bool UpdateCanSelfUpgrade() const override;
     bool UpdateStart(const std::string &tag, std::function<void(bool ok, std::string detail)> on_done) override;
     void UpdateCancel() override;
@@ -362,6 +373,12 @@ class AppFacade : public IAppFacade
     std::string page_sync_payload_;
     bool page_sync_waiting_ = false;
     bool page_sync_done_ = false;
+    /* A sync fetch that timed out still has an actor reply in flight. Its sid
+     * is recorded here so DeliverPageSync can DROP the late page instead of
+     * posting it to the UI sink -- applying a startup page after the reader
+     * has moved on would rebuild the chat model from a stale snapshot (and in
+     * a synchronous-dispatcher harness, on the wrong thread). */
+    std::string page_sync_late_sid_;
 
     /* Called from TranslateAndDispatch (channel-actor thread) ONLY when a
      * synchronous fetch is in flight. */

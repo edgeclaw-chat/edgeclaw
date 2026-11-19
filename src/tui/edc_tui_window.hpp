@@ -120,6 +120,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // synchronously.
     void Post(std::function<void()> task) override;
 
+    // The update-check result, marshalled onto the UI thread by AppFacade.
+    // Public so a harness can re-register it after exercising SetUpdateObserver
+    // and drive the banner deterministically.
+    void OnUpdateFound(std::string tag);
+
     // Application port (lifetime tied to the window).
     port::IAppFacade *App()
     {
