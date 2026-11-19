@@ -45,9 +45,12 @@ class OutputRoutingPolicy
   public:
     virtual ~OutputRoutingPolicy() = default;
 
-    // Output with no session tag (command replies) is always Shown.
+    // Interface feedback (command replies) is always Shown. Historically it was
+    // identified by an empty session_id, but every bubble now has an owner, so
+    // the producer declares it explicitly. Defaulted for the legacy callers.
     virtual OutputRoute Route(const std::string &session_id, bool from_active_task,
-                              const std::string &displayed_session) const = 0;
+                              const std::string &displayed_session,
+                              bool interface_feedback = false) const = 0;
 
     static const OutputRoutingPolicy &Default();
 };

@@ -52,6 +52,10 @@ struct edc_channel_message
      * folded -- the ordinary case, and the reason no code needs to test for null
      * everywhere but the two places that care. Owned by this message. */
     struct edc_payload *payload;
+    bool interface_feedback;      /* A command reply / startup hint: ALWAYS shown on the
+                                    * current tab, even though it is not an active task's
+                                    * output. With every bubble now carrying session_id,
+                                    * "empty session" can no longer identify this case. */
     bool from_active_task;         /* A fact the sender declares: whether this output came from
                                     * its own session's active task. Declaration only -- the
                                     * kernel drops nothing based on it (it does not know who is
@@ -98,6 +102,12 @@ struct edc_reply_to
     struct edc_actor *channel_actor; /* whom to deliver to (the channel actor) */
     struct edc_actor *actor;         /* in whose name (the inbound sender; task output = the scheduler actor) */
     edc_channel_message_type type;   /* message type (routing key) */
+    /* Which conversation this reply belongs to. Every bubble that reaches a
+     * screen belongs to exactly one session; the channel actor uses this to
+     * give reply messages (command output etc.) the same session_id that task
+     * messages get from their owning session. NULL only for messages that are
+     * not bubbles (control replies), which never enter chat_bubbles. */
+    const char *session_id;
 };
 
 /* ── Outbound: publish a message to the channel (frontend) ───

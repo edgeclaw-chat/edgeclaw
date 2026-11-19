@@ -34,7 +34,7 @@ struct edc_sched_task_entry
 
 /* ── Forward declarations ──────────────────────────────────── */
 
-static void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
+void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
 static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s, const char *tag);
 static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task, const char *tag);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
@@ -1852,6 +1852,87 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         sdsfree(out);
 }
 
+/* Answer "one page of the durable chat log" for the session the UI named.
+ *
+ * This is the ONLY place the chat_bubbles table is read for display. Keeping it
+ * on the scheduler actor thread is the store's invariant (edc_state_store.h);
+ * the UI receives rows as a channel message and does nothing but render them.
+ *
+ * The wire shape is pinned by tests/test_chat_bubble_page.cpp; this side builds
+ * the same JSON with cJSON so no C++ type crosses the C boundary. */
+static void sched_handle_pull_chat_bubble_page(struct edc_scheduler *sched, const char *request_json)
+{
+    if (!sched || !request_json || !*request_json)
+        return;
+    cJSON *root = cJSON_Parse(request_json);
+    if (!root)
+        return;
+    const cJSON *sid = cJSON_GetObjectItem(root, "session_id");
+    const cJSON *before = cJSON_GetObjectItem(root, "before_seq");
+    const cJSON *limit = cJSON_GetObjectItem(root, "limit");
+    if (!cJSON_IsString(sid) || !sid->valuestring || !*sid->valuestring ||
+        !cJSON_IsNumber(before) || !cJSON_IsNumber(limit) || limit->valueint <= 0)
+    {
+        cJSON_Delete(root);
+        return;
+    }
+    /* Copy the name out of the parsed tree: cJSON_Delete(root) below would
+     * leave `sid->valuestring` dangling before the reply callback runs. */
+    char session_id[256];
+    snprintf(session_id, sizeof(session_id), "%s", sid->valuestring);
+    /* The wire cursor is 0 for "newest page" and a positive seq otherwise.
+     * JSON numbers are doubles: clamp anything non-positive or too large to
+     * INT64_MAX (the DB layer's "no upper bound" sentinel) instead of casting
+     * an out-of-range double, which is UB and differs across architectures. */
+    const double raw_before = before->valuedouble;
+    const int64_t requested_before = (raw_before > 0 && raw_before < 9.0e18) ? (int64_t)raw_before : 0;
+    const int64_t before_seq = requested_before > 0 ? requested_before : INT64_MAX;
+    const int want = limit->valueint;
+
+    /* Ask for one extra row: if it comes back, there is an older page still to
+     * load. Only `want` rows are put on the wire. */
+    struct edc_chat_bubble_row *rows = NULL;
+    int n = 0;
+    const bool ok = edc_chat_bubble_page(session_id, before_seq, want + 1, &rows, &n);
+    if (!ok)
+    {
+        cJSON_Delete(root);
+        return;
+    }
+    const bool has_more = n > want;
+    const int send_n = has_more ? want : n;
+
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddStringToObject(reply, "session_id", session_id);
+    cJSON_AddNumberToObject(reply, "before_seq", (double)requested_before);
+    cJSON_AddBoolToObject(reply, "has_more", has_more);
+    cJSON *arr = cJSON_AddArrayToObject(reply, "rows");
+    /* rows are in ASCENDING seq order; a page answered for cursor C contains
+     * the `want` newest rows below C, so with an extra row (the oldest) we
+     * publish rows[1..send_n] when has_more, else rows[0..n). */
+    const int first = has_more ? 1 : 0;
+    for (int i = first; i < first + send_n; i++)
+    {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "seq", (double)rows[i].seq);
+        cJSON_AddStringToObject(item, "line", rows[i].line ? rows[i].line : "");
+        cJSON_AddItemToArray(arr, item);
+    }
+    edc_chat_bubble_rows_free(rows, n);
+    cJSON_Delete(root);
+
+    char *printed = cJSON_PrintUnformatted(reply);
+    cJSON_Delete(reply);
+    if (!printed)
+        return;
+    sds payload = sdsnew(printed);
+    cJSON_free(printed);
+    if (sched->chat_bubble_page_reply)
+        sched->chat_bubble_page_reply(sched, session_id, payload);
+    else
+        sdsfree(payload);
+}
+
 void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     struct edc_scheduler *sched = actor->state;
@@ -1887,6 +1968,10 @@ void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg)
     case BC_ACTOR_MSG_MESSAGE_PAYLOAD:
         /* A pull names a mid; the answer is that user message's folded-paste map. */
         sched_handle_pull_message_payload(sched, (const char *)msg->data);
+        break;
+    case BC_ACTOR_MSG_CHAT_BUBBLE_PAGE:
+        /* The UI asks, the scheduler reads the store (the only thread allowed to). */
+        sched_handle_pull_chat_bubble_page(sched, (const char *)msg->data);
         break;
     default:
         break;

@@ -5,6 +5,7 @@
 #include "edc_message_list.hpp"
 #include "edc_scroll_view.hpp"
 #include "ftxui/component/component_base.hpp"
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -35,7 +36,6 @@ class ChatWidget : public ::ftxui::ComponentBase
     ChatWidget &operator=(ChatWidget const &) = delete;
 
     void AddMessage(std::shared_ptr<Message> message);
-    void PrependMessages(std::vector<std::shared_ptr<Message>> messages);
     void Clear();
     void SetFilter(std::shared_ptr<const std::set<std::string>> allowed, std::string label = "");
     void SetTaskInputs(std::shared_ptr<const std::map<std::string, std::string>> inputs);
@@ -54,6 +54,10 @@ class ChatWidget : public ::ftxui::ComponentBase
     // the row map). The window keeps a throttled frame coming until this clears.
     bool NeedsRemeasure() const;
 
+    /* Resident Message instances (the list's whole log until windowing lands).
+     * Read-only probe for the windowing regression tests. */
+    size_t LiveCount() const;
+
     // Deliberately NOT keyboard focusable (↑/↓ belong to the message editor); it
     // still scrolls with the wheel.
     bool Scroll(int delta);
@@ -64,11 +68,9 @@ class ChatWidget : public ::ftxui::ComponentBase
     // Used to tell "reading the newest" from "browsing older history".
     bool StickingToBottom() const;
 
-    // True when the viewport's top row is a bubble that arrived through the
-    // startup backfill: the reader has scrolled up past the bubbles painted at
-    // startup, into the older history still being filled in above them. Scrolling
-    // up within that first screenful stays false (nothing above it is missing).
-    bool ReadingBackfilledHistory() const;
+    /* The list reached its oldest loaded row: ask for an older DB page. */
+    void SetReachedTopCallback(std::function<void()> cb);
+
 
   private:
     // One model change -> one list update (append or rebuild).

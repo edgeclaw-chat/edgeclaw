@@ -357,13 +357,32 @@ static const char *const EDC_SCHEMA_SQL =
      * before v8). Persisted so a restart does not erase the layering of past changes. */
     "  changed    INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, seq)"
-    ");";
+    ");"
+
+    /* v9: the TUI's view state. This is the chat transcript (one bubble per line)
+     * that used to live in <workspace>/<session_id>/chat.jsonl. It is NOT part of
+     * `messages`: that table is model state (wire messages under a task/turn) and
+     * feeding interface feedback into it would change LLM context assembly. Keeping
+     * the bubbles in their own table gives the UI one durable, paged authority
+     * without touching any model-side reader. See docs/chat-bubbles-in-db.md.
+     *
+     * `line` is the ENCODED transcript line (EncodeTranscriptLine), verbatim: the
+     * one-time importer can copy each file line byte-for-byte and every reader reuses
+     * DecodeTranscriptLine, so no escape rule is duplicated. session_id is TEXT
+     * because that is the identity the frontend and channel events carry. */
+    "CREATE TABLE IF NOT EXISTS chat_bubbles ("
+    "  session_id TEXT NOT NULL,"
+    "  seq        INTEGER NOT NULL,"
+    "  line       TEXT NOT NULL,"
+    "  PRIMARY KEY (session_id, seq)"
+    ");"
+    "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session ON chat_bubbles(session_id, seq DESC);";
 
 /* The tables a healthy database must contain. Used by the post-DDL sanity check so a
  * half-applied schema fails here rather than as a mysterious SQL error later. */
 static const char *const EDC_EXPECTED_TABLES[] = {
     "sessions", "groups", "group_fold_files", "tasks", "task_deps", "task_tool_calls",
-    "turns", "messages", "memo_entries", "memo_events", NULL};
+    "turns", "messages", "memo_entries", "memo_events", "chat_bubbles", NULL};
 
 /* ── Small SQL helpers ─────────────────────────────────────────────────────── */
 
@@ -615,23 +634,28 @@ static bool apply_pragmas(sqlite3 *db)
     if (!exec_sql(db, "PRAGMA journal_mode=WAL", "PRAGMA journal_mode"))
         return false;
 
-    /* The page cache is the session cache. This is the answer to "if writing to disk is
-     * slow, make the cache bigger instead of building a second copy of the database in
-     * C": the message rows the runtime re-reads (the live tail of a conversation) stay
-     * resident as PAGES, and every reader -- fold, token accounting, request assembly --
-     * sees them through the same cache. 64 MiB is ~16k pages, comfortably more than the
-     * live tail of a long session (a 40k-message session is ~45k pages in total, and the
-     * unfolded tail is a fraction of that).
+    /* The page cache is the session cache: the message rows the runtime re-reads
+     * (the live tail of a conversation) stay resident as PAGES, and every reader --
+     * fold, token accounting, request assembly -- sees them through the same cache.
+     * 8 MiB is ~2k pages, enough for the unfolded tail of a long session: the corpus
+     * is read a bounded slice at a time, never the whole table.
      *
-     * Negative = KiB and per-connection, so this never rewrites a persisted setting into
-     * somebody's database file. */
-    if (!exec_sql(db, "PRAGMA cache_size=-65536", "PRAGMA cache_size"))
+     * Negative = KiB and per-connection, so this never rewrites a persisted setting
+     * into somebody's database file. */
+    if (!exec_sql(db, "PRAGMA cache_size=-8192", "PRAGMA cache_size"))
         return false;
 
-    /* Memory-map the read path. Read-only mapping: writes still go through the WAL, so
-     * this cannot bypass the durability story above. 512 MiB ceiling; SQLite clamps it to
-     * the file size, so a small database maps only what exists. */
-    if (!exec_sql(db, "PRAGMA mmap_size=536870912", "PRAGMA mmap_size"))
+    /* Memory-mapping the read path was the single largest resident-memory cost:
+     * SQLite clamps mmap_size to the file size, so on a workspace whose DB has
+     * grown to ~116 MiB the ENTIRE database stayed mapped (measured 119 MiB RSS,
+     * ~25% of the process) even though only the live tail is ever read. The OS page
+     * cache already caches those pages for us without pinning them into our RSS,
+     * so leave mmap off and let SQLite use the bounded page cache above.
+     *
+     * Measured with tests/probe_sqlite_rss.c on a 33k-message DB (full scan of
+     * messages.body): 512M/64M -> 119.3 MiB, 0/8M -> 12.2 MiB, i.e. ~106 MiB
+     * saved. Writes still go through the WAL either way. */
+    if (!exec_sql(db, "PRAGMA mmap_size=0", "PRAGMA mmap_size"))
         return false;
 
     /* Verify instead of trusting: on a filesystem that cannot do WAL, SQLite keeps the
@@ -2057,17 +2081,30 @@ static void load_detach_from_groups(struct edc_session *session, struct edc_task
     {
         if (only_group && g != only_group)
             continue;
-        struct edc_task *t;
-        LL_FOREACH2(g->members, t, group_next)
+        /* Do the unlink by hand: LL_DELETE2 (UTLIST_RS variant) rewrites
+         * g->members while walking, which corrupts a concurrent
+         * LL_FOREACH2 over the same head. Keeping prev/next explicit also
+         * guarantees the task really leaves this group, so it cannot be
+         * attached to two groups and freed twice at teardown. */
+        struct edc_task *prev = NULL;
+        struct edc_task *t = g->members;
+        while (t && t != task)
         {
-            if (t != task)
-                continue;
-            LL_DELETE2(g->members, t, group_next);
+            prev = t;
+            t = t->group_next;
+        }
+        if (t == task)
+        {
+            if (prev)
+                prev->group_next = task->group_next;
+            else
+                g->members = task->group_next;
+            task->group_next = NULL;
+            task->group = NULL; /* add_task() uses this as its "already a member" test */
             if (g->member_count > 0)
                 g->member_count--;
             log_warn("load: task %" PRId64 " detached from group %" PRId64 " (a task belongs to one group only)",
                      (int64_t)task_id, (int64_t)g->group_id);
-            break;
         }
     }
 }
@@ -2447,7 +2484,11 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                         struct edc_task *mt = load_task_get(task_map, mid);
                         if (!mt)
                             continue;
-                        load_detach_from_groups(session, mt, mid, group);
+                        /* Detach from EVERY group, including the one we are
+                         * about to attach to: a task already on a stale chain
+                         * must be unlinked before add_task() appends it, or
+                         * it ends up on two lists and is freed twice. */
+                        load_detach_from_groups(session, mt, mid, NULL);
                         edc_task_group_add_task(group, mt);
                     }
                 }
@@ -3641,4 +3682,253 @@ char *edc_state_store_session_for_task(int64_t task_id)
     }
     sqlite3_finalize(st);
     return out;
+}
+
+/* ── chat_bubbles: the TUI's durable view state (v9) ──────────────────────────
+ * INVARIANT: only the scheduler actor thread calls these. The UI thread requests
+ * a page through the channel actor and gets rows back as a channel message.
+ * `line` is an encoded transcript line stored verbatim; decoding/encoding stays
+ * in edc_chat_transcript.cpp so no escape rule is duplicated here.
+ */
+
+bool edc_chat_bubble_append(const char *session_id, const char *line, int64_t *out_seq)
+{
+    if (!g_db || !session_id || !*session_id || !line || !*line)
+        return false;
+    if (out_seq)
+        *out_seq = 0;
+
+    sqlite3_stmt *st = NULL;
+    int64_t seq = 0;
+    if (sqlite3_prepare_v2(g_db,
+                           "SELECT coalesce(max(seq),0)+1 FROM chat_bubbles WHERE session_id=?",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) == SQLITE_ROW)
+        seq = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    if (seq <= 0)
+        return false;
+
+    if (sqlite3_prepare_v2(g_db,
+                           "INSERT INTO chat_bubbles(session_id,seq,line) VALUES(?,?,?)",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)seq);
+    sqlite3_bind_text(st, 3, line, -1, SQLITE_TRANSIENT);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (ok && out_seq)
+        *out_seq = seq;
+    return ok;
+}
+
+bool edc_chat_bubble_page(const char *session_id, int64_t before_seq, int limit,
+                          struct edc_chat_bubble_row **out, int *n)
+{
+    if (!out || !n)
+        return false;
+    *out = NULL;
+    *n = 0;
+    if (!g_db || !session_id || !*session_id || limit <= 0)
+        return false;
+
+    /* Descending scan to take the newest rows under the cursor, then reverse so
+     * callers always see file order. chat_bubbles_by_session makes this an index
+     * range, not a scan of the whole log. */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "SELECT seq,line FROM chat_bubbles "
+                           "WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)before_seq);
+    sqlite3_bind_int(st, 3, limit);
+
+    int cap = 0;
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        if (*n == cap)
+        {
+            cap = cap ? cap * 2 : 32;
+            struct edc_chat_bubble_row *grown =
+                (struct edc_chat_bubble_row *)realloc(*out, (size_t)cap * sizeof(**out));
+            if (!grown)
+            {
+                edc_chat_bubble_rows_free(*out, *n);
+                *out = NULL;
+                *n = 0;
+                sqlite3_finalize(st);
+                return false;
+            }
+            *out = grown;
+        }
+        const char *text = (const char *)sqlite3_column_text(st, 1);
+        if (!text)
+            text = "";
+        (*out)[*n].seq = sqlite3_column_int64(st, 0);
+        (*out)[*n].line = strdup(text);
+        if (!(*out)[*n].line)
+        {
+            edc_chat_bubble_rows_free(*out, *n);
+            *out = NULL;
+            *n = 0;
+            sqlite3_finalize(st);
+            return false;
+        }
+        (*n)++;
+    }
+    sqlite3_finalize(st);
+
+    for (int i = 0, j = *n - 1; i < j; i++, j--)
+    {
+        struct edc_chat_bubble_row tmp = (*out)[i];
+        (*out)[i] = (*out)[j];
+        (*out)[j] = tmp;
+    }
+    return true;
+}
+
+void edc_chat_bubble_rows_free(struct edc_chat_bubble_row *rows, int n)
+{
+    if (!rows)
+        return;
+    for (int i = 0; i < n; i++)
+        free(rows[i].line);
+    free(rows);
+}
+
+int64_t edc_chat_bubble_count(const char *session_id)
+{
+    if (!g_db || !session_id || !*session_id)
+        return -1;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "SELECT count(*) FROM chat_bubbles WHERE session_id=?",
+                           -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
+    int64_t out = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        out = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return out;
+}
+
+int64_t edc_chat_bubble_import_file(const char *session_id, const char *path)
+{
+    if (!g_db || !session_id || !*session_id || !path || !*path)
+        return -1;
+
+    /* Successful imports leave a marker. Never rename or delete chat.jsonl: a
+     * v8 binary must still be able to read it after a downgrade, and keeping the
+     * bytes is the rollback path. */
+    char marker[4096];
+    if (snprintf(marker, sizeof(marker), "%s.imported", path) >= (int)sizeof(marker))
+        return -1;
+    struct stat mst;
+    if (stat(marker, &mst) == 0)
+        return 0;
+
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return 0; /* no legacy transcript is not an error */
+
+    if (!exec_sql(g_db, "BEGIN IMMEDIATE", "chat bubble import BEGIN"))
+    {
+        fclose(file);
+        return -1;
+    }
+
+    sqlite3_stmt *ins = NULL;
+    bool ok = sqlite3_prepare_v2(
+                  g_db,
+                  "INSERT OR IGNORE INTO chat_bubbles(session_id,seq,line) VALUES(?,?,?)",
+                  -1, &ins, NULL) == SQLITE_OK;
+    int64_t inserted = 0;
+    int64_t seq = 0;
+    /* Fixed buffer + explicit growth: getline() is POSIX-only and this store
+     * builds on MSVC too. A transcript line is one encoded bubble; grow until
+     * the whole line (including its '\n') fits, rather than silently splitting
+     * a long tool output into two bubbles. */
+    size_t cap = 4096;
+    char *buf = (char *)malloc(cap);
+    if (!buf)
+        ok = false;
+    while (ok && buf && !feof(file))
+    {
+        size_t len = 0;
+        for (;;)
+        {
+            if (len + 1 >= cap)
+            {
+                char *grown = (char *)realloc(buf, cap * 2);
+                if (!grown)
+                {
+                    ok = false;
+                    break;
+                }
+                buf = grown;
+                cap *= 2;
+            }
+            if (!fgets(buf + len, (int)(cap - len), file))
+            {
+                len = 0; /* EOF or error with nothing read on this round */
+                break;
+            }
+            len += strlen(buf + len);
+            if (len && buf[len - 1] == '\n')
+                break;
+            if (feof(file))
+                break;
+        }
+        if (!ok || len == 0)
+            break;
+        /* A crash can leave a partial final line without its newline. The file
+         * reader drops that fragment too, so skipping it here keeps the two
+         * authorities byte-for-byte identical. */
+        if (buf[len - 1] != '\n')
+            continue;
+        buf[len - 1] = '\0';
+        if (!*buf)
+            continue;
+        seq++;
+        sqlite3_reset(ins);
+        sqlite3_clear_bindings(ins);
+        sqlite3_bind_text(ins, 1, session_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(ins, 2, (sqlite3_int64)seq);
+        sqlite3_bind_text(ins, 3, buf, -1, SQLITE_TRANSIENT);
+        ok = sqlite3_step(ins) == SQLITE_DONE;
+        if (ok)
+            inserted += (int64_t)sqlite3_changes(g_db);
+    }
+    free(buf);
+    fclose(file);
+    if (ins)
+        sqlite3_finalize(ins);
+
+    if (!ok)
+    {
+        exec_sql(g_db, "ROLLBACK", "chat bubble import ROLLBACK");
+        return -1;
+    }
+    if (!exec_sql(g_db, "COMMIT", "chat bubble import COMMIT"))
+    {
+        exec_sql(g_db, "ROLLBACK", "chat bubble import ROLLBACK");
+        return -1;
+    }
+
+    /* The marker is best-effort: failing to write it only means the next start
+     * re-runs an idempotent import (INSERT OR IGNORE), never duplicate rows. */
+    FILE *m = fopen(marker, "wb");
+    if (m)
+    {
+        fputs("imported\n", m);
+        fclose(m);
+    }
+    log_info("state_store: imported %" PRId64 " chat bubbles from %s for session %s",
+             inserted, path, session_id);
+    return inserted;
 }

@@ -1,4 +1,6 @@
 #include "edc_channel_actor.h"
+#include "edc_chat_bubble_line.h"
+#include "edc_state_store.h"
 
 #include "edc_payload.h"
 #include "edc_actor.h"
@@ -56,12 +58,59 @@ void edc_channel_input_free(struct edc_sched_input *input)
 /* Only one channel (adapter): an outbound message (CHANNEL_SEND) goes straight to that
  * callback. This used to look up the implementation in a handler hash by msg->sub_type
  * (= channel type) -- the multi-channel mechanism, deleted with the extra channels. */
+/* The five message types that become chat bubbles. Everything else (task
+ * snapshot, tree-changed event, /task history payload, message-payload reply,
+ * chat-bubble page reply) is a control message and must NOT enter the log. */
+static bool chat_bubble_kind(edc_channel_message_type type, const char **kind)
+{
+    switch (type)
+    {
+    case EDC_CHANNEL_MESSAGE_USER_TYPE:     *kind = "user";    return true;
+    case EDC_CHANNEL_MESSAGE_TOOL_TYPE:     *kind = "tool";    return true;
+    case EDC_CHANNEL_MESSAGE_THOUGHT_TYPE:  *kind = "thought"; return true;
+    case EDC_CHANNEL_MESSAGE_RESP_TYPE:     *kind = "reply";   return true;
+    case EDC_CHANNEL_MESSAGE_SYS_TYPE:      *kind = "sys";     return true;
+    default:                                *kind = NULL;      return false;
+    }
+}
+
+/* Persist exactly what is about to be shown, on the ONE runner thread that is
+ * allowed to touch the state store (edc_state_store.h). This is the single
+ * funnel: every channel message -- task output, command reply, user echo --
+ * arrives here as BC_ACTOR_MSG_CHANNEL_SEND, so a bubble can be written exactly
+ * once with the same bytes the TUI will render. No UI thread writes storage.
+ *
+ * A bubble without session_id has no owner. That is a bug in the producer, not
+ * something to guess from UI state: refuse it loudly instead of writing it to a
+ * wrong conversation. */
+static void chat_bubble_persist(struct edc_channel_message *msg)
+{
+    const char *kind = NULL;
+    if (!msg || !chat_bubble_kind(msg->message_type, &kind))
+        return;
+    if (!msg->session_id || !*msg->session_id)
+    {
+        log_warn("chat bubble of type %d has no session_id -- refusing to persist it", (int)msg->message_type);
+        return;
+    }
+    char *line = edc_chat_bubble_encode(kind, (int)msg->render_pref, msg->task_id, msg->header, msg->content);
+    if (!line)
+        return;
+    int64_t seq = 0;
+    if (!edc_chat_bubble_append(msg->session_id, line, &seq))
+        log_warn("chat bubble append failed for session %s", msg->session_id);
+    free(line);
+}
+
 static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
 {
     edc_channel_actor_state_t *state = actor->state;
 
     if (msg->type == BC_ACTOR_MSG_CHANNEL_SEND && state->adapter.on_actor_message_send_fn)
+    {
+        chat_bubble_persist((struct edc_channel_message *)msg->data);
         state->adapter.on_actor_message_send_fn(state->adapter.instance, msg->data);
+    }
 
     edc_actor_msg_free(msg);
 }
@@ -264,7 +313,8 @@ void edc_channel_notify_active_session(struct edc_actor *channel_actor, const ch
     edc_channel_trace_active_session(session_id);
     /* Tab-switch notice: emitted by the channel in its OWN name (no inbound sender). */
     struct edc_reply_to to = {.channel_actor = channel_actor, .actor = channel_actor,
-                              .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE};
+                              .type = EDC_CHANNEL_MESSAGE_TASK_TREE_CHANGED_TYPE,
+                              .session_id = session_id};
     edc_channel_publish(to, session_id, sdsnew("active"));
 }
 
@@ -282,7 +332,11 @@ void edc_channel_notify_active_session(struct edc_actor *channel_actor, const ch
  * the old assembly-root thunk. */
 static struct edc_reply_to edc_channel_to(struct edc_scheduler *sched, edc_channel_message_type type)
 {
-    struct edc_reply_to to = {.channel_actor = g_channel, .actor = edc_scheduler_get_actor(sched), .type = type};
+    /* Task-output messages carry their own session_id (own->session_id), so
+     * `to` has none; ec_channel_publish callers that DO have one pass it
+     * explicitly as the second argument. */
+    struct edc_reply_to to = {.channel_actor = g_channel, .actor = edc_scheduler_get_actor(sched),
+                              .type = type, .session_id = NULL};
     return to;
 }
 
@@ -332,6 +386,14 @@ static void edc_channel_cb_message_payload(struct edc_scheduler *sched, const ch
     edc_channel_publish_keyed(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE), mid, payload);
 }
 
+/* The page reply names its session in `header`, so the UI can drop a late reply
+ * for a session the reader has since switched away from. */
+static void edc_channel_cb_chat_bubble_page(struct edc_scheduler *sched, const char *session_id, sds payload)
+{
+    edc_channel_publish_keyed(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE), session_id,
+                              payload);
+}
+
 void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *sched)
 {
     if (!actor || !sched)
@@ -343,4 +405,5 @@ void edc_channel_actor_bind_scheduler(edc_actor_t *actor, struct edc_scheduler *
     sched->snapshot_reply = edc_channel_cb_snapshot_reply;
     sched->snapshot_changed = edc_channel_cb_snapshot_changed;
     sched->message_payload_reply = edc_channel_cb_message_payload;
+    sched->chat_bubble_page_reply = edc_channel_cb_chat_bubble_page;
 }

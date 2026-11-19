@@ -4,6 +4,9 @@
 #include "ftxui/screen/box.hpp"
 #include <algorithm>
 #include <cstddef>
+#include <ctime>
+#include <memory>
+#include <string>
 #include <string_view>
 
 namespace edc
@@ -26,12 +29,56 @@ class Message : public ::ftxui::ComponentBase
         return task_id_;
     }
 
+    /* Raw fields, needed to turn an in-process bubble into a kMemory entry so it
+     * can be re-materialized after eviction WITHOUT ever writing it to disk. */
+    const std::string &Content() const
+    {
+        return content_;
+    }
+    virtual const std::string &Header() const
+    {
+        static const std::string kEmpty;
+        return kEmpty;
+    }
+    virtual const char *KindName() const
+    {
+        return "sys";
+    }
+    virtual int RenderPref() const
+    {
+        return 0;
+    }
+
+    /* Read-only probe for the windowing regression test: does this object
+     * still pin a cached ftxui element tree? LiveCount() cannot see this. */
+    bool HasCachedTree() const
+    {
+        return body_ != nullptr;
+    }
+
+    /* Drop the cached tree so the object is cheap again. Called at the frame
+     * boundary for windowed proxies whose real bubble is off screen. */
+    void ClearCachedTree()
+    {
+        body_ = nullptr;
+    }
+
+    /* Collapsible state lives on the descriptor (ChatBubbleRef::expanded). */
+    virtual bool Expanded() const
+    {
+        return false;
+    }
+    virtual void SetExpanded(bool value)
+    {
+        (void)value;
+    }
+
     // The list knows the width before rendering and reports it here, because
     // ftxui's flow containers only break between children: an unbroken run (CJK
     // text, a long URL or path) is one unbreakable item that overflows and gets
     // clipped by the stencil. Subclasses wrap against BodyWidth().
     // 0 = "width unknown" (e.g. rendered outside a MessageList).
-    void SetRenderWidth(int cols);
+    virtual void SetRenderWidth(int cols);
 
     Message(const Message &rhs) = delete;
     Message &operator=(const Message &rhs) = delete;
@@ -80,6 +127,21 @@ class ThoughtMessage : public Message
     ftxui::Element OnRender() override;
 
   private:
+    bool Expanded() const override
+    {
+        return thought_expanded_;
+    }
+    void SetExpanded(bool value) override
+    {
+        thought_expanded_ = value;
+        body_ = nullptr;
+    }
+    const char *KindName() const override
+    {
+        return "thought";
+    }
+
+  private:
     bool thought_expanded_ = false;
     ::ftxui::Box box_;
 };
@@ -91,6 +153,10 @@ class UserMessage : public Message
 
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
+    const char *KindName() const override
+    {
+        return "user";
+    }
 };
 
 class ToolMessage : public Message
@@ -104,6 +170,27 @@ class ToolMessage : public Message
   protected:
     // The cached markdown body depends on the render width as well.
     void OnWidthChanged() override;
+    const std::string &Header() const override
+    {
+        return header_;
+    }
+    const char *KindName() const override
+    {
+        return "tool";
+    }
+    int RenderPref() const override
+    {
+        return markdown_ ? 1 : 0; /* EDC_APP_RENDER_MARKDOWN == 1 */
+    }
+    bool Expanded() const override
+    {
+        return expanded_;
+    }
+    void SetExpanded(bool value) override
+    {
+        expanded_ = value;
+        body_ = nullptr;
+    }
 
   private:
     // Collapsed, the content shows the first kPreviewLines lines plus a "..."
@@ -123,5 +210,13 @@ class ToolMessage : public Message
     ::ftxui::Element md_body_; /* lazy RenderMarkdown cache, only when markdown_ */
     ::ftxui::Box box_;
 };
+
+/* Build one chat bubble from a transcript/channel entry. Shared by the live
+ * channel path, the restart replay, and the windowed loader, so a bubble looks
+ * the same however it reached the screen. |kind| is user | tool | thought |
+ * reply | sys; |render_pref| is EDC_APP_RENDER_PLAIN / _MARKDOWN. */
+std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
+                                        const std::string &content, const std::string &task_id, int render_pref,
+                                        time_t ts);
 
 } // namespace edc

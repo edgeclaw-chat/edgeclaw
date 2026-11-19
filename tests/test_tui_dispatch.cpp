@@ -22,10 +22,8 @@
 //      runner 线程上（Post() 的 else 分支），会和本测试自己的断言抢同一个 widget。
 
 #include "edc_tui_window.hpp"
+#include "edc_chat_bubble_page.hpp"
 #include "edc_compat.h"
-#ifndef _WIN32
-#include "fake_release.h"
-#endif
 #include "tui_dispatch_msgs.h"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -95,8 +93,14 @@ bool SetupHome(std::string *out_home)
         return false;
     // 明文 api_key（无 EDGECLAW_ENC: 前缀 → 不需要解密；EDGECLAW_MASTER_KEY 让
     // secret 模块不必问口令）。api_url 指向一个没人听的端口：本测试不跑 LLM。
+    /* update_check=false: the release check runs on a worker thread and posts
+     * its result through the facade trampoline. With no ftxui screen, Post()
+     * runs inline on that thread, so the banner could land BETWEEN two FrameOf()
+     * calls of ANY assertion and overwrite a character of the first chat row
+     * (under ASan it reliably did: "HARNES|_SHOWN_LINE"). The banner is driven
+     * deterministically in TestUpdateBanner instead. */
     conf << R"({"api_url":"https://127.0.0.1:1/v1/chat/completions",)"
-            R"("model":"harness-model","api_key":"harness-plaintext-key","onboarded":true})";
+            R"("model":"harness-model","api_key":"harness-plaintext-key","onboarded":true,"update_check":false})";
     conf.close();
 
     // 一个 prompt 模板：给补全弹层的 `/prompt <name>` 词表用（否则那份词表是空的）。
@@ -371,6 +375,32 @@ void TestKindRouting(edc::TUIWindow &win)
         Feed(win, MakeMsg(HARNESS_MSG_SYS, "HARNESS_SYS_LINE", kShown, nullptr, /*from_active_task=*/1));
         Check(Has(FrameOf(win), "HARNESS_SYS_LINE"), "系统消息 → 上屏");
     }
+}
+
+// A startup page that arrives LATE (after the reader has already moved on to the
+// live stream) must not rebuild the chat model. In CI this used to happen only
+// when the 3s synchronous fetch timed out under ASan, so the failure was flaky
+// and landed on whatever assertion happened to read the frame next. Here we
+// deliver the stale page deterministically through the real channel message
+// path, with no timeout and no actor thread.
+void TestLateStartupPageDoesNotClobberLiveChat(edc::TUIWindow &win)
+{
+    std::cout << "迟到的启动分页不能冲掉实时流\n";
+
+    Feed(win, MakeMsg(HARNESS_MSG_RESP, "LATE_PAGE_LIVE_MARKER", kShown, nullptr, /*from_active_task=*/1));
+    const std::string before = FrameOf(win);
+    /* Vacuous-pass guard: the live bubble really is on screen. */
+    Check(Has(before, "LATE_PAGE_LIVE_MARKER"), "实时产出先上屏（前提成立）");
+
+    const char *lines[] = {"reply\t0\t\t\tLATE_PAGE_STALE_MARKER"};
+    const int64_t seqs[] = {7};
+    const std::string payload = edc::EncodeChatBubblePageReply(kShown, /*before_seq=*/0, lines, seqs, 1, false);
+    /* header = session_id (the same field the scheduler reply uses). */
+    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, payload.c_str(), "", kShown));
+
+    const std::string after = FrameOf(win);
+    Check(Has(after, "LATE_PAGE_LIVE_MARKER"), "迟到分页之后实时气泡还在");
+    Check(!Has(after, "LATE_PAGE_STALE_MARKER"), "迟到分页的内容没有上屏");
 }
 
 // 兜底：认不出来的消息什么都不做（Kind::None → `default: return`）。
@@ -924,9 +954,6 @@ void TestInterruptKeys(edc::TUIWindow &win)
 
 } // namespace
 
-/* Set by main() when the local release server came up; the banner case needs it. */
-static bool g_fake_release_up = false;
-
 void TestUpdateSurface(edc::TUIWindow &win)
 {
     std::cout << "更新入口（横幅 / /update / 升级协调）\n";
@@ -958,34 +985,28 @@ void TestUpdateSurface(edc::TUIWindow &win)
     Check(true, "构造后可以再注册更新观察者");
 }
 
-/* 横幅 / `/update` 弹框：只有"检查真的找到了版本"才走得到。
+/* 横幅 / `/update` 弹框：驱动"检查找到版本"之后的那一段 UI。
  *
- * 靠 main() 在构造窗口之前起的那个本地假发布服务器 —— 检查在 edc_app_new 里跑一次，
- * 所以这里断言的是它跑过之后的状态：facade 的 UpdateFoundTrampoline 把 tag 送进
- * TUIWindow，update_tag_ 因此非空，横幅出现，`/update` 打开对话框。
+ * 从前这里靠构造期自动跑的 update check（本地假发布服务器 + 环境变量注入）。
+ * 那条路径是异步的：worker 线程把结果经 AppFacade::UpdateFoundTrampoline
+ * -> Post() 投递，而 harness 没有 ftxui screen，Post() 内联在那个 worker
+ * 线程上。于是 banner 可能在任意两条断言之间落地，盖住聊天区首行的一个字符
+ * （ASan 下实测 "HARNES|_SHOWN_LINE"），造成 PR Check 的 ASan job 随机红而
+ * 同一 commit 的 Tests job 绿。
  *
- * 这同时是唯一能走到 AppFacade::UpdateFoundTrampoline 的路径 —— 它是 static C 回调，
- * 除了"检查找到版本"没有别的入口。 */
+ * 现在 harness 的 config 里 update_check=false，这里显式把结果喂进同一个
+ * trampoline：覆盖的仍是"actor 回调 -> UI 线程 -> 横幅/对话框"这条生产路径，
+ * 但时机完全确定。 */
 void TestUpdateBanner(edc::TUIWindow &win)
 {
     std::cout << "更新横幅（检查找到版本之后）\n";
 
-    if (!g_fake_release_up)
-    {
-        std::cout << "  (跳过：本地假发布服务器没起来)\n";
-        return;
-    }
-
-    /* 检查在窗口构造时就跑了，结果经 facade 的 trampoline 投递到 UI 线程，并在那一帧
-     * 请求重绘。等它落地再读屏幕。 */
-    std::string frame;
-    for (int i = 0; i < 200; i++)
-    {
-        frame = FrameOf(win);
-        if (Has(frame, "v9.9.9"))
-            break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(25));
-    }
+    auto *app = win.App();
+    /* TestUpdateSurface 换过 observer（它测的是"能重新注册"）；把它注册回
+     * 窗口自己，然后走 facade 的 trampoline 投递 v9.9.9。 */
+    app->SetUpdateObserver([&win](std::string tag) { win.OnUpdateFound(std::move(tag)); });
+    app->EmitUpdateFoundForTest("v9.9.9");
+    const std::string frame = FrameOf(win);
 
     Check(Has(frame, "v9.9.9"), "横幅上屏：检查找到的版本号出现了");
     Check(Has(frame, "is available"), "横幅说明了有新版本可用");
@@ -1090,31 +1111,6 @@ int main()
         return 1;
     }
 
-#ifndef _WIN32
-    /* 更新检查在 edc_app_new 里跑一次，所以服务器、endpoint 和 CA 包都必须在构造 TUIWindow
-     * 之前就位。CA 包放 <workspace>/ssl/cacert.pem —— app 读的就是那个路径。
-     *
-     * 这三条环境变量是 edc_app.c 里的注入点（同 EDGECLAW_MODELS_CATALOG 那一类）：URL 指到
-     * 本地假服务器、版本给一个可解析的值（dev 构建报的是 commit hash，检查会直接跳过）、
-     * 延迟设 0 以免为了等那十秒而拖慢测试。 */
-    {
-        char url[256] = {0};
-        char cert[600] = {0};
-        if (fake_release_start_newer("v9.9.9", url, sizeof(url), cert, sizeof(cert)) == 0)
-        {
-            std::error_code ec;
-            std::filesystem::create_directories(home + "/.edgeclaw/workspace/ssl", ec);
-            if (!ec)
-                std::filesystem::copy_file(cert, home + "/.edgeclaw/workspace/ssl/cacert.pem",
-                                          std::filesystem::copy_options::overwrite_existing, ec);
-            g_fake_release_up = !ec;
-            setenv("EDGECLAW_UPDATE_RELEASES_URL", url, 1);
-            setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
-            setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
-        }
-    }
-
-#endif
     edc::TUIWindow win(/*sandbox_override=*/0);
     if (!win.Ready())
     {
@@ -1132,6 +1128,7 @@ int main()
     TestSnapshotReachesSidebar(win);
     TestForeignSnapshotDropped(win);
     TestLiveOutputRouting(win);
+    TestLateStartupPageDoesNotClobberLiveChat(win);
     TestKindRouting(win);
     TestUnknownMessageIgnored(win);
     TestUserInputIsEchoedImmediately(win);
@@ -1145,11 +1142,6 @@ int main()
     TestInterruptedStartupHint(win);
     TestUpdateSurface(win);
     TestUpdateBanner(win);
-
-#ifndef _WIN32
-    /* The fake release server served its one connection; release the port and its files. */
-    fake_release_stop();
-#endif
 
     if (g_failures)
     {

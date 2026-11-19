@@ -1,8 +1,10 @@
 #include "edc_app_facade.hpp"
 
 #include "edc_app.h"
+#include "edc_chat_bubble_page.hpp"
 
 #include <utility>
+#include <chrono>
 
 namespace edc::port
 {
@@ -366,6 +368,72 @@ void AppFacade::RequestMessagePayload(const std::string &mid)
         edc_app_request_message_payload(app_, mid.c_str());
 }
 
+void AppFacade::RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit)
+{
+    if (!app_ || session_id.empty() || limit <= 0)
+        return;
+    edc::ChatBubblePageRequest request;
+    request.session_id = session_id;
+    request.before_seq = before_seq;
+    request.limit = limit;
+    const std::string json = edc::EncodeChatBubblePageRequest(request);
+    edc_app_request_chat_bubble_page(app_, json.c_str());
+}
+
+bool AppFacade::DeliverPageSync(const std::string &session_id, const std::string &payload)
+{
+    std::lock_guard<std::mutex> lock(page_sync_mutex_);
+    if (page_sync_waiting_ && page_sync_sid_ == session_id)
+    {
+        page_sync_payload_ = payload;
+        page_sync_done_ = true;
+        page_sync_cv_.notify_all();
+        return true;
+    }
+    /* A reply to a fetch that already timed out: consume and DROP it. Posting
+     * it to the sink would apply a stale page on the actor thread. */
+    if (!page_sync_late_sid_.empty() && page_sync_late_sid_ == session_id)
+    {
+        page_sync_late_sid_.clear();
+        return true;
+    }
+    return false; /* a genuine async page -> the sink */
+}
+
+std::string AppFacade::FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
+                                               int timeout_ms)
+{
+    if (!app_ || session_id.empty() || limit <= 0)
+        return "";
+    {
+        std::lock_guard<std::mutex> lock(page_sync_mutex_);
+        if (page_sync_waiting_)
+            return ""; /* one synchronous fetch at a time */
+        page_sync_sid_ = session_id;
+        page_sync_payload_.clear();
+        page_sync_done_ = false;
+        page_sync_waiting_ = true;
+    }
+    RequestChatBubblePage(session_id, before_seq, limit);
+
+    std::string out;
+    {
+        std::unique_lock<std::mutex> lock(page_sync_mutex_);
+        if (timeout_ms > 0)
+            page_sync_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                                   [this] { return page_sync_done_; });
+        else
+            page_sync_cv_.wait(lock, [this] { return page_sync_done_; });
+        if (page_sync_done_)
+            out = page_sync_payload_;
+        else
+            page_sync_late_sid_ = session_id; /* discard the in-flight reply */
+        page_sync_waiting_ = false;
+        page_sync_done_ = false;
+    }
+    return out;
+}
+
 void AppFacade::RequestTaskSnapshot(const std::string &session_id)
 {
     if (app_)
@@ -441,6 +509,24 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         return;
     }
 
+    // A page of the durable chat log: header = session_id, content = page JSON.
+    // The store read already happened on the scheduler thread; this thread only
+    // parses and renders.
+    if (edc_app_message_is_chat_bubble_page(message))
+    {
+        const char *sid_c = edc_app_message_header(message);
+        const std::string sid = sid_c ? sid_c : "";
+        const std::string payload = content ? content : "";
+        /* A startup fetch is waiting on the UI thread; handing it the payload
+         * here (on the actor thread) is what makes the FIRST frame show the
+         * tail without going through the UI event loop (which would deadlock). */
+        if (DeliverPageSync(sid, payload))
+            return;
+        IChannelSink *sink = sink_;
+        dispatcher_->Post([sink, sid, payload]() { sink->OnChatBubblePage(sid, payload); });
+        return;
+    }
+
     // Structured reply for `/task history <id>` / `/group history <id>`.
     if (edc_app_message_is_task_history(message))
     {
@@ -497,6 +583,7 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
     event.session_id = session_id_c ? session_id_c : "";
     event.render_pref = edc_app_message_render_pref(message);
     event.from_active_task = edc_app_message_from_active_task(message) != 0;
+    event.interface_feedback = edc_app_message_is_interface_feedback(message) != 0;
     event.ts = ::time(nullptr);
 
     IChannelSink *sink = sink_;
@@ -508,6 +595,14 @@ void AppFacade::SetUpdateObserver(std::function<void(std::string tag)> observer)
     update_observer_ = std::move(observer);
     if (app_)
         edc_app_set_update_observer(app_, &AppFacade::UpdateFoundTrampoline, this);
+}
+
+void AppFacade::EmitUpdateFoundForTest(const std::string &tag)
+{
+    /* Same static callback the update service invokes on the loop thread. It
+     * copies the tag, marshals through IUiDispatcher::Post and then asks for a
+     * frame, so the harness covers that path without a worker thread. */
+    UpdateFoundTrampoline(tag.c_str(), this);
 }
 
 void AppFacade::UpdateFoundTrampoline(const char *tag, void *ud)

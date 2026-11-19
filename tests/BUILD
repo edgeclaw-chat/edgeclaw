@@ -1585,10 +1585,7 @@ cc_test(
         "@ftxui//:dom",
         "@ftxui//:screen",
         "@sds//:sds",
-    ] + select({
-        "//:windows": [],
-        "//conditions:default": [":fake_release"],
-    }),
+    ],
     linkstatic = True,
     linkopts = TUI_TEST_LINK_OPTS,
     # 这个 harness 会真起一个 app（临时 HOME + 最小 config），比纯渲染测试慢。
@@ -1929,7 +1926,36 @@ cc_test(
 )
 cc_test(
     name = "test_message_list",
-    srcs = ["test_message_list.cpp"],
+    srcs = ["test_message_list.cpp", "test_fs_util.h"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:component",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_chat_refs",
+    srcs = ["test_chat_refs.cpp", "test_fs_util.h"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
+    name = "test_chat_window",
+    srcs = ["test_chat_window.cpp", "test_fs_util.h"],
     deps = [
         "//src/tui:tui",
         "@ftxui//:component",
@@ -2131,3 +2157,98 @@ cc_test(
     target_compatible_with = POSIX_ONLY,
 )
 
+cc_test(
+    name = "test_chat_bubble_channel",
+    srcs = ["test_chat_bubble_channel.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/app:api",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_write",
+    srcs = ["test_chat_bubble_write.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_session",
+    srcs = ["test_chat_bubble_session.c"],
+    deps = [
+        "//src/actor:actor",
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/shell:shell",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_refs_db",
+    srcs = ["test_chat_bubble_refs_db.cpp"],
+    deps = [
+        "//src/tui:tui",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_page_model",
+    srcs = ["test_chat_bubble_page_model.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@cjson//:cjson",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubble_page",
+    srcs = ["test_chat_bubble_page.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@cjson//:cjson",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
+    name = "test_chat_bubbles",
+    srcs = ["test_chat_bubbles.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_binary(
+    name = "probe_sqlite_rss",
+    srcs = ["probe_sqlite_rss.c"],
+    deps = ["@sqlite3//:sqlite3"],
+    tags = ["manual"],
+)

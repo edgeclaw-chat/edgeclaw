@@ -43,6 +43,9 @@ void edc_commands_reply(struct edc_reply_to to, const char *text)
      * so it must NOT go in the first slot -- that is the mix-up this macro exists for. */
     struct edc_channel_message *reply =
         edc_channel_message_new(EDC_COMMANDS_CHANNEL, EDC_CHANNEL_MESSAGE_SYS_TYPE, sdsnew(text));
+    if (to.session_id && *to.session_id)
+        reply->session_id = sdsnew(to.session_id);
+    reply->interface_feedback = true;
     edc_actor_send(to.channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, to.actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));
@@ -52,6 +55,8 @@ void edc_commands_send_history(struct edc_reply_to to, const char *payload)
 {
     struct edc_channel_message *reply =
         edc_channel_message_new(EDC_COMMANDS_CHANNEL, EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE, sdsnew(payload));
+    if (to.session_id && *to.session_id)
+        reply->session_id = sdsnew(to.session_id);
     edc_actor_send(to.channel_actor,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, reply->type, to.actor, NULL, reply,
                                               (edc_actor_data_free_fn)edc_channel_message_free));
@@ -4046,7 +4051,8 @@ static bool edc_commands_cb_handle_command(struct edc_scheduler *sched, struct e
      * comes from msg->message_type. msg->type is the CHANNEL type (which adapter the
      * message arrived on) and the two enums only coincide at 0 -- every command reply was
      * being tagged USER for that reason. */
-    struct edc_reply_to to = {.channel_actor = actor, .actor = actor, .type = msg->message_type};
+    struct edc_reply_to to = {.channel_actor = actor, .actor = actor, .type = msg->message_type,
+                              .session_id = msg->session_id};
     return edc_commands_handler(sched->config, sched->sessions, sched, to, msg);
 }
 

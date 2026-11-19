@@ -390,6 +390,55 @@ static bool verify_v8(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+
+/* v8 -> v9: chat_bubbles, the TUI's durable view state (was chat.jsonl).
+ * Purely additive: no existing table is touched, so a 125 MB v8 database
+ * migrates with zero data rewrite. The DDL is duplicated from EDC_SCHEMA_SQL on
+ * purpose -- a fresh v9 database and a migrated one must have the same shape,
+ * and tests/test_state_migrate.c asserts exactly that. */
+static bool step_v8_to_v9(sqlite3 *db, char *err, size_t cap)
+{
+    if (!run_sql(db,
+                 "CREATE TABLE IF NOT EXISTS chat_bubbles ("
+                 "  session_id TEXT NOT NULL,"
+                 "  seq        INTEGER NOT NULL,"
+                 "  line       TEXT NOT NULL,"
+                 "  PRIMARY KEY (session_id, seq)"
+                 ")",
+                 "create chat_bubbles", err, cap))
+        return false;
+    return run_sql(db,
+                   "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session "
+                   "ON chat_bubbles(session_id, seq DESC)",
+                   "create chat_bubbles_by_session", err, cap);
+}
+
+static bool verify_v9(sqlite3 *db, char *err, size_t cap)
+{
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db,
+                       "SELECT count(*) FROM sqlite_master "
+                       "WHERE type='table' AND name='chat_bubbles'",
+                       &n, err, cap))
+        return false;
+    if (n != 1)
+    {
+        set_err(err, cap, "v9 is stamped but chat_bubbles is missing");
+        return false;
+    }
+    if (!query_one_int(db,
+                       "SELECT count(*) FROM sqlite_master "
+                       "WHERE type='index' AND name='chat_bubbles_by_session'",
+                       &n, err, cap))
+        return false;
+    if (n != 1)
+    {
+        set_err(err, cap, "v9 is stamped but chat_bubbles_by_session is missing");
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -399,6 +448,7 @@ static bool verify_v8(sqlite3 *db, char *err, size_t cap)
  * one disagree. tests/test_state_migrate.c asserts that they agree. */
 static const struct edc_migration EDC_MIGRATIONS[] = {
     {7, step_v7_to_v8, verify_v8},
+    {8, step_v8_to_v9, verify_v9},
     {0, NULL, NULL}, /* terminator */
 };
 

@@ -1,4 +1,5 @@
 #include "edc_chat_transcript.hpp"
+#include "edc_chat_bubble_line.h"  /* the one shared encoder */
 
 #include <algorithm>
 #include <cstdlib>
@@ -181,8 +182,17 @@ size_t DecodeLines(const char *base, size_t from, size_t last_nl, std::vector<Ch
 
 std::string EncodeTranscriptLine(const ChatTranscriptEntry &entry)
 {
-    return EscapeField(entry.kind) + "\t" + std::to_string(entry.render_pref) + "\t" +
-           EscapeField(entry.task_id) + "\t" + EscapeField(entry.header) + "\t" + EscapeField(entry.content) + "\n";
+    /* The channel actor writes the SAME line into chat_bubbles; using one C
+     * encoder on both sides is what guarantees a bubble survives a restart
+     * byte-for-byte. The file path adds its trailing newline itself. */
+    char *raw = edc_chat_bubble_encode(entry.kind.c_str(), entry.render_pref, entry.task_id.c_str(),
+                                       entry.header.c_str(), entry.content.c_str());
+    if (!raw)
+        return {};
+    std::string out(raw);
+    free(raw);
+    out.push_back('\n');
+    return out;
 }
 
 bool DecodeTranscriptLine(const std::string &raw, ChatTranscriptEntry *out)

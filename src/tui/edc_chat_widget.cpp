@@ -41,15 +41,6 @@ ChatWidget::~ChatWidget()
 
 void ChatWidget::OnModelChanged(const model::ChatModel::Change &change)
 {
-    // Older bubbles prepended above the head (the startup backfill): insert them
-    // without rebuilding, so the rows already on screen stay put (the list's scroll
-    // anchor moves the offset by the height that lands above).
-    if (!change.prepended.empty())
-    {
-        list_->PrependMessages(change.prepended);
-        return;
-    }
-
     // An appended bubble: one list append, exactly as before (the reader's scroll
     // offset is untouched — if following the tail, layout pins it to the new
     // bottom, otherwise the reader stays where they were).
@@ -68,11 +59,6 @@ void ChatWidget::OnModelChanged(const model::ChatModel::Change &change)
 void ChatWidget::AddMessage(std::shared_ptr<Message> message)
 {
     model_->AddMessage(std::move(message));
-}
-
-void ChatWidget::PrependMessages(std::vector<std::shared_ptr<Message>> messages)
-{
-    model_->PrependMessages(std::move(messages));
 }
 
 void ChatWidget::Clear()
@@ -100,6 +86,11 @@ bool ChatWidget::NeedsRemeasure() const
     return list_ && list_->HasPendingWork();
 }
 
+size_t ChatWidget::LiveCount() const
+{
+    return model_ ? model_->LiveCount() : 0;
+}
+
 bool ChatWidget::ScrollToTop()
 {
     return scroll_view_->ScrollToTop();
@@ -115,9 +106,10 @@ bool ChatWidget::StickingToBottom() const
     return scroll_view_->StickingToBottom();
 }
 
-bool ChatWidget::ReadingBackfilledHistory() const
+void ChatWidget::SetReachedTopCallback(std::function<void()> cb)
 {
-    return list_ && list_->TopIsBackfilled();
+    if (list_)
+        list_->SetReachedTopCallback(std::move(cb));
 }
 
 bool ChatWidget::OnEvent(::ftxui::Event event)
@@ -139,6 +131,11 @@ bool ChatWidget::OnEvent(::ftxui::Event event)
         return ::ftxui::filler();
     }
 
+    /* No per-frame SetWindow here. LazyBubble materializes its real bubble on
+     * demand during layout (which runs BEFORE OnRender), and MessageWindow::Get's
+     * kMaxLive eviction keeps residency bounded without a frame-lagged visible
+     * range that would delete exactly the rows a scroll just moved into view.
+     * LoadTranscript primes the tail window for the first frame. */
     return scroll_view_->Render();
 }
 

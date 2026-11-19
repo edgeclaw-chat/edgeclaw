@@ -157,6 +157,11 @@ typedef enum
     EDC_CHANNEL_MESSAGE_MESSAGE_PAYLOAD_TYPE,    /* A pull REPLY: the folded-paste payload parked on the
                                                   * user message named by the request's tag (header = that
                                                   * tag, content = the payload JSON, "" = not found). */
+    EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE,   /* A pull REPLY: one page of the durable chat
+                                                  * bubbles (header = session_id, content =
+                                                  * JSON: before_seq, rows[{seq,line}],
+                                                  * has_more). UI only renders; the store
+                                                  * read happened on the scheduler thread. */
 } edc_channel_message_type;
 
 /* Render preference for message content: declared explicitly by the sender (tool/app);

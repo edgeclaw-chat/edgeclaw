@@ -22,6 +22,10 @@ enum
     HARNESS_MSG_TASK_TREE_CHANGED = 6,
     HARNESS_MSG_TASK_HISTORY = 7,
     HARNESS_MSG_MESSAGE_PAYLOAD = 8,
+    /* A pull REPLY carrying a chat_bubbles page. The harness feeds one LATE,
+     * after live bubbles are already on screen, to pin the "do not let a stale
+     * startup page rebuild the model" rule without waiting for a timeout. */
+    HARNESS_MSG_CHAT_BUBBLE_PAGE = 9,
     /* 认不出来的类型: 前端必须什么都不做 (兜底分支)。 */
     HARNESS_MSG_GARBAGE = 99
 };

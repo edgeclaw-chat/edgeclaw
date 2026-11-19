@@ -494,9 +494,9 @@ static void test_real_v7_to_v8(void)
     CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open the fixture");
 
     char err[1024] = {0};
-    CHECK(edc_migrate_run(db, path, 7, err, sizeof err), "v7 migrates to v8");
+    CHECK(edc_migrate_run(db, path, 7, err, sizeof err), "v7 migrates to the current version");
 
-    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is v8");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
     CHECK(column_exists(db, "tasks", "memo_baseline_done"),
           "tasks.memo_baseline_done exists");
     CHECK(column_exists(db, "memo_events", "changed"), "memo_events.changed exists");
@@ -509,6 +509,10 @@ static void test_real_v7_to_v8(void)
           "a task with memo_seen_seq > 0 IS baselined");
     CHECK(query_int64(db, "SELECT count(*) FROM memo_events") == 0,
           "memo_events rows survive (none in this fixture)");
+    /* v9 is additive: the v8 step still ran, and the new table exists too. */
+    CHECK(query_int64(db, "SELECT count(*) FROM sqlite_master "
+                           "WHERE type='table' AND name='chat_bubbles'") == 1,
+          "chat_bubbles exists after migrating through v9");
 
     /* And the backup is the v7 file, so a user can go back. */
     char backup[800] = {0};
@@ -543,10 +547,10 @@ static void test_rerun_is_refused(void)
     char err[1024] = {0};
     CHECK(edc_migrate_run(db, path, 7, err, sizeof err), "first run migrates");
     err[0] = '\0';
-    CHECK(!edc_migrate_run(db, path, 8, err, sizeof err), "second run is refused");
+    CHECK(!edc_migrate_run(db, path, EDC_DB_VERSION, err, sizeof err), "second run is refused");
     CHECK(strstr(err, "newer EdgeClaw") != NULL,
           "a retry at the current version reports 'nothing to do' as a refusal");
-    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "still v8");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "still current");
     CHECK(query_int64(db, "SELECT count(*) FROM tasks") == 2, "data is intact");
     sqlite3_close(db);
     drop_dir();

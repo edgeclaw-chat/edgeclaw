@@ -72,6 +72,31 @@ static char *test_tmp_template(char *buf, size_t cap, const char *name)
     return buf;
 }
 
+/* Absolute path of a writable scratch FILE (not a directory template).
+ *
+ * Several chat-log tests need one transcript file to open with std::ofstream;
+ * writing "/tmp/name.jsonl" literally fails on Windows (no \tmp directory,
+ * and _mkdir does not create parents). Use Bazel's per-test TEST_TMPDIR, or
+ * the platform TEMP/current directory when run by hand. */
+static const char *test_tmp_file_path(const char *name)
+{
+    static char buf[4096];
+    const char *base = getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = getenv("TMPDIR");
+#ifdef _WIN32
+    if (!base || !*base)
+        base = getenv("TEMP");
+    if (!base || !*base)
+        base = ".";
+#else
+    if (!base || !*base)
+        base = "/tmp";
+#endif
+    snprintf(buf, sizeof(buf), "%s/%s", base, name);
+    return buf;
+}
+
 /* Create `path` and every missing parent. Already existing is success, like `mkdir -p`. */
 static void test_mkdir_p(const char *path)
 {

@@ -112,12 +112,18 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void PresentHistory(const std::string &payload) override;
     // A payload pull came back: header = the mid it answers ("" = that message is gone).
     void PresentMessagePayload(const std::string &mid, const std::string &payload_json) override;
+    void ApplyChatBubblePage(const std::string &session_id, const std::string &payload) override;
     void RequestTaskSnapshot() override;
     void RequestFrame() override;
 
     // IUiDispatcher: post a task to the UI thread. With no screen, Post() runs
     // synchronously.
     void Post(std::function<void()> task) override;
+
+    // The update-check result, marshalled onto the UI thread by AppFacade.
+    // Public so a harness can re-register it after exercising SetUpdateObserver
+    // and drive the banner deterministically.
+    void OnUpdateFound(std::string tag);
 
     // Application port (lifetime tied to the window).
     port::IAppFacade *App()
@@ -133,6 +139,8 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // True while the chat pane shows a pulled task history; live output then
     // neither renders nor is written to the transcript.
     bool history_view_ = false;
+    /* The live chat model while the history view is showing its own bubbles. */
+    std::unique_ptr<model::ChatModel::Snapshot> chat_snapshot_;
 
     // Append the current input as a user message and clear the box. A bare
     // "/connect" opens the setup wizard instead of sending anything.
@@ -169,17 +177,6 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     void LoadChatTranscript(const char *session_id);
     // Replay |path| into the (already cleared) log.
     void LoadChatTranscriptFile(const std::string &path);
-    // Progressive transcript backfill (see LoadChatTranscriptFile): the newest
-    // bubbles are shown at once; the older history is decoded on a worker thread and
-    // prepended a bounded batch per TickAnimations, so no single step blocks a frame.
-    void StartTranscriptBackfill(const std::string &path, size_t prefix_end);
-    void PumpTranscriptBackfill();
-    void CancelTranscriptBackfill();
-    // Join the backfill worker and clear its state. Caller must hold |backfill_mutex_|.
-    void ReleaseBackfillWorkerLocked();
-    // True while older history is still being decoded or prepended -- drives the
-    // "Loading earlier history…" hint.
-    bool TranscriptBackfillActive() const;
     // Record one displayed bubble at the tail of the current session's transcript.
     void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
                               const std::string &task_id, int render_pref);
@@ -315,10 +312,6 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     bool bracketed_paste_on_ = false;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
     ClipboardToast clipboard_toast_;
-    // The "Loading earlier history…" chip (same look as the clipboard toast): raised
-    // only while the reader is scrolled up into a backfill that is still running, then
-    // left to fade out once it finishes or they return to the tail.
-    Toast backfill_hint_;
     // Where the left-button drag started, and whether a copy is still due. The
     // copy waits for the next frame: FTXUI rebuilds its selection while that
     // frame is drawn, and a click without movement is not a selection.
@@ -364,24 +357,5 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // task-state changes, since they send no channel message).
     std::chrono::steady_clock::time_point last_snapshot_request_;
 
-    /* Startup transcript backfill.
-     *
-     * Threading: only the decode runs off the UI thread (|backfill_thread_|); its
-     * result is published through |backfill_ready_| with a release store, and read
-     * only after an acquire load returns true -- so the decoded vector crosses
-     * threads without sharing a lock with the decode itself. Every other access to
-     * the fields below (Start/Pump/Cancel, reached from UI-thread callbacks and
-     * TickAnimations) is serialized by |backfill_mutex_|. The worker is always
-     * joined before its state is reused or destroyed (see CancelTranscriptBackfill),
-     * so capturing |this| in the lambda is safe. Note the widget/model calls that
-     * Start leads to still require the UI thread (all IChannelHost callbacks are
-     * marshalled there by AppFacade) -- the mutex only guards this handoff state. */
-    mutable std::mutex backfill_mutex_;
-    std::thread backfill_thread_;
-    std::atomic<bool> backfill_cancel_{false};
-    std::atomic<bool> backfill_ready_{false};
-    std::vector<ChatTranscriptEntry> backfill_result_; // worker writes; UI reads after |backfill_ready_|
-    std::vector<ChatTranscriptEntry> backfill_queue_;  // file order; consumed from the back
-    size_t backfill_remaining_ = 0;
 };
 } // namespace edc

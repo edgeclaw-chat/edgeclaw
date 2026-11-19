@@ -77,6 +77,12 @@ void TestDefaultRoutingPolicy()
     Check(p.Route("a", false, "a") == edc::domain::OutputRoute::Silent, "路由: 同 session 非 active → 静默");
     Check(p.Route("b", true, "a") == edc::domain::OutputRoute::OtherSession, "路由: 别的 session → 进它自己的转录");
     Check(p.Route("", false, "a") == edc::domain::OutputRoute::Shown, "路由: 无 session 标签 (命令回复) → 上屏");
+    /* Regression: every bubble now carries a session_id (chat_bubbles needs an
+     * owner), so "empty session" no longer identifies a command reply. It MUST
+     * still be shown even though it is not an active task's output, or /task
+     * output, /help, /session list all go silent. */
+    Check(p.Route("a", false, "a", true) == edc::domain::OutputRoute::Shown,
+          "路由: 带 session 标签的命令回复 → 上屏 (不是 active task 也要显示)");
 }
 
 void TestLegacyDelegation()

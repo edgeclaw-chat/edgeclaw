@@ -106,6 +106,17 @@ int edc_app_message_is_task_history(const struct edc_channel_message *message)
     return message ? message->message_type == EDC_CHANNEL_MESSAGE_TASK_HISTORY_TYPE : 0;
 }
 
+/* A pull REPLY: one page of the durable chat log (header = session_id). */
+int edc_app_message_is_interface_feedback(const struct edc_channel_message *message)
+{
+    return message ? (message->interface_feedback ? 1 : 0) : 0;
+}
+
+int edc_app_message_is_chat_bubble_page(const struct edc_channel_message *message)
+{
+    return message ? message->message_type == EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_PAGE_TYPE : 0;
+}
+
 /* The mid carried by a MESSAGE_PAYLOAD reply (the message it answers for), or NULL. */
 const char *edc_app_message_mid(const struct edc_channel_message *message)
 {
@@ -607,6 +618,26 @@ void edc_app_request_task_snapshot(struct edc_app *app, const char *session_id)
     sds tag = sdsnew(session_id);
     edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_TASK_SNAPSHOT, channel, NULL, tag,
                                              (edc_actor_data_free_fn)sdsfree);
+    edc_actor_send(state->observer, msg);
+}
+
+void edc_app_request_chat_bubble_page(struct edc_app *app, const char *request_json)
+{
+    edc_actor_t *channel = edc_app_channel_actor(app);
+    if (!channel || !request_json || !*request_json)
+        return;
+
+    edc_channel_actor_state_t *state = channel->state;
+    if (!state || !state->observer)
+        return;
+
+    /* strdup/free rather than sds: the message data is an opaque byte buffer as
+     * far as the actor is concerned, and the C++ side cannot include sds.h. */
+    char *tag = strdup(request_json);
+    if (!tag)
+        return;
+    edc_actor_msg_t *msg = edc_actor_msg_new(BC_ACTOR_MSG_CHAT_BUBBLE_PAGE, channel, NULL, tag,
+                                             (edc_actor_data_free_fn)free);
     edc_actor_send(state->observer, msg);
 }
 

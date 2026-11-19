@@ -5,6 +5,7 @@
 #include "ftxui/component/component_base.hpp"
 #include "ftxui/screen/box.hpp"
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -40,6 +41,10 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
 
     void AddMessage(std::shared_ptr<Message> message);
 
+    /* Called once when the reader has scrolled to the very top of the loaded
+     * log. The chat widget uses it to ask the actor for an older page. */
+    void SetReachedTopCallback(std::function<void()> cb);
+
     // Insert |messages| (file order: oldest first) above the current head. Used by
     // the startup backfill to fill the older history in without blocking: the
     // already-measured rows only shift down, and the scroll anchor moves the offset
@@ -53,6 +58,16 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
     {
         return items_.empty();
     }
+
+    /* Resident Message instances. Until windowing lands this is the whole log
+     * (items_.size()), which is exactly what the P0 regression test measures.
+     * After the runtime wiring is in place it becomes the bounded window count.
+     * Read-only probe -- see docs/tui-windowing-proposal.md. */
+    size_t LiveCount() const
+    {
+        return items_.size();
+    }
+
 
     // True while the list still owes work to finish a resize: some heights are
     // still estimates from an older width, or a height measured while drawing has
@@ -143,6 +158,9 @@ class MessageList : public ::ftxui::ComponentBase, public ui::IScrollAnchor
     // clears its highlight only in ComputeRequirement, which a steady frame skips,
     // so the next frame clears these before painting the new selection.
     std::vector<size_t> highlighted_;
+
+    std::function<void()> reached_top_cb_;
+    bool reached_top_fired_ = false;
 
     // Lay one item out at |width|, returning its own body height; the blank row
     // between messages is a stride added in Rebuild.

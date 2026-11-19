@@ -216,6 +216,14 @@ static void test_pragmas(void)
     CHECK(edc_state_store_pragma_int("wal_autocheckpoint") == 1000,
           "wal_autocheckpoint is 1000 on the store connection");
 
+    /* Resident-memory budget. mmap_size=0 keeps SQLite from pinning the whole
+     * database file into our RSS (measured 119 MiB on a 33k-message workspace);
+     * a small page cache is enough because messages are read a bounded slice at
+     * a time. Together these saved ~106 MiB. Assert on the STORE's own
+     * connection -- a second connection would report its own defaults. */
+    CHECK(edc_state_store_pragma_int("mmap_size") == 0, "mmap_size is 0 (no whole-DB mapping)");
+    CHECK(edc_state_store_pragma_int("cache_size") == -8192, "cache_size is -8192 (8 MiB page cache)");
+
     /* user_version is a property of the FILE, not of a connection. */
     CHECK(inspect_int("PRAGMA user_version") == EDC_DB_VERSION,
           "user_version is EDC_DB_VERSION");
