@@ -543,6 +543,44 @@ static void test_real_v7_to_v8(void)
     drop_dir();
 }
 
+/* The real v12 -> v13 step: read_count is RENAMED to get_count (keeping recorded
+ * values) and search_count is added at 0. A v12 DB with a real read_count value
+ * is the fixture -- an empty table would make "kept the value" vacuous. */
+static void test_real_v12_to_v13(void)
+{
+    printf("\n── the real v12 -> v13 step (usage counters split) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY, "
+                             "read_count INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO memo_entries(entry_id,read_count) VALUES ('m1',7)") &&
+                 exec_ok(db, "PRAGMA user_version=12");
+    CHECK(built, "fixture v12 database with a real read_count=7");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 12, err, sizeof err), "v12 migrates to v13");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "memo_entries", "get_count"), "get_count exists");
+    CHECK(column_exists(db, "memo_entries", "search_count"), "search_count exists");
+    CHECK(!column_exists(db, "memo_entries", "read_count"), "old read_count column is gone");
+    CHECK(query_int64(db, "SELECT get_count FROM memo_entries WHERE entry_id='m1'") == 7,
+          "recorded read_count=7 became get_count=7 (no data loss)");
+    CHECK(query_int64(db, "SELECT search_count FROM memo_entries WHERE entry_id='m1'") == 0,
+          "search_count starts at 0 (unrecorded history not invented)");
+    sqlite3_close(db);
+    drop_dir();
+}
+
 /* Running it twice: the second run must refuse (there is nothing to do), not "succeed"
  * silently and not corrupt anything. That is what makes a retry after a crash safe. */
 static void test_rerun_is_refused(void)
@@ -579,6 +617,7 @@ int main(void)
     test_no_version_refused();
     test_verify_failure_reported();
     test_real_v7_to_v8();
+    test_real_v12_to_v13();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);

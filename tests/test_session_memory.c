@@ -14,6 +14,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Helpers for the regex out_ids path added 2026-11-20. */
+static bool ids_has(char **ids, const char *want)
+{
+    if (!ids)
+        return false;
+    for (size_t i = 0; ids[i]; i++)
+        if (strcmp(ids[i], want) == 0)
+            return true;
+    return false;
+}
+static void ids_free(char **ids)
+{
+    if (!ids)
+        return;
+    for (size_t i = 0; ids[i]; i++)
+        free(ids[i]);
+    free(ids);
+}
+
 static int g_failed = 0;
 static int g_passed = 0;
 
@@ -200,6 +219,41 @@ static void test_read_write_api(void)
     sdsfree(d);
     CHECK(edc_session_memory_get_detail(m, "m99") == NULL, "不存在的 id = NULL");
     CHECK(edc_session_memory_get_detail(NULL, "m1") == NULL, "m = NULL = NULL");
+
+    /* 2026-11-20: usage counters -- every note_get / note_search branch. */
+    CHECK(edc_session_memory_note_get(NULL, "m1") == false, "note_get: m=NULL ⇒ false");
+    CHECK(edc_session_memory_note_get(m, NULL) == false, "note_get: id=NULL ⇒ false");
+    CHECK(edc_session_memory_note_get(m, "") == false, "note_get: id empty ⇒ false");
+    CHECK(edc_session_memory_note_get(m, "m99") == false, "note_get: 不存在的 id ⇒ false");
+    CHECK(edc_session_memory_note_search(NULL, "m1") == false, "note_search: m=NULL ⇒ false");
+    CHECK(edc_session_memory_note_search(m, NULL) == false, "note_search: id=NULL ⇒ false");
+    CHECK(edc_session_memory_note_search(m, "") == false, "note_search: id empty ⇒ false");
+    CHECK(edc_session_memory_note_search(m, "m99") == false, "note_search: 不存在的 id ⇒ false");
+    /* Anti-vacuous: the valid path really moves the counters. */
+    uint64_t g0 = edc_session_memory_entry(m, "m2")->get_count;
+    uint64_t s0 = edc_session_memory_entry(m, "m2")->search_count;
+    CHECK(edc_session_memory_note_get(m, "m2") && edc_session_memory_entry(m, "m2")->get_count == g0 + 1,
+          "note_get: 有效 id ⇒ get_count +1");
+    CHECK(edc_session_memory_entry(m, "m2")->search_count == s0, "note_get 不动 search_count");
+    CHECK(edc_session_memory_note_search(m, "m2") && edc_session_memory_entry(m, "m2")->search_count == s0 + 1,
+          "note_search: 有效 id ⇒ search_count +1");
+    CHECK(edc_session_memory_entry(m, "m2")->get_count == g0 + 1, "note_search 不动 get_count");
+
+    /* search_regex_lines 的 out_ids 新增路径：拿到实际命中的 entry id, 调用方负责释放。 */
+    {
+        char **ids = (char **)0x1; /* 非 NULL 初值：验证函数入口把它置 NULL */
+        int regerr = 0;
+        sds rr2 = edc_session_memory_search_regex_lines(m, "^沙", 5, &hits, &regerr, &ids);
+        CHECK(regerr == 0 && hits == 1 && ids_has(ids, "m2"),
+              "regex out_ids: 命中 m2 ⇒ ids 含 'm2'");
+        sdsfree(rr2);
+        ids_free(ids);
+        /* 无命中时 out_ids 必须被置 NULL（不是悬空）。 */
+        char **ids0 = (char **)0x1;
+        rr2 = edc_session_memory_search_regex_lines(m, "ZZZ_NO_MATCH", 5, &hits, &regerr, &ids0);
+        CHECK(hits == 0 && ids0 == NULL, "regex out_ids: 无命中 ⇒ NULL");
+        sdsfree(rr2);
+    }
 
     edc_session_memory_free(m);
 }
