@@ -939,8 +939,12 @@ struct edc_task *edc_session_memory_start_compact(struct edc_scheduler *sched, s
 
     struct edc_session_memory *m = session->memo;
     sds prompt = build_compact_prompt(session);
-    struct edc_task *task =
-        edc_scheduler_spawn_system_task_as(sched, session, "compact session memory", EDC_SINK_SESSION_MEMORY);
+    /* The material is the whole index (no group/task corpus): say how many
+     * entries the round works on, so the sidebar is not another bare literal. */
+    sds desc = sdscatprintf(sdsempty(), "compact session memory (session %" PRId64 ", all entries: %zu)",
+                            session->session_id, m ? m->entry_count : (size_t)0);
+    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
+    sdsfree(desc);
     if (!task)
     {
         sdsfree(prompt);
@@ -1118,15 +1122,52 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
     return out;
 }
 
+/* A fold-chained curation has no cut of its own: it reads the fold task's output.
+ * Keep the same coordinates as the fold description (session / group / tasks),
+ * but name the fold task it depends on instead of a cut boundary. */
+static sds edc_session_memory_curate_desc(int64_t session_id, int64_t group_id, const int64_t *covered,
+                                          size_t covered_n, int64_t fold_task_id)
+{
+    enum
+    {
+        kShowMax = 3
+    };
+    size_t shown = covered_n < kShowMax ? covered_n : (size_t)kShowMax;
+    sds out = sdscatprintf(sdsempty(), "curate session memory (session %" PRId64 ", group %" PRId64 ", tasks ",
+                           session_id, group_id);
+    if (shown == 0)
+        out = sdscat(out, "(none)");
+    for (size_t i = 0; i < shown; i++)
+    {
+        if (i)
+            out = sdscat(out, ",");
+        out = sdscat(out, edc_id_str(covered[i])); /* one at a time: 4 rotating buffers */
+    }
+    if (covered_n > shown)
+        out = sdscatprintf(out, " +%zu more", covered_n - shown);
+    out = sdscat(out, "; from fold ");
+    out = sdscat(out, edc_id_str(fold_task_id));
+    out = sdscat(out, ")");
+    return out;
+}
+
 struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct edc_session *session,
-                                          struct edc_task_group *folded_group, struct edc_task *fold_task)
+                                          struct edc_task_group *folded_group, struct edc_task *fold_task,
+                                          const struct edc_fold_scope *scope)
 {
     if (!sched || !session || !session->memo)
         return NULL;
 
     sds prompt = build_curate_prompt(session, folded_group, /*all_groups=*/false, NULL);
-    struct edc_task *task =
-        edc_scheduler_spawn_system_task_as(sched, session, "curate session memory", EDC_SINK_SESSION_MEMORY);
+    /* Same material as the fold: the group memory just written covers exactly the
+     * member tasks the fold compressed. L2 has NO cut of its own -- it curates the
+     * fold's output -- so name that fold task explicitly rather than showing a
+     * meaningless cut boundary. */
+    sds desc = edc_session_memory_curate_desc(session->session_id, folded_group ? folded_group->group_id : 0,
+                                              scope ? scope->task_ids : NULL, scope ? scope->count : 0,
+                                              fold_task ? fold_task->task_id : 0);
+    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
+    sdsfree(desc);
     if (!task)
     {
         sdsfree(prompt);
@@ -1181,8 +1222,12 @@ struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sched, st
     }
 
     sds prompt = build_curate_prompt(session, NULL, /*all_groups=*/true, focus);
-    struct edc_task *task =
-        edc_scheduler_spawn_system_task_as(sched, session, "curate session memory", EDC_SINK_SESSION_MEMORY);
+    /* No single group: the manual round reads EVERY group's memory in the
+     * session, so the description says so (and names the session). */
+    sds desc = sdscatprintf(sdsempty(), "curate session memory (session %" PRId64 ", all groups)",
+                            session->session_id);
+    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
+    sdsfree(desc);
     if (!task)
     {
         sdsfree(prompt);
@@ -1360,13 +1405,18 @@ static size_t extract_collect(struct edc_task *const *members, size_t n, struct 
 }
 
 static sds build_extract_prompt(struct edc_session *session, struct edc_task_group *group,
-                                struct edc_extract_cut *out_cut)
+                                struct edc_extract_cut *out_cut, struct edc_fold_scope *out_scope)
 {
     if (out_cut)
     {
         out_cut->task_id = 0;
         out_cut->turn = 0;
         out_cut->prefix = 0;
+    }
+    if (out_scope)
+    {
+        out_scope->task_ids = NULL;
+        out_scope->count = 0;
     }
     if (!session || !group)
         return NULL;
@@ -1391,21 +1441,32 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
      * so only the oldest span is sent; the rest waits for the next round (each round
      * advances at least one message, so the loop terminates). Never move the cut to 0
      * (a "due but yields nothing" spin). */
+    const int64_t corpus_cap = edc_group_fold_corpus_cap(group);
     size_t cut_at = cnt; /* index of the first NOT-covered piece */
-    if (total > EDC_FOLD_MAX_CORPUS_TOKENS)
+    if (total > corpus_cap)
     {
         int64_t acc = 0;
         cut_at = 0;
-        while (cut_at < cnt && acc + ps[cut_at].tokens <= EDC_FOLD_MAX_CORPUS_TOKENS)
+        while (cut_at < cnt && acc + ps[cut_at].tokens <= corpus_cap)
         {
             acc += ps[cut_at].tokens;
             cut_at++;
         }
         if (cut_at == 0)
             cut_at = 1;
-        log_info("L2 memo extract: group %s corpus %" PRId64 " > cap %d — extracting the oldest %zu of %zu msgs",
-                 edc_id_str(group->group_id), total, EDC_FOLD_MAX_CORPUS_TOKENS, cut_at, cnt);
+        log_info("L2 memo extract: group %s corpus %" PRId64 " > cap %" PRId64
+                 " — extracting the oldest %zu of %zu msgs",
+                 edc_id_str(group->group_id), total, corpus_cap, cut_at, cnt);
     }
+
+    /* "Never cut to zero" must still mean "retry SMALLER". A single tool dump
+     * can be larger than even the reduced cap (the real DB has 300 KB ones);
+     * re-sending it whole would be the byte-identical retry this backoff exists
+     * to prevent. Trim that one message's rendered line to the byte budget the
+     * cap implies (the estimator is ~4 bytes/token). */
+    size_t first_line_max = 0;
+    if (cut_at == 1 && cnt > 0 && ps[0].tokens > corpus_cap)
+        first_line_max = (size_t)corpus_cap * 4;
 
     if (out_cut)
     {
@@ -1448,6 +1509,18 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         if (tk != cur)
         {
             cur = tk;
+            /* Which member tasks this round's material came from -- the same
+             * single pass that builds the corpus, so the description cannot
+             * disagree with what was actually sent. */
+            if (out_scope)
+            {
+                int64_t *grown = realloc(out_scope->task_ids, (out_scope->count + 1) * sizeof(*grown));
+                if (grown)
+                {
+                    out_scope->task_ids = grown;
+                    out_scope->task_ids[out_scope->count++] = tk->task_id;
+                }
+            }
             out = sdscatprintf(out, "\n### [task %s] %s\n", edc_id_str(tk->task_id), tk->description ? tk->description : "");
         }
         cJSON *m = ps[i].msg;
@@ -1456,6 +1529,11 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
             /* One line, with the message's wall-clock time and (for a tool call) its
              * name + arguments -- see edc_turn_render_message. */
             sds line = edc_turn_render_message(m);
+            if (i == 0 && first_line_max > 0 && sdslen(line) > first_line_max)
+            {
+                sdsrange(line, 0, (ssize_t)first_line_max - 1);
+                line = sdscat(line, "… [truncated]");
+            }
             out = sdscatprintf(out, "%s\n", line);
             sdsfree(line);
         }
@@ -1556,12 +1634,20 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
 
     struct edc_extract_cut cut;
     memset(&cut, 0, sizeof(cut));
-    sds prompt = build_extract_prompt(session, group, &cut);
+    struct edc_fold_scope scope;
+    memset(&scope, 0, sizeof(scope));
+    sds prompt = build_extract_prompt(session, group, &cut, &scope);
     if (!prompt)
+    {
+        edc_fold_scope_free(&scope);
         return NULL;
+    }
 
-    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, "extract session memory",
-                                                              EDC_SINK_SESSION_MEMORY);
+    sds desc = edc_group_fold_scope_desc("extract session memory", session->session_id, group->group_id,
+                                         scope.task_ids, scope.count, cut.task_id, cut.turn, cut.prefix);
+    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
+    sdsfree(desc);
+    edc_fold_scope_free(&scope);
     if (!task)
     {
         sdsfree(prompt);
@@ -1639,6 +1725,8 @@ void edc_session_memory_extract_note_failure(struct edc_task_group *group)
     if (!group)
         return;
     group->memo_extract_failures++;
+    /* Like L1: retry a smaller corpus rather than the exact request that failed. */
+    edc_group_fold_shrink_corpus(group);
     if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
         log_error("L2 memo extract: group %s failed %d times in a row — automatic extraction is paused for this "
                   "group (do new work in it, or fold it, to try again)",
@@ -1650,11 +1738,16 @@ void edc_session_memory_extract_note_failure(struct edc_task_group *group)
 
 void edc_session_memory_extract_note_progress(struct edc_task_group *group)
 {
-    if (!group || group->memo_extract_failures == 0)
+    if (!group)
         return;
-    log_info("L2 memo extract: group %s failure streak cleared (was %d)", edc_id_str(group->group_id),
-             group->memo_extract_failures);
-    group->memo_extract_failures = 0;
+    if (group->memo_extract_failures > 0)
+    {
+        log_info("L2 memo extract: group %s failure streak cleared (was %d)", edc_id_str(group->group_id),
+                 group->memo_extract_failures);
+        group->memo_extract_failures = 0;
+    }
+    /* A successful landing restores the full L1/L2 corpus cap. */
+    group->fold_corpus_budget = 0;
 }
 
 /* ── Landing: advance the watermark by the recorded cut ── */

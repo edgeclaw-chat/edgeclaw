@@ -134,7 +134,7 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
     if (event.is_mouse())
     {
         if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
-            box_.Contain(event.mouse().x, event.mouse().y))
+            HitBox().Contain(event.mouse().x, event.mouse().y))
         {
             thought_expanded_ = !thought_expanded_;
             body_ = nullptr; // the two shapes have different heights
@@ -167,7 +167,7 @@ bool ThoughtMessage::OnEvent(ftxui::Event event)
     // The thought toggle is the message's only visible header; it carries no
     // task tag, so no "task N" rides on the label.
     std::string label_text = " " + std::string(arrow) + " Thought";
-    auto label = ::ftxui::text(label_text) | ::ftxui::color(applied_color) | ::ftxui::bold | ::ftxui::reflect(box_);
+    auto label = ::ftxui::text(label_text) | ::ftxui::color(applied_color) | ::ftxui::bold | ::ftxui::reflect(HitBox());
 
     if (!thought_expanded_)
     {
@@ -271,7 +271,7 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     if (event.is_mouse())
     {
         if (event.mouse().button == ::ftxui::Mouse::Left && event.mouse().motion == ::ftxui::Mouse::Pressed &&
-            box_.Contain(event.mouse().x, event.mouse().y))
+            HitBox().Contain(event.mouse().x, event.mouse().y))
         {
             expanded_ = !expanded_;
             body_ = nullptr; // collapsed and expanded are different trees
@@ -345,7 +345,7 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     if (toggleable)
     {
         auto toggle = expanded_ ? ::ftxui::text("- Collapse") : ::ftxui::text("+ Click to expand");
-        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(pal.accent) | ::ftxui::reflect(box_)}) | ::ftxui::flex;
+        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(pal.accent) | ::ftxui::reflect(HitBox())}) | ::ftxui::flex;
         children.push_back(footer);
     }
 

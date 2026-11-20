@@ -530,6 +530,41 @@ static void test_resize_remeasures_only_the_visible_window(void)
 // the list reports the leftover work and the window keeps drawing frames until it
 // is done. Once those frames have run, the geometry must be exactly what a
 // freshly measured log produces -- not merely close.
+// A sidebar drag walks the chat pane through every width down to a couple of
+// columns and back. Every one of those frames re-wraps every visible bubble and
+// repaints it; a width-dependent render tree that writes past its box corrupts
+// whatever heap block sits next to the frame's nodes, and the next hit-box
+// push_back (the list's own vector) is where the corruption surfaces.
+static void test_drag_through_extreme_widths(void)
+{
+    TEST("a sidebar drag through extreme widths does not corrupt the frame");
+    auto chat = std::make_shared<edc::ChatWidget>();
+    const auto now = ::time(nullptr);
+
+    const std::string cjk = "这是一段没有任何空格的中文文本用来测试消息正文在宽度不足时会不会把尾巴裁掉TAIL";
+    std::string prose;
+    for (int i = 0; i < 120; i++)
+        prose += "word" + std::to_string(i) + " ";
+
+    for (int i = 0; i < 30; i++)
+    {
+        chat->AddMessage(std::make_shared<edc::Message>(prose + "tail" + std::to_string(i), now));
+        chat->AddMessage(std::make_shared<edc::UserMessage>(cjk + std::to_string(i), now));
+        chat->AddMessage(std::make_shared<edc::ToolMessage>("shell", NumberedBody(20), now, /*markdown=*/true));
+        chat->AddMessage(std::make_shared<edc::ThoughtMessage>(cjk + std::to_string(i), now));
+    }
+
+    for (int w = 120; w >= 1; w--)
+        (void)Draw(chat, w, kH);
+    for (int w = 1; w <= 120; w++)
+        (void)Draw(chat, w, kH);
+
+    // The hit boxes rebuilt on the last frame must still be usable: a click in
+    // the middle of the pane is dispatched through hits_ and reaches a bubble.
+    (void)chat->OnEvent(ClickAt(3, kH / 2));
+    PASS();
+}
+
 static void test_resize_catch_up_restores_exact_geometry(void)
 {
     TEST("the post-resize catch-up restores exact geometry");
@@ -829,6 +864,7 @@ int main(void)
     test_wheel_scrolls_the_virtualized_log();
     test_resize_remeasures_wrapped_heights();
     test_resize_remeasures_only_the_visible_window();
+    test_drag_through_extreme_widths();
     test_resize_catch_up_restores_exact_geometry();
     test_scroll_up_during_resize_catch_up_moves_one_row_at_a_time();
     test_click_reaches_a_visible_item();

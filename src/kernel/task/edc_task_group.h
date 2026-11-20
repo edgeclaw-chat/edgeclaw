@@ -100,6 +100,13 @@ struct edc_task_group
      * so it is ignored until the member replies again. */
     uint32_t fold_epoch;
 
+    /* Corpus budget for the NEXT memory round (0 = full EDC_FOLD_MAX_CORPUS_TOKENS).
+     * Each consecutive fold/extract failure halves it (floor
+     * EDC_FOLD_MIN_CORPUS_TOKENS); a successful landing resets it. Persisted so a
+     * restart cannot restart the "same giant prompt forever" loop. Shared by the
+     * L1 fold and the L2 extraction: both build their material with the same cap. */
+    int64_t fold_corpus_budget;
+
     /* Consecutive failure count: at EDC_FOLD_MAX_FAILURES, automatic folding stops,
      * so "fail -> group still due -> retry unchanged" cannot become a perpetual
      * motion machine. Reset on successful landing / manual fold / new committed

@@ -14,6 +14,7 @@ struct edc_session_manager;
 struct edc_config;
 struct edc_task;
 struct edc_task_group;
+struct edc_fold_scope; /* defined in edc_group_fold.h; kept opaque here */
 
 /* L2: session-level memory.
 
@@ -303,8 +304,11 @@ extern const char *edc_session_memory_compact_prompt(void);
  *     folded group's non-terminal members --SEQUENCE--> L2 --SEQUENCE--> L1 (just landed)
  * so member recovery happens after curation and L2 can read the just-landed group
  * memory. Returns the built L2 task (NULL on failure). */
+/* |scope| is the fold corpus's member list (see struct edc_fold_scope); the L2
+ * description names the same tasks the fold covered. NULL is allowed. */
 extern struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct edc_session *session,
-                                                 struct edc_task_group *folded_group, struct edc_task *fold_task);
+                                                 struct edc_task_group *folded_group, struct edc_task *fold_task,
+                                                 const struct edc_fold_scope *scope);
 
 /* Result of a guarded (optimistic-concurrency) mutation. */
 enum edc_memo_write_result

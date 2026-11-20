@@ -14,6 +14,7 @@
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
 #include "ftxui/component/event.hpp"
+#include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
 #include "ftxui/screen/screen.hpp"
 #include "test_fs_util.h"
@@ -226,6 +227,87 @@ static void test_cached_trees_stay_bounded(void)
     PASS();
 }
 
+/* A LazyBubble caches the ftxui tree built by a REAL bubble. ToolMessage and
+ * ThoughtMessage put reflect(box_) in that tree: reflect holds a reference to
+ * the real bubble's own member. MessageWindow::Get() may evict the real bubble
+ * (the startup window primes only the tail; a resize's catch-up / a scroll can
+ * materialise another range), but the proxy keeps rendering its cached tree.
+ * Reflect::Render then writes the new box into freed memory -- a 16-byte
+ * heap-use-after-free that later shows up as corruption in an unrelated vector
+ * (the chat list's hit boxes were where the user's gdb backtrace landed). */
+static void test_cached_tree_survives_real_bubble_eviction(void)
+{
+    TEST("a cached tooltip tree does not reference an evicted real bubble");
+    constexpr size_t kRows = 260;
+    const std::string path = test_tmp_file_path("edc_chat_window_evict.jsonl");
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        for (size_t i = 0; i < kRows; i++)
+        {
+            edc::ChatTranscriptEntry e;
+            /* Plain sys rows cannot reproduce it: their tree has no reflect.
+             * Alternate the two message types whose trees capture box_. */
+            e.kind = (i % 2 == 0) ? "thought" : "tool";
+            e.header = "shell";
+            /* >14 lines makes the tool bubble collapsible, so its footer also
+             * carries a reflect(box_) in the cached tree. */
+            std::string body;
+            for (size_t line = 0; line < 20; line++)
+                body += "line " + std::to_string(i) + "-" + std::to_string(line) + "\n";
+            e.content = body;
+            out << edc::EncodeTranscriptLine(e);
+        }
+    }
+
+    auto chat = std::make_shared<edc::ChatWidget>();
+    chat->model()->LoadTranscript(path);
+    /* First frame: the tail proxies materialize their real bubbles and cache
+     * their trees. Assert the fixture really took that path. */
+    (void)Frame(chat);
+    ASSERT(chat->model()->CachedTreeCount() > 0, "no proxy cached a render tree -- probe is vacuous");
+
+    /* Drive the resident window away from the tail: all those real bubbles are
+     * released. The proxies and their cached trees stay alive. */
+    chat->model()->SetWindow(0, 1, /*prefetch=*/0);
+    ASSERT(chat->model()->LiveCount() <= 2, "old tail bubbles were not evicted -- probe is vacuous");
+
+    /* Re-render the proxies whose real bubble died. Without owning the real
+     * bubble (or dropping the tree), ftxui's reflect writes through a dangling
+     * Box&. ASan reports it here; without ASan it corrupts the heap. */
+    for (size_t i = kRows - 20; i < kRows; i++)
+    {
+        auto proxy = chat->model()->visible()[i];
+        auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(25));
+        ftxui::Render(screen, proxy->Render() | ftxui::flex);
+    }
+
+    /* The rebound hit box is not merely safe to write: clicking the cached
+     * tree's collapsible footer must still reach the newly materialised real
+     * bubble and persist the toggle on the descriptor. */
+    auto click_screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(100), ftxui::Dimension::Fixed(25));
+    ftxui::Render(click_screen, chat->Render() | ftxui::flex);
+    int footer_row = -1;
+    for (int y = 0; y < 25 && footer_row < 0; y++)
+    {
+        std::string row;
+        for (int x = 0; x < 100; x++)
+        {
+            const std::string &cell = click_screen.CellAt(x, y).character;
+            row += cell.empty() ? " " : cell;
+        }
+        if (row.find("Click to expand") != std::string::npos)
+            footer_row = y;
+    }
+    ASSERT(footer_row >= 0, "no collapsible footer is on screen -- click probe is vacuous");
+    const auto click = ::ftxui::Event::Mouse(
+        "", ::ftxui::Mouse{::ftxui::Mouse::Left, ::ftxui::Mouse::Pressed, false, false, false, 4, footer_row});
+    ASSERT(chat->OnEvent(click), "click on the cached footer did not reach the bubble");
+    ASSERT(Frame(chat).find("Collapse") != std::string::npos, "the cached footer did not expand the bubble");
+
+    std::remove(path.c_str());
+    PASS();
+}
+
 /* Regression for the windowing render bug: after scrolling from the tail to the
  * head and back, EVERY frame must still draw the bubbles at that end. The
  * geometry (prefix_/total_/visible range) was correct while the frame was
@@ -263,6 +345,7 @@ int main(void)
     test_live_count_does_not_grow_with_history();
     test_first_frame_cached_trees_are_bounded();
     test_cached_trees_stay_bounded();
+    test_cached_tree_survives_real_bubble_eviction();
     test_scrolling_keeps_both_ends_rendered();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
