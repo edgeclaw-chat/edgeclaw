@@ -1913,7 +1913,10 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
              * (the text above is the expanded one -- what the model saw). */
             cJSON *task_payload = edc_task_user_payload(t);
             if (task_payload)
-                cJSON_AddItemToObject(tj, "payload", cJSON_Duplicate(task_payload, 1));
+                /* edc_task_user_payload already returns a private duplicate; hand that
+                 * straight to the tree. Duplicating it again here leaked one cJSON tree
+                 * per task on every sidebar snapshot. */
+                cJSON_AddItemToObject(tj, "payload", task_payload);
             /* Token usage for the sidebar (double, exact below 2^53). */
             cJSON_AddNumberToObject(tj, "tokens_prompt", (double)t->tokens_prompt);
             cJSON_AddNumberToObject(tj, "tokens_completion", (double)t->tokens_completion);

@@ -2666,10 +2666,12 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                     rec->status = (status && strcmp(status, "executing") == 0) ? TOOL_CALL_EXECUTING
                                                                               : TOOL_CALL_PENDING;
                 }
-                else if (parsed)
-                {
+                /* edc_task_tool_call_add duplicates args into the record; the parsed
+                 * tree we handed in stays owned by US and must be freed on BOTH paths
+                 * (the old code only freed it when the add failed, leaking one cJSON
+                 * tree per restored tool call -- 597 of them in the original DHAT run). */
+                if (parsed)
                     cJSON_Delete(parsed);
-                }
             }
         }
         sqlite3_finalize(st);

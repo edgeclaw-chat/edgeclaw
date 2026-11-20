@@ -957,6 +957,21 @@ cc_test(
 )
 
 cc_test(
+    name = "test_leak_regression",
+    srcs = ["test_leak_regression.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_session_routing",
     srcs = ["test_session_routing.c", "test_ws.h"],
     deps = [
