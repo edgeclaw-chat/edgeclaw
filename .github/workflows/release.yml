@@ -432,17 +432,15 @@ jobs:
           # opened a year from now identifiable without running it, and it is what a
           # pinned download cites.
           #
-          # A version-less alias was published here until now, so that
+          # A version-less alias used to be published here so that
           # `releases/latest/download/<name>` could resolve: that URL looks an asset up
           # BY NAME in the newest release, and a name containing the version cannot be
-          # written down before the tag exists. It was removed because `latest` never
-          # resolves to a pre-release, so while every tag carries a suffix the alias was
-          # unreachable -- the README pins an explicit tag instead, and builds the
-          # filename from it. The consequence to keep in mind: `releases/latest/download/`
-          # stays unusable after the first stable release too. That is the trade-off that
-          # was chosen; do not reinstate the alias without also deciding what the README
-          # should say, because a second name per archive is otherwise just 25 MB of
-          # duplicates nobody links to.
+          # written down before the tag exists. It was removed because the fixed URL still
+          # needs a name that is stable across releases, which a tag-carrying asset never
+          # is -- the installer reads the release feed for the current tag and builds the
+          # filename from it. Do not reinstate the alias without also deciding what the
+          # README should say, because a second name per archive is otherwise just 25 MB
+          # of duplicates nobody links to.
           if [[ "$VERSION" == v* ]]; then
             mv "${ARTIFACT}" "${{ matrix.target }}_${VERSION}.tar.gz"
           fi
@@ -540,7 +538,7 @@ jobs:
           generate_release_notes: true
           # A tag carrying a suffix (v2.0.2-rc.1, -beta.2, ...) is a pre-release, decided
           # by the tag itself rather than by a separate switch nobody would remember to
-          # flip. It matters beyond the label: GitHub's `releases/latest` resolves to the
-          # newest NON-pre-release, so a pre-release is deliberately not what a visitor's
-          # `/releases/latest/download/...` link resolves to. The README says so.
+          # flip. GitHub's `releases/latest` skips such releases, so the installers use the
+          # releases.atom feed instead: it lists pre-releases too, and the '-' convention
+          # is what both installers use to decide the default stable choice.
           prerelease: ${{ contains(github.ref_name, '-') }}

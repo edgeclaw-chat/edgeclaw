@@ -126,25 +126,41 @@ sed -i "s#^\\\$Dl = .*#\$Dl = 'http://127.0.0.1:${PORT}'#" "$RUN_PS1" 2>/dev/nul
     perl -0pi -e "s{^\\\$Dl = .*}{\$Dl = 'http://127.0.0.1:${PORT}'}m" "$RUN_PS1"
 grep -q "127.0.0.1:${PORT}" "$RUN_PS1" || { echo "could not point the script at the fixture server" >&2; exit 1; }
 
-# The release list is a fixture for the same reason, and it covers the path every other
-# case here skips: passing -Tag means Get-Releases never runs, so the API URL -- a query
-# string built by interpolation -- and the stable/pre split went unexecuted. A variable
-# expanding wrong there killed a real installer on a real Windows box before it made a
-# single request.
+# The release feed is a fixture for the same reason, and it covers the path every other
+# case here skips: passing -Tag means Get-Tags never runs, so the feed URL and the stable/pre
+# split went unexecuted. Its shape is GitHub's real atom feed: one <id> per release whose
+# last component is the tag, newest first. v9.9.9-rc.1 is a pre-release ('-' tag), v9.9.8
+# stable; drafts are absent because the feed omits them.
 #
-# The .json name is load-bearing: the fixture server derives Content-Type from the
+# The .atom extension is load-bearing: the fixture server derives Content-Type from the
 # extension, and Windows PowerShell hands Content back as a byte[] for anything that is not
-# text -- ConvertFrom-Json then reads one number per byte instead of the release objects.
-# GitHub answers application/json, so a file named `releases` would make the fixture unlike
-# the endpoint it stands in for.
-cat > "${WORK}/fixtures/releases.json" <<'JSON'
-[{"tag_name":"v9.9.9","prerelease":true,"draft":false},
- {"tag_name":"v9.9.8","prerelease":false,"draft":false},
- {"tag_name":"v9.9.7","prerelease":false,"draft":true}]
-JSON
-sed -i "s#^\\\$Api = .*#\$Api = 'http://127.0.0.1:${PORT}/releases.json'#" "$RUN_PS1" 2>/dev/null || \
-    perl -0pi -e "s{^\\\$Api = .*}{\$Api = 'http://127.0.0.1:${PORT}/releases.json'}m" "$RUN_PS1"
-grep -q "127.0.0.1:${PORT}/releases.json" "$RUN_PS1" || { echo "could not point the release list at the fixture server" >&2; exit 1; }
+# text -- the tag regex would then match nothing. GitHub answers text/xml for .atom.
+cat > "${WORK}/fixtures/releases.atom" <<'ATOM'
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/1447922093/v9.9.9-rc.1</id>
+    <title>v9.9.9-rc.1</title>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1447922093/v9.9.8</id>
+    <title>v9.9.8</title>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1447922093/v9.9.7</id>
+    <title>v9.9.7</title>
+  </entry>
+</feed>
+ATOM
+sed -i "s#^\\\$Feed = .*#\$Feed = 'http://127.0.0.1:${PORT}/releases.atom'#" "$RUN_PS1" 2>/dev/null || \
+    perl -0pi -e "s{^\\\$Feed = .*}{\$Feed = 'http://127.0.0.1:${PORT}/releases.atom'}m" "$RUN_PS1"
+grep -q "127.0.0.1:${PORT}/releases.atom" "$RUN_PS1" || { echo "could not point the release feed at the fixture server" >&2; exit 1; }
+# "No API calls" is a promise of the feed design, not of a comment: assert the script has
+# no API endpoint left to contact even by accident.
+if grep -q 'api.github.com' "$RUN_PS1"; then
+    echo "install.ps1 still references api.github.com after the feed migration" >&2
+    exit 1
+fi
 
 run_ps1() {
     pwsh -NoProfile -NonInteractive -File "$RUN_PS1" "$@" 2>&1
@@ -187,16 +203,25 @@ check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.9" "the dry run 
 check "$(ls -A "${WORK}/bin" | wc -l | tr -d ' ')" "0" "a dry run installs nothing"
 
 # ── resolving the newest release: the path that needs no -Tag ─────────────────
-# v9.9.9 is a pre-release, v9.9.8 is stable, v9.9.7 is a draft: the answer differs
-# with -Pre, and a draft is never a candidate.
+# v9.9.9-rc.1 is a pre-release ('-' tag), v9.9.8 stable: the answer differs with -Pre.
 out=$(run_ps1_expect_ok "newest stable" -Dir "${WORK}/bin" -DryRun)
-check "$?" "0" "the release list is read with no -Tag"
+check "$?" "0" "the release feed is read with no -Tag"
 check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.8" \
-    "the newest release skips pre-releases and drafts"
+    "the default skips a pre-release tag"
 
 out=$(run_ps1_expect_ok "newest pre" -Dir "${WORK}/bin" -DryRun -Pre)
-check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.9" \
+check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v9.9.9-rc.1" \
     "-Pre resolves the newest release, pre-release included"
+
+# A tag is spliced into a URL and a temporary filename; refuse a path traversal before any
+# download rather than letting it escape the temp directory (measured on the sh installer).
+out=$(run_ps1 -Tag 'v9/../evil' -Dir "${WORK}/bin" -DryRun 2>&1)
+check "$?" "1" "a tag with a path traversal is refused"
+case "$out" in
+    *"invalid release tag"*) check "ps1 names the cause" "ps1 names the cause" \
+        "the ps1 refusal names the bad tag" ;;
+    *) check "$out" "ps1 names the cause" "the ps1 refusal names the bad tag" ;;
+esac
 
 # ── a release with a matching checksum installs ─────────────────────────────────────────
 mk_archive v9.9.9
