@@ -284,6 +284,10 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
             out = sdscatprintf(out, "- [%s] (no such entry; list ids with memory_list)", id);
             continue;
         }
+        /* A real detail read: count it once per requested id. Persisted with the
+         * entry on the next state flush so usage can be analysed across sessions.
+         * Discovery tools (list / search) deliberately do NOT count. */
+        edc_session_memory_note_read(m, id);
         /* Surface the entry's rev: memory_update needs it as expected_rev, so a write
          * built on this read cannot clobber a newer edit. */
         out = sdscatprintf(out, "- [%s] rev %" PRIu64 "\n%s", id, e ? e->updated_seq : 0, detail);

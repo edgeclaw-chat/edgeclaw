@@ -9,6 +9,7 @@
 #include "edc_error.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox.h"
@@ -168,7 +169,12 @@ int main(void)
     CHECK(s4.error != NULL, "缺 patterns 报错");
     free_capture(&s4);
 
-    TEST("memory_get: 批量读; 未知 id 给说明而不是整体报错");
+    TEST("read_count: 只有 memory_get 读明细计数, list/search 发现不计");
+    const struct edc_memo_entry *rc = edc_session_memory_entry(session->memo, "m1");
+    CHECK(rc && rc->read_count == 0, "anti-vacuous: 读之前 m1 计数为 0");
+    /* The list / search calls above already happened; they must not have counted. */
+    CHECK(edc_session_memory_entry(session->memo, "m1")->read_count == 0,
+          "list/search 只读索引, 不计 read_count");
     struct capture g1 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\",\"m99\"]}");
     CHECK(g1.error == NULL, "批量读成功");
     CHECK(g1.result && strstr(g1.result, "[m1] rev ") != NULL && strstr(g1.result, "不要再用 make") != NULL,
@@ -176,7 +182,19 @@ int main(void)
     CHECK(g1.result && strstr(g1.result, "created: ") != NULL && strstr(g1.result, "updated: ") != NULL,
           "明细带 created/updated 时间");
     CHECK(g1.result && strstr(g1.result, "[m99] (no such entry") != NULL, "m99 给说明");
+    CHECK(edc_session_memory_entry(session->memo, "m1")->read_count == 1,
+          "memory_get 一次 ⇒ m1.read_count = 1");
+    CHECK(edc_session_memory_entry(session->memo, "m99") == NULL, "未知 id 不创建条目/计数");
     free_capture(&g1);
+    /* A second get increments again; list/search in between do not. */
+    struct capture g2 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\"]}");
+    CHECK(g2.error == NULL, "第二次 get 成功");
+    CHECK(edc_session_memory_entry(session->memo, "m1")->read_count == 2, "第二次 get ⇒ read_count = 2");
+    free_capture(&g2);
+    struct capture l2 = run_tool(tb, task, "memory_list", "{}");
+    CHECK(l2.error == NULL && edc_session_memory_entry(session->memo, "m1")->read_count == 2,
+          "list 再次调用仍不计 read_count");
+    free_capture(&l2);
     struct capture g0 = run_tool(tb, task, "memory_get", "{}");
     CHECK(g0.error != NULL, "缺 ids 报错");
     free_capture(&g0);
@@ -471,6 +489,18 @@ int main(void)
     struct capture d4 = run_tool(tb, task, "memory_update", leg_upd);
     CHECK(d4.error == NULL, "两者同批 = 规定路径");
     free_capture(&d4);
+
+    TEST("read_count: flush → load 往返后计数保留 (重启不丢)");
+    /* m1 was read twice above; persist and reload into a fresh session object. */
+    CHECK(edc_session_memory_entry(session->memo, "m1")->read_count >= 2,
+          "anti-vacuous: m1 has a nonzero read count before flush");
+    uint64_t expected = edc_session_memory_entry(session->memo, "m1")->read_count;
+    CHECK(edc_state_store_flush(session, NULL), "flush the session");
+    struct edc_session *reloaded = edc_session_new(cfg, session->session_id, "S1-reloaded");
+    CHECK(edc_state_store_load(reloaded, NULL), "load back (restart)");
+    const struct edc_memo_entry *e_re = edc_session_memory_entry(reloaded->memo, "m1");
+    CHECK(e_re && e_re->read_count == expected, "read_count survives flush → load");
+    edc_session_free(reloaded);
 
     edc_toolbox_free(tb);
     edc_session_free(session); /* 连带释放 group / task / memo */

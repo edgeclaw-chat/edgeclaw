@@ -110,7 +110,10 @@ struct edc_scheduler;
  * capped by EDC_FOLD_MAX_FAILURES). step_v10_to_v11 is one O(1) ADD COLUMN DEFAULT 0,
  * so a pre-v11 group loads as healthy and keeps its old behaviour. A restart must not
  * silently unfreeze a group that is still waiting for a retry. */
-#define EDC_DB_VERSION 11
+/* v12: memo_entries.read_count -- how many times an entry's detail was read via
+ * memory_get. step_v11_to_v12 is one O(1) ADD COLUMN DEFAULT 0, so pre-v12 entries
+ * start at zero reads rather than being invented as "popular". */
+#define EDC_DB_VERSION 12
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

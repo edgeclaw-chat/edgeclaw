@@ -506,6 +506,35 @@ static bool verify_v11(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v11 -> v12: count how often each memo entry's detail was read via memory_get.
+ * Additive like the other bumps: one ALTER TABLE ADD COLUMN with a constant default,
+ * so a large v11 DB upgrades with zero data rewrite. 0 is the honest value for every
+ * pre-v12 entry -- their reads were never recorded, and inventing a number would
+ * corrupt the usage analysis this column exists to enable. */
+static bool step_v11_to_v12(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE memo_entries ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0",
+                   "add memo_entries.read_count", err, cap);
+}
+
+static bool verify_v12(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "memo_entries", "read_count"))
+    {
+        set_err(err, cap, "v12 is stamped but memo_entries has no read_count column");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM memo_entries WHERE read_count != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld entries have a non-default read_count after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -518,6 +547,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {8, step_v8_to_v9, verify_v9},
     {9, step_v9_to_v10, verify_v10},
     {10, step_v10_to_v11, verify_v11},
+    {11, step_v11_to_v12, verify_v12},
     {0, NULL, NULL}, /* terminator */
 };
 

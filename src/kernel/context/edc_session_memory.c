@@ -174,7 +174,8 @@ struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memor
                                                        const char *title, const char *summary, const char *detail,
                                                        const char *sources, const char *proposed_by,
                                                        uint64_t created_seq, uint64_t updated_seq,
-                                                       uint64_t created_at, uint64_t updated_at, bool superseded)
+                                                       uint64_t created_at, uint64_t updated_at,
+                                                       uint64_t read_count, bool superseded)
 {
     if (!m || !id)
         return NULL;
@@ -195,8 +196,21 @@ struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memor
     e->updated_seq = updated_seq;
     e->created_at = created_at;
     e->updated_at = updated_at;
+    e->read_count = read_count;
     e->superseded = superseded;
     return e;
+}
+
+bool edc_session_memory_note_read(struct edc_session_memory *m, const char *id)
+{
+    if (!m || !id || !*id)
+        return false;
+    struct edc_memo_entry *e = edc_session_memory_entry(m, id);
+    if (!e)
+        return false;
+    if (e->read_count < UINT64_MAX)
+        e->read_count++;
+    return true;
 }
 
 uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
@@ -1055,6 +1069,12 @@ const char *edc_session_memory_system_prompt(void)
  * JOIN edge, so the fold's output (the just-landed group memory) is auto-injected by
  * the request assembler into this same user message (see edc_llm_request.c).
  * That makes the material exactly "what the fold really wrote".
+ *
+ * NOTE (2026-11-20 audit): the index here carries ONLY id / title / summary / time
+ * (see index_line_for) -- NOT the entry `detail`. Entry detail reaches the curator
+ * only when IT calls the memory_get tool, as a tool result in a later round. So the
+ * first request's material is bounded by (group memory ~14-50 KB + index ~44 KB),
+ * never by the sum of all entry details (which can be MB-scale).
  * all_groups = true is manual curation (/session memo compact): it has no such edge,
  * so it gathers EVERY group's memory into the prompt itself. */
 static sds build_curate_prompt(struct edc_session *session, struct edc_task_group *group, bool all_groups,

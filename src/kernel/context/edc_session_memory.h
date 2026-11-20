@@ -88,6 +88,12 @@ struct edc_memo_entry
      * judge how fresh the entry is. */
     uint64_t created_at;
     uint64_t updated_at;
+    /* How many times this entry's DETAIL was actually read into a task's context via
+     * the memory_get tool. Discovery (memory_list / memory_search) does not count: it
+     * only surfaces the index, not the knowledge. Persisted (memo_entries.read_count),
+     * so usage can be analysed across sessions; the curator/extract writers do not
+     * touch it. Incremented by edc_session_memory_note_read(). */
+    uint64_t read_count;
     bool superseded;
 };
 
@@ -169,7 +175,8 @@ extern struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_sessio
                                                               const char *detail, const char *sources,
                                                               const char *proposed_by, uint64_t created_seq,
                                                               uint64_t updated_seq, uint64_t created_at,
-                                                              uint64_t updated_at, bool superseded);
+                                                              uint64_t updated_at, uint64_t read_count,
+                                                              bool superseded);
 
 extern uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
                                              enum edc_memo_event_kind kind, const char *title, const char *summary);
@@ -182,6 +189,9 @@ extern struct edc_memo_entry *edc_session_memory_upsert_entry(struct edc_session
 
 /* Record who proposed the entry (foreground memory_write; owned by m). */
 extern void edc_session_memory_note_proposer(struct edc_memo_entry *entry, const char *task_id);
+/* Count one DETAIL read (memory_get of an existing id). Discovery-only tools
+ * (memory_list / memory_search) do not call this. Returns false when id is absent. */
+extern bool edc_session_memory_note_read(struct edc_session_memory *m, const char *id);
 
 /* ── Readers/writers for tools and notifications ────────────── */
 
