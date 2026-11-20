@@ -13,8 +13,10 @@
 #include "edc_chat_bubble_page.hpp"
 #include "edc_chat_model.hpp"
 #include "edc_message.hpp"
+#include "test_fs_util.h"
 
 #include <cstdio>
+#include <fstream>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -151,6 +153,60 @@ void test_foreign_session_is_refused(void)
     CHECK(f.model.size() == before, "no row from the old session was prepended");
 }
 
+/* A cold/debug restart can make FetchChatBubblePageSync's 3s wait time out.
+ * LoadChatTranscript then falls back to an old chat.jsonl that has not grown
+ * since chat_bubbles became authoritative. The late cursor-0 DB page must
+ * replace that fallback, or the newest history looks lost even though the DB
+ * still owns every row. */
+void test_late_startup_page_recovers_fallback(void)
+{
+    printf("-- a late cursor-0 page recovers the legacy fallback --\n");
+    const std::string path = test_tmp_file_path("edc_late_startup_fallback.jsonl");
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << "reply\t0\t\t\tOLD_FILE_MARKER\n";
+    }
+
+    edc::model::ChatModel model;
+    model.LoadTranscript(path);
+    CHECK(model.size() == 1, "the legacy file really loaded one row, got %zu", model.size());
+
+    const char *lines[] = {"reply\t0\t\t\tDURABLE_DB_TAIL_MARKER"};
+    const int64_t seqs[] = {97};
+    CHECK(model.RecoverStartupPage("s1", Page("s1", 0, lines, seqs, 1)),
+          "the startup page replaces the legacy fallback");
+    CHECK(model.size() == 1, "the DB page has one row, got %zu", model.size());
+    CHECK(model.oldest_seq() == 97, "the DB page's seq became the oldest cursor, got %lld",
+          (long long)model.oldest_seq());
+    CHECK(model.session_id() == "s1", "the DB page's session id was adopted");
+    std::remove(path.c_str());
+}
+
+/* The same late page must not clobber live bubbles that appeared while the
+ * synchronous fetch was waiting. */
+void test_late_startup_page_does_not_clobber_live_chat(void)
+{
+    printf("-- a late cursor-0 page leaves a live bubble alone --\n");
+    const std::string path = test_tmp_file_path("edc_late_startup_live.jsonl");
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << "reply\t0\t\t\tOLD_FILE_MARKER\n";
+    }
+
+    edc::model::ChatModel model;
+    model.LoadTranscript(path);
+    model.AddMessage(std::make_shared<edc::Message>("LIVE_BUBBLE_MARKER", 0));
+    const size_t before = model.size();
+
+    const char *lines[] = {"reply\t0\t\t\tSTALE_DB_TAIL_MARKER"};
+    const int64_t seqs[] = {97};
+    CHECK(!model.RecoverStartupPage("s1", Page("s1", 0, lines, seqs, 1)),
+          "a late page is refused once live bubbles are present");
+    CHECK(model.size() == before, "the live bubble was not clobbered, got %zu (was %zu)", model.size(), before);
+    CHECK(model.visible().size() == before, "the visible sequence was not rebuilt");
+    std::remove(path.c_str());
+}
+
 } // namespace
 
 int main(void)
@@ -159,6 +215,8 @@ int main(void)
     test_late_startup_page_is_refused();
     test_wrong_cursor_is_refused();
     test_foreign_session_is_refused();
+    test_late_startup_page_recovers_fallback();
+    test_late_startup_page_does_not_clobber_live_chat();
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
     return g_failed ? 1 : 0;
 }

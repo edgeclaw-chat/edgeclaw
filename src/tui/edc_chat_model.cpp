@@ -38,6 +38,9 @@ void ChatModel::AddMessage(std::shared_ptr<Message> message)
 {
     if (!message)
         return;
+    /* A live in-process bubble means the reader has moved past the startup
+     * fallback; a stale startup page must no longer replace the log. */
+    legacy_fallback_ = false;
     if (!window_)
         window_ = std::make_unique<MessageWindow>();
 
@@ -69,11 +72,13 @@ void ChatModel::Clear()
     input_shown_.clear();
     window_.reset();
     refs_holder_.reset();
+    legacy_fallback_ = false;
     Notify(Change{});
 }
 
 void ChatModel::LoadTranscript(const std::string &path)
 {
+    legacy_fallback_ = true;
     refs_holder_ = std::make_unique<std::vector<ChatBubbleRef>>();
     BuildChatBubbleRefs(path, refs_holder_.get());
     window_ = std::make_unique<MessageWindow>(path, refs_holder_.get());
@@ -120,11 +125,24 @@ bool ChatModel::LoadFromPage(const std::string &session_id, const std::string &p
     session_id_ = session_id;
     has_more_ = reply.has_more;
     oldest_seq_ = all_.empty() ? 0 : (*refs_holder_)[0].seq;
+    legacy_fallback_ = false;
     const size_t n = all_.size();
     window_->SetWindow(n > kPrimeWindow ? n - kPrimeWindow : 0, n, /*prefetch=*/40);
     Rebuild();
     Notify(Change{});
     return true;
+}
+
+bool ChatModel::RecoverStartupPage(const std::string &session_id, const std::string &payload)
+{
+    ChatBubblePageReply reply;
+    if (!DecodeChatBubblePageReply(session_id.c_str(), payload.c_str(), &reply))
+        return false;
+    if (reply.before_seq != 0 || reply.session_id != session_id)
+        return false; /* only the cursor-0 startup page can replace a fallback */
+    if (!legacy_fallback_ || !window_ || !window_->IsLegacyFallback())
+        return false; /* live bubbles are already on screen: never clobber them */
+    return LoadFromPage(session_id, payload);
 }
 
 bool ChatModel::ApplyOlderPage(const std::string &session_id, const std::string &payload)
@@ -193,6 +211,7 @@ ChatModel::Snapshot ChatModel::TakeSnapshot()
     snap.session_id = std::move(session_id_);
     snap.oldest_seq = oldest_seq_;
     snap.has_more = has_more_;
+    snap.legacy_fallback = legacy_fallback_;
     /* Leave this model empty but usable: RenderTaskHistory will AddMessage()
      * into it, and AddMessage() creates a fresh MessageWindow when window_ is
      * null. The saved window keeps owning the saved refs (raw pointer stays
@@ -201,6 +220,7 @@ ChatModel::Snapshot ChatModel::TakeSnapshot()
     filter_label_.clear();
     oldest_seq_ = 0;
     has_more_ = false;
+    legacy_fallback_ = false;
     return snap;
 }
 
@@ -213,6 +233,7 @@ void ChatModel::RestoreSnapshot(Snapshot snap)
     session_id_ = std::move(snap.session_id);
     oldest_seq_ = snap.oldest_seq;
     has_more_ = snap.has_more;
+    legacy_fallback_ = snap.legacy_fallback;
     Rebuild();
     Notify(Change{});
 }

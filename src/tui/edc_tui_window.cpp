@@ -633,6 +633,19 @@ void TUIWindow::ApplyChatBubblePage(const std::string &session_id, const std::st
     RequestFrame();
 }
 
+void TUIWindow::ApplyStartupChatBubblePage(const std::string &session_id, const std::string &payload)
+{
+    if (!chat_model_)
+        return;
+    /* The 3s startup fetch can time out under a cold/debug build. Its reply is
+     * still the authoritative DB tail: replace the legacy chat.jsonl fallback,
+     * unless a live bubble has already been appended (RecoverStartupPage). */
+    if (!chat_model_->RecoverStartupPage(session_id, payload))
+        return;
+    chat_widget_->ScrollToBottom();
+    RequestFrame();
+}
+
 void TUIWindow::PresentMessagePayload(const std::string &mid, const std::string &payload_json)
 {
     struct edc_payload *payload = edc_payload_from_json(payload_json.c_str());

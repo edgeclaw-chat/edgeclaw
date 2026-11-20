@@ -403,6 +403,21 @@ void TestLateStartupPageDoesNotClobberLiveChat(edc::TUIWindow &win)
     Check(!Has(after, "LATE_PAGE_STALE_MARKER"), "迟到分页的内容没有上屏");
 }
 
+/* The facade must not drop a timed-out cursor-0 page: it has to marshal the
+ * authoritative DB tail to the UI thread. The model decides whether the legacy
+ * fallback may be replaced (see test_chat_bubble_page_model.cpp). This probe
+ * is RED if DeliverPageSync goes back to silently discarding the late reply. */
+void TestLateStartupPageIsDelivered(edc::TUIWindow &win)
+{
+    std::cout << "迟到的启动分页不会被 facade 丢弃\n";
+    const char *lines[] = {"reply\t0\t\t\tLATE_DELIVERY_MARKER"};
+    const int64_t seqs[] = {8};
+    const std::string payload = edc::EncodeChatBubblePageReply(kShown, /*before_seq=*/0, lines, seqs, 1, false);
+    win.App()->ArmLateStartupPageForTest(kShown);
+    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, payload.c_str(), "", kShown));
+    Check(win.App()->LateStartupPageDeliveriesForTest() == 1, "迟到的启动页投递了一次 UI 线程恢复");
+}
+
 // 兜底：认不出来的消息什么都不做（Kind::None → `default: return`）。
 void TestUnknownMessageIgnored(edc::TUIWindow &win)
 {
@@ -1128,6 +1143,7 @@ int main()
     TestSnapshotReachesSidebar(win);
     TestForeignSnapshotDropped(win);
     TestLiveOutputRouting(win);
+    TestLateStartupPageIsDelivered(win);
     TestLateStartupPageDoesNotClobberLiveChat(win);
     TestKindRouting(win);
     TestUnknownMessageIgnored(win);

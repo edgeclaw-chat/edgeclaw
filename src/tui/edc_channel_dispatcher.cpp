@@ -80,6 +80,11 @@ void ChannelDispatcher::OnChatBubblePage(const std::string &session_id, const st
     host_.ApplyChatBubblePage(session_id, payload_json);
 }
 
+void ChannelDispatcher::OnStartupChatBubblePage(const std::string &session_id, const std::string &payload_json)
+{
+    host_.ApplyStartupChatBubblePage(session_id, payload_json);
+}
+
 void ChannelDispatcher::OnTreeChanged(const std::string &session_id, const std::string &reason)
 {
     // A tree-changed event (P3 ①b) is a control message: "session X's tree

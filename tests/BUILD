@@ -2246,7 +2246,7 @@ cc_test(
 
 cc_test(
     name = "test_chat_bubble_page_model",
-    srcs = ["test_chat_bubble_page_model.cpp"],
+    srcs = ["test_chat_bubble_page_model.cpp", "test_fs_util.h"],
     deps = [
         "//src/tui:tui",
         "@cjson//:cjson",

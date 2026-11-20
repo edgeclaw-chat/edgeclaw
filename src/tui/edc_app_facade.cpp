@@ -390,11 +390,20 @@ bool AppFacade::DeliverPageSync(const std::string &session_id, const std::string
         page_sync_cv_.notify_all();
         return true;
     }
-    /* A reply to a fetch that already timed out: consume and DROP it. Posting
-     * it to the sink would apply a stale page on the actor thread. */
-    if (!page_sync_late_sid_.empty() && page_sync_late_sid_ == session_id)
+    /* A reply to a fetch that already timed out: marshal it to the UI thread
+     * as a STARTUP page. LoadChatTranscript() may have fallen back to the old
+     * chat.jsonl; RecoverStartupPage replaces that fallback with the durable
+     * DB tail, while refusing to clobber any live bubble that has appeared. */
+    if (!page_sync_late_sid_.empty() && page_sync_late_sid_ == session_id && sink_ && dispatcher_)
     {
         page_sync_late_sid_.clear();
+        {
+            std::lock_guard<std::mutex> probe_lock(page_sync_probe_mutex_);
+            page_sync_late_deliveries_++;
+        }
+        IChannelSink *sink = sink_;
+        dispatcher_->Post([sink, sid = session_id, payload]() { sink->OnStartupChatBubblePage(sid, payload); });
+        dispatcher_->RequestFrame();
         return true;
     }
     return false; /* a genuine async page -> the sink */
@@ -486,6 +495,24 @@ void AppFacade::ChannelTrampoline(void *instance, struct edc_channel_message *me
 void AppFacade::HandleChannelMessage(struct edc_channel_message *message)
 {
     TranslateAndDispatch(message);
+}
+
+void AppFacade::ArmLateStartupPageForTest(const std::string &session_id)
+{
+    /* Reproduce FetchChatBubblePageSync timing out without waiting 3 seconds:
+     * arm the late-sid guard, then let the harness feed the real channel page
+     * message through HandleChannelMessage(). No C message is built here (sds.h
+     * must not be included from a C++ translation unit). */
+    std::lock_guard<std::mutex> lock(page_sync_mutex_);
+    page_sync_late_sid_ = session_id;
+    std::lock_guard<std::mutex> probe_lock(page_sync_probe_mutex_);
+    page_sync_late_deliveries_ = 0;
+}
+
+int AppFacade::LateStartupPageDeliveriesForTest() const
+{
+    std::lock_guard<std::mutex> lock(page_sync_probe_mutex_);
+    return page_sync_late_deliveries_;
 }
 
 // Verbatim from the old TUIWindow::on_channel_adapter_send classification + field

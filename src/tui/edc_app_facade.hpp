@@ -95,6 +95,14 @@ class IChannelSink
         (void)session_id;
         (void)payload_json;
     }
+    /* The cursor-0 startup page whose synchronous fetch timed out. The frontend
+     * may replace a legacy-file fallback with it; it must never clobber live
+     * bubbles. Default no-op keeps every test fake concrete. */
+    virtual void OnStartupChatBubblePage(const std::string &session_id, const std::string &payload_json)
+    {
+        (void)session_id;
+        (void)payload_json;
+    }
 };
 
 // The config submitted by the first-run setup page (the wizard): the LLM settings plus
@@ -258,6 +266,20 @@ class IAppFacade
         (void)tag;
     }
 
+    /* Deterministic harness seam: arm one timed-out cursor-0 startup fetch;
+     * the caller then feeds the late page through HandleChannelMessage().
+     * Default no-op so FakeFacade implementations stay concrete. */
+    virtual void ArmLateStartupPageForTest(const std::string &session_id)
+    {
+        (void)session_id;
+    }
+    /* Test probe: how many timed-out startup pages were actually marshalled
+     * to the UI sink. Default 0 keeps every fake facade concrete. */
+    virtual int LateStartupPageDeliveriesForTest() const
+    {
+        return 0;
+    }
+
     /* Whether this copy can replace itself: the installer put it there and the platform has
      * one. False means the dialog shows the manual command instead of a button that would
      * fail. */
@@ -333,6 +355,8 @@ class AppFacade : public IAppFacade
     bool EnsureParentDir(const std::string &path) override;
 
     void HandleChannelMessage(struct edc_channel_message *message) override;
+    void ArmLateStartupPageForTest(const std::string &session_id) override;
+    int LateStartupPageDeliveriesForTest() const override;
 
     void SetUpdateObserver(std::function<void(std::string tag)> observer) override;
     /* Deterministic harness seam: run the update-found trampoline with |tag|
@@ -369,16 +393,17 @@ class AppFacade : public IAppFacade
      * FetchChatBubblePageSync. Guarded, never polled. */
     std::mutex page_sync_mutex_;
     std::condition_variable page_sync_cv_;
+    mutable std::mutex page_sync_probe_mutex_;
     std::string page_sync_sid_;
     std::string page_sync_payload_;
     bool page_sync_waiting_ = false;
     bool page_sync_done_ = false;
     /* A sync fetch that timed out still has an actor reply in flight. Its sid
-     * is recorded here so DeliverPageSync can DROP the late page instead of
-     * posting it to the UI sink -- applying a startup page after the reader
-     * has moved on would rebuild the chat model from a stale snapshot (and in
-     * a synchronous-dispatcher harness, on the wrong thread). */
+     * is recorded here so DeliverPageSync can route the late cursor-0 page to
+     * OnStartupChatBubblePage on the UI thread. The model refuses it if live
+     * bubbles have appeared, so this cannot rebuild a stale snapshot. */
     std::string page_sync_late_sid_;
+    int page_sync_late_deliveries_ = 0; /* deterministic test probe */
 
     /* Called from TranslateAndDispatch (channel-actor thread) ONLY when a
      * synchronous fetch is in flight. */

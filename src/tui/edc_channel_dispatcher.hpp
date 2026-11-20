@@ -61,6 +61,12 @@ class IChannelHost
         (void)session_id;
         (void)payload;
     }
+    /* A cursor-0 startup page arrived after the synchronous fetch timed out. */
+    virtual void ApplyStartupChatBubblePage(const std::string &session_id, const std::string &payload)
+    {
+        (void)session_id;
+        (void)payload;
+    }
 
     virtual void RequestTaskSnapshot() = 0;
     virtual void RequestFrame() = 0;
@@ -81,6 +87,7 @@ class ChannelDispatcher : public port::IChannelSink
     void OnTreeChanged(const std::string &session_id, const std::string &reason) override;
     void OnTaskHistory(const std::string &payload) override;
     void OnChatBubblePage(const std::string &session_id, const std::string &payload_json) override;
+    void OnStartupChatBubblePage(const std::string &session_id, const std::string &payload_json) override;
     void OnMessagePayload(const std::string &mid, const std::string &payload_json) override;
 
   private:
