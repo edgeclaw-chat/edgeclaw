@@ -262,10 +262,6 @@ class FakeFacade : public edc::port::IAppFacade
     {
         return false;
     }
-    bool ChatLogPathFor(const std::string &, std::string *) const override
-    {
-        return false;
-    }
     bool WriteFile(const std::string &, const char *, size_t, bool, bool) override
     {
         return false;

@@ -242,9 +242,9 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
      * that session's transcript rather than the one on screen.
      *
      * edc_id_str(), NOT edc_id_str(): this string goes to the frontend, which
-     * derives the transcript path from it (<ws>/<session_id>/chat.jsonl) and compares it
-     * against the id it displays. A session's text form is "s<id>" -- a bare number would
-     * point at a directory that does not exist. */
+     * publishes the bubble into chat_bubbles under that session. A session's text form
+     * is "s<id>"; the old transcript-path comparison is gone with chat.jsonl runtime
+     * reads. */
     reply->session_id = sdsnew(edc_id_str(own->session_id));
     /* Declare the fact: is this its session's active task (the frontend's display gate)? */
     reply->from_active_task = edc_session_get_active_task(own) == task;

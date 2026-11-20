@@ -164,13 +164,6 @@ class MessageWindow
     {
         return live_.find(index) != live_.end();
     }
-    /* True after LoadTranscript()'s legacy-file fallback: no chat_bubbles page
-     * has been adopted yet, so a late startup page may still replace the model
-     * without losing live bubbles. */
-    bool IsLegacyFallback() const
-    {
-        return !path_.empty() && refs_owned_ == nullptr;
-    }
     /* Visible index range of the last SetWindow call (for ChatWidget). */
     size_t first() const
     {

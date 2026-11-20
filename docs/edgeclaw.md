@@ -973,7 +973,7 @@ nothing.
 | `~/.edgeclaw/config.json` | Configuration (API key, model) |
 | `~/.edgeclaw/workspace/` | Workspace root |
 | `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
-| `~/.edgeclaw/workspace/<sid>/chat.jsonl` | Session transcript (one bubble per line) |
+| `~/.edgeclaw/workspace/<sid>/chat.jsonl` | Legacy v8 transcript; imported once into `chat_bubbles`, never read at runtime |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from

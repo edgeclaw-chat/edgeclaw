@@ -1,7 +1,8 @@
 # chat_bubbles：把 TUI 视图状态迁进 edgeclaw.db（B1 + 分页加载 A）
 
-状态：**全部四阶段已实现并验证。chat.jsonl 不再是权威：TUI 首帧从 DB 同步取
-最后一页，新气泡由 channel actor 写 DB，启动时一次性导入旧文件。**
+状态：**chat.jsonl 已彻底退出运行时读取路径。chat_bubbles 是唯一来源：TUI
+首帧异步请求 DB 尾页，新气泡由 channel actor 写 DB；启动时一次性导入旧文件，
+仅为 v8 升级兼容。**
 
 ## 落地结果（2026-11-18）
 
@@ -14,10 +15,11 @@
   记警告，绝不猜 UI 当前显示哪个 tab。UI 线程的 `AppendChatTranscript*` 改成
   no-op，**不再写 chat.jsonl**。
 - **读路径**：启动时 `edc_app_new` 在 store 打开后、runner 启动前遍历所有会话
-  调 `import_file`（幂等、`.imported` marker、保留源文件供 v8 降级）。
-  首帧 `AppFacade::FetchChatBubblePageSync` 发请求后由条件变量等 actor 回包
-  （实测 `done=1 len=247838`），`ChatModel::LoadFromPage` 建 DB 描述符；
-  滚到顶由 `MessageList` 回调触发 `RequestChatBubblePage(oldest_seq)`，
+  调 `import_file`（幂等、`.imported` marker、保留源文件供 v8 降级），这是
+  chat.jsonl 唯一仍被读取的地方。`TUIWindow::LoadChatTranscript` 只发
+  `RequestChatBubblePage(id, 0, 200)`，cursor-0 回包经 `ApplyChatBubblePage`
+  调 `ChatModel::LoadFromPage`；没有 3s 同步等待，也没有 `LoadTranscript(path)`
+  文件回退。滚到顶由 `MessageList` 回调触发 `RequestChatBubblePage(oldest_seq)`，
   `ApplyOlderPage` 前插并重建代理（描述符保留、expanded 状态在 ref 上不丢）。
   已加载页描述符留在内存，渲染树仍由 `kMaxLive=200` + `OnFrameBegin` 清理管住。
 - **测试**：`test_chat_bubble_session` 6/6、`test_chat_bubble_write` 10/10
@@ -32,8 +34,6 @@
 ## 已知边界
 
 - 老 v8 二进制不认识 `chat_bubbles` 表，会继续写 `chat.jsonl`；降级后需重新导入。
-- `FetchChatBubblePageSync` 有 3s 超时，超时会回退到旧的 `LoadTranscript(path)`
-  （读文件）以保证首帧不空白；正常路径实测无超时。
 - `chat_bubbles` 表目前只增不删；历史无限增长时行数会线性上升（每行是轻量
   TEXT，不是渲染树），需要时再加归档。
 
@@ -136,13 +136,13 @@ int64_t edc_chat_bubble_count(const char *session_id);
   `std::string line`（或按需解码）；`source` 只留 `kMemory`。
 - `BuildChatBubbleRefs(path)` → 由 actor 回传的 page payload 构建描述符；
   `DecodeChatBubbleAt` 改成 `DecodeTranscriptLine(ref.line)`，不再 `seekg`。
-- `ChatModel::LoadTranscript(session_id)`：请求最后一页 → `ApplyPage`。
+- `ChatModel::LoadFromPage(session_id, payload)`：cursor-0 回包直接替换当前日志。
 - `ChatModel::LoadOlderPage()`：`visible_first_ == 0` 时由 `MessageList`
   发信号 → facade 请求上一页 → `ApplyOlderPage` **前插**到
   `refs_/all_/visible_`（复用 `PrependMessages` 的锚定修正），
   `TakeOffsetAdjustment` 保证屏幕行不动。
-- `AppendChatTranscript*` 删除；`SessionModel::chat_log_path()` 保留给
-  导入器/兼容，但不再写。
+- `AppendChatTranscript*`、`SessionModel::chat_log_path()` 和
+  `port::TranscriptStore` 删除；运行时不再持有 transcript 路径。
 - `/task history` 不动（继续读 `messages` 表）。
 
 ## 保留的现状

@@ -50,18 +50,9 @@ class ChatModel
     // Drop every message (the log was re-pointed at another session).
     void Clear();
 
-    /* Point the log at a transcript file: build the descriptor index once and
-     * fill the log with LazyBubble proxies. This is the ONLY history path. */
-    void LoadTranscript(const std::string &path);
-
     /* Replace the log with one chat_bubbles page (startup / session switch).
      * |payload| is the CHAT_BUBBLE_PAGE reply JSON read on the actor thread. */
     bool LoadFromPage(const std::string &session_id, const std::string &payload);
-
-    /* A startup page that arrived after LoadChatTranscript's synchronous fetch
-     * timed out and fell back to the legacy chat.jsonl. Replace that fallback
-     * with the durable DB page, but only while no live bubble has been appended. */
-    bool RecoverStartupPage(const std::string &session_id, const std::string &payload);
 
     /* Prepend an older page (scrolling to the top). Returns false when the
      * payload belongs to another session or there is nothing more to add. */
@@ -81,7 +72,6 @@ class ChatModel
         std::string session_id;
         int64_t oldest_seq = 0;
         bool has_more = false;
-        bool legacy_fallback = false;
     };
     Snapshot TakeSnapshot();
     void RestoreSnapshot(Snapshot snap);
@@ -160,7 +150,6 @@ class ChatModel
     std::string session_id_;
     int64_t oldest_seq_ = 0;
     bool has_more_ = false;
-    bool legacy_fallback_ = false;
 
     std::map<int, Listener> listeners_;
     int next_id_ = 0;

@@ -4,7 +4,6 @@
 #include "edc_chat_bubble_page.hpp"
 
 #include <utility>
-#include <chrono>
 
 namespace edc::port
 {
@@ -380,69 +379,6 @@ void AppFacade::RequestChatBubblePage(const std::string &session_id, int64_t bef
     edc_app_request_chat_bubble_page(app_, json.c_str());
 }
 
-bool AppFacade::DeliverPageSync(const std::string &session_id, const std::string &payload)
-{
-    std::lock_guard<std::mutex> lock(page_sync_mutex_);
-    if (page_sync_waiting_ && page_sync_sid_ == session_id)
-    {
-        page_sync_payload_ = payload;
-        page_sync_done_ = true;
-        page_sync_cv_.notify_all();
-        return true;
-    }
-    /* A reply to a fetch that already timed out: marshal it to the UI thread
-     * as a STARTUP page. LoadChatTranscript() may have fallen back to the old
-     * chat.jsonl; RecoverStartupPage replaces that fallback with the durable
-     * DB tail, while refusing to clobber any live bubble that has appeared. */
-    if (!page_sync_late_sid_.empty() && page_sync_late_sid_ == session_id && sink_ && dispatcher_)
-    {
-        page_sync_late_sid_.clear();
-        {
-            std::lock_guard<std::mutex> probe_lock(page_sync_probe_mutex_);
-            page_sync_late_deliveries_++;
-        }
-        IChannelSink *sink = sink_;
-        dispatcher_->Post([sink, sid = session_id, payload]() { sink->OnStartupChatBubblePage(sid, payload); });
-        dispatcher_->RequestFrame();
-        return true;
-    }
-    return false; /* a genuine async page -> the sink */
-}
-
-std::string AppFacade::FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
-                                               int timeout_ms)
-{
-    if (!app_ || session_id.empty() || limit <= 0)
-        return "";
-    {
-        std::lock_guard<std::mutex> lock(page_sync_mutex_);
-        if (page_sync_waiting_)
-            return ""; /* one synchronous fetch at a time */
-        page_sync_sid_ = session_id;
-        page_sync_payload_.clear();
-        page_sync_done_ = false;
-        page_sync_waiting_ = true;
-    }
-    RequestChatBubblePage(session_id, before_seq, limit);
-
-    std::string out;
-    {
-        std::unique_lock<std::mutex> lock(page_sync_mutex_);
-        if (timeout_ms > 0)
-            page_sync_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                                   [this] { return page_sync_done_; });
-        else
-            page_sync_cv_.wait(lock, [this] { return page_sync_done_; });
-        if (page_sync_done_)
-            out = page_sync_payload_;
-        else
-            page_sync_late_sid_ = session_id; /* discard the in-flight reply */
-        page_sync_waiting_ = false;
-        page_sync_done_ = false;
-    }
-    return out;
-}
-
 void AppFacade::RequestTaskSnapshot(const std::string &session_id)
 {
     if (app_)
@@ -453,18 +389,6 @@ bool AppFacade::HistoryPath(std::string *out) const
 {
     char buf[4096];
     if (!edc_app_history_path(buf, sizeof(buf)))
-        return false;
-    if (out)
-        *out = buf;
-    return true;
-}
-
-bool AppFacade::ChatLogPathFor(const std::string &session_id, std::string *out) const
-{
-    if (!app_)
-        return false;
-    char buf[4096];
-    if (!edc_app_chat_log_path_for(app_, session_id.c_str(), buf, sizeof(buf)))
         return false;
     if (out)
         *out = buf;
@@ -497,24 +421,6 @@ void AppFacade::HandleChannelMessage(struct edc_channel_message *message)
     TranslateAndDispatch(message);
 }
 
-void AppFacade::ArmLateStartupPageForTest(const std::string &session_id)
-{
-    /* Reproduce FetchChatBubblePageSync timing out without waiting 3 seconds:
-     * arm the late-sid guard, then let the harness feed the real channel page
-     * message through HandleChannelMessage(). No C message is built here (sds.h
-     * must not be included from a C++ translation unit). */
-    std::lock_guard<std::mutex> lock(page_sync_mutex_);
-    page_sync_late_sid_ = session_id;
-    std::lock_guard<std::mutex> probe_lock(page_sync_probe_mutex_);
-    page_sync_late_deliveries_ = 0;
-}
-
-int AppFacade::LateStartupPageDeliveriesForTest() const
-{
-    std::lock_guard<std::mutex> lock(page_sync_probe_mutex_);
-    return page_sync_late_deliveries_;
-}
-
 // Verbatim from the old TUIWindow::on_channel_adapter_send classification + field
 // copying: read the C message (lifetime = this function), build the typed event,
 // Post to the UI thread. The view side no longer touches the C API.
@@ -544,11 +450,6 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
         const char *sid_c = edc_app_message_header(message);
         const std::string sid = sid_c ? sid_c : "";
         const std::string payload = content ? content : "";
-        /* A startup fetch is waiting on the UI thread; handing it the payload
-         * here (on the actor thread) is what makes the FIRST frame show the
-         * tail without going through the UI event loop (which would deadlock). */
-        if (DeliverPageSync(sid, payload))
-            return;
         IChannelSink *sink = sink_;
         dispatcher_->Post([sink, sid, payload]() { sink->OnChatBubblePage(sid, payload); });
         return;

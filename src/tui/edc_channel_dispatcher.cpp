@@ -75,14 +75,10 @@ void ChannelDispatcher::OnTaskHistory(const std::string &payload)
 
 void ChannelDispatcher::OnChatBubblePage(const std::string &session_id, const std::string &payload_json)
 {
-    /* Late replies for a session the reader has left are dropped downstream by
-     * ChatModel::ApplyOlderPage (it compares session_id). */
+    /* A cursor-0 page replaces the displayed session's log; a positive cursor
+     * prepends an older page. A reply for a session the reader has left is
+     * dropped by TUIWindow (it compares displayed_id). */
     host_.ApplyChatBubblePage(session_id, payload_json);
-}
-
-void ChannelDispatcher::OnStartupChatBubblePage(const std::string &session_id, const std::string &payload_json)
-{
-    host_.ApplyStartupChatBubblePage(session_id, payload_json);
 }
 
 void ChannelDispatcher::OnTreeChanged(const std::string &session_id, const std::string &reason)

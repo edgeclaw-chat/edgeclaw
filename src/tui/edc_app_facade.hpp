@@ -21,8 +21,6 @@
 // synchronously.
 
 #include "edc_api.h" /* struct edc_channel_message + message_* read-only views + EDC_APP_RENDER_* */
-#include <condition_variable>
-#include <mutex>
 #include "edc_command_palette.hpp" /* model::CommandFact (the completion popup's rows) */
 
 #include <cstddef>
@@ -91,14 +89,6 @@ class IChannelSink
      * Default no-op so test fakes that do not care about paging stay concrete
      * (adding a pure virtual here would break every FakeFacade). */
     virtual void OnChatBubblePage(const std::string &session_id, const std::string &payload_json)
-    {
-        (void)session_id;
-        (void)payload_json;
-    }
-    /* The cursor-0 startup page whose synchronous fetch timed out. The frontend
-     * may replace a legacy-file fallback with it; it must never clobber live
-     * bubbles. Default no-op keeps every test fake concrete. */
-    virtual void OnStartupChatBubblePage(const std::string &session_id, const std::string &payload_json)
     {
         (void)session_id;
         (void)payload_json;
@@ -221,23 +211,8 @@ class IAppFacade
         (void)limit;
     }
 
-    /* Synchronous first-frame request: send the page request, then block until
-     * the actor's reply arrives (or a short timeout). Returns the reply JSON,
-     * or "" when nothing came back. Only the startup path uses it; all later
-     * pages go through the async RequestChatBubblePage. */
-    virtual std::string FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
-                                                int timeout_ms)
-    {
-        (void)session_id;
-        (void)before_seq;
-        (void)limit;
-        (void)timeout_ms;
-        return "";
-    }
-
     // ── paths / files the frontend owns ──────────────────────────
     virtual bool HistoryPath(std::string *out) const = 0;
-    virtual bool ChatLogPathFor(const std::string &session_id, std::string *out) const = 0;
     virtual bool WriteFile(const std::string &path, const char *data, size_t len, bool append,
                            bool under_workspace) = 0;
     virtual bool EnsureParentDir(const std::string &path) = 0;
@@ -264,20 +239,6 @@ class IAppFacade
     virtual void EmitUpdateFoundForTest(const std::string &tag)
     {
         (void)tag;
-    }
-
-    /* Deterministic harness seam: arm one timed-out cursor-0 startup fetch;
-     * the caller then feeds the late page through HandleChannelMessage().
-     * Default no-op so FakeFacade implementations stay concrete. */
-    virtual void ArmLateStartupPageForTest(const std::string &session_id)
-    {
-        (void)session_id;
-    }
-    /* Test probe: how many timed-out startup pages were actually marshalled
-     * to the UI sink. Default 0 keeps every fake facade concrete. */
-    virtual int LateStartupPageDeliveriesForTest() const
-    {
-        return 0;
     }
 
     /* Whether this copy can replace itself: the installer put it there and the platform has
@@ -346,17 +307,12 @@ class AppFacade : public IAppFacade
     void RequestTaskSnapshot(const std::string &session_id) override;
     void RequestMessagePayload(const std::string &mid) override;
     void RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit) override;
-    std::string FetchChatBubblePageSync(const std::string &session_id, int64_t before_seq, int limit,
-                                        int timeout_ms) override;
 
     bool HistoryPath(std::string *out) const override;
-    bool ChatLogPathFor(const std::string &session_id, std::string *out) const override;
     bool WriteFile(const std::string &path, const char *data, size_t len, bool append, bool under_workspace) override;
     bool EnsureParentDir(const std::string &path) override;
 
     void HandleChannelMessage(struct edc_channel_message *message) override;
-    void ArmLateStartupPageForTest(const std::string &session_id) override;
-    int LateStartupPageDeliveriesForTest() const override;
 
     void SetUpdateObserver(std::function<void(std::string tag)> observer) override;
     /* Deterministic harness seam: run the update-found trampoline with |tag|
@@ -388,26 +344,6 @@ class AppFacade : public IAppFacade
     std::function<void(std::string)> update_observer_;
     std::function<void(bool, std::string)> upgrade_done_;
 
-    /* Startup-only synchronous page handoff. The channel actor runs on the
-     * runner thread and fills these; the UI thread waits in
-     * FetchChatBubblePageSync. Guarded, never polled. */
-    std::mutex page_sync_mutex_;
-    std::condition_variable page_sync_cv_;
-    mutable std::mutex page_sync_probe_mutex_;
-    std::string page_sync_sid_;
-    std::string page_sync_payload_;
-    bool page_sync_waiting_ = false;
-    bool page_sync_done_ = false;
-    /* A sync fetch that timed out still has an actor reply in flight. Its sid
-     * is recorded here so DeliverPageSync can route the late cursor-0 page to
-     * OnStartupChatBubblePage on the UI thread. The model refuses it if live
-     * bubbles have appeared, so this cannot rebuild a stale snapshot. */
-    std::string page_sync_late_sid_;
-    int page_sync_late_deliveries_ = 0; /* deterministic test probe */
-
-    /* Called from TranslateAndDispatch (channel-actor thread) ONLY when a
-     * synchronous fetch is in flight. */
-    bool DeliverPageSync(const std::string &session_id, const std::string &payload);
 };
 
 } // namespace edc::port

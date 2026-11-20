@@ -55,7 +55,7 @@ class FakeHost : public edc::control::IChannelHost
     void LoadSessionTranscript(const std::string &session_id) override
     {
         loads.push_back(session_id);
-        session_.Reset(session_id, /*log_path=*/"");
+        session_.Reset(session_id);
     }
     void SetTaskTree(const edc::TaskSnapshot &) override
     {
@@ -135,7 +135,7 @@ void TestRouting()
     edc::model::SessionModel session;
     FakeHost host(session);
     edc::control::ChannelDispatcher d(chat, session, host);
-    session.Reset("sess-a", "");
+    session.Reset("sess-a");
 
     // 显示中的 session 的 active task 产出 → 上屏 + 拉树 + 重绘。
     d.OnChatMessage(Chat(edc::port::ChatKind::Reply, "sess-a", true));
@@ -166,7 +166,7 @@ void TestHistoryViewGate()
     edc::model::SessionModel session;
     FakeHost host(session);
     edc::control::ChannelDispatcher d(chat, session, host);
-    session.Reset("s", "");
+    session.Reset("s");
     host.in_history = true;
 
     d.OnChatMessage(Chat(edc::port::ChatKind::Reply, "s", true));
@@ -208,7 +208,7 @@ void TestTreeChanged()
     edc::model::SessionModel session;
     FakeHost host(session);
     edc::control::ChannelDispatcher d(chat, session, host);
-    session.Reset("sess-a", "");
+    session.Reset("sess-a");
 
     d.OnTreeChanged("sess-b", "state");
     Check(host.pulls == 0 && host.loads.empty(), "后台 session 变化 → 不拉不换显示");

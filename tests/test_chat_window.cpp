@@ -11,6 +11,7 @@
 // this fails (LiveCount() == the whole log), which is the point -- a regression
 // test that has never been red has proved nothing.
 #include "edc_chat_transcript.hpp"
+#include "edc_chat_bubble_page.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
 #include "ftxui/component/event.hpp"
@@ -68,24 +69,30 @@ constexpr size_t kHistory = 1000;
 
 /* Feed a long history the way startup does: a transcript file, loaded in one
  * shot. This is the path that must stay O(viewport) resident. */
-std::string WriteLog(const std::string &tag, size_t n)
+// Load |n| rows as one chat_bubbles page (the only runtime chat source).
+std::shared_ptr<edc::ChatWidget> FillLog(size_t n)
 {
-    const std::string path = test_tmp_file_path(("edc_chat_window_" + tag + ".jsonl").c_str());
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    auto chat = std::make_shared<edc::ChatWidget>();
+    std::vector<std::string> encoded;
+    std::vector<const char *> raw;
+    std::vector<int64_t> seqs;
+    encoded.reserve(n);
+    raw.reserve(n);
+    seqs.reserve(n);
     for (size_t i = 0; i < n; i++)
     {
         edc::ChatTranscriptEntry e;
         e.kind = "sys";
         e.content = "bubble " + std::to_string(i) + " — a line of chat text that must be rendered";
-        out << edc::EncodeTranscriptLine(e);
+        encoded.push_back(edc::EncodeTranscriptLine(e));
+        if (!encoded.back().empty() && encoded.back().back() == '\n')
+            encoded.back().pop_back();
+        raw.push_back(encoded.back().c_str());
+        seqs.push_back(static_cast<int64_t>(i + 1));
     }
-    return path;
-}
-
-std::shared_ptr<edc::ChatWidget> FillLog(size_t n)
-{
-    auto chat = std::make_shared<edc::ChatWidget>();
-    chat->model()->LoadTranscript(WriteLog("fill" + std::to_string(n), n));
+    const std::string payload = edc::EncodeChatBubblePageReply("test-session", 0, raw.data(), seqs.data(),
+                                                               static_cast<int>(raw.size()), false);
+    chat->model()->LoadFromPage("test-session", payload);
     return chat;
 }
 
@@ -239,28 +246,35 @@ static void test_cached_tree_survives_real_bubble_eviction(void)
 {
     TEST("a cached tooltip tree does not reference an evicted real bubble");
     constexpr size_t kRows = 260;
-    const std::string path = test_tmp_file_path("edc_chat_window_evict.jsonl");
-    {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        for (size_t i = 0; i < kRows; i++)
-        {
-            edc::ChatTranscriptEntry e;
-            /* Plain sys rows cannot reproduce it: their tree has no reflect.
-             * Alternate the two message types whose trees capture box_. */
-            e.kind = (i % 2 == 0) ? "thought" : "tool";
-            e.header = "shell";
-            /* >14 lines makes the tool bubble collapsible, so its footer also
-             * carries a reflect(box_) in the cached tree. */
-            std::string body;
-            for (size_t line = 0; line < 20; line++)
-                body += "line " + std::to_string(i) + "-" + std::to_string(line) + "\n";
-            e.content = body;
-            out << edc::EncodeTranscriptLine(e);
-        }
-    }
-
     auto chat = std::make_shared<edc::ChatWidget>();
-    chat->model()->LoadTranscript(path);
+    std::vector<std::string> encoded;
+    std::vector<const char *> raw;
+    std::vector<int64_t> seqs;
+    encoded.reserve(kRows);
+    raw.reserve(kRows);
+    seqs.reserve(kRows);
+    for (size_t i = 0; i < kRows; i++)
+    {
+        edc::ChatTranscriptEntry e;
+        /* Plain sys rows cannot reproduce it: their tree has no reflect.
+         * Alternate the two message types whose trees capture box_. */
+        e.kind = (i % 2 == 0) ? "thought" : "tool";
+        e.header = "shell";
+        /* >14 lines makes the tool bubble collapsible, so its footer also
+         * carries a reflect(box_) in the cached tree. */
+        std::string body;
+        for (size_t line = 0; line < 20; line++)
+            body += "line " + std::to_string(i) + "-" + std::to_string(line) + "\n";
+        e.content = body;
+        encoded.push_back(edc::EncodeTranscriptLine(e));
+        if (!encoded.back().empty() && encoded.back().back() == '\n')
+            encoded.back().pop_back();
+        raw.push_back(encoded.back().c_str());
+        seqs.push_back(static_cast<int64_t>(i + 1));
+    }
+    const std::string payload = edc::EncodeChatBubblePageReply("test-session", 0, raw.data(), seqs.data(),
+                                                               static_cast<int>(raw.size()), false);
+    chat->model()->LoadFromPage("test-session", payload);
     /* First frame: the tail proxies materialize their real bubbles and cache
      * their trees. Assert the fixture really took that path. */
     (void)Frame(chat);
@@ -304,7 +318,6 @@ static void test_cached_tree_survives_real_bubble_eviction(void)
     ASSERT(chat->OnEvent(click), "click on the cached footer did not reach the bubble");
     ASSERT(Frame(chat).find("Collapse") != std::string::npos, "the cached footer did not expand the bubble");
 
-    std::remove(path.c_str());
     PASS();
 }
 

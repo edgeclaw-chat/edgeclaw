@@ -12,6 +12,7 @@
 // (tail pinning, clamping, hit-testing, re-measuring on resize) must stay
 // exactly what a fully rendered log produced.
 #include "edc_chat_transcript.hpp"
+#include "edc_chat_bubble_page.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
 #include "ftxui/component/event.hpp"
@@ -238,18 +239,29 @@ std::shared_ptr<edc::ChatWidget> MakeWrappingLog(int count)
 /* Write a transcript file (oldest first) and load it in one shot. This is the
  * startup path after the progressive backfill was removed: the model builds a
  * descriptor index and materializes only the viewport window. */
-std::string WriteNumberedTranscript(const std::string &tag, const std::vector<std::string> &lines)
+// Load |lines| as one chat_bubbles page: the DB reply is the only runtime path.
+void LoadLines(const std::shared_ptr<edc::ChatWidget> &chat, const std::vector<std::string> &lines)
 {
-    const std::string path = test_tmp_file_path(("edc_ml_" + tag + ".jsonl").c_str());
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    for (const std::string &line : lines)
+    std::vector<std::string> encoded;
+    std::vector<const char *> raw;
+    std::vector<int64_t> seqs;
+    encoded.reserve(lines.size());
+    raw.reserve(lines.size());
+    seqs.reserve(lines.size());
+    for (size_t i = 0; i < lines.size(); i++)
     {
         edc::ChatTranscriptEntry e;
         e.kind = "sys";
-        e.content = line;
-        out << edc::EncodeTranscriptLine(e);
+        e.content = lines[i];
+        encoded.push_back(edc::EncodeTranscriptLine(e));
+        if (!encoded.back().empty() && encoded.back().back() == '\n')
+            encoded.back().pop_back();
+        raw.push_back(encoded.back().c_str());
+        seqs.push_back(static_cast<int64_t>(i + 1));
     }
-    return path;
+    const std::string payload =
+        edc::EncodeChatBubblePageReply("test-session", 0, raw.data(), seqs.data(), static_cast<int>(raw.size()), false);
+    chat->model()->LoadFromPage("test-session", payload);
 }
 
 std::vector<std::string> NumberedLines(const std::string &prefix, int count)
@@ -347,8 +359,7 @@ static void test_prepend_keeps_the_tail_pinned(void)
     std::vector<std::string> lines = NumberedLines("older number ", 20);
     for (const std::string &l : NumberedLines("message number ", 60))
         lines.push_back(l);
-    const std::string path = WriteNumberedTranscript("tail", lines);
-    chat->model()->LoadTranscript(path);
+    LoadLines(chat, lines);
     chat->ScrollToBottom();
     (void)Draw(chat);
     const int tail_row = RowOf(Draw(chat), "message number 59");
@@ -359,15 +370,12 @@ static void test_prepend_keeps_the_tail_pinned(void)
     std::vector<std::string> older = NumberedLines("oldest number ", 20);
     for (const std::string &l : lines)
         older.push_back(l);
-    const std::string path2 = WriteNumberedTranscript("tail2", older);
-    chat->model()->LoadTranscript(path2);
+    LoadLines(chat, older);
     chat->ScrollToBottom();
     const std::string after = Draw(chat);
     ASSERT(AnyRowContains(after, "message number 59"), "tail left the screen after reloading");
     ASSERT(RowOf(after, "message number 59") == tail_row, "the tail row moved (%d -> %d)", tail_row,
            RowOf(after, "message number 59"));
-    std::remove(path.c_str());
-    std::remove(path2.c_str());
     PASS();
 }
 
@@ -383,8 +391,7 @@ static void test_prepend_preserves_history_order(void)
         lines.push_back(l);
     for (const std::string &l : NumberedLines("message number ", 3))
         lines.push_back(l);
-    const std::string path = WriteNumberedTranscript("order", lines);
-    chat->model()->LoadTranscript(path);
+    LoadLines(chat, lines);
     (void)Draw(chat);
     ScrollToTop(chat);
 
@@ -397,7 +404,6 @@ static void test_prepend_preserves_history_order(void)
         ASSERT(rows[i] >= 0, "history row %d is missing from the frame", i);
     for (int i = 1; i < 5; i++)
         ASSERT(rows[i - 1] < rows[i], "history out of order at %d (%d !< %d)", i, rows[i - 1], rows[i]);
-    std::remove(path.c_str());
     PASS();
 }
 
@@ -409,30 +415,37 @@ static void test_prepend_keeps_clicks_on_the_right_row(void)
     TEST("a loaded transcript still toggles the visible entry on click");
     auto chat = std::make_shared<edc::ChatWidget>();
 
-    const std::string path = test_tmp_file_path("edc_ml_click.jsonl");
+    std::vector<std::string> lines = NumberedLines("older number ", 50);
+    for (int i = 0; i < 20; i++)
+        lines.push_back("plain " + std::to_string(i));
+    /* The last row is a collapsed tool message; encode it directly so the page
+     * reply keeps the same five-field transcript format as the DB. */
+    edc::ChatTranscriptEntry tool;
+    tool.kind = "tool";
+    tool.header = "shell";
+    tool.content = NumberedBody(60);
+    std::string tool_line = edc::EncodeTranscriptLine(tool);
+    if (!tool_line.empty() && tool_line.back() == '\n')
+        tool_line.pop_back();
+    std::vector<const char *> raw;
+    std::vector<int64_t> seqs;
+    std::vector<std::string> encoded;
+    for (size_t i = 0; i < lines.size(); i++)
     {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        for (const std::string &l : NumberedLines("older number ", 50))
-        {
-            edc::ChatTranscriptEntry e;
-            e.kind = "sys";
-            e.content = l;
-            out << edc::EncodeTranscriptLine(e);
-        }
-        for (int i = 0; i < 20; i++)
-        {
-            edc::ChatTranscriptEntry e;
-            e.kind = "sys";
-            e.content = "plain " + std::to_string(i);
-            out << edc::EncodeTranscriptLine(e);
-        }
-        edc::ChatTranscriptEntry tool;
-        tool.kind = "tool";
-        tool.header = "shell";
-        tool.content = NumberedBody(60);
-        out << edc::EncodeTranscriptLine(tool);
+        edc::ChatTranscriptEntry e;
+        e.kind = "sys";
+        e.content = lines[i];
+        encoded.push_back(edc::EncodeTranscriptLine(e));
+        if (!encoded.back().empty() && encoded.back().back() == '\n')
+            encoded.back().pop_back();
+        raw.push_back(encoded.back().c_str());
+        seqs.push_back(static_cast<int64_t>(i + 1));
     }
-    chat->model()->LoadTranscript(path);
+    raw.push_back(tool_line.c_str());
+    seqs.push_back(static_cast<int64_t>(raw.size()));
+    const std::string payload = edc::EncodeChatBubblePageReply("test-session", 0, raw.data(), seqs.data(),
+                                                               static_cast<int>(raw.size()), false);
+    chat->model()->LoadFromPage("test-session", payload);
     chat->ScrollToBottom();
     const std::string before = Draw(chat);
     const int footer = RowOf(before, "Click to expand");
@@ -440,7 +453,6 @@ static void test_prepend_keeps_clicks_on_the_right_row(void)
 
     chat->OnEvent(ClickAt(3, footer));
     ASSERT(AnyRowContains(Draw(chat), "Collapse"), "the click missed the entry");
-    std::remove(path.c_str());
     PASS();
 }
 
