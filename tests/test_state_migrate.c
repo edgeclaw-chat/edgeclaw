@@ -581,6 +581,40 @@ static void test_real_v12_to_v13(void)
     drop_dir();
 }
 
+/* The real v13 -> v14 step: an independent extract budget is added at 0. */
+static void test_real_v13_to_v14(void)
+{
+    printf("\n── the real v13 -> v14 step (independent extract budget) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY, "
+                             "fold_corpus_budget INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO groups(group_id,fold_corpus_budget) VALUES (10,32768)") &&
+                 exec_ok(db, "PRAGMA user_version=13");
+    CHECK(built, "fixture v13 database with a real group");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 13, err, sizeof err), "v13 migrates to v14");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "groups", "extract_summary_budget"), "extract_summary_budget exists");
+    CHECK(query_int64(db, "SELECT extract_summary_budget FROM groups WHERE group_id=10") == 0,
+          "new extract budget starts at full-cap sentinel 0");
+    CHECK(query_int64(db, "SELECT fold_corpus_budget FROM groups WHERE group_id=10") == 32768,
+          "the independent fold budget value survives migration");
+    sqlite3_close(db);
+    drop_dir();
+}
+
 /* Running it twice: the second run must refuse (there is nothing to do), not "succeed"
  * silently and not corrupt anything. That is what makes a retry after a crash safe. */
 static void test_rerun_is_refused(void)
@@ -618,6 +652,7 @@ int main(void)
     test_verify_failure_reported();
     test_real_v7_to_v8();
     test_real_v12_to_v13();
+    test_real_v13_to_v14();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);

@@ -1104,6 +1104,44 @@ static void test_no_tool_message_without_its_assistant(void)
     harness_down(&h);
 }
 
+/* The L1 of the new extract (EXTRACT_SUMMARY) is a one-shot summary: even if a caller
+ * hands memory tools to edc_llm_request_send, the request builder must send tools=none
+ * and use the knowledge-candidate system prompt. Pinned 2026-11-21: removing the
+ * memo_kind exception in edc_llm_request.c must turn this test red. */
+static void test_extract_summary_request_has_no_tools(void)
+{
+    TEST("extract-summary request: tools=none and knowledge-candidate system prompt");
+    struct harness h;
+    harness_up(&h);
+
+    struct edc_task *l1 = edc_scheduler_spawn_system_task_as(h.sched, h.sess, "extract knowledge candidates",
+                                                             EDC_SINK_SESSION_MEMORY);
+    CHECK(l1 != NULL && l1->sink == EDC_SINK_SESSION_MEMORY, "L1 is a SESSION_MEMORY system task");
+    if (l1)
+    {
+        l1->memo_kind = EDC_MEMO_KIND_EXTRACT_SUMMARY;
+        edc_scheduler_attach_input(h.sched, l1, "raw history chunk");
+
+        /* Hand it real memory tools -- the builder must override to none for this kind. */
+        cJSON *mem_tools = cJSON_CreateArray();
+        cJSON_AddItemToArray(mem_tools, cJSON_CreateObject());
+        g_req = NULL;
+        edc_llm_request_send(h.sched, l1, NULL, mem_tools, h.llm_actor, NULL);
+        pump(&h);
+        CHECK(g_req_msgs == 1 && g_req != NULL, "the request was sent");
+        if (g_req)
+        {
+            CHECK(g_req->tools == NULL, "EXTRACT_SUMMARY gets tools=none even if passed memory tools");
+            cJSON *sys0 = cJSON_IsArray(g_req->history) ? cJSON_GetArrayItem(g_req->history, 0) : NULL;
+            const char *content = sys0 ? cJSON_GetStringValue(cJSON_GetObjectItem(sys0, "content")) : NULL;
+            CHECK(content && strcmp(content, edc_session_memory_extract_summary_prompt()) == 0,
+                  "system prompt is the knowledge-candidate prompt");
+        }
+        cJSON_Delete(mem_tools);
+    }
+    harness_down(&h);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -1120,6 +1158,7 @@ int main(void)
     test_one_bad_reference_disables_the_good_ones();
     test_curate_request_is_self_contained();
     test_summary_request_is_capped();
+    test_extract_summary_request_has_no_tools();
     test_fold_request_is_self_contained();
     test_tool_only_turn_reaches_the_next_request();
     test_no_tool_message_without_its_assistant();

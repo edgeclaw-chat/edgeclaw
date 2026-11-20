@@ -170,6 +170,8 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
             memo_prompt = edc_session_memory_compact_prompt();
         else if (task->memo_kind == EDC_MEMO_KIND_EXTRACT)
             memo_prompt = edc_session_memory_extract_prompt();
+        else if (task->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY)
+            memo_prompt = edc_session_memory_extract_summary_prompt();
         cJSON_AddStringToObject(sys, "content",
                                 task->sink == EDC_SINK_SESSION_MEMORY ? memo_prompt : edc_group_fold_system_prompt());
         cJSON_AddItemToArray(msgs, sys);
@@ -381,7 +383,9 @@ void edc_llm_request_send(struct edc_scheduler *sched, struct edc_task *task, cJ
      *   - SINK_SESSION_MEMORY      -> only the memory tools (the curator searches /
      *     reads / updates memory and must not be dragged into anything else). */
     cJSON *tools = NULL;
-    if (task->sink == EDC_SINK_SESSION_MEMORY)
+    if (task->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY)
+        tools = NULL; /* L1 of the new extract is a one-shot summary, not a tool loop. */
+    else if (task->sink == EDC_SINK_SESSION_MEMORY)
         tools = memory_schemas;
     else if (!is_memory_sink)
         /* A normal reply declares the GROUP's set, not the process's: the group is the

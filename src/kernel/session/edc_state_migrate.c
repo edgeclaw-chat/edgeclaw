@@ -569,6 +569,33 @@ static bool verify_v13(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v13 -> v14: the independent corpus budget for the two-stage extract's L1 summary.
+ * Additive O(1) ADD COLUMN; 0 is the honest "full cap" default for every pre-v14 group. */
+static bool step_v13_to_v14(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE groups ADD COLUMN extract_summary_budget INTEGER NOT NULL DEFAULT 0",
+                   "add groups.extract_summary_budget", err, cap);
+}
+
+static bool verify_v14(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "extract_summary_budget"))
+    {
+        set_err(err, cap, "v14 is stamped but groups has no extract_summary_budget column");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE extract_summary_budget != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have a non-default extract_summary_budget after migration",
+                (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -583,6 +610,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {10, step_v10_to_v11, verify_v11},
     {11, step_v11_to_v12, verify_v12},
     {12, step_v12_to_v13, verify_v13},
+    {13, step_v13_to_v14, verify_v14},
     {0, NULL, NULL}, /* terminator */
 };
 

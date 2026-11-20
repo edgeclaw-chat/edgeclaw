@@ -139,6 +139,8 @@ const char *edc_task_memo_kind_name(edc_memo_kind kind)
         return "COMPACT";
     case EDC_MEMO_KIND_EXTRACT:
         return "EXTRACT";
+    case EDC_MEMO_KIND_EXTRACT_SUMMARY:
+        return "EXTRACT_SUMMARY";
     case EDC_MEMO_KIND_CURATE:
     default:
         return "CURATE";
@@ -153,6 +155,8 @@ edc_memo_kind edc_task_classify_memo_kind(const char *name)
         return EDC_MEMO_KIND_COMPACT;
     if (strcmp(name, "EXTRACT") == 0)
         return EDC_MEMO_KIND_EXTRACT;
+    if (strcmp(name, "EXTRACT_SUMMARY") == 0)
+        return EDC_MEMO_KIND_EXTRACT_SUMMARY;
     return EDC_MEMO_KIND_CURATE;
 }
 

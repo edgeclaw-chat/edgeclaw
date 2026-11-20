@@ -116,7 +116,9 @@ struct edc_scheduler;
 /* v13: split the single read_count into two independent signals: get_count (DETAIL
  * read via memory_get, inheriting the old read_count values) and search_count
  * (memory_search hit, new column default 0). step_v12_to_v13 is O(1). */
-#define EDC_DB_VERSION 13
+/* v14: groups.extract_summary_budget -- the two-stage extract's INDEPENDENT corpus
+ * budget, separate from fold_corpus_budget. O(1) ADD COLUMN DEFAULT 0. */
+#define EDC_DB_VERSION 14
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

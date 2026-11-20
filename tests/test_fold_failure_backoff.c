@@ -256,7 +256,10 @@ static void test_extract_failure_shrinks_corpus(void)
      * next scan can start a fresh one. */
     edc_session_memory_extract_note_failure(group);
     edc_task_mark_failed(t0);
-    CHECK(group->fold_corpus_budget > 0, "the failure records a reduced corpus budget on the group");
+    /* The new extract has an INDEPENDENT budget: a failed extract shrinks it, not the
+     * fold budget (decision: budget isolation). */
+    CHECK(group->extract_summary_budget > 0, "the failure records a reduced EXTRACT budget on the group");
+    CHECK(group->fold_corpus_budget == 0, "the fold budget is untouched by an extract failure");
 
     out = NULL;
     CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "next extract round started");

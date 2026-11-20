@@ -278,8 +278,11 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
          * retry. A CURATION task (SESSION_MEMORY) is deliberately tool-driven
          * and falls through to the normal tool loop
          * below. */
-        if (task->sink == EDC_SINK_GROUP_MEMORY)
+        if (task->sink == EDC_SINK_GROUP_MEMORY ||
+            task->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY)
         {
+            /* The L1 extract-summary task has tools=none just like a fold: a tool call
+             * in its response is a provider misbehaviour, refuse it. */
             task->current_request_id = NULL;
             edc_task_mark_failed(task);
             const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);

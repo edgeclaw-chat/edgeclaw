@@ -127,6 +127,13 @@ struct edc_task_group
      * successful landing / new committed content. In-memory only. */
     int memo_extract_failures;
 
+    /* Independent corpus budget for the new two-stage extract's L1 (knowledge-candidate
+     * summary). Kept SEPARATE from fold_corpus_budget so a failed fold cannot shrink the
+     * extract's input (or vice versa). 0 = full cap; halved on each extract failure down
+     * to EDC_FOLD_MIN_CORPUS_TOKENS; reset on a successful L2 landing. Persisted
+     * (groups.extract_summary_budget, schema v14). */
+    int64_t extract_summary_budget;
+
     /* ── "Is anybody still working?" -- the clock the L2 extraction windows run on ──
      *
      * `busy_members` counts the members that can still advance on their own: not

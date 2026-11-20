@@ -200,8 +200,8 @@ static void test_extract_desc(void)
     if (task)
     {
         check_scope("extract", task->description, sess->session_id, g->group_id, edc_test_id("gd2"), true);
-        CHECK(strstr(task->description, "extract session memory") != NULL,
-              "extract: still says what kind of task it is");
+        CHECK(strstr(task->description, "extract knowledge candidates") != NULL,
+              "extract: still says what kind of task it is (L1 knowledge-candidate summary)");
     }
 }
 

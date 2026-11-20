@@ -1480,6 +1480,29 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
                 else
                     edc_session_memory_extract_note_failure(task->sink_group);
             }
+            else if (task->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY)
+            {
+                /* L1: a clean one-shot summary. Its output is JOIN-injected into the
+                 * chained CURATE task; there is no watermark to advance here and NOTHING
+                 * about the group's context (folded_prefix / history) may change. Only a
+                 * failure needs recording (shrink the independent budget). The chained
+                 * CURATE fails/cancels automatically via the JOIN cascade. */
+                if (res->outcome != EDC_STEP_DONE)
+                    edc_session_memory_extract_note_failure(task->sink_group);
+                else
+                    log_info("L2 extract: knowledge-candidate summary landed from task %s",
+                             edc_id_str(task->task_id));
+            }
+            else if (task->memo_kind == EDC_MEMO_KIND_CURATE && task->memo_cut_task_id)
+            {
+                /* L2 of the new extract: the CURATE task carries the cut. It writes via
+                 * the memory tools during its run; only on a clean DONE do we advance
+                 * memo_prefix by that cut. A failed / truncated round advances nothing. */
+                if (res->outcome == EDC_STEP_DONE)
+                    edc_session_memory_extract_land(task);
+                else
+                    edc_session_memory_extract_note_failure(task->sink_group);
+            }
             else
                 log_info("L2 memo done: task=%s (writes already landed via the memory tools)",
                          edc_id_str(task->task_id));

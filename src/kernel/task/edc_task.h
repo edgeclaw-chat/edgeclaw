@@ -96,7 +96,12 @@ typedef enum
     EDC_MEMO_KIND_CURATE = 0, /* fold-chained curation (the default, and what an old
                                * file without the key reads back as) */
     EDC_MEMO_KIND_COMPACT,    /* entry-cap compaction: make the memory smaller */
-    EDC_MEMO_KIND_EXTRACT,    /* idle group's unfolded history -> session memory */
+    EDC_MEMO_KIND_EXTRACT,    /* idle group's unfolded history -> session memory (legacy, direct multi-tool) */
+    /* The first stage of the new extract: a tools=none, one-shot summary of the idle
+     * group's unexplored history into a compact "knowledge candidate" block. Its output
+     * is JOIN-injected into a normal CURATE task, which writes the session memo and
+     * advances memo_prefix only on success. SESSION_MEMORY sink, but no memory tools. */
+    EDC_MEMO_KIND_EXTRACT_SUMMARY,
 } edc_memo_kind;
 extern const char *edc_task_memo_kind_name(edc_memo_kind kind);
 extern edc_memo_kind edc_task_classify_memo_kind(const char *name);

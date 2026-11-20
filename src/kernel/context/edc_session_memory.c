@@ -1375,6 +1375,67 @@ const char *edc_session_memory_extract_prompt(void)
     return kExtractSystemPrompt;
 }
 
+/* L1 of the new two-stage extract: a tools=none, one-shot compression of an idle
+ * group's unexplored history into KNOWLEDGE CANDIDATES. It must NOT answer the
+ * conversation or call tools -- a later CURATE task reads this output and does the
+ * actual memory_get / memory_write. The format is deliberately not the fold's
+ * six-section "continue the work" summary: it is a flat list of durable facts,
+ * each with its source task and timestamp, so the curator can reconcile directly. */
+static const char *kExtractSummarySystemPrompt =
+    "You are a knowledge-extraction assistant. Read the raw, UN-FOLDED conversation history of ONE "
+    "group (in your input) and compress it into KNOWLEDGE CANDIDATES for a session memory.\n"
+    "Do NOT continue the conversation, do NOT answer anything in it, and do NOT call tools. "
+    "Output ONLY the candidates.\n"
+    "\n"
+    "Format: a markdown list grouped by subject. Each candidate is one bullet:\n"
+    "- **<short subject>**: <the durable fact -- a decision, constraint, gotcha, external fact, "
+    "or exact path / command / error text>. (source: <task id>, <timestamp>)\n"
+    "\n"
+    "Rules:\n"
+    "- Record KNOWLEDGE, not activity: no progress logs, no todos, no transient conclusions.\n"
+    "- Keep exact file paths, function names, commands and error messages verbatim -- these are "
+    "the facts a later reader cannot reconstruct.\n"
+    "- If several messages say the same thing, merge into one candidate; if a later message "
+    "corrects an earlier one, keep the newer truth and note it superseded the older.\n"
+    "- Skip greetings, acknowledgements and anything already reflected in the stated index.\n"
+    "- Be concise but complete: every candidate must stand alone without the surrounding chat.\n";
+
+const char *edc_session_memory_extract_summary_prompt(void)
+{
+    return kExtractSummarySystemPrompt;
+}
+
+int64_t edc_group_extract_corpus_cap(const struct edc_task_group *group)
+{
+    if (!group || group->extract_summary_budget <= 0)
+        return EDC_FOLD_MAX_CORPUS_TOKENS;
+    int64_t cap = group->extract_summary_budget;
+    if (cap < EDC_FOLD_MIN_CORPUS_TOKENS)
+        cap = EDC_FOLD_MIN_CORPUS_TOKENS;
+    if (cap > EDC_FOLD_MAX_CORPUS_TOKENS)
+        cap = EDC_FOLD_MAX_CORPUS_TOKENS;
+    return cap;
+}
+
+void edc_group_extract_shrink_budget(struct edc_task_group *group)
+{
+    if (!group)
+        return;
+    int64_t cur = group->extract_summary_budget > 0 ? group->extract_summary_budget : EDC_FOLD_MAX_CORPUS_TOKENS;
+    cur /= 2;
+    if (cur < EDC_FOLD_MIN_CORPUS_TOKENS)
+        cur = EDC_FOLD_MIN_CORPUS_TOKENS;
+    group->extract_summary_budget = cur;
+    log_info("L2 extract: group %s corpus budget cut to %" PRId64 " tokens after a failure",
+             edc_id_str(group->group_id), cur);
+}
+
+void edc_group_extract_reset_budget(struct edc_task_group *group)
+{
+    if (group)
+        group->extract_summary_budget = 0; /* 0 = full cap */
+}
+
 /* ── Selection: the raw un-extracted committed history, oldest first ── */
 
 struct extract_piece
@@ -1454,8 +1515,12 @@ static size_t extract_collect(struct edc_task *const *members, size_t n, struct 
     return cnt;
 }
 
+/* summary_mode: build the L1 "knowledge candidate" prompt (tools=none, no entry index)
+ * instead of the legacy direct-extract prompt (memory tools + entry index). Both share
+ * the same per-group corpus collection, cap and cut -- only the payload tail differs. */
 static sds build_extract_prompt(struct edc_session *session, struct edc_task_group *group,
-                                struct edc_extract_cut *out_cut, struct edc_fold_scope *out_scope)
+                                struct edc_extract_cut *out_cut, struct edc_fold_scope *out_scope,
+                                bool summary_mode)
 {
     if (out_cut)
     {
@@ -1491,7 +1556,8 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
      * so only the oldest span is sent; the rest waits for the next round (each round
      * advances at least one message, so the loop terminates). Never move the cut to 0
      * (a "due but yields nothing" spin). */
-    const int64_t corpus_cap = edc_group_fold_corpus_cap(group);
+    const int64_t corpus_cap =
+        summary_mode ? edc_group_extract_corpus_cap(group) : edc_group_fold_corpus_cap(group);
     size_t cut_at = cnt; /* index of the first NOT-covered piece */
     if (total > corpus_cap)
     {
@@ -1536,11 +1602,18 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         }
     }
 
-    sds out = sdscatprintf(sdsempty(),
-                           "## Group history to extract from\n"
-                           "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
-                           "content order) that has NOT reached the session memory yet.\n\n",
-                           edc_id_str(group->group_id));
+    sds out = summary_mode
+                  ? sdscatprintf(sdsempty(),
+                                 "## Group history to compress into knowledge candidates\n"
+                                 "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
+                                 "content order) that has NOT reached the session memory yet. Compress it into\n"
+                                 "the candidate list your instructions ask for; do NOT answer the conversation.\n\n",
+                                 edc_id_str(group->group_id))
+                  : sdscatprintf(sdsempty(),
+                                 "## Group history to extract from\n"
+                                 "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
+                                 "content order) that has NOT reached the session memory yet.\n\n",
+                                 edc_id_str(group->group_id));
     if (group->memory && sdslen(group->memory) > 0)
     {
         /* Neither the group memory's text nor its entries are here, but its recency is:
@@ -1589,19 +1662,31 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         }
     }
 
-    out = sdscat(out, "\n## Existing session entries\n");
-    size_t total_entries = 0;
-    sds index = edc_session_memory_index_lines(session->memo, 0, EDC_SESSION_MEMORY_MAX_ENTRIES + 1, &total_entries);
-    if (sdslen(index))
-        out = sdscatsds(out, index);
+    if (summary_mode)
+    {
+        /* L1: no entry index (that is the L2 curator's job, injected by its own prompt),
+         * and no memory-tool instructions -- this task has tools=none. Just tell it the
+         * candidate format; kExtractSummarySystemPrompt carries the detailed rules. */
+        out = sdscat(out, "\n\nOutput the KNOWLEDGE CANDIDATES now (markdown bullets grouped by "
+                          "subject; each with source task and timestamp). Do not answer the "
+                          "conversation.\n");
+    }
     else
-        out = sdscat(out, "(none yet)");
-    sdsfree(index);
-    out = sdscat(out, "\n\nNow use the memory tools on the material above:\n"
-                      "1) RECONCILE -- find the existing entries it covers (memory_search / memory_list),\n"
-                      "   read each (memory_get), and update or retire any whose facts it has changed;\n"
-                      "2) EXTRACT -- update a related entry, or memory_write a new one when nothing\n"
-                      "   related exists.\n");
+    {
+        out = sdscat(out, "\n## Existing session entries\n");
+        size_t total_entries = 0;
+        sds index = edc_session_memory_index_lines(session->memo, 0, EDC_SESSION_MEMORY_MAX_ENTRIES + 1, &total_entries);
+        if (sdslen(index))
+            out = sdscatsds(out, index);
+        else
+            out = sdscat(out, "(none yet)");
+        sdsfree(index);
+        out = sdscat(out, "\n\nNow use the memory tools on the material above:\n"
+                          "1) RECONCILE -- find the existing entries it covers (memory_search / memory_list),\n"
+                          "   read each (memory_get), and update or retire any whose facts it has changed;\n"
+                          "2) EXTRACT -- update a related entry, or memory_write a new one when nothing\n"
+                          "   related exists.\n");
+    }
 
     free(members);
     extract_free_pieces(ps, cnt);
@@ -1673,6 +1758,48 @@ bool edc_session_memory_extract_due(struct edc_task_group *group, const struct e
     return true;
 }
 
+/* Start the L2 half of the new extract: a normal CURATE task that reads the L1
+ * summary (JOIN-injected) and writes session memo entries with the memory tools.
+ * It carries `cut`; ONLY when it lands cleanly does the scheduler advance
+ * memo_prefix (see the CURATE+memo_cut branch in edc_scheduler.c). No group
+ * barrier and no folded_prefix / rebuild_history touch -- the group stays fully
+ * usable if the user comes back. */
+static struct edc_task *extract_curate_start(struct edc_scheduler *sched, struct edc_session *session,
+                                             struct edc_task_group *group, struct edc_task *summary_task,
+                                             const struct edc_extract_cut *cut, const struct edc_fold_scope *scope)
+{
+    sds prompt = build_curate_prompt(session, group, /*all_groups=*/false, NULL);
+    sds desc = edc_session_memory_curate_desc(session->session_id, group->group_id,
+                                              scope ? scope->task_ids : NULL, scope ? scope->count : 0,
+                                              summary_task ? summary_task->task_id : 0);
+    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
+    sdsfree(desc);
+    if (!task)
+    {
+        sdsfree(prompt);
+        return NULL;
+    }
+    task->sink_group = group;
+    /* CURATE by default; the cut is what marks this as the L2 of the new extract. */
+    task->memo_cut_task_id = cut->task_id;
+    task->memo_cut_turn = cut->turn;
+    task->memo_cut_prefix = cut->prefix;
+    if (!edc_scheduler_attach_input(sched, task, prompt))
+    {
+        edc_task_mark_failed(task);
+        sdsfree(prompt);
+        return NULL;
+    }
+    sdsfree(prompt);
+    if (summary_task)
+        edc_task_add_dependency(task, summary_task, TASK_DEP_JOIN); /* inject L1 output as material */
+    return task;
+}
+
+/* New two-stage extract. L1 = a tools=none, one-shot "knowledge candidate" summary
+ * of the idle group's unexplored history (SESSION_MEMORY sink, EXTRACT_SUMMARY kind).
+ * L2 = extract_curate_start above (CURATE + memory tools, JOIN-injected summary).
+ * No folded_prefix / rebuild_history / group memory write anywhere in this chain. */
 static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_session *session,
                                       struct edc_task_group *group)
 {
@@ -1686,45 +1813,52 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
     memset(&cut, 0, sizeof(cut));
     struct edc_fold_scope scope;
     memset(&scope, 0, sizeof(scope));
-    sds prompt = build_extract_prompt(session, group, &cut, &scope);
+    sds prompt = build_extract_prompt(session, group, &cut, &scope, /*summary_mode=*/true);
     if (!prompt)
     {
         edc_fold_scope_free(&scope);
         return NULL;
     }
 
-    sds desc = edc_group_fold_scope_desc("extract session memory", session->session_id, group->group_id,
+    sds desc = edc_group_fold_scope_desc("extract knowledge candidates", session->session_id, group->group_id,
                                          scope.task_ids, scope.count, cut.task_id, cut.turn, cut.prefix);
-    struct edc_task *task = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
+    struct edc_task *l1 = edc_scheduler_spawn_system_task_as(sched, session, desc, EDC_SINK_SESSION_MEMORY);
     sdsfree(desc);
-    edc_fold_scope_free(&scope);
-    if (!task)
+    if (!l1)
     {
         sdsfree(prompt);
+        edc_fold_scope_free(&scope);
         return NULL;
     }
-    task->memo_kind = EDC_MEMO_KIND_EXTRACT;
-    task->sink_group = group;
-    task->memo_cut_task_id = cut.task_id;
-    task->memo_cut_turn = cut.turn;
-    task->memo_cut_prefix = cut.prefix;
-
-    /* No barrier: the group is idle (no non-terminal member to hold), and the round
-     * only reads committed turns and raises a watermark -- it changes nothing about
-     * what any request sends. */
-    if (!edc_scheduler_attach_input(sched, task, prompt))
+    l1->memo_kind = EDC_MEMO_KIND_EXTRACT_SUMMARY;
+    l1->sink_group = group;
+    /* L1 carries the cut too, so a retry after failure can rebuild the same span; the
+     * actual watermark advance happens only in the L2 CURATE landing. */
+    l1->memo_cut_task_id = cut.task_id;
+    l1->memo_cut_turn = cut.turn;
+    l1->memo_cut_prefix = cut.prefix;
+    if (!edc_scheduler_attach_input(sched, l1, prompt))
     {
-        log_error("L2 memo extract: could not attach the prompt for group %s — nothing started", edc_id_str(group->group_id));
-        edc_task_mark_failed(task); /* failure also releases dependents */
+        log_error("L2 extract summary: could not attach the prompt for group %s — nothing started",
+                  edc_id_str(group->group_id));
+        edc_task_mark_failed(l1);
         sdsfree(prompt);
+        edc_fold_scope_free(&scope);
         edc_session_memory_extract_note_failure(group);
         return NULL;
     }
     sdsfree(prompt);
-    log_info("L2 memo extract start: session=%s group=%s task=%s cut=task %s turn %u msg %u", edc_id_str(session->session_id),
-             edc_id_str(group->group_id), edc_id_str(task->task_id), edc_id_str(task->memo_cut_task_id),
-             task->memo_cut_turn, task->memo_cut_prefix);
-    return task;
+
+    /* Chain L2 now so the whole chain is visible at once; its JOIN edge will inject
+     * L1's output as material once L1 completes. */
+    struct edc_task *l2 = extract_curate_start(sched, session, group, l1, &cut, &scope);
+    edc_fold_scope_free(&scope);
+    (void)l2; /* started or not: L1 still runs; no extra caller-visible state */
+
+    log_info("L2 extract start: session=%s group=%s L1=%s cut=task %s turn %u msg %u",
+             edc_id_str(session->session_id), edc_id_str(group->group_id), edc_id_str(l1->task_id),
+             edc_id_str(l1->memo_cut_task_id), l1->memo_cut_turn, l1->memo_cut_prefix);
+    return l1;
 }
 
 bool edc_session_memory_extract_try(struct edc_scheduler *sched, struct edc_session_manager *sessions,
@@ -1775,8 +1909,9 @@ void edc_session_memory_extract_note_failure(struct edc_task_group *group)
     if (!group)
         return;
     group->memo_extract_failures++;
-    /* Like L1: retry a smaller corpus rather than the exact request that failed. */
-    edc_group_fold_shrink_corpus(group);
+    /* Retry a smaller corpus with the EXTRACT-INDEPENDENT budget -- never the fold
+     * budget (a failed extract must not shrink a group's normal fold, or vice versa). */
+    edc_group_extract_shrink_budget(group);
     if (group->memo_extract_failures >= EDC_MEMO_EXTRACT_MAX_FAILURES)
         log_error("L2 memo extract: group %s failed %d times in a row — automatic extraction is paused for this "
                   "group (do new work in it, or fold it, to try again)",
@@ -1796,8 +1931,9 @@ void edc_session_memory_extract_note_progress(struct edc_task_group *group)
                  group->memo_extract_failures);
         group->memo_extract_failures = 0;
     }
-    /* A successful landing restores the full L1/L2 corpus cap. */
-    group->fold_corpus_budget = 0;
+    /* A successful landing restores the EXTRACT corpus cap only. The fold budget is
+     * independent and must not be touched by an extract success (decision: separate budget). */
+    edc_group_extract_reset_budget(group);
 }
 
 /* ── Landing: advance the watermark by the recorded cut ── */

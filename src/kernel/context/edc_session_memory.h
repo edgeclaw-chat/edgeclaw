@@ -412,6 +412,15 @@ extern struct edc_task *edc_session_memory_start_manual(struct edc_scheduler *sc
 /* The extraction call's system text (self-contained: this plus its turn). Distinct
  * from the curator's, which says the material "was just folded" -- it was not. */
 extern const char *edc_session_memory_extract_prompt(void);
+/* L1 of the new extract: a tools=none, one-shot "knowledge candidate" summary. */
+extern const char *edc_session_memory_extract_summary_prompt(void);
+
+/* The extract's INDEPENDENT corpus cap (0 = full EDC_FOLD_MAX_CORPUS_TOKENS), read by
+ * the summary-mode prompt builder and halved by extract failures -- never touches the
+ * fold budget. Mirrors edc_group_fold_corpus_cap / shrink_corpus. */
+extern int64_t edc_group_extract_corpus_cap(const struct edc_task_group *group);
+extern void edc_group_extract_shrink_budget(struct edc_task_group *group);
+extern void edc_group_extract_reset_budget(struct edc_task_group *group);
 
 /* How many committed messages of |group| are still past their turn's memo watermark
  * (the material an EXTRACT round would carry). Members with a memory sink are skipped.
