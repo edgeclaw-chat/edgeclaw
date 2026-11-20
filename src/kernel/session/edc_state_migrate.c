@@ -472,6 +472,40 @@ static bool verify_v10(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v10 -> v11: persist the "fold failed, barrier still held" state on each group.
+ * Purely additive (one ALTER TABLE ADD COLUMN, constant default); 0 means healthy,
+ * which is exactly what every pre-v11 group was in memory before this change. */
+static bool step_v10_to_v11(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db,
+                   "ALTER TABLE groups ADD COLUMN fold_failure_state INTEGER NOT NULL DEFAULT 0",
+                   "add groups.fold_failure_state", err, cap) &&
+           run_sql(db,
+                   "ALTER TABLE groups ADD COLUMN fold_held INTEGER NOT NULL DEFAULT 0",
+                   "add groups.fold_held", err, cap);
+}
+
+static bool verify_v11(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "fold_failure_state") || !has_column(db, "groups", "fold_held"))
+    {
+        set_err(err, cap, "v11 is stamped but groups is missing a fold-state column");
+        return false;
+    }
+    /* The defaults are load-bearing: any other value would freeze pre-v11 groups whose
+     * folds had actually succeeded. */
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE fold_failure_state != 0 OR fold_held != 0",
+                       &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have a non-default fold state after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -483,6 +517,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {7, step_v7_to_v8, verify_v8},
     {8, step_v8_to_v9, verify_v9},
     {9, step_v9_to_v10, verify_v10},
+    {10, step_v10_to_v11, verify_v11},
     {0, NULL, NULL}, /* terminator */
 };
 

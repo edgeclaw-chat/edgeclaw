@@ -2337,6 +2337,9 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
     out = sdscatprintf(out, "- **fold epoch** %u · **memory** %s · **failure streak** %d/%d\n", group->fold_epoch,
                        (group->memory && sdslen(group->memory) > 0) ? "present" : "none (never folded)",
                        group->fold_failures, EDC_FOLD_MAX_FAILURES);
+    if (group->fold_held)
+        out = sdscat(out, "- **fold failed: barrier held** — the group is frozen until a retry lands "
+                          "(`/group fold`, or a new task joining the group)\n");
     {
         /* The tracked-file counts belong next to `memory`: they are part of it, and this
          * line is where someone looks to find out whether there is anything to see. */
@@ -2541,6 +2544,8 @@ static const char *edc_commands_dep_kind(edc_task_dep_type type)
         return "ORDER (`;`)";
     case TASK_DEP_UNLESS:
         return "INVERSE (`||`)";
+    case TASK_DEP_FOLD_HOLD:
+        return "FOLD HOLD";
     }
     return "DEP";
 }

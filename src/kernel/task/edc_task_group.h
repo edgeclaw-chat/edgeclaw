@@ -107,11 +107,20 @@ struct edc_task_group
      * L1 fold and the L2 extraction: both build their material with the same cap. */
     int64_t fold_corpus_budget;
 
-    /* Consecutive failure count: at EDC_FOLD_MAX_FAILURES, automatic folding stops,
-     * so "fail -> group still due -> retry unchanged" cannot become a perpetual
-     * motion machine. Reset on successful landing / manual fold / new committed
-     * content. In-memory only, not persisted (a restart counts as new). */
+    /* Consecutive VOLUME-related failure count: at EDC_FOLD_MAX_FAILURES the automatic
+     * retry chain stops and the group stays in the "fold failed / barrier held" state until
+     * the user manually folds or a new task joins the group (which restarts the fold and
+     * rebinds the barrier). Persisted (groups.fold_failure_state) so a restart does not
+     * silently unfreeze the group or reset the retry accounting. Non-volume failures
+     * (auth, rate limit) do NOT increment this. Reset only by a successful landing. */
     int fold_failures;
+
+    /* True while a failed fold round has NOT been followed by a successful landing: the
+     * TASK_DEP_FOLD_HOLD edges are live, the group is frozen, and window-based automatic
+     * folding must not fire. Persisted (groups.fold_held). A non-volume failure sets this
+     * too (without touching fold_failures), so an auth error cannot be retried in a tight
+     * loop at full corpus size. Cleared ONLY by a successful landing. */
+    bool fold_held;
 
     /* Same shape for the L2 extraction of this group's unfolded history: consecutive
      * failures stop the AUTOMATIC path at EDC_MEMO_EXTRACT_MAX_FAILURES; reset on

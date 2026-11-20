@@ -183,14 +183,23 @@ extern int edc_group_fold_hold_task(struct edc_task *task);
  * changed (retry on the next trigger). */
 extern bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
 
-/** Record one fold failure (task ERROR / empty summary / unresolvable cut). At
- *  EDC_FOLD_MAX_FAILURES, `edc_group_fold_due` returns false on the AUTOMATIC
- *  path; manual `/group fold` is unaffected. */
+/** True when a failed fold request is a VOLUME problem: shrinking the corpus can
+ *  plausibly make the next round succeed. TRANSPORT (the 300s non-streaming timeout)
+ *  and an explicit CONTEXT_OVERFLOW are; auth, rate limits and other 4xx are not --
+ *  retrying those smaller only burns calls. */
+extern bool edc_group_fold_is_volume_failure(int task_fail);
+
+/** Record one VOLUME-related fold failure (task ERROR classified as such, empty
+ *  summary, unresolvable cut). Each one halves the corpus budget; at
+ *  EDC_FOLD_MAX_FAILURES the automatic retry chain stops and the group stays in the
+ *  "fold failed / barrier held" state until a manual fold or a new task joins. The
+ *  state is persisted (groups.fold_failure_state). */
 extern void edc_group_fold_note_failure(struct edc_task_group *group);
 
-/** Reset the consecutive-failure count. Three call sites: successful landing,
- *  manual fold, and new committed content in the group (a new turn = new
- *  situation, worth retrying). Starting a fold does NOT reset it. */
+/** Reset the consecutive-failure count AND restore the full corpus budget. Called
+ *  ONLY by a successful landing. Starting a fold, a manual fold and new committed
+ *  content do NOT reset it: those are retry triggers, not evidence that the corpus
+ *  size is workable again. */
 extern void edc_group_fold_note_progress(struct edc_task_group *group);
 
 /** The files the folded work read / modified, as newline-separated text: a projection of

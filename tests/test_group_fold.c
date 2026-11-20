@@ -459,7 +459,10 @@ static void test_fold_failure_keeps_memory(void)
     CHECK(strcmp(group->memory, "# memory before") == 0, "记忆没被改");
     CHECK(count_folded(group) == 0, "没有任何任务被标已折叠");
     CHECK(group->fold_epoch == epoch_before, "折叠没落地: fold_epoch 没动");
-    CHECK(edc_group_fold_due(group, cfg_due(cfg, group)), "下一轮还会再折 (可折叠的还在)");
+    /* 2026-11-20: 失败置 fold_held, 窗口自动路径停手; scheduler 会显式缩小预算后
+     * 立即重试 (见 test_fold_failure_backoff 与应用层路径), 但那不是 fold_due 触发。 */
+    CHECK(!edc_group_fold_due(group, cfg_due(cfg, group)), "失败后自动窗口路径停手 (held)");
+    CHECK(group->fold_held, "失败状态被记录 (barrier 保持, 等待重试)");
 
     CHECK(count_tasks_in(session) == 4, "失败的折叠任务 + 被 JOIN 级联失败的策展任务仍在 (普通任务, 不回收)");
     CHECK(edc_session_find_system_group(session) != NULL, "系统组还在");
@@ -2043,7 +2046,7 @@ static void test_corpus_is_capped(void)
 
 static void test_fold_failure_cap(void)
 {
-    TEST("(c) 连续失败到上限 ⇒ 自动折叠停手; 手动折叠是唯一的重启开关");
+    TEST("(c) 失败 ⇒ 自动折叠停手且 barrier 保持; 手动折叠/新 task 是重试开关 (不复位失败账)");
     struct edc_config *cfg = make_config();
     struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-failcap"), "FailCap");
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
@@ -2056,32 +2059,36 @@ static void test_fold_failure_cap(void)
 
     CHECK(edc_group_fold_due(group, cfg), "基线: 该折");
     edc_group_fold_note_failure(group);
-    CHECK(group->fold_failures == 1 && edc_group_fold_due(group, cfg), "1 次失败: 还该折 (一次失败就放弃太脆)");
+    /* 2026-11-20 设计: 任何失败都置 fold_held, 窗口自动路径立刻停手; 缩小重试由
+     * scheduler 显式驱动, 不再由 fold_due 在每次 advance 借窗口重新触发。 */
+    CHECK(group->fold_failures == 1 && group->fold_held, "1 次失败: held, 自动路径停手");
+    CHECK(!edc_group_fold_due(group, cfg), "失败后窗口自动路径不再该折");
     edc_group_fold_note_failure(group);
-    CHECK(edc_group_fold_due(group, cfg), "2 次失败: 还没到顶");
+    CHECK(group->fold_failures == 2 && group->fold_held, "2 次失败: 仍 held");
     edc_group_fold_note_failure(group);
     CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "到上限");
-    CHECK(!edc_group_fold_due(group, cfg), "到上限后自动路径不再该折 (永动机熄火)");
 
     /* 起折本身**不**复位 —— 否则"起折 → 失败 → 起折"永远到不了上限, 正是永动机的形状。
      * start 也不受限 (只有 due 那道门管自动路径, 手动/直接起折照走)。 */
     struct edc_task *direct = edc_group_fold_start(sched, session, group, NULL);
     CHECK(direct != NULL, "start 不受失败上限限制 (被限制的是 due 这道门)");
-    CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "起折**不清零** (清零的是落地/手动/新内容)");
+    CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "起折不清零 (只有成功落地才复位)");
     if (direct)
-        /* 收尾: 会话里别有在飞的系统任务, 免得下面的手动折叠被挡。用**生产路径**的
-         * SIGTERM (会通知依赖者 ⇒ 链上的 L2 被级联取消); `edc_task_mark_cancelled`
-         * 不通知, 会把 L2 留在"等一个死掉的源"上 (已有的小 wart, 不是本次引入)。 */
         edc_task_send_signal(direct, TASK_SIGTERM);
 
-    /* 手动折叠既不受上限限制, 也是复位开关 (自动路径熄火后唯一的重启方式)。 */
+    /* 手动折叠 = 重试开关, 但不是复位开关: 失败账和缩小后的预算都保留, 直到成功
+     * landing 证明这个语料规模可用。 */
     struct edc_task *manual = edc_scheduler_fold_group_now(sched, session, group, NULL);
     CHECK(manual != NULL, "手动 /group fold 照起");
-    CHECK(group->fold_failures == 0, "手动折叠清掉失败账");
-    CHECK(edc_group_fold_due(group, cfg), "复位后自动路径又该折了");
+    CHECK(group->fold_failures == EDC_FOLD_MAX_FAILURES, "手动折叠不清失败账");
+    CHECK(group->fold_corpus_budget > 0, "手动折叠不恢复全量预算");
+    if (manual)
+        edc_task_send_signal(manual, TASK_SIGTERM);
 
-    /* 组里又有了**已提交内容**也清零 (调度器那条钩子: 成员完成 = 新情况, 值得再试)。 */
-    group->fold_failures = EDC_FOLD_MAX_FAILURES;
+    /* 组里新提交的成员完成 => 不是复位信号, 只是重试触发。新内容落在 keep_recent
+     * 尾部, 超时那批最老语料没变, 清零会立刻重发全量 prompt (m145 #4 的 bug)。 */
+    int failures_before = group->fold_failures;
+    int64_t budget_before = group->fold_corpus_budget;
     struct edc_task *member = edc_task_new(edc_test_id("99"), edc_test_session_id("sess-failcap"), group->group_id, "later work", edc_channel_adapter);
     edc_task_group_add_task(group, member);
     edc_task_await_exec(member);
@@ -2092,7 +2099,226 @@ static void test_fold_failure_cap(void)
     r.settled = true;
     r.changed = true;
     edc_scheduler_apply_advance(sched, member, NULL, &r);
-    CHECK(group->fold_failures == 0, "成员完成 (新内容) ⇒ 失败账清零");
+    CHECK(group->fold_failures == failures_before, "成员完成 (新内容) ⇒ 失败账不复位");
+    CHECK(group->fold_corpus_budget == budget_before, "成员完成 ⇒ 缩小后的预算不变");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  2026-11-20 design: failed fold keeps its barrier, corpus stays frozen,
+ *  and a new task joining the group restarts the fold with the edges rebound.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* A live member parked by a FOLD_HOLD must stay parked after the fold fails, even
+ * though the chained L2 curation is thrown into ERROR by the JOIN cascade. This is
+ * the exact semantic flip: the old BARRIER released it on any source ending. */
+static void test_failed_fold_keeps_barrier(void)
+{
+    TEST("fold design: a failed fold keeps FOLD_HOLD; the member stays frozen (not released)");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000); /* no window trigger: drive explicitly */
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-hold-fail"), "HoldFail");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-hold-fail"), "leader");
+    struct edc_task *live = edc_task_new(edc_test_id("77"), edc_test_session_id("sess-hold-fail"), group->group_id,
+                                        "live member", edc_channel_adapter);
+    edc_task_group_add_task(group, live);
+    edc_scheduler_attach_input(sched, live, "do work");
+    edc_task_await_exec(live);
+    CHECK(edc_task_is_running(live), "sanity: the member was running");
+
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "fold started");
+    /* Anti-vacuous: the member really holds a FOLD_HOLD edge to this fold. */
+    bool held_live = false;
+    struct edc_task_dep *d;
+    LL_FOREACH(live->deps, d)
+    {
+        if (d->source == fold && d->type == TASK_DEP_FOLD_HOLD && !d->completed && !d->cancelled)
+            held_live = true;
+    }
+    CHECK(held_live, "anti-vacuous: live member holds a live FOLD_HOLD on the fold");
+
+    /* Fail the fold via the group-level hook: drive it to the cap so the automatic
+     * shrink-retry chain is exhausted and the group is in the stable held state.
+     * (A single ERROR advance would legitimately start an immediate smaller retry,
+     * which is a different behaviour tested in test_fold_failure_backoff.) */
+    for (int i = 0; i < EDC_FOLD_MAX_FAILURES; i++)
+        edc_group_fold_note_failure(group);
+    edc_task_mark_failed(fold);
+
+    CHECK(edc_task_has_failed(fold), "fold is ERROR");
+    CHECK(group->fold_held && group->fold_failures == EDC_FOLD_MAX_FAILURES,
+          "the group is in the failed/held state (persisted field, cap reached)");
+    CHECK(edc_task_has_unresolved_deps(live), "member STILL frozen after fold failure (barrier kept)");
+    held_live = false;
+    LL_FOREACH(live->deps, d)
+    {
+        if (d->source == fold && d->type == TASK_DEP_FOLD_HOLD && !d->completed && !d->cancelled)
+            held_live = true;
+    }
+    CHECK(held_live, "the FOLD_HOLD edge to the failed fold is still live (rebind target exists)");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* A new task joining a failed group must restart the fold BEFORE it is adopted, so
+ * it parks on the fresh fold and its input never grows the frozen corpus. The old
+ * failed fold's FOLD_HOLD edges must be rebound, not stacked. */
+static void test_new_task_restarts_fold_and_rebinds(void)
+{
+    TEST("fold design: a new task in a failed group restarts the fold, rebinds holds, stays parked");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-rebind"), "Rebind");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-rebind"), "leader");
+    struct edc_task *live = edc_task_new(edc_test_id("78"), edc_test_session_id("sess-rebind"), group->group_id,
+                                        "live member", edc_channel_adapter);
+    edc_task_group_add_task(group, live);
+    edc_scheduler_attach_input(sched, live, "in flight");
+    edc_task_await_exec(live);
+
+    struct edc_task *fold1 = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold1 != NULL, "first fold started");
+    /* Drive to the cap for a STABLE held state (no automatic retry in flight), so the
+     * fresh live fold found below can only have been started by the new task. */
+    for (int i = 0; i < EDC_FOLD_MAX_FAILURES; i++)
+        edc_group_fold_note_failure(group);
+    edc_task_mark_failed(fold1);
+    CHECK(group->fold_held && edc_task_has_unresolved_deps(live), "group frozen after the failure");
+
+    /* Snapshot the pre-retry corpus size: a new task must not enlarge it. */
+    struct edc_fold_cut cut_before;
+    sds prompt_before = edc_group_fold_build_prompt(group, NULL, &cut_before);
+    CHECK(prompt_before != NULL, "anti-vacuous: a corpus exists before the new task");
+
+    /* New task joins the SAME group via the real scheduler creation path. */
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "new work";
+    spec.input = sdsnew("brand new task input");
+    spec.channel_type = edc_channel_adapter;
+    spec.place = EDC_TASK_PLACE_GROUP;
+    spec.group_id = group->group_id;
+    spec.take_foreground = false;
+    struct edc_task *fresh = edc_scheduler_task_create(sched, session, &spec);
+    CHECK(fresh != NULL, "new task created in the failed group");
+    CHECK(fresh->group == group, "anti-vacuous: the new task landed in the failed group");
+
+    /* A NEW fold must have been started (not the failed one resurrected). */
+    struct edc_task *fold2 = NULL;
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    struct edc_task *it;
+    LL_FOREACH2(sys->members, it, group_next)
+    {
+        if (it->sink == EDC_SINK_GROUP_MEMORY && !edc_task_is_finished(it))
+            fold2 = it;
+    }
+    CHECK(fold2 != NULL && fold2 != fold1, "a fresh live fold task was started by the new task");
+
+    if (fold2)
+    {
+        bool rebound_live = false;
+        int hold_count = 0;
+        struct edc_task_dep *d;
+        LL_FOREACH(live->deps, d)
+        {
+            if (d->type == TASK_DEP_FOLD_HOLD && !d->completed && !d->cancelled)
+            {
+                hold_count++;
+                if (d->source == fold2)
+                    rebound_live = true;
+            }
+        }
+        CHECK(rebound_live, "the old member's FOLD_HOLD was rebound to the retry fold");
+        CHECK(hold_count == 1, "anti-vacuous: no duplicate stacked hold edge on the member");
+    }
+
+    /* The new task is parked on the retry fold and its input did NOT join the corpus. */
+    CHECK(fresh && edc_task_has_unresolved_deps(fresh), "new task is parked behind the fold");
+    if (fresh && fold2)
+    {
+        bool fresh_on_fold2 = false;
+        struct edc_task_dep *d;
+        LL_FOREACH(fresh->deps, d)
+        {
+            if (d->source == fold2 && d->type == TASK_DEP_FOLD_HOLD && !d->completed && !d->cancelled)
+                fresh_on_fold2 = true;
+        }
+        CHECK(fresh_on_fold2, "new task holds a FOLD_HOLD on the retry fold");
+    }
+    /* The retry fold's prompt was fixed inside fold_start (before the new task was
+     * adopted), so it cannot contain the new task's input. That is the real "corpus
+     * did not grow" guarantee -- not a hypothetical re-plan made after the fact. */
+    if (fold2)
+    {
+        cJSON *pm = fold2->active_turn ? edc_turn_msg_at(fold2->active_turn, 0) : NULL;
+        const char *prompt_text = pm ? cJSON_GetStringValue(cJSON_GetObjectItem(pm, "content")) : NULL;
+        CHECK(prompt_text && strstr(prompt_text, "brand new task input") == NULL,
+              "the retry fold's frozen prompt excludes the new task's input");
+        CHECK(fold2->active_turn && fold2->active_turn->msg_count > 0,
+              "anti-vacuous: the retry fold really carries a prompt to inspect");
+        if (pm)
+            cJSON_Delete(pm);
+    }
+    /* And the new task has committed no history of its own -- it only has the one
+     * unprocessed input turn, so nothing new reached the group's folded corpus. */
+    CHECK(fresh && fresh->turns.tail - fresh->turns.head == 0,
+          "the parked new task has no committed turns (no history added to the group)");
+    CHECK(prompt_before != NULL, "anti-vacuous: a pre-retry corpus was planned");
+
+    if (prompt_before)
+        sdsfree(prompt_before);
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+/* Non-volume failures (auth) must NOT shrink the corpus or consume an attempt, yet
+ * must still freeze the group so the window trigger cannot retry at full size. */
+static void test_non_volume_failure_keeps_corpus(void)
+{
+    TEST("fold design: auth failure freezes the group but keeps the corpus and the streak");
+
+    struct edc_config *cfg = make_config();
+    cfg_win(cfg, 1000000);
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-auth"), "Auth");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+    sched->send_llm = stub_send_llm;
+
+    struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-auth"), "leader");
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    CHECK(fold != NULL, "fold started");
+    edc_task_await_exec(fold);
+
+    int64_t budget_before = group->fold_corpus_budget; /* 0 = full */
+    int failures_before = group->fold_failures;        /* 0 */
+    edc_task_set_fail(fold, EDC_FAIL_AUTH);
+    struct edc_advance_result res;
+    memset(&res, 0, sizeof(res));
+    res.outcome = EDC_STEP_ERROR;
+    res.settled = true;
+    edc_scheduler_apply_advance(sched, fold, fold->current_request_id, &res);
+
+    CHECK(group->fold_held, "auth failure still freezes the group (no tight full-size retry loop)");
+    CHECK(group->fold_corpus_budget == budget_before, "auth failure does NOT shrink the corpus");
+    CHECK(group->fold_failures == failures_before, "auth failure does NOT consume an attempt");
+    CHECK(!edc_group_fold_due(group, cfg), "window path stays suspended while held");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -2131,6 +2357,9 @@ int main(void)
     test_cut_active_turn_committed_before_landing();
     test_corpus_is_capped();
     test_fold_failure_cap();
+    test_failed_fold_keeps_barrier();
+    test_new_task_restarts_fold_and_rebinds();
+    test_non_volume_failure_keeps_corpus();
 
     log_info("=== %d passed, %d failed ===", test_passed, test_failed);
     printf("%d passed, %d failed\n", test_passed, test_failed);

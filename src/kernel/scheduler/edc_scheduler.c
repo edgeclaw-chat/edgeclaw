@@ -37,6 +37,8 @@ struct edc_sched_task_entry
 void edc_scheduler_actor_handler(edc_actor_t *actor, edc_actor_msg_t *msg);
 static void sched_save_session(struct edc_scheduler *sched, struct edc_session *s, const char *tag);
 static void sched_save_progress(struct edc_scheduler *sched, struct edc_task *task, const char *tag);
+static struct edc_task *sched_restart_failed_fold(struct edc_scheduler *sched, struct edc_session *session,
+                                                  struct edc_task_group *group, const char *tag);
 /* Sidebar-only task-tree snapshot, pulled by explicit session_id; the chat pane is the TUI's own. */
 static void sched_handle_pull_snapshot(struct edc_scheduler *sched, const char *session_id);
 static void sched_handle_pull_message_payload(struct edc_scheduler *sched, const char *mid);
@@ -467,6 +469,23 @@ static int sched_attach_maintenance_barrier(struct edc_task *task)
     return edc_group_fold_hold_task(task) + edc_session_memory_hold_task(task);
 }
 
+/* A task joining a group whose fold FAILED is the second retry trigger (the first is
+ * /group fold). Start the retry fold BEFORE the new task is adopted: fold_start builds
+ * the corpus from the group as it is now and rebinds the surviving FOLD_HOLD edges, and
+ * sched_attach_maintenance_barrier then hangs this new task on the live fold. The new
+ * task therefore parks in AWAIT_DEPS and produces no active-turn history until the fold
+ * lands -- the corpus we are retrying cannot grow underneath us. No failure counters or
+ * budgets are reset here; only a successful landing does that. */
+static void sched_retry_fold_before_task(struct edc_scheduler *sched, struct edc_session *session,
+                                         struct edc_task *task)
+{
+    if (!sched || !session || !task || !task->group || edc_task_is_memory_sink(task))
+        return;
+    if (!task->group->fold_held)
+        return;
+    (void)sched_restart_failed_fold(sched, session, task->group, "fold:new-task-retry");
+}
+
 static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, struct edc_session *session,
                                                 struct edc_task *task, const struct edc_task_spec *spec,
                                                 bool *chained_out)
@@ -531,6 +550,11 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
         if (chained_out)
             *chained_out = chained;
     }
+
+    /* A new task joining a group whose fold failed is the retry trigger: start the
+     * fold FIRST, so the barrier hook below sees a live fold task and parks this one.
+     * Order matters -- reversing it lets the new task run and grow the corpus. */
+    sched_retry_fold_before_task(sched, session, task);
 
     /* Door 1 of 2: a task that joins while a maintenance round is in flight waits for it too
      * (this is what the former drive-time predicate caught for newcomers). */
@@ -797,17 +821,39 @@ static void sched_fold_before_request(struct edc_scheduler *sched, struct edc_ta
         sched_save_session(sched, session, "fold:auto"); /* the fold task and its dep edges must be persistable at once */
 }
 
+/* Restart a group whose fold failed. Returns the new fold task (or NULL when a round is
+ * already in flight / nothing can be built). Deliberately does NOT clear the failure
+ * streak or the reduced corpus budget: those are reset ONLY by a successful landing
+ * (edc_group_fold_deliver_memory -> edc_group_fold_note_progress). A manual fold or a
+ * new task joining a failed group is a RETRY TRIGGER, not evidence that a full-size
+ * corpus suddenly works. fold_start rebinds the surviving FOLD_HOLD edges, so the group
+ * stays frozen until this round actually lands. */
+static struct edc_task *sched_restart_failed_fold(struct edc_scheduler *sched, struct edc_session *session,
+                                                  struct edc_task_group *group, const char *tag)
+{
+    if (!sched || !session || !group || !group->fold_held)
+        return NULL;
+    struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
+    if (fold)
+    {
+        log_info("L1 fold: group %s restarted by %s (failure streak %d, corpus budget %" PRId64 ")",
+                 edc_id_str(group->group_id), tag, group->fold_failures, group->fold_corpus_budget);
+        sched_save_session(sched, session, tag);
+    }
+    return fold;
+}
+
 struct edc_task *edc_scheduler_fold_group_now(struct edc_scheduler *sched, struct edc_session *session,
                                               struct edc_task_group *group, const char *focus)
 {
+    /* Manual fold on a FAILED group = a retry trigger, not a reset. On a healthy group
+     * it is the ordinary "fold now, ignoring the line" command. */
+    if (sched && session && group && group->fold_held)
+        return sched_restart_failed_fold(sched, session, group, "fold:manual-retry");
+
     struct edc_task *fold = edc_group_fold_start(sched, session, group, focus);
     if (fold)
-    {
-        /* (c) Manual fold = the user asking for one more try: clear the consecutive
-         * failure count (the only restart switch once the automatic path hits the cap). */
-        edc_group_fold_note_progress(group);
-        sched_save_session(sched, session, "fold:manual"); /* as on the automatic path: persistable at once */
-    }
+        sched_save_session(sched, session, "fold:manual"); /* the fold task and its dep edges must be persistable at once */
     return fold;
 }
 
@@ -1104,10 +1150,13 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (task->end == EDC_END_BLOCKED)
         edc_task_set_output(task, NULL);
 
-    /* Door 2 of 2: a maintenance round in flight holds it. Park at READY/ALIVE -- the intent to
-     * resume is NOT dropped: the message-end scan drives it as soon as the round ends and
-     * releases the barrier (same effect as the fold's own member sweep, for the doors that sweep
-     * cannot see). */
+    /* Door 2 of 2: a maintenance round in flight holds it. Resuming a task in a group
+     * whose fold failed is also a retry trigger, with the same ordering as creation. */
+    sched_retry_fold_before_task(sched, task->group ? task->group->session : NULL, task);
+
+    /* Park at READY/ALIVE -- the intent to resume is NOT dropped: the message-end scan
+     * drives it as soon as the round ends and releases the barrier (same effect as the
+     * fold's own member sweep, for the doors that sweep cannot see). */
     if (sched_attach_maintenance_barrier(task) > 0)
     {
         /* AWAIT_DEPS is the ONE representation of "waiting for something": an edge added to a
@@ -1383,11 +1432,12 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
         if (task->sink == EDC_SINK_CHANNEL && own)
         {
             edc_task_set_completion_seq(task, own->next_completion_seq++);
-            /* (c) New committed content in the group => clear the fold failure count:
-             * this is a new situation worth retrying (distinct from the same content
-             * failing repeatedly). Same for the extraction failure streak. */
-            edc_group_fold_note_progress(task->group);
-            edc_session_memory_extract_note_progress(task->group);
+            /* NEW CONTENT IS NOT PROGRESS for the fold backoff. A new message lands in
+             * the keep_recent tail; the oversized corpus that just timed out is the
+             * OLDEST span and did not change. Clearing the streak / budget here used
+             * to unlock a byte-identical full-size retry on the very same advance.
+             * Retry triggers are /group fold and a new task joining a failed group
+             * (see sched_retry_fold_before_task); neither resets the budget. */
         }
         else
             edc_task_set_completion_seq(task, 0);
@@ -1407,7 +1457,8 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
              * -> L1). One corner to note: the fold completed but wrote no memory =>
              * the memory is unchanged, yet L2 still runs (its JOIN edge is done) and
              * re-curates the old memory -- the curator merges the entries, so it is
-             * not wrong, just a wasted call. */
+             * not wrong, just a wasted call. A failed landing (empty summary / bad
+             * cut) counts as a volume failure and enters the retry chain below. */
             if (!landed)
                 log_warn("L1 fold: group %s landed nothing — the chained curation will see the previous memory",
                          edc_id_str(task->sink_group ? task->sink_group->group_id : 0));
@@ -1463,11 +1514,32 @@ static void sched_apply_advance_one(struct edc_scheduler *sched, struct edc_task
     else /* ERROR */
     {
         sched_mark_dirty(sched, own, "state");
-        /* (c) A fold task reaching ERROR => count one failure; at the cap
-         * edc_group_fold_due stops automatic folding (manual /group fold is exempt).
-         * A cancel is not a failure -- a human stopped it. */
+        /* A fold task reaching ERROR: only VOLUME failures count toward the
+         * shrink-and-retry chain. An auth error, a rate limit or another 4xx must not
+         * halve the corpus or consume one of the three attempts; the group stays in
+         * its failed/held state and waits for a manual fold or a new task. The
+         * FOLD_HOLD barrier is kept by the task layer (see on_dep_failed). */
         if (task->sink == EDC_SINK_GROUP_MEMORY)
-            edc_group_fold_note_failure(task->sink_group);
+        {
+            struct edc_task_group *g = task->sink_group;
+            if (edc_group_fold_is_volume_failure(task->fail))
+            {
+                edc_group_fold_note_failure(g); /* shrink budget, ++streak, set fold_held */
+                /* The next round is started after the cascade settles (step 4/5 of
+                 * apply_advance): spawning it here would be refused by
+                 * has_pending_system_task because the chained L2 curation is still
+                 * non-terminal at this point. See sched_fold_auto_retry_chain(). */
+            }
+            else if (g)
+            {
+                /* Auth / rate limit / other 4xx: NOT a volume problem. Freeze the
+                 * group (so the window-based trigger cannot tight-loop a full-size
+                 * retry), but do not shrink and do not consume an attempt. */
+                g->fold_held = true;
+                log_warn("L1 fold: group %s failed for a non-volume reason (%s) — corpus unchanged, "
+                         "barrier held", edc_id_str(g->group_id), edc_task_fail_name(task->fail));
+            }
+        }
         if (task->sink == EDC_SINK_SESSION_MEMORY && task->memo_kind == EDC_MEMO_KIND_EXTRACT)
             edc_session_memory_extract_note_failure(task->sink_group);
         if (sched->send_reply)
@@ -1498,6 +1570,27 @@ void edc_scheduler_apply_advance(struct edc_scheduler *sched, struct edc_task *t
 
     /* (4) Clear the accounts: recursive -- clearing itself moves other tasks. */
     edc_task_drain_moves(task, sched_settle_cascaded, sched);
+
+    /* (4b) Shrink-and-retry chain: a volume-related fold failure that has NOT yet hit
+     * the cap gets ONE immediate retry with the just-halved corpus. fold_start rebinds
+     * the surviving FOLD_HOLD edges, so the group never unfreezes between rounds. This
+     * runs after (4) because the chained L2 curation only becomes terminal there. */
+    if (task->sink == EDC_SINK_GROUP_MEMORY && task->sink_group &&
+        task->sink_group->fold_failures < EDC_FOLD_MAX_FAILURES)
+    {
+        /* Two ways an L1 round fails and needs the next (smaller) try:
+         *  - the task itself went ERROR for a volume reason;
+         *  - it COMPLETED but landing found nothing usable (empty summary / bad cut),
+         *    in which case deliver_memory already counted the failure and left
+         *    fold_held set (a successful landing clears it). */
+        bool error_volume = edc_task_has_failed(task) && edc_group_fold_is_volume_failure(task->fail);
+        bool landing_failed = edc_task_is_completed(task) && task->sink_group->fold_held;
+        if (error_volume || landing_failed)
+        {
+            struct edc_session *fold_session = edc_task_session(task);
+            sched_restart_failed_fold(sched, fold_session, task->sink_group, "fold:auto-retry");
+        }
+    }
 
     /* (5) Fold check (mount point (a)): asked after every advance, not only on the
      * "task completed" branch -- a tool-response advance can push a group's context

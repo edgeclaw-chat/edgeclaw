@@ -145,6 +145,12 @@ static const char *const EDC_SCHEMA_SQL =
      * 0 = the full cap. Persisted so a restart cannot restore a giant prompt that just
      * timed out and re-send it with the failure streak (in-memory) already cleared. */
     "  fold_corpus_budget INTEGER NOT NULL DEFAULT 0,"
+    /* v11: the fold-failure state. fold_failure_state = consecutive volume-related
+     * failures (0..EDC_FOLD_MAX_FAILURES), fold_held = 1 while the barrier is live and
+     * window-based automatic folding is suspended. Persisted so a restart cannot
+     * silently unfreeze a group that is still waiting for a retry. */
+    "  fold_failure_state INTEGER NOT NULL DEFAULT 0,"
+    "  fold_held          INTEGER NOT NULL DEFAULT 0,"
     "  ord                INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, group_id)"
     ");"
@@ -1185,13 +1191,16 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
 
 static const char *INSERT_GROUP =
     "INSERT INTO groups(session_id,group_id,is_orphaned,kind,memory,fold_epoch,"
-    "memory_created_at,memory_updated_at,memory_covers_to,fold_corpus_budget,ord) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+    "memory_created_at,memory_updated_at,memory_covers_to,fold_corpus_budget,"
+    "fold_failure_state,fold_held,ord) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(session_id,group_id) DO UPDATE SET is_orphaned=excluded.is_orphaned,"
     "kind=excluded.kind,memory=excluded.memory,"
     "fold_epoch=excluded.fold_epoch,memory_created_at=excluded.memory_created_at,"
     "memory_updated_at=excluded.memory_updated_at,memory_covers_to=excluded.memory_covers_to,"
-    "fold_corpus_budget=excluded.fold_corpus_budget,ord=excluded.ord";
+    "fold_corpus_budget=excluded.fold_corpus_budget,"
+    "fold_failure_state=excluded.fold_failure_state,fold_held=excluded.fold_held,"
+    "ord=excluded.ord";
 
 struct group_bind
 {
@@ -1214,7 +1223,9 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     bind_num(st, 8, (double)g->memory_updated_at);
     bind_num(st, 9, (double)g->memory_covers_to);
     bind_num(st, 10, (double)g->fold_corpus_budget);
-    sqlite3_bind_int(st, 11, b->ord);
+    sqlite3_bind_int(st, 11, g->fold_failures);
+    sqlite3_bind_int(st, 12, g->fold_held ? 1 : 0);
+    sqlite3_bind_int(st, 13, b->ord);
 }
 
 static const char *INSERT_TASK =
@@ -2429,7 +2440,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,fold_epoch,"
                                      "memory_created_at,memory_updated_at,memory_covers_to,"
-                                     "fold_corpus_budget "
+                                     "fold_corpus_budget,fold_failure_state,fold_held "
                                      "FROM groups WHERE session_id=? ORDER BY ord",
                                -1, &st, NULL) != SQLITE_OK)
             goto done;
@@ -2489,6 +2500,8 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             group->memory_updated_at = (uint64_t)col_i64(st, 6);
             group->memory_covers_to = (uint64_t)col_i64(st, 7);
             group->fold_corpus_budget = col_i64(st, 8);
+            group->fold_failures = sqlite3_column_int(st, 9);
+            group->fold_held = sqlite3_column_int(st, 10) != 0;
 
             /* members, in the stored order; the leader is already on the list */
             {

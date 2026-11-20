@@ -211,6 +211,8 @@ const char *edc_task_dep_type_name(edc_task_dep_type t)
         return "BARRIER";
     case TASK_DEP_UNLESS:
         return "UNLESS";
+    case TASK_DEP_FOLD_HOLD:
+        return "FOLD_HOLD";
     default:
         return "UNKNOWN";
     }
@@ -228,6 +230,8 @@ edc_task_dep_type edc_task_classify_dep_type(const char *name)
         return TASK_DEP_BARRIER;
     if (strcmp(name, "UNLESS") == 0)
         return TASK_DEP_UNLESS;
+    if (strcmp(name, "FOLD_HOLD") == 0)
+        return TASK_DEP_FOLD_HOLD;
     return TASK_DEP_JOIN;
 }
 
@@ -1213,6 +1217,20 @@ void edc_task_on_dep_completed(struct edc_task *target, struct edc_task *source)
     if (!target || !source)
         return;
 
+    /* A FOLD_HOLD on a GROUP_MEMORY source (the L1 fold) is NOT released by the task
+     * merely completing: it can be COMPLETED and still have produced no usable memory
+     * (empty summary / unresolved cut). Only a successful landing releases it, through
+     * edc_group_fold_release_holds(). A SESSION_MEMORY source (the chained curation)
+     * releases normally when it completes. */
+    struct edc_task_dep *hold_check;
+    LL_FOREACH(target->deps, hold_check)
+    {
+        if (hold_check->source == source && hold_check->type == TASK_DEP_FOLD_HOLD &&
+            !hold_check->completed && !hold_check->cancelled &&
+            source->sink == EDC_SINK_GROUP_MEMORY)
+            return;
+    }
+
     struct edc_task_dep *found = NULL;
     struct edc_task_dep *dep;
     LL_FOREACH(target->deps, dep)
@@ -1428,14 +1446,20 @@ void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    /* Two kinds are released by the source ending badly: BARRIER (a fold / curation round
+    /* Two kinds are released by the source ending badly: BARRIER (a maintenance round
      * that died must not take the tasks it was holding with it) and UNLESS (`||` -- "run the
-     * right-hand side only if the left one did not succeed", so this IS its turn). */
+     * right-hand side only if the left one did not succeed", so this IS its turn).
+     * FOLD_HOLD deliberately falls through: a failed group fold must KEEP its barrier so
+     * no new history commits before the retry succeeds. It is rebound to the new fold
+     * task by edc_task_rebind_fold_holds(), and released on a successful landing by
+     * edc_group_fold_release_holds(). */
     if (dep->type == TASK_DEP_BARRIER || dep->type == TASK_DEP_UNLESS)
     {
         task_void_dep(dep, target, source);
         return;
     }
+    if (dep->type == TASK_DEP_FOLD_HOLD)
+        return;
 
     /* A dependency the user authored -- JOIN or SEQUENCE, which differ only in whether the
      * source's output would have been injected: the source produced nothing, so this
@@ -1471,12 +1495,17 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
     if (!dep)
         return;
 
-    /* Released by the source ending badly -- see on_dep_cancelled (BARRIER and `||`). */
+    /* Released by the source ending badly -- see on_dep_cancelled (BARRIER and `||`).
+     * FOLD_HOLD is the exception: a failed group fold keeps the group frozen until a
+     * retry fold is started and the edge is rebound to it. Never cascade a fold failure
+     * into the members it was holding. */
     if (dep->type == TASK_DEP_BARRIER || dep->type == TASK_DEP_UNLESS)
     {
         task_void_dep(dep, target, source);
         return;
     }
+    if (dep->type == TASK_DEP_FOLD_HOLD)
+        return;
 
     /* Cascade failure, and the EDGE STAYS. The dependency is unsatisfiable *now* -- not
      * forever: the source is ERROR / CANCELLED / INTERRUPTED and all of them are resumable.
@@ -1506,6 +1535,142 @@ void edc_task_on_dep_failed(struct edc_task *target, struct edc_task *source)
      * failures are idempotent: no real move, no record). */
     if (target->step != step_before || target->life != life_before)
         task_record_move(source, target, EDC_MOVE_CASCADED, NULL);
+}
+
+/* A failed group fold keeps its barrier (FOLD_HOLD), but the failed fold task can never
+ * produce again: a retry is a NEW system task. Re-point every still-live FOLD_HOLD edge
+ * that names |old| at |new|, in both halves of the dep graph, without moving the target's
+ * phase (it stays parked exactly where it was). The lists are snapshot first because
+ * walking |old->dependents| while mutating it is not safe. Returns the number of edges
+ * rebound, so the caller can assert the group really was frozen. */
+int edc_task_rebind_fold_holds(struct edc_task *old, struct edc_task *fresh)
+{
+    if (!old || !fresh || old == fresh)
+        return 0;
+
+    size_t n = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(old->dependents, dep)
+    {
+        if (!dep->cancelled && !dep->completed && dep->type == TASK_DEP_FOLD_HOLD)
+            n++;
+    }
+    if (n == 0)
+        return 0;
+
+    struct edc_task **targets = malloc(n * sizeof(*targets));
+    if (!targets)
+        return 0; /* no phase changes: the edges keep naming the old task this round */
+    size_t i = 0;
+    LL_FOREACH(old->dependents, dep)
+    {
+        if (!dep->cancelled && !dep->completed && dep->type == TASK_DEP_FOLD_HOLD)
+            targets[i++] = dep->target;
+    }
+
+    for (size_t k = 0; k < i; k++)
+    {
+        struct edc_task *target = targets[k];
+        struct edc_task_dep *t_dep = NULL, *s_dep = NULL;
+        LL_FOREACH(target->deps, dep)
+        {
+            if (dep->source == old && dep->type == TASK_DEP_FOLD_HOLD && !dep->cancelled &&
+                !dep->completed)
+            {
+                t_dep = dep;
+                break;
+            }
+        }
+        LL_FOREACH(old->dependents, dep)
+        {
+            if (dep->target == target && dep->type == TASK_DEP_FOLD_HOLD && !dep->cancelled &&
+                !dep->completed)
+            {
+                s_dep = dep;
+                break;
+            }
+        }
+        if (!t_dep || !s_dep)
+            continue;
+
+        /* Unlink from old->dependents and append to fresh->dependents (single move, no
+         * allocation). The target's deps node stays in place: only its source changes, so
+         * deps_total / deps_completed / the AWAIT_DEPS phase are all untouched. */
+        struct edc_task_dep **link = &old->dependents;
+        while (*link && *link != s_dep)
+            link = &(*link)->next;
+        if (*link == s_dep)
+        {
+            *link = s_dep->next;
+            s_dep->next = NULL;
+            s_dep->source = fresh;
+            t_dep->source = fresh;
+            struct edc_task_dep **tail = &fresh->dependents;
+            while (*tail)
+                tail = &(*tail)->next;
+            *tail = s_dep;
+        }
+    }
+    free(targets);
+    return (int)i;
+}
+
+/* The other end of a FOLD_HOLD: the fold actually LANDED (the cut was applied), so every
+ * task the group was holding may run. L1's ordinary on_dep_completed deliberately leaves
+ * FOLD_HOLD edges alone (a COMPLETED fold task can still have failed to land), so the
+ * release is done here directly: complete both halves of the edge and wake the target. */
+void edc_group_fold_release_holds(struct edc_task *fold)
+{
+    if (!fold)
+        return;
+    size_t n = 0;
+    struct edc_task_dep *dep;
+    LL_FOREACH(fold->dependents, dep)
+    {
+        if (!dep->cancelled && !dep->completed && dep->type == TASK_DEP_FOLD_HOLD)
+            n++;
+    }
+    if (n == 0)
+        return;
+    struct edc_task **targets = malloc(n * sizeof(*targets));
+    if (!targets)
+        return;
+    size_t i = 0;
+    LL_FOREACH(fold->dependents, dep)
+    {
+        if (!dep->cancelled && !dep->completed && dep->type == TASK_DEP_FOLD_HOLD)
+            targets[i++] = dep->target;
+    }
+    for (size_t k = 0; k < i; k++)
+    {
+        struct edc_task *target = targets[k];
+        struct edc_task_dep *t_dep = NULL, *s_dep = NULL;
+        LL_FOREACH(target->deps, dep)
+        {
+            if (dep->source == fold && dep->type == TASK_DEP_FOLD_HOLD && !dep->completed &&
+                !dep->cancelled)
+            {
+                t_dep = dep;
+                break;
+            }
+        }
+        LL_FOREACH(fold->dependents, dep)
+        {
+            if (dep->target == target && dep->type == TASK_DEP_FOLD_HOLD && !dep->completed &&
+                !dep->cancelled)
+            {
+                s_dep = dep;
+                break;
+            }
+        }
+        if (!t_dep || !s_dep)
+            continue;
+        t_dep->completed = s_dep->completed = true;
+        target->deps_completed++;
+        if (target->deps_completed >= target->deps_total && edc_task_awaits_deps(target))
+            edc_task_mark_ready(target);
+    }
+    free(targets);
 }
 
 /* Failure broadcast: snapshot the dependents before processing, since a JOIN
@@ -1544,6 +1709,12 @@ void edc_task_notify_dependents(struct edc_task *task)
     {
         if (!dep->cancelled && !dep->completed)
         {
+            /* A FOLD_HOLD on the L1 fold is released ONLY by a successful landing
+             * (edc_group_fold_release_holds). Marking it completed here -- before the
+             * scheduler has run deliver_memory -- would hide it from release_holds
+             * and leave the group frozen forever after a perfectly good fold. */
+            if (dep->type == TASK_DEP_FOLD_HOLD && task->sink == EDC_SINK_GROUP_MEMORY)
+                continue;
             dep->completed = true;
             edc_task_on_dep_completed(dep->target, task);
         }

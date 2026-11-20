@@ -567,6 +567,11 @@ extern bool edc_task_depends_on(const struct edc_task *target, const struct edc_
  *  The door out of a dependency whose source can never produce again -- its owner session
  *  is gone, so nothing will ever release it. Exposed for `/task dep <id> --drop <source>`. */
 extern bool edc_task_drop_dep(struct edc_task *target, struct edc_task *source);
+/** Re-point every live TASK_DEP_FOLD_HOLD edge from a failed fold task to its retry
+ *  (which is a NEW task). The waiting tasks keep their phase; 0 means nobody was held. */
+extern int edc_task_rebind_fold_holds(struct edc_task *old, struct edc_task *fresh);
+/** Release every live TASK_DEP_FOLD_HOLD edge on a fold that landed successfully. */
+extern void edc_group_fold_release_holds(struct edc_task *fold);
 extern void edc_task_on_dep_cancelled(struct edc_task *target, struct edc_task *source);
 /** Handle a source that failed, symmetric with cancellation (the source will not
  *  produce anything either way): a JOIN edge cascades the failure to the dependent

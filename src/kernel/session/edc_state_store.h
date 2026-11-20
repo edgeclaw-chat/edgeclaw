@@ -105,7 +105,12 @@ struct edc_scheduler;
 /* v10: groups.fold_corpus_budget -- the reduced L1/L2 corpus budget after consecutive
  * memory-round failures. step_v9_to_v10 is one O(1) ADD COLUMN with DEFAULT 0 (the
  * documented "full cap"), so every pre-v10 group keeps its old behaviour. */
-#define EDC_DB_VERSION 10
+/* v11: groups.fold_failure_state -- the persisted "this group's fold failed, its
+ * barrier is still held" state (0 = healthy; N = consecutive volume-related failures,
+ * capped by EDC_FOLD_MAX_FAILURES). step_v10_to_v11 is one O(1) ADD COLUMN DEFAULT 0,
+ * so a pre-v11 group loads as healthy and keeps its old behaviour. A restart must not
+ * silently unfreeze a group that is still waiting for a retry. */
+#define EDC_DB_VERSION 11
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

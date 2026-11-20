@@ -1199,6 +1199,11 @@ struct edc_task *edc_session_memory_start(struct edc_scheduler *sched, struct ed
         {
             if (edc_task_is_completed(m) || edc_task_is_cancelled(m) || edc_task_has_failed(m))
                 continue;
+            /* L2 keeps the ordinary BARRIER: its failure/cancel releases the members.
+             * The group stays frozen through L1's FOLD_HOLD edge instead -- that one
+             * survives a failed round and is rebound to the retry fold. Members wait
+             * for BOTH: L1 (hold) releases only on a successful landing, L2 (barrier)
+             * on completion. */
             edc_task_add_dependency(m, task, TASK_DEP_BARRIER);
         }
     }
