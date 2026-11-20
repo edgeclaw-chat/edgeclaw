@@ -535,6 +535,40 @@ static bool verify_v12(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v12 -> v13: split read_count into two independent signals. RENAME keeps every
+ * recorded memory_get count as get_count (no data loss, O(1)), and the new
+ * search_count starts at 0 (unrecorded history cannot be invented). */
+static bool step_v12_to_v13(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE memo_entries RENAME COLUMN read_count TO get_count",
+                   "rename memo_entries.read_count to get_count", err, cap) &&
+           run_sql(db, "ALTER TABLE memo_entries ADD COLUMN search_count INTEGER NOT NULL DEFAULT 0",
+                   "add memo_entries.search_count", err, cap);
+}
+
+static bool verify_v13(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "memo_entries", "get_count") || !has_column(db, "memo_entries", "search_count"))
+    {
+        set_err(err, cap, "v13 is stamped but memo_entries is missing a usage-count column");
+        return false;
+    }
+    if (has_column(db, "memo_entries", "read_count"))
+    {
+        set_err(err, cap, "v13 is stamped but the old read_count column still exists");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM memo_entries WHERE search_count != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld entries have a non-default search_count after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -548,6 +582,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {9, step_v9_to_v10, verify_v10},
     {10, step_v10_to_v11, verify_v11},
     {11, step_v11_to_v12, verify_v12},
+    {12, step_v12_to_v13, verify_v13},
     {0, NULL, NULL}, /* terminator */
 };
 

@@ -175,7 +175,7 @@ struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memor
                                                        const char *sources, const char *proposed_by,
                                                        uint64_t created_seq, uint64_t updated_seq,
                                                        uint64_t created_at, uint64_t updated_at,
-                                                       uint64_t read_count, bool superseded)
+                                                       uint64_t get_count, uint64_t search_count, bool superseded)
 {
     if (!m || !id)
         return NULL;
@@ -196,20 +196,31 @@ struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memor
     e->updated_seq = updated_seq;
     e->created_at = created_at;
     e->updated_at = updated_at;
-    e->read_count = read_count;
+    e->get_count = get_count;
+    e->search_count = search_count;
     e->superseded = superseded;
     return e;
 }
 
-bool edc_session_memory_note_read(struct edc_session_memory *m, const char *id)
+bool edc_session_memory_note_get(struct edc_session_memory *m, const char *id)
 {
     if (!m || !id || !*id)
         return false;
     struct edc_memo_entry *e = edc_session_memory_entry(m, id);
-    if (!e)
+    if (!e || e->get_count == UINT64_MAX)
         return false;
-    if (e->read_count < UINT64_MAX)
-        e->read_count++;
+    e->get_count++;
+    return true;
+}
+
+bool edc_session_memory_note_search(struct edc_session_memory *m, const char *id)
+{
+    if (!m || !id || !*id)
+        return false;
+    struct edc_memo_entry *e = edc_session_memory_entry(m, id);
+    if (!e || e->search_count == UINT64_MAX)
+        return false;
+    e->search_count++;
     return true;
 }
 
@@ -499,8 +510,10 @@ sds edc_session_memory_search_lines(const struct edc_session_memory *m, const ch
 #define EDC_MEMO_MAX_PATTERN_LEN 512
 
 sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, const char *pattern, size_t cap,
-                                          size_t *out_hits, int *out_regerror)
+                                          size_t *out_hits, int *out_regerror, char ***out_ids)
 {
+    if (out_ids)
+        *out_ids = NULL;
     if (out_hits)
         *out_hits = 0;
     if (out_regerror)
@@ -562,6 +575,18 @@ sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, co
         sds line = index_line_for(&m->entries[hits[i]]);
         out = sdscatsds(out, line);
         sdsfree(line);
+        /* Collect the ids actually shown to the caller, for usage counting (the
+         * memory_search tool turns each of these into one search_count increment). */
+        if (out_ids)
+        {
+            char **grown = realloc(*out_ids, (i + 2) * sizeof(**out_ids));
+            if (grown)
+            {
+                *out_ids = grown;
+                (*out_ids)[i] = m->entries[hits[i]].id ? strdup(m->entries[hits[i]].id) : NULL;
+                (*out_ids)[i + 1] = NULL;
+            }
+        }
     }
     free(hits);
     if (out_hits)

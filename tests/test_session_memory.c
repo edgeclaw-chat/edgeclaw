@@ -180,13 +180,13 @@ static void test_read_write_api(void)
 
     /* 正则搜索: POSIX ERE + 大小写不敏感; 非法正则置 out_regerror 且不回行 */
     int regerr = 0;
-    sds rr = edc_session_memory_search_regex_lines(m, "^沙", 5, &hits, &regerr);
+    sds rr = edc_session_memory_search_regex_lines(m, "^沙", 5, &hits, &regerr, NULL);
     CHECK(regerr == 0 && hits == 1 && strstr(rr, "[m2]") != NULL, "正则锚定命中标题");
     sdsfree(rr);
-    rr = edc_session_memory_search_regex_lines(m, "uid 1000|BAZELISK", 5, &hits, &regerr);
+    rr = edc_session_memory_search_regex_lines(m, "uid 1000|BAZELISK", 5, &hits, &regerr, NULL);
     CHECK(regerr == 0 && hits == 2, "交替 + 大小写不敏感命中 2 条");
     sdsfree(rr);
-    rr = edc_session_memory_search_regex_lines(m, "(", 5, &hits, &regerr);
+    rr = edc_session_memory_search_regex_lines(m, "(", 5, &hits, &regerr, NULL);
     CHECK(regerr == 1 && hits == 0 && sdslen(rr) == 0, "非法正则: 置 regerror, 不回行");
     sdsfree(rr);
 

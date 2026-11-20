@@ -88,12 +88,15 @@ struct edc_memo_entry
      * judge how fresh the entry is. */
     uint64_t created_at;
     uint64_t updated_at;
-    /* How many times this entry's DETAIL was actually read into a task's context via
-     * the memory_get tool. Discovery (memory_list / memory_search) does not count: it
-     * only surfaces the index, not the knowledge. Persisted (memo_entries.read_count),
-     * so usage can be analysed across sessions; the curator/extract writers do not
-     * touch it. Incremented by edc_session_memory_note_read(). */
-    uint64_t read_count;
+    /* Two INDEPENDENT usage signals, both persisted, written only by reads (never by
+     * the curator/extract writers), so extract/curation can be tuned with data:
+     *   get_count    -- memory_get actually read this entry's DETAIL into a task's context.
+     *   search_count -- memory_search matched this entry (shown to the model as an index hit).
+     * memory_list (plain enumeration) counts as neither: it does not indicate use of the
+     * knowledge. The two are deliberately separate -- a high search_count / low get_count
+     * means "surface but never read", and vice versa means "few, deep reads". */
+    uint64_t get_count;
+    uint64_t search_count;
     bool superseded;
 };
 
@@ -175,8 +178,8 @@ extern struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_sessio
                                                               const char *detail, const char *sources,
                                                               const char *proposed_by, uint64_t created_seq,
                                                               uint64_t updated_seq, uint64_t created_at,
-                                                              uint64_t updated_at, uint64_t read_count,
-                                                              bool superseded);
+                                                              uint64_t updated_at, uint64_t get_count,
+                                                              uint64_t search_count, bool superseded);
 
 extern uint64_t edc_session_memory_add_event(struct edc_session_memory *m, const char *entry_id,
                                              enum edc_memo_event_kind kind, const char *title, const char *summary);
@@ -189,9 +192,12 @@ extern struct edc_memo_entry *edc_session_memory_upsert_entry(struct edc_session
 
 /* Record who proposed the entry (foreground memory_write; owned by m). */
 extern void edc_session_memory_note_proposer(struct edc_memo_entry *entry, const char *task_id);
-/* Count one DETAIL read (memory_get of an existing id). Discovery-only tools
- * (memory_list / memory_search) do not call this. Returns false when id is absent. */
-extern bool edc_session_memory_note_read(struct edc_session_memory *m, const char *id);
+/* Count one DETAIL read via memory_get (increments get_count only).
+ * Returns false when id is absent or would overflow. */
+extern bool edc_session_memory_note_get(struct edc_session_memory *m, const char *id);
+/* Count one memory_search hit on an entry (increments search_count only).
+ * Returns false when id is absent or would overflow. */
+extern bool edc_session_memory_note_search(struct edc_session_memory *m, const char *id);
 
 /* ── Readers/writers for tools and notifications ────────────── */
 
@@ -211,7 +217,8 @@ extern sds edc_session_memory_search_lines(const struct edc_session_memory *m, c
  * `*out_regerror` (may be NULL) = 1 when the pattern is refused (invalid or too long);
  * the result is empty then. */
 extern sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, const char *pattern, size_t cap,
-                                                 size_t *out_hits, int *out_regerror);
+                                                 size_t *out_hits, int *out_regerror,
+                                                 char ***out_ids /* optional: matched entry ids (caller frees each + array) */);
 
 /* ── The catalogue channel: "what exists" ─────────────────────
  * The counterpart of the notice. The notice answers "what changed" (precise, priced,

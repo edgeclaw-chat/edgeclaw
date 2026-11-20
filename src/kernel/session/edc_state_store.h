@@ -113,7 +113,10 @@ struct edc_scheduler;
 /* v12: memo_entries.read_count -- how many times an entry's detail was read via
  * memory_get. step_v11_to_v12 is one O(1) ADD COLUMN DEFAULT 0, so pre-v12 entries
  * start at zero reads rather than being invented as "popular". */
-#define EDC_DB_VERSION 12
+/* v13: split the single read_count into two independent signals: get_count (DETAIL
+ * read via memory_get, inheriting the old read_count values) and search_count
+ * (memory_search hit, new column default 0). step_v12_to_v13 is O(1). */
+#define EDC_DB_VERSION 13
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

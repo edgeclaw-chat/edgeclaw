@@ -352,9 +352,10 @@ static const char *const EDC_SCHEMA_SQL =
     "  created_at  INTEGER NOT NULL DEFAULT 0,"
     "  updated_at  INTEGER NOT NULL DEFAULT 0,"
     "  superseded  INTEGER NOT NULL DEFAULT 0,"
-    /* v12: how many times the entry's detail was actually read via memory_get.
-     * Discovery-only tools do not count. Used to analyse which knowledge is useful. */
-    "  read_count  INTEGER NOT NULL DEFAULT 0,"
+    /* v13: two independent usage signals -- get_count = DETAIL read via memory_get,
+     * search_count = memory_search hit shown to the model. Neither counts memory_list. */
+    "  get_count    INTEGER NOT NULL DEFAULT 0,"
+    "  search_count INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, entry_id)"
     ");"
 
@@ -1765,7 +1766,8 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         if (sqlite3_prepare_v2(db,
                                "INSERT OR REPLACE INTO memo_entries(session_id,entry_id,title,"
                                "summary,detail,sources,proposed_by,created_seq,updated_seq,"
-                               "created_at,updated_at,superseded,read_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               "created_at,updated_at,superseded,get_count,search_count) "
+                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                -1, &st, NULL) != SQLITE_OK)
             return false;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
@@ -1780,7 +1782,8 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         bind_num(st, 10, (double)e->created_at);
         bind_num(st, 11, (double)e->updated_at);
         sqlite3_bind_int(st, 12, e->superseded ? 1 : 0);
-        bind_num(st, 13, (double)e->read_count);
+        bind_num(st, 13, (double)e->get_count);
+        bind_num(st, 14, (double)e->search_count);
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
         if (!ok)
@@ -2746,7 +2749,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db, "SELECT entry_id,title,summary,detail,sources,proposed_by,"
-                                     "created_seq,updated_seq,created_at,updated_at,read_count,superseded "
+                                     "created_seq,updated_seq,created_at,updated_at,get_count,search_count,superseded "
                                      "FROM memo_entries WHERE session_id=? ORDER BY entry_id",
                                -1, &st, NULL) == SQLITE_OK)
         {
@@ -2757,7 +2760,8 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                                                  col_str(st, 5), (uint64_t)col_i64(st, 6),
                                                  (uint64_t)col_i64(st, 7), (uint64_t)col_i64(st, 8),
                                                  (uint64_t)col_i64(st, 9), (uint64_t)col_i64(st, 10),
-                                                 sqlite3_column_int(st, 11) != 0);
+                                                 (uint64_t)col_i64(st, 11),   /* search_count */
+                                                 sqlite3_column_int(st, 12) != 0);
         }
         sqlite3_finalize(st);
     }
