@@ -11,17 +11,22 @@
 # ---------------------------------------------
 # The release assets carry the tag in their name (`edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz`),
 # which is what makes an archive identifiable a year later -- but it also means no URL
-# written down in a README can point at "the newest release". `releases/latest/download/`
-# is not an alternative: that URL resolves an asset BY NAME in the newest non-pre-release,
-# and this project's tags carry a suffix, so it 404s (see .github/workflows/release.yml).
-# This script closes the gap the way every other project with tag-carrying assets does:
-# ask the API which tag is current, then build the filename from the answer.
+# written down in a README can point at "the newest release": the filename has to be built
+# from a tag that does not exist yet. `releases/latest/download/<name>` cannot help -- it
+# looks up an asset BY NAME, and the name itself needs the tag.
 #
-# Why it asks /releases and not /releases/latest
-# ----------------------------------------------
-# /releases/latest deliberately skips pre-releases. While every tag here has a suffix that
-# endpoint answers 404, and it also hides the case --pre exists for. Listing releases and
-# picking one gives a single code path for both cases, and one place to explain the choice.
+# Why the atom feed, not the API
+# ------------------------------
+# `api.github.com/repos/<repo>/releases` would give the tags as JSON, but it consumes one of
+# the 60 anonymous API requests per hour shared by every IP behind a NAT -- the same budget
+# the in-app `--update-check` already uses, and hitting it turns this installer into another
+# consumer of a 403. The atom feed is served from github.com, needs no key or quota, and
+# carries the tag of each release newest-first; --pre and the default stable choice are both
+# made from that one list.
+#
+# The feed shows the 10 most recent releases, including pre-releases but not drafts. It has
+# no explicit prerelease flag, so this script follows the project's own convention from
+# release.yml: a tag containing '-' is a pre-release.
 #
 # Trust boundary
 # --------------
@@ -38,7 +43,10 @@
 set -eu
 
 REPO="edgeclaw-chat/edgeclaw"
-API="https://api.github.com/repos/${REPO}/releases"
+# The release feed is served by github.com, not api.github.com: no API key, and no share of
+# the 60 anonymous API requests per hour that the in-app update check already competes for.
+# It carries the tag of each release, newest first; see resolve_tag() for what it costs.
+FEED="https://github.com/${REPO}/releases.atom"
 DL="https://github.com/${REPO}/releases/download"
 
 # Install location, resolved after the arguments are read: --dir must work on a machine
@@ -66,11 +74,11 @@ Usage: install.sh [options]
 Options:
   --tag <tag>     Install this exact release (a pre-release works, e.g. v1.0.0-rc.1).
   --pre           When no --tag is given, allow the newest release to be a pre-release.
-                  Without it, only a stable release is chosen -- and since every release
-                  so far is a pre-release, that currently fails with an explanation.
+                  Without it, only a stable tag (one without '-') is chosen.
   --musl          On Linux, install the musl build instead of the glibc one.
   --dir <path>    Install into <path> instead of ~/.local/bin.
-  --dry-run       Resolve and print tag, target and URL, then stop. Fetches no archive.
+  --dry-run       Resolve and print tag, target and URL, then stop. Downloads no archive;
+                  it still reads the release feed to resolve the tag.
   -h, --help      This text.
 EOF
 }
@@ -118,47 +126,60 @@ fi
 
 # ------------------------------------------------------------------- resolving the tag
 
-# Emits "<tag> <stable|pre>" per release, newest first.
-#
-# Parsed with awk rather than jq on purpose: an install script is copied and piped into a
-# shell before anyone reads it, so every extra dependency is a reason for it not to run.
-# GitHub's API pretty-prints by default -- one field per line, objects indented two spaces
-# and closed with "  }," -- which is what this walks. `"draft": true` releases are skipped:
-# they are invisible on the Releases page, so an asset fetched from one would be a file
-# nobody can point at.
-list_releases() {
-    fetch "${API}?per_page=20" | awk '
-        /"tag_name":/   { tag = $0; sub(/.*"tag_name": *"/, "", tag); sub(/".*/, "", tag) }
-        /"prerelease":/ { pre = ($0 ~ /"prerelease": *true/) }
-        /"draft":/      { draft = ($0 ~ /"draft": *true/) }
-        /^  \},?$/      { if (tag != "" && !draft) print tag, (pre ? "pre" : "stable")
-                          tag = ""; pre = 0; draft = 0 }
-    '
+# Emits one tag per line, newest first. The atom feed gives each release an id like
+#   <id>tag:github.com,2008:Repository/1447922093/v0.1.11</id>
+# and the trailing component after the numeric repository id is exactly the tag. Reading
+# <id>, not <title>: other projects put arbitrary release titles there (nodejs publishes
+# "2026-11-16, Version 27.0.0-alpha.0.1.1 (Alpha), ..."), while <id> is always the tag.
+# The feed omits drafts -- they are invisible on the Releases page, so there is no path to
+# their assets -- and shows pre-releases, which is what --pre needs.
+list_tags() {
+    # Fetch into a variable FIRST: `fetch | sed` would report sed's exit status (always 0)
+    # and swallow a 404 / DNS failure from curl or wget. This way `|| die` sees it.
+    _feed=$(fetch "$FEED") || die "could not read the release feed at ${FEED}
+The release list is unavailable. Pass --tag <tag> to install a specific release without
+consulting the feed."
+    printf '%s\n' "$_feed" | sed -n \
+        's|.*<id>tag:github.com,2008:Repository/[0-9]*/\([^<]*\)</id>.*|\1|p'
+}
+
+# A tag is spliced into both a URL and a temporary filename. Refuse anything outside the
+# charset git tags here use (letters, digits, dot, underscore, plus, hyphen), and any '..':
+# `--tag 'v1/../other'` would otherwise escape both the URL path and the temp directory.
+check_tag() {
+    case "$1" in
+        ''|*[!A-Za-z0-9._+-]*) die "invalid release tag: $1" ;;
+        *..*) die "invalid release tag: $1" ;;
+    esac
 }
 
 resolve_tag() {
     if [ -n "$PIN_TAG" ]; then
+        check_tag "$PIN_TAG"
         printf '%s\n' "$PIN_TAG"
         return 0
     fi
 
-    releases=$(list_releases) || die "could not read the release list from ${API}"
-    [ -n "$releases" ] || die "no published releases found at ${API}"
+    tags=$(list_tags) || die "could not read the release feed at ${FEED}"
+    [ -n "$tags" ] || die "the release feed at ${FEED} lists no releases"
 
+    # release.yml marks a release as pre exactly when its tag contains '-'. Use the same
+    # rule here so the two agree even when an API's prerelease flag would say otherwise.
     if [ "$ALLOW_PRE" = 1 ]; then
-        printf '%s\n' "$releases" | head -n 1 | cut -d' ' -f1
-        return 0
+        tag=$(printf '%s\n' "$tags" | head -n 1)
+    else
+        tag=$(printf '%s\n' "$tags" | awk 'index($0, "-") == 0 { print; exit }')
     fi
 
-    stable=$(printf '%s\n' "$releases" | awk '$2 == "stable" { print $1; exit }')
-    if [ -z "$stable" ]; then
+    if [ -z "$tag" ]; then
         # Not a generic failure: this is the expected state before the first stable tag,
-        # so say what to do instead of just reporting that nothing was found.
-        die "every published release is a pre-release, so there is no stable one to pick.
+        # so say what to do instead of just reporting that nothing was found. The feed has
+        # only the 10 most recent releases, so that is the honest scope of the statement.
+        die "the 10 most recent releases are all pre-releases, so there is no stable one.
 Pass --pre to install the newest release anyway, or --tag <tag> to choose one:
-$(printf '%s\n' "$releases" | sed 's/^/  /')"
+$(printf '%s\n' "$tags" | sed 's/^/  /')"
     fi
-    printf '%s\n' "$stable"
+    printf '%s\n' "$tag"
 }
 
 # ------------------------------------------------------------------ platform selection

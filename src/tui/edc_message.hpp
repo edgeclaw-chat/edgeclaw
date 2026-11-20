@@ -73,6 +73,24 @@ class Message : public ::ftxui::ComponentBase
         (void)value;
     }
 
+    /* Click target of a collapsible bubble. A LazyBubble caches the REAL
+     * bubble's render tree, and that tree reflect()s this box. Point the real
+     * bubble at the proxy-owned box (UseHitBox) so evicting the real bubble
+     * cannot leave a dangling Box& inside the cached tree. */
+    ::ftxui::Box &HitBox()
+    {
+        return *hit_box_ptr_;
+    }
+    void UseHitBox(::ftxui::Box &box)
+    {
+        if (hit_box_ptr_ == &box)
+            return;
+        hit_box_ptr_ = &box;
+        /* A tree built for the previous owner still reflects that box. Never
+         * hand it to a new proxy: build one against the new owner instead. */
+        body_ = nullptr;
+    }
+
     // The list knows the width before rendering and reports it here, because
     // ftxui's flow containers only break between children: an unbroken run (CJK
     // text, a long URL or path) is one unbreakable item that overflows and gets
@@ -103,6 +121,10 @@ class Message : public ::ftxui::ComponentBase
     // render width, so OnWidthChanged() drops the cache (and subclasses toggle
     // their two shapes).
     ::ftxui::Element body_;
+    // Default click target; a windowed proxy rebinds this to its own longer-
+    // lived box before caching the real bubble's tree.
+    ::ftxui::Box hit_box_;
+    ::ftxui::Box *hit_box_ptr_ = &hit_box_;
 
     // Columns a subclass draws around its body; the rest is for the body text.
     static constexpr int kChromeCols = 2;
@@ -143,7 +165,6 @@ class ThoughtMessage : public Message
 
   private:
     bool thought_expanded_ = false;
-    ::ftxui::Box box_;
 };
 
 class UserMessage : public Message
@@ -208,7 +229,6 @@ class ToolMessage : public Message
     std::string preview_;
     bool preview_ready_ = false;
     ::ftxui::Element md_body_; /* lazy RenderMarkdown cache, only when markdown_ */
-    ::ftxui::Box box_;
 };
 
 /* Build one chat bubble from a transcript/channel entry. Shared by the live

@@ -196,12 +196,24 @@ static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
         }
         size_t hits = 0;
         int bad = 0;
-        sds lines = edc_session_memory_search_regex_lines(m, pat, 20, &hits, &bad);
+        char **ids = NULL;
+        sds lines = edc_session_memory_search_regex_lines(m, pat, 20, &hits, &bad, &ids);
         if (bad)
             out = sdscatprintf(out, "__MEMORY_SEARCH__ invalid regex: %s", pat);
         else
+        {
             out = sdscatprintf(out, "__MEMORY_SEARCH__ %zu hit(s) for /%s/\n%s", hits, pat,
                                sdslen(lines) ? lines : "(no match)");
+            /* Each hit shown to the model counts as one search use for that entry. */
+            for (size_t k = 0; ids && ids[k]; k++)
+                edc_session_memory_note_search(m, ids[k]);
+        }
+        if (ids)
+        {
+            for (size_t k = 0; ids[k]; k++)
+                free(ids[k]);
+            free(ids);
+        }
         sdsfree(lines);
     }
     sds header = edc_tools_memory_call_header("memory_search", args);
@@ -284,6 +296,10 @@ static void memory_get_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool *t
             out = sdscatprintf(out, "- [%s] (no such entry; list ids with memory_list)", id);
             continue;
         }
+        /* A real detail read: count it once per requested id. Persisted with the
+         * entry on the next state flush so usage can be analysed across sessions.
+         * Discovery tools (list / search) deliberately do NOT count. */
+        edc_session_memory_note_get(m, id);
         /* Surface the entry's rev: memory_update needs it as expected_rev, so a write
          * built on this read cannot clobber a newer edit. */
         out = sdscatprintf(out, "- [%s] rev %" PRIu64 "\n%s", id, e ? e->updated_seq : 0, detail);

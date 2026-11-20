@@ -341,7 +341,6 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
     // The transcript store owns the chat-log file I/O (path, append, replay); it
     // needs the app port for the workspace path and the symlink-safe writes.
-    transcript_ = std::make_unique<port::TranscriptStore>(*app_);
 
     // Restore the recall history saved by previous runs (ArrowUp/ArrowDown in the
     // box). Missing file on first run just leaves the box with no history. Read
@@ -428,7 +427,6 @@ void TUIWindow::Submit()
     // (ChatWidget::SetTaskInputs), so it is hidden here and shown there.
     const std::string &shown = draft_entry.empty() ? message : draft_entry;
     chat_widget_->AddMessage(std::make_shared<UserMessage>(shown, ::time(nullptr)));
-    AppendChatTranscript("user", "", shown, "", EDC_APP_RENDER_PLAIN);
     // Only what this draft actually references travels with the message.
     const struct edc_payload *draft_payload = input_->DraftPayload();
     std::string payload_json;
@@ -624,12 +622,23 @@ bool TUIWindow::RequestPayloadForDraft()
 
 void TUIWindow::ApplyChatBubblePage(const std::string &session_id, const std::string &payload)
 {
-    if (!chat_model_)
+    if (!chat_model_ || session_id != session_model_->displayed_id())
         return;
-    if (!chat_model_->ApplyOlderPage(session_id, payload))
+
+    /* A cursor-0 reply is the newest DB page (startup / session switch). A
+     * positive cursor is an older page fetched while the reader scrolled up.
+     * Both are ordinary async replies now: no 3s wait, no file fallback. */
+    edc::ChatBubblePageReply reply;
+    if (!edc::DecodeChatBubblePageReply(session_id.c_str(), payload.c_str(), &reply))
         return;
-    /* ApplyOlderPage already rebuilt visible_ and notified the widget; one
-     * more frame draws the settled geometry. */
+
+    const bool applied = reply.before_seq == 0 ? chat_model_->LoadFromPage(session_id, payload)
+                                               : chat_model_->ApplyOlderPage(session_id, payload);
+    if (!applied)
+        return;
+    if (reply.before_seq == 0)
+        chat_widget_->ScrollToBottom();
+    /* LoadFromPage / ApplyOlderPage already rebuilt visible_ and notified the widget. */
     RequestFrame();
 }
 
@@ -774,71 +783,23 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
     chat_widget_->Clear();
     /* The cached workdir belongs to the session being replaced: SessionModel::Reset
      * drops it rather than show a value we already know is wrong. The next snapshot
-     * (pulled right after every switch) refills it; until then the footer falls
-     * back to the launch directory. */
+     * (pulled right after every switch) refills it. */
     const std::string id = session_id ? session_id : "";
-    // The transcript belongs to the session, not to the tab: it records what this
-    // frontend displayed for that session, so it survives switches and restarts.
-    std::string path;
-    if (!id.empty())
-        transcript_->PathFor(id, &path);
-    session_model_->Reset(id, path);
+    session_model_->Reset(id);
 
-    /* First frame is synchronous: ask the actor for the newest page and wait
-     * for its reply, so the tail is on screen from the very first draw. The
-     * store read happens on the actor thread; this thread only renders. */
-    if (!id.empty() && app_ && app_->Ready())
-    {
-        const std::string payload = app_->FetchChatBubblePageSync(id, 0, 200, 3000);
-        if (!payload.empty())
-            chat_model_->LoadFromPage(id, payload);
-        else
-            chat_model_->LoadTranscript(session_model_->chat_log_path()); /* legacy fallback */
-    }
-    else
-    {
-        chat_model_->LoadTranscript(session_model_->chat_log_path());
-    }
-    chat_widget_->ScrollToBottom();
+    /* chat_bubbles is the only runtime source. Request the newest page and let
+     * its reply LoadFromPage() replace the model: no synchronous 3s wait, no
+     * chat.jsonl fallback, and no actor runner blocked waiting for its own
+     * reply. The authoritative page may clear live bubbles when it arrives;
+     * until then the switched-to session starts empty, never from a file.
+     *
+     * EDGECLAW_TUI_NO_PULL is the same harness switch RequestTaskSnapshot uses:
+     * with no ftxui screen, a real actor reply would run inline on the runner
+     * thread and race assertions. Tests feed the page explicitly. */
+    if (!getenv("EDGECLAW_TUI_NO_PULL") && !id.empty() && app_ && app_->Ready())
+        app_->RequestChatBubblePage(id, 0, 200);
 }
 
-void TUIWindow::LoadChatTranscriptFile(const std::string &path)
-{
-    /* Build the descriptor index once and load the log from the transcript
-     * file. The old progressive backfill (a worker thread decoding the history,
-     * prepending a batch per frame) is gone: the model now materializes only the
-     * viewport window, so a long log costs neither startup jank nor O(history)
-     * resident messages. See docs/tui-windowing-proposal.md. */
-    chat_model_->LoadTranscript(path);
-    chat_widget_->ScrollToBottom();
-}
-
-void TUIWindow::AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
-                                     const std::string &task_id, int render_pref)
-{
-    /* The channel actor persists every bubble exactly once (DB write on the
-     * actor thread). The UI thread must NOT also write, or every bubble would
-     * be duplicated on replay. */
-    (void)kind;
-    (void)header;
-    (void)content;
-    (void)task_id;
-    (void)render_pref;
-}
-
-void TUIWindow::AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
-                                       const std::string &content, const std::string &task_id, int render_pref)
-{
-    /* See AppendChatTranscript: persistence is the channel actor's job now.
-     * Background-session output keeps its own session_id on the channel
-     * message, so the actor writes it to the right log without UI help. */
-    (void)path;
-    (void)kind;
-    (void)header;
-    (void)content;
-    (void)task_id;
-    (void)render_pref;
-}
 
 void TUIWindow::SyncWorkingFromSnapshot(const TaskSnapshot *snap)
 {
@@ -1860,16 +1821,10 @@ bool TUIWindow::PresentChat(const port::ChatMessageEvent &event, const std::stri
     // displayed — but it is still part of *that* session's screen history, so it
     // goes into that session's own transcript and shows up when the user switches
     // back. The current tab (and its sidebar) is left untouched.
+    /* The channel actor persists every bubble exactly once in chat_bubbles,
+     * including background-session output; the UI only decides what to show. */
     if (!event.session_id.empty() && event.session_id != session_model_->displayed_id())
-    {
-        std::string path;
-        if (transcript_->PathFor(event.session_id, &path))
-            AppendChatTranscriptTo(path, kind_str, event.header, event.content, event.task_id, event.render_pref);
         return false;
-    }
-
-    // Persist exactly what is shown, so the next start replays this log.
-    AppendChatTranscript(kind_str, event.header, event.content, event.task_id, event.render_pref);
 
     if (std::shared_ptr<Message> widget =
             MakeChatWidget(kind_str, event.header, event.content, event.task_id, event.render_pref, event.ts))

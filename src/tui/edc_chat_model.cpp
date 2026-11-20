@@ -72,25 +72,6 @@ void ChatModel::Clear()
     Notify(Change{});
 }
 
-void ChatModel::LoadTranscript(const std::string &path)
-{
-    refs_holder_ = std::make_unique<std::vector<ChatBubbleRef>>();
-    BuildChatBubbleRefs(path, refs_holder_.get());
-    window_ = std::make_unique<MessageWindow>(path, refs_holder_.get());
-
-    all_.clear();
-    all_.reserve(window_->RefCount());
-    for (size_t i = 0; i < window_->RefCount(); i++)
-        all_.push_back(window_->Proxy(i));
-    /* Prime the tail window now, before the first frame: ftxui measures items
-     * during layout, which is earlier than ChatWidget::OnRender can drive us. */
-    const size_t n = all_.size();
-    window_->SetWindow(n > kPrimeWindow ? n - kPrimeWindow : 0, n, /*prefetch=*/40);
-    Rebuild();
-    Notify(Change{});
-}
-
-
 bool ChatModel::LoadFromPage(const std::string &session_id, const std::string &payload)
 {
     ChatBubblePageReply reply;

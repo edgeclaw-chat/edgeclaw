@@ -439,6 +439,163 @@ static bool verify_v9(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v9 -> v10: persist the reduced memory-round corpus budget on each group.
+ * Purely additive (one ALTER TABLE ADD COLUMN, constant default), so a 462 MB v9
+ * database migrates with zero data rewrite. 0 is the documented "full cap" value, which
+ * is exactly what every pre-v10 group had in memory before the restart. */
+static bool step_v9_to_v10(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db,
+                   "ALTER TABLE groups ADD COLUMN fold_corpus_budget INTEGER NOT NULL DEFAULT 0",
+                   "add groups.fold_corpus_budget", err, cap);
+}
+
+static bool verify_v10(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "fold_corpus_budget"))
+    {
+        set_err(err, cap, "v10 is stamped but groups has no fold_corpus_budget column");
+        return false;
+    }
+    /* The default is load-bearing: 0 means "full cap", not "fold nothing". A migration
+     * that wrote any other value would silently shrink every existing group's corpus. */
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE fold_corpus_budget != 0", &n, err,
+                       cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have a non-default fold_corpus_budget after migration",
+                (long long)n);
+        return false;
+    }
+    return true;
+}
+
+/* v10 -> v11: persist the "fold failed, barrier still held" state on each group.
+ * Purely additive (one ALTER TABLE ADD COLUMN, constant default); 0 means healthy,
+ * which is exactly what every pre-v11 group was in memory before this change. */
+static bool step_v10_to_v11(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db,
+                   "ALTER TABLE groups ADD COLUMN fold_failure_state INTEGER NOT NULL DEFAULT 0",
+                   "add groups.fold_failure_state", err, cap) &&
+           run_sql(db,
+                   "ALTER TABLE groups ADD COLUMN fold_held INTEGER NOT NULL DEFAULT 0",
+                   "add groups.fold_held", err, cap);
+}
+
+static bool verify_v11(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "fold_failure_state") || !has_column(db, "groups", "fold_held"))
+    {
+        set_err(err, cap, "v11 is stamped but groups is missing a fold-state column");
+        return false;
+    }
+    /* The defaults are load-bearing: any other value would freeze pre-v11 groups whose
+     * folds had actually succeeded. */
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE fold_failure_state != 0 OR fold_held != 0",
+                       &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have a non-default fold state after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
+/* v11 -> v12: count how often each memo entry's detail was read via memory_get.
+ * Additive like the other bumps: one ALTER TABLE ADD COLUMN with a constant default,
+ * so a large v11 DB upgrades with zero data rewrite. 0 is the honest value for every
+ * pre-v12 entry -- their reads were never recorded, and inventing a number would
+ * corrupt the usage analysis this column exists to enable. */
+static bool step_v11_to_v12(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE memo_entries ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0",
+                   "add memo_entries.read_count", err, cap);
+}
+
+static bool verify_v12(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "memo_entries", "read_count"))
+    {
+        set_err(err, cap, "v12 is stamped but memo_entries has no read_count column");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM memo_entries WHERE read_count != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld entries have a non-default read_count after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
+/* v12 -> v13: split read_count into two independent signals. RENAME keeps every
+ * recorded memory_get count as get_count (no data loss, O(1)), and the new
+ * search_count starts at 0 (unrecorded history cannot be invented). */
+static bool step_v12_to_v13(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE memo_entries RENAME COLUMN read_count TO get_count",
+                   "rename memo_entries.read_count to get_count", err, cap) &&
+           run_sql(db, "ALTER TABLE memo_entries ADD COLUMN search_count INTEGER NOT NULL DEFAULT 0",
+                   "add memo_entries.search_count", err, cap);
+}
+
+static bool verify_v13(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "memo_entries", "get_count") || !has_column(db, "memo_entries", "search_count"))
+    {
+        set_err(err, cap, "v13 is stamped but memo_entries is missing a usage-count column");
+        return false;
+    }
+    if (has_column(db, "memo_entries", "read_count"))
+    {
+        set_err(err, cap, "v13 is stamped but the old read_count column still exists");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM memo_entries WHERE search_count != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld entries have a non-default search_count after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
+/* v13 -> v14: the independent corpus budget for the two-stage extract's L1 summary.
+ * Additive O(1) ADD COLUMN; 0 is the honest "full cap" default for every pre-v14 group. */
+static bool step_v13_to_v14(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE groups ADD COLUMN extract_summary_budget INTEGER NOT NULL DEFAULT 0",
+                   "add groups.extract_summary_budget", err, cap);
+}
+
+static bool verify_v14(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "extract_summary_budget"))
+    {
+        set_err(err, cap, "v14 is stamped but groups has no extract_summary_budget column");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE extract_summary_budget != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have a non-default extract_summary_budget after migration",
+                (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -449,6 +606,11 @@ static bool verify_v9(sqlite3 *db, char *err, size_t cap)
 static const struct edc_migration EDC_MIGRATIONS[] = {
     {7, step_v7_to_v8, verify_v8},
     {8, step_v8_to_v9, verify_v9},
+    {9, step_v9_to_v10, verify_v10},
+    {10, step_v10_to_v11, verify_v11},
+    {11, step_v11_to_v12, verify_v12},
+    {12, step_v12_to_v13, verify_v13},
+    {13, step_v13_to_v14, verify_v14},
     {0, NULL, NULL}, /* terminator */
 };
 

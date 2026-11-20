@@ -127,6 +127,9 @@ static struct edc_task_group *make_finished_user_group(struct edc_session *sessi
     return group;
 }
 
+/* The two-stage extract starts L1 (EXTRACT_SUMMARY) + chained L2 (CURATE with a cut).
+ * find_extract_task returns the L1 by default (the round's entry point); the L2 can be
+ * found with find_extract_curate_task. */
 static struct edc_task *find_extract_task(struct edc_session *session)
 {
     struct edc_task_group *sg = edc_session_find_system_group(session);
@@ -135,7 +138,23 @@ static struct edc_task *find_extract_task(struct edc_session *session)
     struct edc_task *t;
     LL_FOREACH2(sg->members, t, group_next)
     {
-        if (t->sink == EDC_SINK_SESSION_MEMORY && t->memo_kind == EDC_MEMO_KIND_EXTRACT && !edc_task_is_finished(t))
+        if (t->sink == EDC_SINK_SESSION_MEMORY && t->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY &&
+            !edc_task_is_finished(t))
+            return t;
+    }
+    return NULL;
+}
+
+static struct edc_task *find_extract_curate_task(struct edc_session *session)
+{
+    struct edc_task_group *sg = edc_session_find_system_group(session);
+    if (!sg)
+        return NULL;
+    struct edc_task *t;
+    LL_FOREACH2(sg->members, t, group_next)
+    {
+        if (t->sink == EDC_SINK_SESSION_MEMORY && t->memo_kind == EDC_MEMO_KIND_CURATE &&
+            t->memo_cut_task_id && !edc_task_is_finished(t))
             return t;
     }
     return NULL;
@@ -249,14 +268,17 @@ static void test_material_excludes_group_memory(void)
     CHECK(out == session, "reported the owning session");
 
     struct edc_task *task = find_extract_task(session);
-    CHECK(task != NULL, "the extraction task is in the system group");
-    CHECK(task && task->memo_kind == EDC_MEMO_KIND_EXTRACT, "memo_kind = EXTRACT");
+    CHECK(task != NULL, "the L1 extract-summary task is in the system group");
+    CHECK(task && task->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY, "memo_kind = EXTRACT_SUMMARY");
     CHECK(task && task->sink_group == group, "knows which group it is extracting");
     CHECK(task && task->memo_cut_task_id && task->memo_cut_task_id == edc_test_id("g1"), "cut lands on the member");
+    /* The chained L2 (CURATE + cut) must exist to do the actual memory writes. */
+    CHECK(find_extract_curate_task(session) != NULL, "the L2 curate task is chained");
 
     const char *material = task_input(task);
     CHECK(material != NULL, "the prompt is attached");
-    CHECK(material && strstr(material, "## Group history to extract from") != NULL, "material header present");
+    CHECK(material && strstr(material, "## Group history to compress into knowledge candidates") != NULL,
+          "L1 material header present (knowledge candidates)");
     CHECK(material && strstr(material, "hello world") != NULL, "the raw history is in the material");
     CHECK(material && strstr(material, "2000-01-01 00:00:00  user: hello world") != NULL,
           "each material line carries the message timestamp");
@@ -264,10 +286,16 @@ static void test_material_excludes_group_memory(void)
           "the group memory's last-updated time is stated (its text is not included)");
     CHECK(material && strstr(material, "memory last updated unknown") == NULL,
           "the group memory time is a real time, not unknown");
-    CHECK(material && strstr(material, "## Existing session entries") != NULL, "the index section is present");
-    CHECK(material && strstr(material, "Existing entry") != NULL, "an existing entry row is in the index");
+    /* New design: the entry index is NOT in L1's material -- it belongs to L2's prompt,
+     * and the old group memory text is never included. */
+    CHECK(material && strstr(material, "## Existing session entries") == NULL, "L1 has no entry index");
     CHECK(material && strstr(material, "SECRET_REMEMBERED_FACT") == NULL,
-          "the OLD group memory is NOT in the material (L2 index is the known-reference)");
+          "the OLD group memory is NOT in the material");
+    /* L2 carries the index. */
+    struct edc_task *l2 = find_extract_curate_task(session);
+    const char *l2mat = task_input(l2);
+    CHECK(l2mat && strstr(l2mat, "## Existing session entries") != NULL, "L2 carries the entry index");
+    CHECK(l2mat && strstr(l2mat, "Existing entry") != NULL, "L2's index has the existing row");
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -320,32 +348,42 @@ static void test_cap_multi_round_and_idempotence(void)
     /* Round 1: only the first message fits under the cap. */
     struct edc_session *out = NULL;
     CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "round 1 started");
-    struct edc_task *t1 = find_extract_task(session);
-    CHECK(t1 != NULL, "round 1 task exists");
-    CHECK(t1 && t1->memo_cut_turn == 0 && t1->memo_cut_prefix == 1, "cut = turn 0, first message only");
+    struct edc_task *t1 = find_extract_task(session);       /* L1 summary */
+    struct edc_task *c1 = find_extract_curate_task(session); /* L2 curate, carries cut */
+    CHECK(t1 != NULL && c1 != NULL, "round 1 has both L1 summary and L2 curate");
+    CHECK(t1 && t1->memo_cut_turn == 0 && t1->memo_cut_prefix == 1, "L1 cut = turn 0, first message only");
+    CHECK(c1 && c1->memo_cut_prefix == 1, "L2 carries the same cut");
     const char *m1 = task_input(t1);
     CHECK(m1 && strstr(m1, "MARK_A") != NULL, "round 1 carries the first message");
     CHECK(m1 && strstr(m1, "MARK_B") == NULL, "round 1 does NOT carry the second (over the cap)");
 
-    CHECK(edc_session_memory_extract_land(t1), "round 1 landed");
+    /* Landing happens on the L2 curate task, never on L1. And folded_prefix must stay
+     * untouched -- the group's request context is not pruned by an extract. */
+    uint32_t folded_before = turn->folded_prefix;
+    CHECK(edc_session_memory_extract_land(c1), "round 1 landed (via L2)");
     CHECK(turn->memo_prefix == 1, "watermark advanced to 1");
+    CHECK(turn->folded_prefix == folded_before, "folded_prefix untouched by extract landing");
     CHECK(edc_task_group_extractable_msg_count(group) == 1, "one message still pending");
     finish_task(t1);
+    finish_task(c1);
 
     /* Round 2: the remainder. */
     out = NULL;
     CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "round 2 started");
     struct edc_task *t2 = find_extract_task(session);
-    CHECK(t2 != NULL && t2 != t1, "round 2 is a fresh task");
+    struct edc_task *c2 = find_extract_curate_task(session);
+    CHECK(t2 != NULL && t2 != t1, "round 2 is a fresh L1 task");
+    CHECK(c2 != NULL && c2 != c1, "round 2 is a fresh L2 task");
     CHECK(t2 && t2->memo_cut_prefix == 2, "round 2's cut covers the whole turn");
     const char *m2 = task_input(t2);
     CHECK(m2 && strstr(m2, "MARK_B") != NULL, "round 2 carries the second message");
     CHECK(m2 && strstr(m2, "MARK_A") == NULL, "round 2 does NOT re-send the first (cursor)");
 
-    CHECK(edc_session_memory_extract_land(t2), "round 2 landed");
+    CHECK(edc_session_memory_extract_land(c2), "round 2 landed (via L2)");
     CHECK(turn->memo_prefix == 2, "watermark at the end");
     CHECK(edc_task_group_extractable_msg_count(group) == 0, "nothing pending");
     finish_task(t2);
+    finish_task(c2);
 
     /* Idempotent: a rescan with nothing pending starts nothing. */
     out = NULL;
@@ -657,6 +695,118 @@ static void test_prompts_have_recency_rule(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  New two-stage extract: the L1 summary must never prune the group.
+ * ══════════════════════════════════════════════════════════════ */
+
+static void test_two_stage_never_prunes_group(void)
+{
+    TEST("two-stage: L1 summary touches no watermark / history; only L2 landing advances memo_prefix");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-2stage"), "TwoStage");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, session);
+
+    struct edc_task_group *group = make_finished_user_group(session, "g1", "durable fact", OLD_TS, 1);
+    struct edc_turn *turn = group->leader->turns.data[group->leader->turns.head];
+    int history_before = edc_task_group_history_count(group);
+
+    struct edc_session *out = NULL;
+    CHECK(edc_session_memory_extract_try(sched, sched->sessions, cfg, &out), "two-stage round started");
+    struct edc_task *l1 = find_extract_task(session);
+    struct edc_task *l2 = find_extract_curate_task(session);
+    CHECK(l1 && l2, "both stages exist");
+    CHECK(l1 && l1->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY, "L1 is EXTRACT_SUMMARY");
+
+    /* L1 finishing alone must NOT advance memo_prefix, folded_prefix or prune history. */
+    uint32_t folded_before = turn->folded_prefix;
+    uint32_t memo_before = turn->memo_prefix;
+    finish_task(l1);
+    CHECK(turn->memo_prefix == memo_before, "L1 done leaves memo_prefix alone");
+    CHECK(turn->folded_prefix == folded_before, "L1 done leaves folded_prefix alone");
+    CHECK(edc_task_group_history_count(group) == history_before, "L1 done does not prune group history");
+
+    /* Only the L2 landing advances memo_prefix -- and still never folded_prefix/history. */
+    CHECK(edc_session_memory_extract_land(l2), "L2 landing advances");
+    CHECK(turn->memo_prefix > memo_before, "L2 landing advances memo_prefix");
+    CHECK(turn->folded_prefix == folded_before, "L2 landing leaves folded_prefix alone");
+    CHECK(edc_task_group_history_count(group) == history_before, "L2 landing does not prune group history");
+
+    edc_session_free(session);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
+static void test_extract_budget_is_independent(void)
+{
+    TEST("extract budget: extract failure shrinks only extract budget, not fold; progress resets only extract");
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-budget"), "Budget");
+    struct edc_task_group *group = make_finished_user_group(session, "g1", "work", OLD_TS, 1);
+    /* Give the fold budget a non-default value so we can prove extract leaves it alone. */
+    group->fold_corpus_budget = 32768;
+
+    edc_session_memory_extract_note_failure(group);
+    CHECK(group->extract_summary_budget > 0, "extract failure shrinks the extract budget");
+    CHECK(group->fold_corpus_budget == 32768, "extract failure leaves the fold budget untouched");
+
+    edc_session_memory_extract_note_progress(group);
+    CHECK(group->extract_summary_budget == 0, "extract progress resets the extract budget to full");
+    CHECK(group->fold_corpus_budget == 32768, "extract progress leaves the fold budget untouched");
+
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+/* Direct coverage of the extract budget helpers (public API, every branch). */
+static void test_extract_budget_helpers(void)
+{
+    TEST("extract budget helpers: cap clamp, shrink halving/floor, NULL guards");
+
+    /* NULL guards. */
+    CHECK(edc_group_extract_corpus_cap(NULL) == EDC_FOLD_MAX_CORPUS_TOKENS,
+          "corpus_cap(NULL) = full cap");
+    edc_group_extract_shrink_budget(NULL); /* must not crash */
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-budget-helpers"), "BudgetHelpers");
+    struct edc_task_group *group = make_finished_user_group(session, "g1", "work", OLD_TS, 1);
+
+    /* Default (=0) means full cap. */
+    group->extract_summary_budget = 0;
+    CHECK(edc_group_extract_corpus_cap(group) == EDC_FOLD_MAX_CORPUS_TOKENS,
+          "budget 0 -> full cap");
+    /* Clamp: below floor and above max. */
+    group->extract_summary_budget = EDC_FOLD_MIN_CORPUS_TOKENS / 2;
+    CHECK(edc_group_extract_corpus_cap(group) == EDC_FOLD_MIN_CORPUS_TOKENS,
+          "budget below floor clamps to floor");
+    group->extract_summary_budget = EDC_FOLD_MAX_CORPUS_TOKENS * 2;
+    CHECK(edc_group_extract_corpus_cap(group) == EDC_FOLD_MAX_CORPUS_TOKENS,
+          "budget above max clamps to max");
+
+    /* Shrink halves, and floors at EDC_FOLD_MIN_CORPUS_TOKENS. */
+    group->extract_summary_budget = 65536;
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == 32768, "shrink halves 65536 -> 32768");
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == EDC_FOLD_MIN_CORPUS_TOKENS,
+          "shrink floors at minimum (32768/2=16384)");
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == EDC_FOLD_MIN_CORPUS_TOKENS,
+          "shrink stays at floor (does not underflow)");
+
+    /* Shrink from default also halves from the full cap. */
+    group->extract_summary_budget = 0;
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == EDC_FOLD_MAX_CORPUS_TOKENS / 2,
+          "shrink from default halves the full cap");
+
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  main
  *  ══════════════════════════════════════════════════════════════ */
 
@@ -673,6 +823,9 @@ int main(void)
     test_material_keeps_tool_calls();
     test_idle_clock_starts_when_the_group_goes_idle();
     test_prompts_have_recency_rule();
+    test_two_stage_never_prunes_group();
+    test_extract_budget_is_independent();
+    test_extract_budget_helpers();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
     return test_failed ? 1 : 0;

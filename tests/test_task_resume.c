@@ -689,6 +689,68 @@ static void test_resume_cancelled_nothing_left(void)
     edc_config_free(cfg);
 }
 
+/* ── task 549 的回归: 工具结果已在 turn 里, 账本却留着一条 EXECUTING ──
+ *
+ * 真实库里 549 的 messages = user / assistant(tool_calls) / tool(真实结果),
+ * task_tool_calls 却还有一条 status=executing 的同 id 记录 —— 因为老 flush 只
+ * INSERT OR REPLACE 而不删除内存里已移除的行, 重启 load 把它复活了。
+ *
+ * START 的 repair 见到已有 tool 响应就跳过(幂等), 但不会清账本; 于是
+ * has_pending_tool_calls()（只看链表非空）走进重派发分支, 而
+ * edc_toolbox_actor_redispatch 只重建 PENDING, 返回 0 → executor 报
+ * "[failed: the tool chain could not be re-dispatched (no toolbox port)]"。
+ * 端口其实装好了, 这条文案是误报。
+ *
+ * 断言的是用户可见的行为: resume 必须接着这轮 turn 向 LLM 发请求, 不得再次
+ * 失败, 也不得重跑那个已经有结果的工具。stub_redispatch 和真实现一样按
+ * PENDING 计数, 所以这里连端口都装上了 —— 只靠修文案/装端口骗不过这条测试。 */
+static void test_resume_stale_executing_record_with_real_result(void)
+{
+    TEST("resume: stale EXECUTING record + real tool result -> continue LLM, not 'no toolbox port'");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-stale"), "Stale");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
+    sched->send_llm = stub_send_llm;
+    sched->redispatch_tools = stub_redispatch; /* 端口是装好的, 不是缺端口 */
+
+    struct edc_task *t = edc_task_new(edc_test_id("r549"), edc_test_session_id("sess-stale"),
+                                      edc_test_id("r549"), "我已经合并了", edc_channel_adapter);
+    edc_task_await_exec(t);
+    edc_task_await_tools(t);
+    seed_tool_turn(t, "c-finished", "exec_shell");
+    /* tool_done() 把真实结果写进 turn 了 */
+    CHECK(edc_turn_add_tool_message(t->active_turn, "c-finished", "exec_shell", "state=MERGED"),
+          "fixture: the real tool result is in the turn");
+    CHECK(turn_has_tool_msg(t->active_turn, "c-finished"), "fixture: response is visible");
+    /* ...但账本里那条 EXECUTING 行被旧 flush 留在盘上, load 时复活 */
+    edc_task_tool_call_add(t, "c-finished", "exec_shell", NULL);
+    edc_task_tool_call_mark_executing(t, "c-finished");
+    edc_task_mark_failed(t); /* 549 的落盘状态: DONE / ERROR / FAILED */
+    CHECK(edc_task_has_failed(t), "fixture: task is ERROR (what /task resume sees)");
+    CHECK(edc_task_is_resumable(t), "fixture: ERROR is resumable");
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    CHECK(!edc_task_has_failed(t), "resume did NOT fail again with 'no toolbox port'");
+    CHECK(edc_task_awaits_exec(t), "resume continues the turn -> LLM_PROCESSING");
+    CHECK(g_send_llm_calls == 1, "LLM re-sent once");
+    CHECK(g_redispatch_calls == 0, "the tool that already has a result was not re-dispatched");
+    CHECK(!edc_task_has_pending_tool_calls(t), "stale ledger record is gone after the repair");
+    CHECK(edc_task_tool_call_find(t, "c-finished") == NULL, "and the record itself is removed");
+    /* 幂等: 真实结果不能被合成一条 interrupted 响应覆盖/重复 */
+    CHECK(t->active_turn && t->active_turn->msg_count == 3, "no extra tool message was synthesized");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 /* 一个因为依赖没产出而结束的任务，output 里留着级联写的那句
  * "[failed: its dependency … ]"。resume 撤销的正是那个状态，所以那句机器文案必须跟着走，
  * 否则 /task output 会报一个正在重试的"失败"。 */
@@ -741,6 +803,7 @@ int main(void)
     test_resume_cancelled_dangling_tool();
     test_resume_cancelled_nothing_left();
     test_resume_blocked_clears_the_note();
+    test_resume_stale_executing_record_with_real_result();
 
     log_info("");
     log_info("=== Results: %d passed, %d failed ===", test_passed, test_failed);

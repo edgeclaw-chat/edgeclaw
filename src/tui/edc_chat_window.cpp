@@ -437,6 +437,11 @@ LazyBubble::LazyBubble(MessageWindow *window, size_t index, std::string task_id)
      * ComponentBase::Render() (or returning a transient tree) left the frame
      * blank after a scroll. */
     real->SetRenderWidth(render_width_);
+    /* reflect(HitBox()) captures a Box& into the element tree. Rebind it to a
+     * box owned by THIS proxy before building the tree: MessageWindow may evict
+     * the real bubble while the proxy keeps rendering the cached tree, and a
+     * reference into the evicted object is a heap-use-after-free. */
+    real->UseHitBox(hit_box_);
     if (!body_)
         body_ = real->OnRender();
     return body_;
@@ -449,6 +454,8 @@ bool LazyBubble::OnEvent(::ftxui::Event event)
     std::shared_ptr<Message> real = window_->Get(index_);
     if (!real)
         return false;
+    /* The tree reflected the proxy's box, not the transient real bubble's. */
+    real->UseHitBox(hit_box_);
     const bool handled = real->OnEvent(event);
     if (ChatBubbleRef *ref = window_->Ref(index_))
         ref->expanded = real->Expanded(); /* P4 */

@@ -168,7 +168,8 @@ v1 的设计是程序自己完成全部动作：下载归档、解 gzip、解 ta
 
 **端点**：`GET https://api.github.com/repos/<owner>/<repo>/releases`
 
-不用 `/releases/latest`：它会跳过 prerelease，而本项目当前所有 tag 都带后缀。
+不用 `/releases/latest`：它会跳过 prerelease，而 `--pre` 通道需要能看到预发布版本。
+（安装器改用 `github.com/<repo>/releases.atom` 解析 tag，不消耗这里的 API 额度。）
 
 **传输**：复用 `edc_https_client`（已支持重定向）。该端点不重定向，所以检查功能不依赖重定向支持。
 

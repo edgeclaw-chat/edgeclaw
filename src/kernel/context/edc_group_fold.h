@@ -36,6 +36,21 @@ struct edc_task_group;
  * fold the rest next round; the cut is always a message boundary. */
 #define EDC_FOLD_MAX_CORPUS_TOKENS (EDC_FOLD_SUMMARY_MAX_TOKENS * 4)
 
+/* A group whose memory round keeps failing (300s non-streaming timeouts in the
+ * real world) retries the SAME corpus forever: the watermark does not advance, so
+ * the next round rebuilds a byte-identical prompt. Each consecutive failure
+ * halves that group's corpus budget until it reaches this floor; a successful
+ * landing restores the full cap. See edc_group_fold_corpus_cap(). */
+#define EDC_FOLD_MIN_CORPUS_TOKENS 16384
+
+/** The corpus cap currently in force for this group. 0/decay state lives on the
+ *  group (persisted), so a restart does not silently restore the full cap. */
+extern int64_t edc_group_fold_corpus_cap(const struct edc_task_group *group);
+
+/** Halve this group's corpus budget after a failed memory round (fold or L2
+ *  extraction); called from the *_note_failure hooks, never from build_prompt. */
+extern void edc_group_fold_shrink_corpus(struct edc_task_group *group);
+
 /* (c) Consecutive-failure cap.
  *
  * At the cap automatic folding STOPS (manual `/group fold` is exempt), so "fail ->
@@ -86,6 +101,17 @@ struct edc_fold_cut
     uint32_t prefix;
 };
 
+/** What one memory round's corpus covered: the member task ids in content order
+ *  that contributed at least one message (deduplicated). The task description
+ *  renders it, so the user can see which tasks a background round worked on. */
+struct edc_fold_scope
+{
+    int64_t *task_ids; /* owned (malloc); NULL when empty */
+    size_t count;
+};
+
+extern void edc_fold_scope_free(struct edc_fold_scope *scope);
+
 /** Build the fold prompt and the cut it corresponds to (they are computed together,
  *  from one pass, so the corpus sent and the prefix applied can never disagree).
  *  Selection: walk the group's unfolded messages in content order
@@ -99,6 +125,20 @@ struct edc_fold_cut
 /** |focus| (optional, NULL ok) lands verbatim in the prompt as "Additional focus:" --
  *  it is how the manual `/group fold [id] [focus]` (decision 8) steers a fold. */
 extern sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut);
+
+/** One line describing WHAT a memory system task works on, for the task list.
+ *
+ *  A bare "fold group memory" tells the user nothing: a session has many groups
+ *  and each round covers only a prefix of a group's history. The description
+ *  therefore names the owning session, the source group, the member tasks whose
+ *  messages are in scope, and the cut boundary. Caller owns the returned sds.
+ *
+ *  |covered| lists the members in content order that contributed at least one
+ *  message to this round (deduplicated; may be empty). |cut_task| / |cut_turn| /
+ *  |cut_prefix| is the cut already computed for the round. */
+extern sds edc_group_fold_scope_desc(const char *kind, int64_t session_id, int64_t group_id,
+                                     const int64_t *covered, size_t covered_n, int64_t cut_task,
+                                     uint32_t cut_turn, uint32_t cut_prefix);
 
 /** Start a fold: create a system task carrying the target group and watermark,
  *  attach the prompt, dispatch it. NULL when one is already in flight, when the
@@ -143,14 +183,23 @@ extern int edc_group_fold_hold_task(struct edc_task *task);
  * changed (retry on the next trigger). */
 extern bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content);
 
-/** Record one fold failure (task ERROR / empty summary / unresolvable cut). At
- *  EDC_FOLD_MAX_FAILURES, `edc_group_fold_due` returns false on the AUTOMATIC
- *  path; manual `/group fold` is unaffected. */
+/** True when a failed fold request is a VOLUME problem: shrinking the corpus can
+ *  plausibly make the next round succeed. TRANSPORT (the 300s non-streaming timeout)
+ *  and an explicit CONTEXT_OVERFLOW are; auth, rate limits and other 4xx are not --
+ *  retrying those smaller only burns calls. */
+extern bool edc_group_fold_is_volume_failure(int task_fail);
+
+/** Record one VOLUME-related fold failure (task ERROR classified as such, empty
+ *  summary, unresolvable cut). Each one halves the corpus budget; at
+ *  EDC_FOLD_MAX_FAILURES the automatic retry chain stops and the group stays in the
+ *  "fold failed / barrier held" state until a manual fold or a new task joins. The
+ *  state is persisted (groups.fold_failure_state). */
 extern void edc_group_fold_note_failure(struct edc_task_group *group);
 
-/** Reset the consecutive-failure count. Three call sites: successful landing,
- *  manual fold, and new committed content in the group (a new turn = new
- *  situation, worth retrying). Starting a fold does NOT reset it. */
+/** Reset the consecutive-failure count AND restore the full corpus budget. Called
+ *  ONLY by a successful landing. Starting a fold, a manual fold and new committed
+ *  content do NOT reset it: those are retry triggers, not evidence that the corpus
+ *  size is workable again. */
 extern void edc_group_fold_note_progress(struct edc_task_group *group);
 
 /** The files the folded work read / modified, as newline-separated text: a projection of

@@ -875,6 +875,38 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# A failed memory round must not rebuild the same giant corpus: consecutive
+# failures decay that group's corpus budget, a landing restores it.
+cc_test(
+    name = "test_fold_failure_backoff",
+    srcs = ["test_fold_failure_backoff.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+# A memory system task's description must say which session/group/tasks/cut it
+# works on; the old bare literals ("fold group memory" etc.) named none of them.
+cc_test(
+    name = "test_system_task_desc",
+    srcs = ["test_system_task_desc.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actors",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@log.c//:log.c",
+        "@sds//:sds",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 cc_test(
     name = "test_fold_files",
     srcs = ["test_fold_files.c"],
@@ -920,6 +952,21 @@ cc_test(
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
         "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_leak_regression",
+    srcs = ["test_leak_regression.c", "test_ws.h"],
+    deps = [
+        "//src/actor:actor",
+        "//src/common:common",
+        "//src/common:utlist_fix",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
     ],
     linkopts = LINK_OPTS,
 )

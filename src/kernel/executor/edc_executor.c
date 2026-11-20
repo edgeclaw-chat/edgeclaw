@@ -147,16 +147,32 @@ static struct edc_advance_result exec_start(struct edc_executor *ex, struct edc_
         return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
     }
 
-    /* 3. Re-dispatch the ledger's PENDING tools. */
+    /* 3. Re-dispatch the ledger's PENDING tools. The three ways this can go are
+     * deliberately separate: the old single message blamed "no toolbox port" for a
+     * state-machine rejection AND for a port that legitimately returned 0 because
+     * nothing was due (task 549 -- the tool had already produced its result). */
     if (edc_task_has_pending_tool_calls(task))
     {
-        if (edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE) && ops->redispatch_tools &&
-            ops->redispatch_tools(ex->ctx, task, req_id) > 0)
+        if (!edc_task_move(task, EDC_TASKSTEP_AWAIT_TOOLS, EDC_LIFE_ALIVE))
+            return exec_io_failed(task, "[failed: this task cannot be moved to AWAIT_TOOLS (state machine)]");
+        if (!ops->redispatch_tools)
+            return exec_io_failed(task, "[failed: no toolbox port is installed, so the tool chain cannot be resumed]");
+
+        const int posted = ops->redispatch_tools(ex->ctx, task, req_id);
+        if (posted > 0)
             return (struct edc_advance_result){.outcome = EDC_STEP_BLOCKED};
 
-        /* Cannot re-dispatch: fail rather than stay a "runnable" task the scan
-         * would retry forever. */
-        return exec_io_failed(task, "[failed: the tool chain could not be re-dispatched (no toolbox port)]");
+        /* 0 = the port rebuilt no PENDING records (see edc_toolbox_actor_redispatch).
+         * That is legitimate when the only records left are EXECUTING ones whose
+         * results never came back -- repair above has already answered them from the
+         * messages, so a waiting turn must be allowed to continue to branch 4. Only a
+         * PENDING record that the port refused to post is a real failure. */
+        bool pending_left = false;
+        for (const struct edc_tool_call_record *r = task->tool_calls; r; r = r->next)
+            if (r->status == TOOL_CALL_PENDING)
+                pending_left = true;
+        if (pending_left)
+            return exec_io_failed(task, "[failed: the toolbox posted no requests for the task's pending tool calls]");
     }
 
     /* 4. An active turn is waiting: send an inference request. */
@@ -262,8 +278,11 @@ static struct edc_advance_result exec_done(struct edc_executor *ex, struct edc_t
          * retry. A CURATION task (SESSION_MEMORY) is deliberately tool-driven
          * and falls through to the normal tool loop
          * below. */
-        if (task->sink == EDC_SINK_GROUP_MEMORY)
+        if (task->sink == EDC_SINK_GROUP_MEMORY ||
+            task->memo_kind == EDC_MEMO_KIND_EXTRACT_SUMMARY)
         {
+            /* The L1 extract-summary task has tools=none just like a fold: a tool call
+             * in its response is a provider misbehaviour, refuse it. */
             task->current_request_id = NULL;
             edc_task_mark_failed(task);
             const bool curate = (task->sink == EDC_SINK_SESSION_MEMORY);

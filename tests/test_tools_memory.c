@@ -9,6 +9,7 @@
 #include "edc_error.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox.h"
@@ -168,7 +169,19 @@ int main(void)
     CHECK(s4.error != NULL, "缺 patterns 报错");
     free_capture(&s4);
 
-    TEST("memory_get: 批量读; 未知 id 给说明而不是整体报错");
+    TEST("usage counts: get_count 只由 memory_get 增, search_count 只由命中增, list 都不计");
+    /* A controlled search on a unique term: exactly m1 should be hit.
+     * Assert incrementally because earlier search tests may already have hit m1. */
+    uint64_t m1_search_before = edc_session_memory_entry(session->memo, "m1")->search_count;
+    uint64_t m2_search_before = edc_session_memory_entry(session->memo, "m2")->search_count;
+    struct capture sc = run_tool(tb, task, "memory_search", "{\"patterns\":[\"^构建入口\"]}");
+    CHECK(sc.error == NULL, "受控 search 成功");
+    const struct edc_memo_entry *rc = edc_session_memory_entry(session->memo, "m1");
+    CHECK(rc && rc->get_count == 0, "anti-vacuous: get 之前 get_count 为 0");
+    CHECK(rc && rc->search_count == m1_search_before + 1, "search 命中 m1 ⇒ search_count +1");
+    CHECK(edc_session_memory_entry(session->memo, "m2")->search_count == m2_search_before,
+          "没命中的 m2 search_count 不增");
+    free_capture(&sc);
     struct capture g1 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\",\"m99\"]}");
     CHECK(g1.error == NULL, "批量读成功");
     CHECK(g1.result && strstr(g1.result, "[m1] rev ") != NULL && strstr(g1.result, "不要再用 make") != NULL,
@@ -176,7 +189,22 @@ int main(void)
     CHECK(g1.result && strstr(g1.result, "created: ") != NULL && strstr(g1.result, "updated: ") != NULL,
           "明细带 created/updated 时间");
     CHECK(g1.result && strstr(g1.result, "[m99] (no such entry") != NULL, "m99 给说明");
+    CHECK(edc_session_memory_entry(session->memo, "m1")->get_count == 1,
+          "memory_get 一次 ⇒ m1.get_count = 1");
+    CHECK(edc_session_memory_entry(session->memo, "m1")->search_count == m1_search_before + 1,
+          "memory_get 不改 search_count");
+    CHECK(edc_session_memory_entry(session->memo, "m99") == NULL, "未知 id 不创建条目/计数");
     free_capture(&g1);
+    /* A second get increments again; list/search in between do not. */
+    struct capture g2 = run_tool(tb, task, "memory_get", "{\"ids\":[\"m1\"]}");
+    CHECK(g2.error == NULL, "第二次 get 成功");
+    CHECK(edc_session_memory_entry(session->memo, "m1")->get_count == 2, "第二次 get ⇒ get_count = 2");
+    free_capture(&g2);
+    struct capture l2 = run_tool(tb, task, "memory_list", "{}");
+    CHECK(l2.error == NULL && edc_session_memory_entry(session->memo, "m1")->get_count == 2 &&
+              edc_session_memory_entry(session->memo, "m1")->search_count == m1_search_before + 1,
+          "list 再次调用两个计数都不增");
+    free_capture(&l2);
     struct capture g0 = run_tool(tb, task, "memory_get", "{}");
     CHECK(g0.error != NULL, "缺 ids 报错");
     free_capture(&g0);
@@ -471,6 +499,20 @@ int main(void)
     struct capture d4 = run_tool(tb, task, "memory_update", leg_upd);
     CHECK(d4.error == NULL, "两者同批 = 规定路径");
     free_capture(&d4);
+
+    TEST("usage counts: flush → load 往返后 get_count/search_count 都保留");
+    CHECK(edc_session_memory_entry(session->memo, "m1")->get_count >= 2 &&
+              edc_session_memory_entry(session->memo, "m1")->search_count > 0,
+          "anti-vacuous: m1 has nonzero get/search counts before flush");
+    uint64_t expect_get = edc_session_memory_entry(session->memo, "m1")->get_count;
+    uint64_t expect_search = edc_session_memory_entry(session->memo, "m1")->search_count;
+    CHECK(edc_state_store_flush(session, NULL), "flush the session");
+    struct edc_session *reloaded = edc_session_new(cfg, session->session_id, "S1-reloaded");
+    CHECK(edc_state_store_load(reloaded, NULL), "load back (restart)");
+    const struct edc_memo_entry *e_re = edc_session_memory_entry(reloaded->memo, "m1");
+    CHECK(e_re && e_re->get_count == expect_get, "get_count survives flush → load");
+    CHECK(e_re && e_re->search_count == expect_search, "search_count survives flush → load");
+    edc_session_free(reloaded);
 
     edc_toolbox_free(tb);
     edc_session_free(session); /* 连带释放 group / task / memo */

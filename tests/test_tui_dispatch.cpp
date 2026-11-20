@@ -377,32 +377,6 @@ void TestKindRouting(edc::TUIWindow &win)
     }
 }
 
-// A startup page that arrives LATE (after the reader has already moved on to the
-// live stream) must not rebuild the chat model. In CI this used to happen only
-// when the 3s synchronous fetch timed out under ASan, so the failure was flaky
-// and landed on whatever assertion happened to read the frame next. Here we
-// deliver the stale page deterministically through the real channel message
-// path, with no timeout and no actor thread.
-void TestLateStartupPageDoesNotClobberLiveChat(edc::TUIWindow &win)
-{
-    std::cout << "迟到的启动分页不能冲掉实时流\n";
-
-    Feed(win, MakeMsg(HARNESS_MSG_RESP, "LATE_PAGE_LIVE_MARKER", kShown, nullptr, /*from_active_task=*/1));
-    const std::string before = FrameOf(win);
-    /* Vacuous-pass guard: the live bubble really is on screen. */
-    Check(Has(before, "LATE_PAGE_LIVE_MARKER"), "实时产出先上屏（前提成立）");
-
-    const char *lines[] = {"reply\t0\t\t\tLATE_PAGE_STALE_MARKER"};
-    const int64_t seqs[] = {7};
-    const std::string payload = edc::EncodeChatBubblePageReply(kShown, /*before_seq=*/0, lines, seqs, 1, false);
-    /* header = session_id (the same field the scheduler reply uses). */
-    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, payload.c_str(), "", kShown));
-
-    const std::string after = FrameOf(win);
-    Check(Has(after, "LATE_PAGE_LIVE_MARKER"), "迟到分页之后实时气泡还在");
-    Check(!Has(after, "LATE_PAGE_STALE_MARKER"), "迟到分页的内容没有上屏");
-}
-
 // 兜底：认不出来的消息什么都不做（Kind::None → `default: return`）。
 void TestUnknownMessageIgnored(edc::TUIWindow &win)
 {
@@ -899,6 +873,19 @@ void TestInputModeTag(edc::TUIWindow &win)
     clear();
 }
 
+// Startup uses an ordinary cursor-0 page. The harness HOME also contains no
+// chat.jsonl: this must still show the DB row and never read a legacy file.
+void TestStartupPageLoadsDbTail(edc::TUIWindow &win)
+{
+    std::cout << "启动分页直接加载 DB 尾页\n";
+
+    const char *lines[] = {"reply\t0\t\t\tSTARTUP_DB_TAIL_MARKER"};
+    const int64_t seqs[] = {7};
+    const std::string payload = edc::EncodeChatBubblePageReply(kShown, /*before_seq=*/0, lines, seqs, 1, false);
+    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, payload.c_str(), "", kShown));
+    Check(Has(FrameOf(win), "STARTUP_DB_TAIL_MARKER"), "cursor-0 启动页的 DB 行上屏");
+}
+
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
 // 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
 // 重启后侧栏里那批 INTERRUPTED 任务：启动时在聊天流里说一次，并给出恢复方式。
@@ -909,6 +896,8 @@ void TestInterruptedStartupHint(edc::TUIWindow &win)
 
     // 切到一个别的 session：切会话会重置"只提示一次"的开关（生产路径同一条）。
     AdoptDisplayedSession(win, kOther);
+    const std::string empty_page = edc::EncodeChatBubblePageReply(kOther, 0, nullptr, nullptr, 0, false);
+    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, empty_page.c_str(), "", kOther));
     Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
                       kOther));
     {
@@ -924,6 +913,8 @@ void TestInterruptedStartupHint(edc::TUIWindow &win)
 
     // 换回原会话：提示不在 transcript 里，所以看不到它了。
     AdoptDisplayedSession(win, kShown);
+    const std::string shown_page = edc::EncodeChatBubblePageReply(kShown, 0, nullptr, nullptr, 0, false);
+    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, shown_page.c_str(), "", kShown));
     Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kShown, "HARNESS_IDLE", "IDLE", "NONE").c_str(), kShown));
     Check(!Has(FrameOf(win), "was interrupted"), "提示不写 transcript：换个会话就没了");
 }
@@ -1128,7 +1119,6 @@ int main()
     TestSnapshotReachesSidebar(win);
     TestForeignSnapshotDropped(win);
     TestLiveOutputRouting(win);
-    TestLateStartupPageDoesNotClobberLiveChat(win);
     TestKindRouting(win);
     TestUnknownMessageIgnored(win);
     TestUserInputIsEchoedImmediately(win);
@@ -1139,6 +1129,7 @@ int main()
     TestHistoryRecallKeepsArrows(win);
     TestInputModeTag(win);
     TestInterruptKeys(win);
+    TestStartupPageLoadsDbTail(win);
     TestInterruptedStartupHint(win);
     TestUpdateSurface(win);
     TestUpdateBanner(win);

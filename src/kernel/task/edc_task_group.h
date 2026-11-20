@@ -100,16 +100,39 @@ struct edc_task_group
      * so it is ignored until the member replies again. */
     uint32_t fold_epoch;
 
-    /* Consecutive failure count: at EDC_FOLD_MAX_FAILURES, automatic folding stops,
-     * so "fail -> group still due -> retry unchanged" cannot become a perpetual
-     * motion machine. Reset on successful landing / manual fold / new committed
-     * content. In-memory only, not persisted (a restart counts as new). */
+    /* Corpus budget for the NEXT memory round (0 = full EDC_FOLD_MAX_CORPUS_TOKENS).
+     * Each consecutive fold/extract failure halves it (floor
+     * EDC_FOLD_MIN_CORPUS_TOKENS); a successful landing resets it. Persisted so a
+     * restart cannot restart the "same giant prompt forever" loop. Shared by the
+     * L1 fold and the L2 extraction: both build their material with the same cap. */
+    int64_t fold_corpus_budget;
+
+    /* Consecutive VOLUME-related failure count: at EDC_FOLD_MAX_FAILURES the automatic
+     * retry chain stops and the group stays in the "fold failed / barrier held" state until
+     * the user manually folds or a new task joins the group (which restarts the fold and
+     * rebinds the barrier). Persisted (groups.fold_failure_state) so a restart does not
+     * silently unfreeze the group or reset the retry accounting. Non-volume failures
+     * (auth, rate limit) do NOT increment this. Reset only by a successful landing. */
     int fold_failures;
+
+    /* True while a failed fold round has NOT been followed by a successful landing: the
+     * TASK_DEP_FOLD_HOLD edges are live, the group is frozen, and window-based automatic
+     * folding must not fire. Persisted (groups.fold_held). A non-volume failure sets this
+     * too (without touching fold_failures), so an auth error cannot be retried in a tight
+     * loop at full corpus size. Cleared ONLY by a successful landing. */
+    bool fold_held;
 
     /* Same shape for the L2 extraction of this group's unfolded history: consecutive
      * failures stop the AUTOMATIC path at EDC_MEMO_EXTRACT_MAX_FAILURES; reset on
      * successful landing / new committed content. In-memory only. */
     int memo_extract_failures;
+
+    /* Independent corpus budget for the new two-stage extract's L1 (knowledge-candidate
+     * summary). Kept SEPARATE from fold_corpus_budget so a failed fold cannot shrink the
+     * extract's input (or vice versa). 0 = full cap; halved on each extract failure down
+     * to EDC_FOLD_MIN_CORPUS_TOKENS; reset on a successful L2 landing. Persisted
+     * (groups.extract_summary_budget, schema v14). */
+    int64_t extract_summary_budget;
 
     /* ── "Is anybody still working?" -- the clock the L2 extraction windows run on ──
      *

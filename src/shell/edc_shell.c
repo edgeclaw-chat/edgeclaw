@@ -474,10 +474,11 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
         }
     }
 
-    /* The shell's syntax decides the placement: `&` is the only thing that does not
-     * take the foreground, and the AST's walk-local target group (a pipeline shares
-     * one) names the group. Everything else -- object, edges, group, turn -- is the
-     * scheduler's edc_scheduler_task_create. */
+    /* Placement has exactly ONE input: |target_group|. The caller resolved
+     * `-g/--group <id>` (if any) to this pointer before getting here; there is no
+     * group-shaped field in opts on purpose -- a second, text-shaped channel is what
+     * made the option parse-but-do-nothing after ce5224b7. Everything else --
+     * object, edges, turn -- is the scheduler's edc_scheduler_task_create. */
     struct edc_task_spec spec;
     memset(&spec, 0, sizeof(spec));
     spec.desc = (opts->desc && sdslen(opts->desc) > 0) ? opts->desc : "New task";
@@ -492,7 +493,10 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
         spec.prev = prev->task;
         spec.prev_type = prev->type;
     }
-    spec.take_foreground = !opts->bg;
+    /* `&` (opts.bg) means "run alongside, take no front". An explicitly named group
+     * sets opts.leave_foreground, which is a FOREGROUND policy, not a group: the task
+     * still queues in its target group (background=false). */
+    spec.take_foreground = !opts->bg && !opts->leave_foreground;
     spec.background = opts->bg;
     if (target_group)
     {
@@ -510,13 +514,16 @@ struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc
     if (!task)
         return NULL;
 
+    /* Borrowed, not adopted: the AST walk owns |r_out| / |r_err| and frees them after
+     * every stage, so copy here. Taking ownership used to leak them on any early
+     * return above (a bad dependency, and now a bad `-g` id too). */
     if (redirect_stdout)
     {
-        task->redirect_stdout = redirect_stdout;
+        task->redirect_stdout = sdsdup(redirect_stdout);
         task->redirect_append = redirect_append;
     }
     if (redirect_stderr)
-        task->redirect_stderr = redirect_stderr;
+        task->redirect_stderr = sdsdup(redirect_stderr);
 
     struct edc_task_group *group = task->group;
 

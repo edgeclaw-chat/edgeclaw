@@ -441,6 +441,78 @@ int main(void)
     CHECK(opt && opt->deps_total >= 1, "and `-d` made it wait for that task");
     CHECK(task_count(sess) == before_opt + 1, "exactly one task");
 
+    /* ── `-g` / `--group <id>`: a shell stage lands in the NAMED group ──
+     *
+     * The target is deliberately NOT the group in front: aiming at the foreground
+     * group would pass even if the option were dropped altogether (the exact bug:
+     * the interpreter copied it into opts.group_id, which spawn_task never read). */
+    TEST("`\"x\" --group <id>` joins a group that is NOT in front");
+    {
+        /* Two fresh groups: the second takes the front, so the first can only be
+         * reached by naming it. */
+        struct edc_task *older = drive_command(cfg, sm, sched, "+\"named group owner\"");
+        struct edc_task_group *named = older ? older->group : NULL;
+        struct edc_task *front = drive_command(cfg, sm, sched, "+\"front group owner\"");
+        CHECK(named != NULL && front && sess->foreground_group != named,
+              "the named group is in the background");
+
+        char line[256];
+        snprintf(line, sizeof(line), "\"group work\" --group %s", edc_id_str(named ? named->group_id : 0));
+        const int before = task_count(sess);
+        const int groups_before = group_count(sess);
+        drive_command(cfg, sm, sched, line);
+
+        struct edc_task *t = find_task_by_desc(sess, "group work");
+        CHECK(task_count(sess) == before + 1, "exactly one task was created");
+        CHECK(t && t->group == named, "and it joined the NAMED group, not the one in front");
+        CHECK(group_count(sess) == groups_before, "no new group was opened");
+        CHECK(sess->foreground_group != named, "the group in front did not move");
+    }
+
+    TEST("`\"x\" -g <id>` is the same option, short form");
+    {
+        struct edc_task *owner = drive_command(cfg, sm, sched, "+\"short form owner\"");
+        struct edc_task_group *named = owner ? owner->group : NULL;
+        drive_command(cfg, sm, sched, "+\"short form front\"");
+        CHECK(named != NULL && sess->foreground_group != named, "again, a background group");
+
+        char line[256];
+        snprintf(line, sizeof(line), "\"short group work\" -g %s", edc_id_str(named ? named->group_id : 0));
+        const int before = task_count(sess);
+        drive_command(cfg, sm, sched, line);
+
+        struct edc_task *t = find_task_by_desc(sess, "short group work");
+        CHECK(task_count(sess) == before + 1, "exactly one task was created");
+        CHECK(t && t->group == named, "and it joined the group named by -g");
+    }
+
+    TEST("`--group` into a BUSY group queues there (it is not a background task)");
+    {
+        /* The spy never answers, so the owner of the named group stays unfinished. */
+        struct edc_task *owner = drive_command(cfg, sm, sched, "+\"busy owner\"");
+        struct edc_task_group *busy = owner ? owner->group : NULL;
+        drive_command(cfg, sm, sched, "+\"busy front\"");
+        CHECK(busy != NULL && sess->foreground_group != busy, "the busy group is not in front");
+
+        char line[256];
+        snprintf(line, sizeof(line), "\"queued in named group\" --group %s",
+                 edc_id_str(busy ? busy->group_id : 0));
+        drive_command(cfg, sm, sched, line);
+
+        struct edc_task *t = find_task_by_desc(sess, "queued in named group");
+        CHECK(t && t->group == busy, "it joined the busy named group");
+        CHECK(t && !t->is_background, "`--group` is not the same as `&`");
+        CHECK(t && edc_task_awaits_deps(t), "so it waits for the task still running there");
+    }
+
+    TEST("`--group` with an unknown id creates nothing");
+    {
+        const int before = task_count(sess);
+        drive_command(cfg, sm, sched, "\"unknown group\" --group 999999999");
+        CHECK(task_count(sess) == before, "no task was silently put in the group in front");
+        CHECK(find_task_by_desc(sess, "unknown group") == NULL, "and nothing was created anywhere");
+    }
+
     TEST("...and the `2` of a stderr redirect is a redirect prefix, not a stray token");
     const int before_err = task_count(sess);
     drive_command(cfg, sm, sched, "\"redirect work\" 2> \"err.log\"");

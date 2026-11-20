@@ -19,7 +19,15 @@ struct edc_cmd_task_opts
     bool literal; /* input came from a '''/''' block or single quotes: do not expand {{…}} refs */
     sds *dep_ids; /* -d/--with <id> dependency list (JOIN: waits and injects) */
     int dep_count;
-    sds group_id;    /* --group <id> / -g <id>; TEXT as typed, parsed where used */
+    /* There is deliberately NO `group_id` field here. A task's group has ONE
+     * representation at spawn time: the `target_group` pointer passed to
+     * edc_shell_spawn_task. Every caller resolves `-g/--group <id>` to that pointer
+     * BEFORE calling it (see shell_named_group in edc_interp.c); keeping a second,
+     * text-shaped channel here is exactly how the option once parsed but did nothing. */
+    /* Leave the session's foreground group / active pointer where they are. This is a
+     * FOREGROUND policy, not a group: a task explicitly placed into a background group
+     * still queues there (background=false), it just does not pull the screen over. */
+    bool leave_foreground;
     /* The first token in the OPTION AREA that is not an option and not the `2` of a
      * stderr redirect. The option area takes options; anything else is an error rather
      * than text silently dropped (`"hello" and more` must not lose ` and more`, and a

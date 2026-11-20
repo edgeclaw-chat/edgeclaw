@@ -227,6 +227,11 @@ static void test_pragmas(void)
     /* user_version is a property of the FILE, not of a connection. */
     CHECK(inspect_int("PRAGMA user_version") == EDC_DB_VERSION,
           "user_version is EDC_DB_VERSION");
+    /* A fresh database and a migrated v9 one must have the same shape: the reduced
+     * memory-round corpus budget is persisted, not silently lost on the next restart. */
+    CHECK(inspect_int("SELECT count(*) FROM pragma_table_info('groups') "
+                      "WHERE name='fold_corpus_budget'") == 1,
+          "groups.fold_corpus_budget exists in a fresh database");
 
     /* The name is interpolated into SQL; a non-identifier must be refused, not passed
      * through. This is what keeps the accessor from becoming an injection point. */

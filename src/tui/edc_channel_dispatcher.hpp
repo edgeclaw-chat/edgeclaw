@@ -61,7 +61,6 @@ class IChannelHost
         (void)session_id;
         (void)payload;
     }
-
     virtual void RequestTaskSnapshot() = 0;
     virtual void RequestFrame() = 0;
 };

@@ -1,6 +1,24 @@
-# TUI 聊天记录窗口化（对象层）方案 — 待评审
+# TUI 聊天记录窗口化（对象层）方案 — 历史设计稿
 
-状态：**P0–P5 全部完成**。目标（RSS 从 O(历史条数) 降到 O(视口)）已达成，且不破坏「界面反馈不落盘」语义。
+> **实际交付状态（2026-11-20 更正，读下文前先看这里）**
+>
+> 本文是一份**设计提案**，下面的 §2（含 §2.4「高度几何」）与 §6 描述的是**最初设想的方案**，
+> 不是最终落地实现。原文曾在此处声称「P0–P5 全部完成、目标已达成」，那是**不准确的**，理由：
+>
+> - §2.4 设想的「窗口外用 `est_lines` 估计高度 + 只测窗口内 + 有界 catch-up」**没有落地**。
+>   `ChatBubbleRef` 的 `est_lines` / `measured_h` / `measured_w` 至今只被赋值、无人读取，
+>   是死字段；`MessageList::EnsureMeasured()` 的首帧全量测量循环仍在。
+> - 真正解决「滚动后缓存树累积、RSS 随历史增长」的是另一条路径（commit `f1c5bbc` + `63fbbf8`）：
+>   **完全不动 `heights_` / `prefix_`，只让任意时刻同时存活的 ftxui 渲染树有界**
+>   （帧边界清缓存 + 首帧测完后立刻清窗口外 proxy 树）。实测 DHAT 峰值 369 MB → 82 MB、
+>   RSS ≈ 379 MB → ~93 MB。估计值方案反复撞 `prefix_`/滚动锚定的几何契约而未被采用。
+> - 再之后 `chat_bubbles` 迁移（commit `466ff07`、`124103f`）把聊天记录改成 **DB 权威 + 分页**，
+>   运行时 `chat.jsonl` 已彻底退役（commit `74bb9b2`）；本文 §2 里以 transcript 文件为视图权威、
+>   `kFile | kMemory` 双源、`ITranscriptStore::pread` 等描述也**不再是当前架构**。
+>
+> 因此：下文作为**历史设计记录**保留（它解释了为什么不走估计高度路线、以及各种几何约束），
+> 但**不要**把其中的"完成/目标达成"字样或 §2.4 当作现状；当前实现以源码、m107/m109 的交付记录
+> 和 `docs/chat-bubbles-in-db.md` 为准。
 
 **第二批提交（P2–P5，最终形态）**
 - 删掉 progressive backfill（线程 + `backfill_*` 成员 + `ReplayTail` + "Loading earlier history" 提示）与
@@ -34,7 +52,7 @@
   offset/length 精确寻址、跨 256 KiB chunk 正确）、`MessageWindow`（`kMaxLive=200`、滑动淘汰、
   状态在 ref 上）。`tests/test_chat_refs` 6/6 通过。
 - 共享工厂：`MakeChatBubble()` 提到 `edc_message.cpp`，各路径共用。
-- 第二批见开头的「P0–P5 全部完成」一节。
+- 第二批见文首「实际交付状态」更正说明（原「P0–P5 全部完成」的说法已被更正，勿当作现状）。
 
 **B 方案遗留的设计缺口（P2 开工前必须补设计）**：`MessageWindow::Get(i)` 从 transcript 行
 解码，但 B 方案明确「界面反馈气泡（task N finished / interrupted hint）不落盘」，
@@ -147,6 +165,10 @@ struct ChatBubbleRef {
 「历史气泡」走同一条 `live_` 路径，不引入第二套机制。
 
 ### 2.4 高度几何（关键，不能退化）
+
+> ⚠️ **此方案未被采纳**：下面的「窗口外估计高度 + 只测窗口内」从未落地（`est_lines` /
+> `measured_h` / `measured_w` 是死字段）。实际交付见文首更正说明与 commit `63fbbf8`。
+> 本段保留是为了记录几何约束，说明后来为什么选择"只让同时存活的树有界"这条路。
 
 `MessageList` 的 `ComputeRequirement()` 需要 `total_`（全内容高度）才能算滚动范围。
 保留 `heights_`/`stale_`/`prefix_` **全量 int 数组**（4 字节/条，40k 条 = 160 KB / 数组，

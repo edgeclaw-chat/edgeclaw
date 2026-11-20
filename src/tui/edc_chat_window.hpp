@@ -10,6 +10,7 @@
 #include "edc_chat_transcript.hpp"
 #include "edc_message.hpp"
 #include "ftxui/component/event.hpp"
+#include "ftxui/screen/box.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -100,6 +101,10 @@ class LazyBubble : public Message
   private:
     class MessageWindow *window_;
     size_t index_;
+    /* The real bubble's collapsible header reflects its HitBox(). A cached tree
+     * can outlive that bubble, so LazyBubble owns the box and points the real
+     * bubble's HitBox() at it while the tree is cached. */
+    ::ftxui::Box hit_box_;
 };
 
 /* The resident window: owns the descriptor index, the kMemory snapshots, and

@@ -35,25 +35,18 @@ class SessionModel
         workdir_ = std::move(workdir);
     }
 
-    const std::string &chat_log_path() const
-    {
-        return chat_log_path_;
-    }
-
-    // Switch to another session (id + transcript path together). The old workdir
-    // is invalidated at once: rather than show a known-wrong value, the caller
-    // falls back to the process launch directory until the next snapshot fills it.
-    void Reset(std::string id, std::string chat_log_path)
+    // Switch to another session. The old workdir is invalidated at once: rather
+    // than show a known-wrong value, the caller falls back to the launch
+    // directory until the next snapshot fills it.
+    void Reset(std::string id)
     {
         displayed_id_ = std::move(id);
-        chat_log_path_ = std::move(chat_log_path);
         workdir_.clear();
     }
 
   private:
     std::string displayed_id_;
     std::string workdir_;
-    std::string chat_log_path_;
 };
 
 } // namespace edc::model

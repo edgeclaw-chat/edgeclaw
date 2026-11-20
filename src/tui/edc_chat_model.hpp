@@ -50,10 +50,6 @@ class ChatModel
     // Drop every message (the log was re-pointed at another session).
     void Clear();
 
-    /* Point the log at a transcript file: build the descriptor index once and
-     * fill the log with LazyBubble proxies. This is the ONLY history path. */
-    void LoadTranscript(const std::string &path);
-
     /* Replace the log with one chat_bubbles page (startup / session switch).
      * |payload| is the CHAT_BUBBLE_PAGE reply JSON read on the actor thread. */
     bool LoadFromPage(const std::string &session_id, const std::string &payload);

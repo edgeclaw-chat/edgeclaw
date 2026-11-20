@@ -135,7 +135,7 @@ bool ChatWidget::OnEvent(::ftxui::Event event)
      * demand during layout (which runs BEFORE OnRender), and MessageWindow::Get's
      * kMaxLive eviction keeps residency bounded without a frame-lagged visible
      * range that would delete exactly the rows a scroll just moved into view.
-     * LoadTranscript primes the tail window for the first frame. */
+     * LoadFromPage primes the tail window for the first frame. */
     return scroll_view_->Render();
 }
 

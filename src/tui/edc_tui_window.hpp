@@ -7,7 +7,6 @@
 #include "edc_setup_dialog.hpp"
 #include "edc_update_dialog.hpp"
 #include "edc_task_snapshot.hpp"
-#include "edc_transcript_store.hpp"
 #include "edc_working_indicator_view.hpp"
 #include <atomic>
 #include <chrono>
@@ -172,18 +171,9 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // `/task history <id>` / `/group history <id>` payload: split into bubbles
     // and append to the chat pane.
     void RenderTaskHistory(const std::string &payload);
-    // Show |session_id|'s chat log by replaying its own transcript
-    // (<session>/chat.jsonl); a session without one shows an empty log.
+    // Ask the DB-backed channel for |session_id|'s newest chat_bubbles page.
+    // The reply replaces the chat model; there is no file fallback.
     void LoadChatTranscript(const char *session_id);
-    // Replay |path| into the (already cleared) log.
-    void LoadChatTranscriptFile(const std::string &path);
-    // Record one displayed bubble at the tail of the current session's transcript.
-    void AppendChatTranscript(const std::string &kind, const std::string &header, const std::string &content,
-                              const std::string &task_id, int render_pref);
-    // Same, into an explicit path: a background session's output belongs in that
-    // session's own transcript, never in the tab on screen.
-    void AppendChatTranscriptTo(const std::string &path, const std::string &kind, const std::string &header,
-                                const std::string &content, const std::string &task_id, int render_pref);
     // Show "processing" exactly while the foreground group's active task runs.
     void SyncWorkingFromSnapshot(const TaskSnapshot *snap);
     // Switch the log to |session_id|: the log is cleared and that session's
@@ -303,8 +293,6 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     std::unique_ptr<port::AppFacade> app_;
     // The AppFacade sink: turns typed events into model updates + IChannelHost hooks.
     std::unique_ptr<control::ChannelDispatcher> dispatcher_;
-    // Chat-log file I/O (transcript port; the concrete store is built in the ctor).
-    std::unique_ptr<port::ITranscriptStore> transcript_;
     // Terminal geometry port: the footer trims its fields against this width.
     std::shared_ptr<const port::ITerminalInfo> terminal_;
     // True once bracketed paste was enabled, so the destructor only emits the

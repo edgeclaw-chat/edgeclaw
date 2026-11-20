@@ -46,7 +46,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'edgeclaw-chat/edgeclaw'
-$Api = "https://api.github.com/repos/$Repo/releases"
+# The release feed comes from github.com, not api.github.com: no key, and none of the 60
+# anonymous API requests per hour that the in-app --update-check competes for. It carries
+# one <id> per release, newest first, whose last component is the tag. See Get-Tags.
+$Feed = "https://github.com/$Repo/releases.atom"
 $Dl = "https://github.com/$Repo/releases/download"
 
 function Fail {
@@ -76,45 +79,60 @@ function Resolve-Target {
     'edgeclaw_amd64_windows'
 }
 
-# Releases, newest first, as "tag<TAB>stable|pre". Same shape the sh installer parses, so the
-# two agree on what counts as a candidate.
-function Get-Releases {
-    # ${Api}, not $Api: `?` is a legal character inside an unbraced variable name, so
-    # "$Api?per_page=20" asks for a variable called `Api?per_page`. It does not exist, and
-    # under the Set-StrictMode above that is a hard error rather than an empty string -- the
-    # installer died here before making a single request. Braces end the name.
-    $resp = Invoke-WebRequest -Uri "${Api}?per_page=20" -UseBasicParsing -Headers @{
-        'Accept'     = 'application/vnd.github+json'
+# Releases, newest first, as one tag per line. The atom feed gives each release an id like
+#   <id>tag:github.com,2008:Repository/1447922093/v0.1.11</id>
+# whose last component is the tag. The feed omits drafts (invisible on the Releases page)
+# and includes pre-releases, which is what -Pre needs. Same source as the sh installer, so
+# both agree on what counts as a candidate.
+function Get-Tags {
+    $resp = Invoke-WebRequest -Uri $Feed -UseBasicParsing -Headers @{
         'User-Agent' = 'edgeclaw-installer'
     }
-    $items = $resp.Content | ConvertFrom-Json
-    foreach ($r in $items) {
-        if ($r.draft) { continue }
-        $kind = if ($r.prerelease) { 'pre' } else { 'stable' }
-        "$($r.tag_name)`t$kind"
+    # Content is a string for text/xml, which is what the .atom endpoint returns. The regex
+    # takes the trailing component of the repository id, not <title>: other projects put
+    # arbitrary release titles there while <id> is always the tag.
+    $tags = @()
+    foreach ($m in [regex]::Matches($resp.Content,
+            '<id>tag:github\.com,2008:Repository/\d+/([^<]+)</id>')) {
+        $tags += $m.Groups[1].Value
+    }
+    $tags
+}
+
+# A tag is spliced into both a URL and a temporary filename. Refuse anything outside the
+# charset the project's tags use, and any '..': an unsanitised tag could escape the temp
+# directory just as easily as the URL path.
+function Assert-Tag {
+    param([string]$Value)
+    if ([string]::IsNullOrEmpty($Value) -or $Value -notmatch '^[A-Za-z0-9._+-]+$' -or $Value.Contains('..')) {
+        Fail "invalid release tag: $Value"
     }
 }
 
 function Resolve-Tag {
-    if ($Tag) { return $Tag }
+    if ($Tag) {
+        Assert-Tag $Tag
+        return $Tag
+    }
 
-    $releases = @(Get-Releases)
-    if ($releases.Count -eq 0) { Fail "no published releases found at $Api" }
+    $tags = @(Get-Tags)
+    if ($tags.Count -eq 0) { Fail "the release feed at $Feed lists no releases" }
 
+    # release.yml marks a release pre exactly when its tag contains '-'. Use the same rule
+    # here so both installers and the release workflow agree.
     if ($Pre) {
-        return ($releases[0] -split "`t")[0]
+        return $tags[0]
     }
 
-    foreach ($line in $releases) {
-        $parts = $line -split "`t"
-        if ($parts[1] -eq 'stable') { return $parts[0] }
+    foreach ($t in $tags) {
+        if (-not $t.Contains('-')) { return $t }
     }
 
-    # Not a generic failure: this is the expected state before the first stable tag, so say
-    # what to do instead of only reporting that nothing was found.
-    $list = ($releases | ForEach-Object { '  ' + ($_ -replace "`t", ' ') }) -join "`n"
+    # Not a generic failure: this is the expected state before the first stable tag. The
+    # feed shows only the 10 most recent releases, so that is the honest scope of the claim.
+    $list = ($tags | ForEach-Object { '  ' + $_ }) -join "`n"
     Fail @"
-every published release is a pre-release, so there is no stable one to pick.
+the 10 most recent releases are all pre-releases, so there is no stable one.
 Pass -Pre to install the newest release anyway, or -Tag <tag> to choose one:
 $list
 "@

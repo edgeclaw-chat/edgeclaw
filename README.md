@@ -141,8 +141,9 @@ it prints this same instruction rather than guessing.
 
 Every archive carries the tag in its name — `edgeclaw_amd64_linux_v1.0.0-rc.1.tar.gz` —
 so a file kept for months still says what it is without being run. There is deliberately
-no version-less name, which is why `releases/latest/download/<name>` does not work and a
-fixed download URL cannot be written down here: build it from the tag instead.
+no version-less name, which is why a fixed download URL cannot be written down here: the
+name needs a tag that does not exist yet. The installer reads the release feed to find
+the current tag and builds the filename from it, without touching the rate-limited API.
 
 ```bash
 TAG=v1.0.0-rc.1   # replace with the tag shown on the Releases page

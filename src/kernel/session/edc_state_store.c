@@ -141,6 +141,18 @@ static const char *const EDC_SCHEMA_SQL =
     "  memory_created_at  INTEGER NOT NULL DEFAULT 0,"
     "  memory_updated_at  INTEGER NOT NULL DEFAULT 0,"
     "  memory_covers_to   INTEGER NOT NULL DEFAULT 0,"
+    /* v10: the reduced L1/L2 corpus budget after consecutive memory-round failures.
+     * 0 = the full cap. Persisted so a restart cannot restore a giant prompt that just
+     * timed out and re-send it with the failure streak (in-memory) already cleared. */
+    "  fold_corpus_budget INTEGER NOT NULL DEFAULT 0,"
+    /* v11: the fold-failure state. fold_failure_state = consecutive volume-related
+     * failures (0..EDC_FOLD_MAX_FAILURES), fold_held = 1 while the barrier is live and
+     * window-based automatic folding is suspended. Persisted so a restart cannot
+     * silently unfreeze a group that is still waiting for a retry. */
+    "  fold_failure_state INTEGER NOT NULL DEFAULT 0,"
+    "  fold_held          INTEGER NOT NULL DEFAULT 0,"
+    /* v14: independent corpus budget for the two-stage extract's L1 summary. */
+    "  extract_summary_budget INTEGER NOT NULL DEFAULT 0,"
     "  ord                INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, group_id)"
     ");"
@@ -342,6 +354,10 @@ static const char *const EDC_SCHEMA_SQL =
     "  created_at  INTEGER NOT NULL DEFAULT 0,"
     "  updated_at  INTEGER NOT NULL DEFAULT 0,"
     "  superseded  INTEGER NOT NULL DEFAULT 0,"
+    /* v13: two independent usage signals -- get_count = DETAIL read via memory_get,
+     * search_count = memory_search hit shown to the model. Neither counts memory_list. */
+    "  get_count    INTEGER NOT NULL DEFAULT 0,"
+    "  search_count INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, entry_id)"
     ");"
 
@@ -1181,13 +1197,16 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
 
 static const char *INSERT_GROUP =
     "INSERT INTO groups(session_id,group_id,is_orphaned,kind,memory,fold_epoch,"
-    "memory_created_at,memory_updated_at,memory_covers_to,ord) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?) "
+    "memory_created_at,memory_updated_at,memory_covers_to,fold_corpus_budget,"
+    "fold_failure_state,fold_held,extract_summary_budget,ord) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(session_id,group_id) DO UPDATE SET is_orphaned=excluded.is_orphaned,"
     "kind=excluded.kind,memory=excluded.memory,"
     "fold_epoch=excluded.fold_epoch,memory_created_at=excluded.memory_created_at,"
     "memory_updated_at=excluded.memory_updated_at,memory_covers_to=excluded.memory_covers_to,"
-    "ord=excluded.ord";
+    "fold_corpus_budget=excluded.fold_corpus_budget,"
+    "fold_failure_state=excluded.fold_failure_state,fold_held=excluded.fold_held,"
+    "extract_summary_budget=excluded.extract_summary_budget,ord=excluded.ord";
 
 struct group_bind
 {
@@ -1209,7 +1228,11 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     bind_num(st, 7, (double)g->memory_created_at);
     bind_num(st, 8, (double)g->memory_updated_at);
     bind_num(st, 9, (double)g->memory_covers_to);
-    sqlite3_bind_int(st, 10, b->ord);
+    bind_num(st, 10, (double)g->fold_corpus_budget);
+    sqlite3_bind_int(st, 11, g->fold_failures);
+    sqlite3_bind_int(st, 12, g->fold_held ? 1 : 0);
+    bind_num(st, 13, (double)g->extract_summary_budget);
+    sqlite3_bind_int(st, 14, b->ord);
 }
 
 static const char *INSERT_TASK =
@@ -1370,6 +1393,13 @@ static void bind_dep(sqlite3_stmt *st, void *ctx)
 
 static const char *INSERT_TOOL_CALL =
     "INSERT OR REPLACE INTO task_tool_calls(task_id,ord,call_id,name,args,status) VALUES(?,?,?,?,?,?)";
+
+/* The ledger is positionally keyed by (task_id, ord), so a removed record cannot be
+ * expressed as an upsert: clear this task's rows before writing the current list. */
+static void bind_task_id(sqlite3_stmt *st, void *ctx)
+{
+    sqlite3_bind_int64(st, 1, *(const int64_t *)ctx);
+}
 
 struct tool_call_bind
 {
@@ -1646,8 +1676,16 @@ static bool flush_task(sqlite3 *db, int64_t session_id, const struct edc_task *t
         }
     }
 
-    /* the incomplete-tool-call ledger */
+    /* the incomplete-tool-call ledger. Replace the whole list, not just the rows
+     * still present: tool_done() removes a record as soon as its result lands, and
+     * an INSERT-only flush leaves the old `executing` row behind. On the next load
+     * that row comes back as an unfinished tool, redispatch rebuilds 0 requests and
+     * every resume fails with "no toolbox port" (task 549). ord is the list position,
+     * so a shortened list must also drop the tail. */
     {
+        int64_t tid = t->task_id;
+        if (!run_stmt(db, "DELETE FROM task_tool_calls WHERE task_id=?", "tool_call clear", bind_task_id, &tid))
+            return false;
         int i = 0;
         for (const struct edc_tool_call_record *c = t->tool_calls; c; c = c->next)
         {
@@ -1731,7 +1769,8 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         if (sqlite3_prepare_v2(db,
                                "INSERT OR REPLACE INTO memo_entries(session_id,entry_id,title,"
                                "summary,detail,sources,proposed_by,created_seq,updated_seq,"
-                               "created_at,updated_at,superseded) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                               "created_at,updated_at,superseded,get_count,search_count) "
+                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                -1, &st, NULL) != SQLITE_OK)
             return false;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
@@ -1746,6 +1785,8 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         bind_num(st, 10, (double)e->created_at);
         bind_num(st, 11, (double)e->updated_at);
         sqlite3_bind_int(st, 12, e->superseded ? 1 : 0);
+        bind_num(st, 13, (double)e->get_count);
+        bind_num(st, 14, (double)e->search_count);
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
         if (!ok)
@@ -2408,7 +2449,8 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,fold_epoch,"
-                                     "memory_created_at,memory_updated_at,memory_covers_to "
+                                     "memory_created_at,memory_updated_at,memory_covers_to,"
+                                     "fold_corpus_budget,fold_failure_state,fold_held,extract_summary_budget "
                                      "FROM groups WHERE session_id=? ORDER BY ord",
                                -1, &st, NULL) != SQLITE_OK)
             goto done;
@@ -2467,6 +2509,10 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             group->memory_created_at = (uint64_t)col_i64(st, 5);
             group->memory_updated_at = (uint64_t)col_i64(st, 6);
             group->memory_covers_to = (uint64_t)col_i64(st, 7);
+            group->fold_corpus_budget = col_i64(st, 8);
+            group->fold_failures = sqlite3_column_int(st, 9);
+            group->fold_held = sqlite3_column_int(st, 10) != 0;
+            group->extract_summary_budget = col_i64(st, 11);
 
             /* members, in the stored order; the leader is already on the list */
             {
@@ -2631,10 +2677,12 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                     rec->status = (status && strcmp(status, "executing") == 0) ? TOOL_CALL_EXECUTING
                                                                               : TOOL_CALL_PENDING;
                 }
-                else if (parsed)
-                {
+                /* edc_task_tool_call_add duplicates args into the record; the parsed
+                 * tree we handed in stays owned by US and must be freed on BOTH paths
+                 * (the old code only freed it when the add failed, leaking one cJSON
+                 * tree per restored tool call -- 597 of them in the original DHAT run). */
+                if (parsed)
                     cJSON_Delete(parsed);
-                }
             }
         }
         sqlite3_finalize(st);
@@ -2705,7 +2753,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db, "SELECT entry_id,title,summary,detail,sources,proposed_by,"
-                                     "created_seq,updated_seq,created_at,updated_at,superseded "
+                                     "created_seq,updated_seq,created_at,updated_at,get_count,search_count,superseded "
                                      "FROM memo_entries WHERE session_id=? ORDER BY entry_id",
                                -1, &st, NULL) == SQLITE_OK)
         {
@@ -2715,7 +2763,9 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                                                  col_str(st, 2), col_str(st, 3), col_str(st, 4),
                                                  col_str(st, 5), (uint64_t)col_i64(st, 6),
                                                  (uint64_t)col_i64(st, 7), (uint64_t)col_i64(st, 8),
-                                                 (uint64_t)col_i64(st, 9), sqlite3_column_int(st, 10) != 0);
+                                                 (uint64_t)col_i64(st, 9), (uint64_t)col_i64(st, 10),
+                                                 (uint64_t)col_i64(st, 11),   /* search_count */
+                                                 sqlite3_column_int(st, 12) != 0);
         }
         sqlite3_finalize(st);
     }

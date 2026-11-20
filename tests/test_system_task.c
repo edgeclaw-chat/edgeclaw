@@ -678,7 +678,9 @@ static void test_session_memory_join_cascades_failure(void)
     edc_task_mark_failed(fold);
     CHECK(edc_task_has_failed(fold), "折叠失败");
     CHECK(l2 && edc_task_has_failed(l2), "策展**自动**失败 (JOIN 级联, 没有额外逻辑)");
-    CHECK(!edc_task_has_unresolved_deps(live), "成员被释放 (它的边都被处理掉了)");
+    /* 2026-11-20 设计: fold 失败 ⇒ TASK_DEP_FOLD_HOLD 保持, 组继续冻结, 不许新历史
+     * 增长正在重试的语料。只有成功 landing 或新 fold rebind 后才放行。 */
+    CHECK(edc_task_has_unresolved_deps(live), "折叠失败 ⇒ 成员的 FOLD_HOLD 边保留 (组仍冻结)");
 
     /* ── ② 取消级联: 第三个组, 折叠一起就被取消 (SIGTERM 那条生产路径) ── */
     struct edc_task *member2 = NULL;
@@ -701,7 +703,8 @@ static void test_session_memory_join_cascades_failure(void)
     edc_task_await_exec(fold2);
     edc_task_send_signal(fold2, TASK_SIGTERM);
     CHECK(l2b && edc_task_is_cancelled(l2b), "折叠被取消 ⇒ 策展自动取消");
-    CHECK(!edc_task_has_unresolved_deps(live2), "成员照常释放");
+    /* 同上: 取消的 fold 也保持 FOLD_HOLD, 直到成功 landing / 新 fold rebind。 */
+    CHECK(edc_task_has_unresolved_deps(live2), "折叠取消 ⇒ 成员的 FOLD_HOLD 边也保留 (组仍冻结)");
 
     /* 用户裁决的语义 (2026-10-10): 取消**不摘边** —— 源还能 resume, 边只是暂时满足不了。
      * 所以 resume 这个被级联取消的 L2, 它回到"等依赖" (而不是空手跑一遍, 也不是假装没依赖)。 */

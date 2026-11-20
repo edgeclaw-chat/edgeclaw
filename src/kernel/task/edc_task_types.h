@@ -41,6 +41,11 @@ typedef enum
                         * record of why it never ran survives. A source that failed / was
                         * cancelled / was interrupted is exactly the case the dependent exists
                         * for: void the edge and release it. Never injected. */
+    TASK_DEP_FOLD_HOLD, /* the group-fold barrier. Unlike BARRIER, a source that fails does NOT
+                         * release the target: the group stays frozen with its (now stale) fold
+                         * edge until a retry fold is started, which rebinds every waiting edge
+                         * to the new fold task via edc_task_rebind_fold_holds(). A successful
+                         * fold releases normally. Only ever produced by the fold path. */
 } edc_task_dep_type;
 
 /* WHY a task is over. |life| says which terminal bucket it landed in; |end| says what put

@@ -76,7 +76,14 @@ struct edc_prev_dep
  * turn/edge decisions live there, not here). |prev| is NULL for a task that starts a
  * chain. Does NOT reply: on error it writes the reason into *out_error (caller frees; NULL
  * when there is no error) -- task creation must not write into the channel as a side
- * effect. */
+ * effect.
+ *
+ * Placement has ONE input: |target_group| (NULL = a new group). Callers resolve
+ * `-g/--group <id>` into that pointer themselves (see shell_named_group in
+ * edc_interp.c), refusing a bad id there; edc_cmd_task_opts carries no group-shaped
+ * field, so a parsed group option cannot be silently dropped again.
+ * |redirect_stdout| / |redirect_stderr| are BORROWED -- copied when a task is created,
+ * so the caller frees them on both success and failure. */
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,

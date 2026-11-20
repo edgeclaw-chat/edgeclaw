@@ -73,6 +73,9 @@ EOF
 
 # Serves ${WORK}/www by asset name. Only the two shapes install.sh uses: `-o FILE URL`
 # and a bare URL. Exit 22 is curl's "HTTP error", which is what a missing asset produces.
+# Every requested URL is appended to ${FAKE_URL_LOG} so a test can assert which endpoints
+# were -- and were not -- contacted. That is how "no API calls" becomes a checkable fact
+# rather than a claim in a comment.
 cat > "${SHIM}/curl" <<'EOF'
 #!/bin/sh
 out=""
@@ -84,12 +87,14 @@ while [ $# -gt 0 ]; do
         *)  url="$1"; shift ;;
     esac
 done
+[ -n "${FAKE_URL_LOG:-}" ] && printf '%s\n' "$url" >> "${FAKE_URL_LOG}"
 name=$(printf '%s' "$url" | sed 's|.*/||')
 src="${FAKE_WWW}/${name}"
-# The API URL is the only one carrying a query string; a release download also contains
-# "/releases/" in its path, so matching that prefix alone would serve the JSON as a tarball.
+# The atom feed is the one endpoint whose URL name differs from the fixture file; a release
+# download also contains "/releases/" in its path, so matching that prefix alone would be
+# ambiguous.
 case "$url" in
-    *"releases?per_page="*) src="${FAKE_WWW}/releases.json" ;;
+    *"/releases.atom") src="${FAKE_WWW}/releases.atom" ;;
 esac
 [ -f "$src" ] || exit 22
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
@@ -97,18 +102,24 @@ EOF
 
 chmod +x "${SHIM}/uname" "${SHIM}/curl"
 
-# A release list shaped like GitHub's: pretty-printed, one field per line, two-space
-# indentation. The parser in install.sh walks exactly this shape.
+# A release feed shaped like GitHub's: each release has an <id> whose last component is the
+# tag. `pre` is 1 for a tag carrying '-' (release.yml's convention); drafts are omitted
+# because the feed omits them. Extra tags are appended after the first so one feed can cover
+# the stable/pre selection cases.
 write_releases() {
-    cat > "${WWW}/releases.json" <<EOF
-[
-  {
-    "tag_name": "$1",
-    "draft": false,
-    "prerelease": $2
-  }
-]
-EOF
+    # $1 = newest tag, $2 = 1 if it is a pre-release; $3.. = further (older) tags
+    {
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+        printf '<feed xmlns="http://www.w3.org/2005/Atom">\n'
+        tag="$1"; shift
+        for t in "$tag" "$@"; do
+            printf '  <entry>\n'
+            printf '    <id>tag:github.com,2008:Repository/1447922093/%s</id>\n' "$t"
+            printf '    <title>%s</title>\n' "$t"
+            printf '  </entry>\n'
+        done
+        printf '</feed>\n'
+    } > "${WWW}/releases.atom"
 }
 
 run_install() {
@@ -151,39 +162,53 @@ expect_fail "unsupported OS"           FreeBSD x86_64
 
 # --------------------------------------------------------------- resolving which tag
 
-write_releases "v2.0.0" false
-out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run)
+# A stable release, alone in the feed. The URL log is reset first: this run must prove it
+# never touches api.github.com -- that is the whole point of reading the atom feed, and the
+# reason a rate-limited machine can still install without --tag.
+: > "${WORK}/urls"
+write_releases "v2.0.0"
+out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_URL_LOG="${WORK}/urls" run_install --dry-run)
 check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v2.0.0" "a stable release is picked"
+check "$(grep -c 'api.github.com' "${WORK}/urls" || true)" "0" \
+      "resolving a tag contacts no API endpoint"
+check "$(grep -c 'releases.atom' "${WORK}/urls" || true)" "1" \
+      "resolving a tag reads the release feed once"
 
-write_releases "v2.0.1-rc.1" true
+# A pre-release newer than a stable one: --pre takes the first entry, the default skips the
+# '-' tag and takes the stable one. Both come from the same feed, newest first.
+write_releases "v2.0.1-rc.1" "v2.0.0"
+out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run)
+check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v2.0.0" \
+      "the default skips a pre-release tag for a stable one"
 out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run --pre)
-check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v2.0.1-rc.1" "--pre allows a pre-release"
+check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v2.0.1-rc.1" \
+      "--pre allows a pre-release"
 
-# The state this project is actually in: everything published is a pre-release. Without
-# --pre that must fail with advice, not install whatever it found.
-if FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run >/dev/null 2>&1; then
-    check "installed a pre-release without --pre" "refused" "a pre-release is not picked implicitly"
+# Only pre-releases in the feed: without --pre that must fail with advice, not install one.
+write_releases "v3.0.0-rc.1" "v2.9.0-beta.2"
+out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run 2>&1)
+if [ -z "$out" ] || printf '%s\n' "$out" | grep -q '^tag '; then
+    check "installed a pre-release" "refused" "a pre-release is not picked implicitly"
 else
     check "refused" "refused" "a pre-release is not picked implicitly"
 fi
+case "$out" in
+    *"--pre"*) check "advises --pre" "advises --pre" "the all-pre refusal mentions --pre" ;;
+    *) check "$out" "advises --pre" "the all-pre refusal mentions --pre" ;;
+esac
 
-# A draft is invisible on the Releases page, so it must never be selected.
-cat > "${WWW}/releases.json" <<'EOF'
-[
-  {
-    "tag_name": "v3.0.0",
-    "draft": true,
-    "prerelease": false
-  },
-  {
-    "tag_name": "v2.5.0",
-    "draft": false,
-    "prerelease": false
-  }
-]
-EOF
-out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 run_install --dry-run)
-check "$(printf '%s\n' "$out" | awk '/^tag /{print $2}')" "v2.5.0" "a draft release is skipped"
+# A tag is spliced into a URL and a temp filename. The charset guard must reject anything
+# with '/' or '..' BEFORE a request is made -- checked by the URL log staying empty.
+: > "${WORK}/urls"
+out=$(FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_URL_LOG="${WORK}/urls" \
+      run_install --dry-run --tag 'v1/../other' 2>&1)
+check "$?" "1" "a tag with a path traversal is refused"
+check "$(grep -c 'releases/download' "${WORK}/urls" || true)" "0" \
+      "a rejected tag never reaches a download URL"
+case "$out" in
+    *"invalid release tag"*) check "names the cause" "names the cause" "the refusal names the bad tag" ;;
+    *) check "$out" "names the cause" "the refusal names the bad tag" ;;
+esac
 
 # ----------------------------------------------------- environments without a HOME
 #

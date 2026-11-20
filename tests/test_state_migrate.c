@@ -236,6 +236,9 @@ static bool make_v7_db(const char *path)
                * necessarily sent one. */
               exec_ok(db, "INSERT INTO tasks(task_id, memo_seen_seq) VALUES (1, 0)") &&
               exec_ok(db, "INSERT INTO tasks(task_id, memo_seen_seq) VALUES (2, 5)") &&
+              /* One group, so the v10 backfill assertion below has a real row to read;
+               * an empty table would make "no non-default rows" pass vacuously. */
+              exec_ok(db, "INSERT INTO groups(group_id) VALUES (10)") &&
               exec_ok(db, "PRAGMA user_version=7");
     sqlite3_close(db);
     return ok;
@@ -513,6 +516,15 @@ static void test_real_v7_to_v8(void)
     CHECK(query_int64(db, "SELECT count(*) FROM sqlite_master "
                            "WHERE type='table' AND name='chat_bubbles'") == 1,
           "chat_bubbles exists after migrating through v9");
+    /* v10 is additive too: the column exists on a migrated database, and its default
+     * keeps every pre-v10 group at the full cap (0). A non-zero default here would
+     * silently shrink the corpus of every group in a user's existing database. */
+    CHECK(column_exists(db, "groups", "fold_corpus_budget"),
+          "groups.fold_corpus_budget exists after migrating through v10");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups WHERE group_id=10") == 1,
+          "the v10 backfill assertion has a real pre-existing group to read");
+    CHECK(query_int64(db, "SELECT fold_corpus_budget FROM groups WHERE group_id=10") == 0,
+          "v10 backfills the full-cap sentinel 0 into an existing group");
 
     /* And the backup is the v7 file, so a user can go back. */
     char backup[800] = {0};
@@ -527,6 +539,78 @@ static void test_real_v7_to_v8(void)
             sqlite3_close(b);
         }
     }
+    sqlite3_close(db);
+    drop_dir();
+}
+
+/* The real v12 -> v13 step: read_count is RENAMED to get_count (keeping recorded
+ * values) and search_count is added at 0. A v12 DB with a real read_count value
+ * is the fixture -- an empty table would make "kept the value" vacuous. */
+static void test_real_v12_to_v13(void)
+{
+    printf("\n── the real v12 -> v13 step (usage counters split) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY, "
+                             "read_count INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO memo_entries(entry_id,read_count) VALUES ('m1',7)") &&
+                 exec_ok(db, "PRAGMA user_version=12");
+    CHECK(built, "fixture v12 database with a real read_count=7");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 12, err, sizeof err), "v12 migrates to v13");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "memo_entries", "get_count"), "get_count exists");
+    CHECK(column_exists(db, "memo_entries", "search_count"), "search_count exists");
+    CHECK(!column_exists(db, "memo_entries", "read_count"), "old read_count column is gone");
+    CHECK(query_int64(db, "SELECT get_count FROM memo_entries WHERE entry_id='m1'") == 7,
+          "recorded read_count=7 became get_count=7 (no data loss)");
+    CHECK(query_int64(db, "SELECT search_count FROM memo_entries WHERE entry_id='m1'") == 0,
+          "search_count starts at 0 (unrecorded history not invented)");
+    sqlite3_close(db);
+    drop_dir();
+}
+
+/* The real v13 -> v14 step: an independent extract budget is added at 0. */
+static void test_real_v13_to_v14(void)
+{
+    printf("\n── the real v13 -> v14 step (independent extract budget) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY, "
+                             "fold_corpus_budget INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO groups(group_id,fold_corpus_budget) VALUES (10,32768)") &&
+                 exec_ok(db, "PRAGMA user_version=13");
+    CHECK(built, "fixture v13 database with a real group");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 13, err, sizeof err), "v13 migrates to v14");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "groups", "extract_summary_budget"), "extract_summary_budget exists");
+    CHECK(query_int64(db, "SELECT extract_summary_budget FROM groups WHERE group_id=10") == 0,
+          "new extract budget starts at full-cap sentinel 0");
+    CHECK(query_int64(db, "SELECT fold_corpus_budget FROM groups WHERE group_id=10") == 32768,
+          "the independent fold budget value survives migration");
     sqlite3_close(db);
     drop_dir();
 }
@@ -567,6 +651,8 @@ int main(void)
     test_no_version_refused();
     test_verify_failure_reported();
     test_real_v7_to_v8();
+    test_real_v12_to_v13();
+    test_real_v13_to_v14();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);

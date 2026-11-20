@@ -369,32 +369,19 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 }
                 continue;
             }
-            if (strncmp(p, "--group ", 8) == 0)
+            /* `-g/--group <id>` is consumed here only to keep this legacy parser's
+             * input/desc extraction working; it produces NO group value. The modern
+             * input pipeline parses shell options into an AST and resolves the named
+             * group to a target_group pointer before spawn (edc_interp.c). A second,
+             * text-shaped group channel in this struct is what made `--group` parse
+             * but do nothing -- do not add it back. */
+            if (strncmp(p, "--group ", 8) == 0 || strncmp(p, "-g ", 3) == 0)
             {
-                p += 8;
+                p += (p[1] == '-') ? 8 : 3;
                 while (*p == ' ')
                     p++;
-                char *s = p;
                 while (*p && *p != ' ')
-                    p++;
-                if (p > s)
-                    opts->group_id = sdsnewlen(s, p - s);
-                continue;
-            }
-            if (strncmp(p, "-g ", 3) == 0)
-            {
-                p += 3;
-                while (*p == ' ')
-                    p++;
-                char *s = p;
-                while (*p && *p != ' ')
-                    p++;
-                if (p > s)
-                {
-                    if (opts->group_id)
-                        sdsfree(opts->group_id);
-                    opts->group_id = sdsnewlen(s, p - s);
-                }
+                    p++; /* skip the value */
                 continue;
             }
             /* Anything else unrecognized is recorded, not skipped: the caller refuses the
@@ -422,8 +409,6 @@ void edc_cmd_task_opts_free(struct edc_cmd_task_opts *opts)
         sdsfree(opts->desc);
     if (opts->input)
         sdsfree(opts->input);
-    if (opts->group_id)
-        sdsfree(opts->group_id);
     if (opts->unknown_option)
         sdsfree(opts->unknown_option);
     for (int i = 0; i < opts->dep_count; i++)

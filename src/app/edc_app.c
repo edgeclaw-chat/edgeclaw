@@ -277,8 +277,16 @@ static void app_import_legacy_chat_logs(struct edc_app *app)
 {
     struct edc_session_row *rows = NULL;
     int n = 0;
-    if (!edc_state_store_list_sessions(&rows, &n) || n <= 0)
+    if (!edc_state_store_list_sessions(&rows, &n))
         return;
+    if (n <= 0)
+    {
+        /* list_sessions succeeded but returned no rows: on this path it may still have
+         * allocated the (empty) rows array, which the caller owns. Free it before the
+         * early return -- the old code leaked it on every empty workspace. */
+        edc_session_rows_free(rows, n);
+        return;
+    }
     for (int i = 0; i < n; i++)
     {
         char sid[32];

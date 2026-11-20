@@ -102,7 +102,23 @@ struct edc_scheduler;
 /* v9: chat_bubbles -- the TUI's durable, paged view state (was chat.jsonl).
  * Migration step_v8_to_v9 creates the table/index and nothing else: no existing
  * table is altered, so a v8 database migrates with zero data rewrite. */
-#define EDC_DB_VERSION 9
+/* v10: groups.fold_corpus_budget -- the reduced L1/L2 corpus budget after consecutive
+ * memory-round failures. step_v9_to_v10 is one O(1) ADD COLUMN with DEFAULT 0 (the
+ * documented "full cap"), so every pre-v10 group keeps its old behaviour. */
+/* v11: groups.fold_failure_state -- the persisted "this group's fold failed, its
+ * barrier is still held" state (0 = healthy; N = consecutive volume-related failures,
+ * capped by EDC_FOLD_MAX_FAILURES). step_v10_to_v11 is one O(1) ADD COLUMN DEFAULT 0,
+ * so a pre-v11 group loads as healthy and keeps its old behaviour. A restart must not
+ * silently unfreeze a group that is still waiting for a retry. */
+/* v12: memo_entries.read_count -- how many times an entry's detail was read via
+ * memory_get. step_v11_to_v12 is one O(1) ADD COLUMN DEFAULT 0, so pre-v12 entries
+ * start at zero reads rather than being invented as "popular". */
+/* v13: split the single read_count into two independent signals: get_count (DETAIL
+ * read via memory_get, inheriting the old read_count values) and search_count
+ * (memory_search hit, new column default 0). step_v12_to_v13 is O(1). */
+/* v14: groups.extract_summary_budget -- the two-stage extract's INDEPENDENT corpus
+ * budget, separate from fold_corpus_budget. O(1) ADD COLUMN DEFAULT 0. */
+#define EDC_DB_VERSION 14
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

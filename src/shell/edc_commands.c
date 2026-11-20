@@ -1122,10 +1122,14 @@ static struct edc_session *cmd_input_session(struct edc_session_manager *sm, str
  * The vocabulary (`--bg`, `--new-group`, `-d|--with`, `-g|--group`) is this command's
  * business, exactly as `-l` is `ls`'s: the splitter must not know it. Separated form only --
  * `-dt1` stays a word, because the lexer never makes it an option. */
+/* |out_group_text| is an OUT parameter, not part of edc_cmd_task_opts: the group is
+ * resolved to a target_group pointer before the task is created, so the shared opts
+ * struct must not grow a second (text-shaped) way to name a group. */
 static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub_argv *args,
-                                    struct edc_cmd_task_opts *opts)
+                                    struct edc_cmd_task_opts *opts, sds *out_group_text)
 {
     memset(opts, 0, sizeof(*opts));
+    *out_group_text = NULL;
     sds text = sdsempty(); /* the description: every non-option word, in order */
     bool any = false;
 
@@ -1156,6 +1160,8 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
                 edc_commands_reply(to, reply);
                 sdsfree(reply);
                 sdsfree(text);
+                sdsfree(*out_group_text);
+                *out_group_text = NULL;
                 edc_cmd_task_opts_free(opts);
                 return false;
             }
@@ -1167,8 +1173,8 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
             }
             else
             {
-                sdsfree(opts->group_id);
-                opts->group_id = sdsnew(v);
+                sdsfree(*out_group_text);
+                *out_group_text = sdsnew(v);
             }
             continue;
         }
@@ -1186,6 +1192,8 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
             edc_commands_reply(to, reply);
             sdsfree(reply);
             sdsfree(text);
+            sdsfree(*out_group_text);
+            *out_group_text = NULL;
             edc_cmd_task_opts_free(opts);
             return false;
         }
@@ -1208,7 +1216,8 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     if (!session)
         return;
     struct edc_cmd_task_opts opts;
-    if (!cmd_task_opts_from_argv(to, args, &opts))
+    sds group_text = NULL;
+    if (!cmd_task_opts_from_argv(to, args, &opts, &group_text))
         return;
 
     /* A task needs something to run. With no text there is nothing to attach, and a READY
@@ -1219,6 +1228,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     {
         edc_commands_reply(to, "A task needs an input — write `/task new <desc>` "
                                "(flags alone do not create a task).");
+        sdsfree(group_text);
         edc_cmd_task_opts_free(&opts);
         return;
     }
@@ -1238,6 +1248,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
                 edc_commands_reply(to, reply);
                 sdsfree(reply);
                 free(deps);
+                sdsfree(group_text);
                 edc_cmd_task_opts_free(&opts);
                 return;
             }
@@ -1260,17 +1271,17 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     spec.deps = deps;
     spec.dep_count = (size_t)opts.dep_count;
 
-    if (opts.group_id)
+    if (group_text)
     {
         /* The name may not exist yet; the scheduler makes one led by this task. */
-        if (!edc_session_find_group(session, (int64_t)strtoll(opts.group_id, NULL, 10)))
+        if (!edc_session_find_group(session, (int64_t)strtoll(group_text, NULL, 10)))
         {
-            sds reply = sdscatprintf(sdsempty(), "Group `%s` not found — creating a new group.", opts.group_id);
+            sds reply = sdscatprintf(sdsempty(), "Group `%s` not found — creating a new group.", group_text);
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
         spec.place = EDC_TASK_PLACE_GROUP;
-        spec.group_id = opts.group_id ? (int64_t)strtoll(opts.group_id, NULL, 10) : 0;
+        spec.group_id = (int64_t)strtoll(group_text, NULL, 10);
     }
     else
     {
@@ -1287,6 +1298,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     deps = NULL;
     if (!task)
     {
+        sdsfree(group_text);
         edc_cmd_task_opts_free(&opts);
         return;
     }
@@ -1296,6 +1308,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
     if (opts.desc && sdslen(opts.desc) > 0 && edc_task_awaits_deps(task))
         log_info("/task new: task %s waits for its dependencies, turn queued", edc_id_str(task->task_id));
 
+    sdsfree(group_text);
     edc_cmd_task_opts_free(&opts);
 }
 
@@ -2324,6 +2337,9 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
     out = sdscatprintf(out, "- **fold epoch** %u · **memory** %s · **failure streak** %d/%d\n", group->fold_epoch,
                        (group->memory && sdslen(group->memory) > 0) ? "present" : "none (never folded)",
                        group->fold_failures, EDC_FOLD_MAX_FAILURES);
+    if (group->fold_held)
+        out = sdscat(out, "- **fold failed: barrier held** — the group is frozen until a retry lands "
+                          "(`/group fold`, or a new task joining the group)\n");
     {
         /* The tracked-file counts belong next to `memory`: they are part of it, and this
          * line is where someone looks to find out whether there is anything to see. */
@@ -2528,6 +2544,8 @@ static const char *edc_commands_dep_kind(edc_task_dep_type type)
         return "ORDER (`;`)";
     case TASK_DEP_UNLESS:
         return "INVERSE (`||`)";
+    case TASK_DEP_FOLD_HOLD:
+        return "FOLD HOLD";
     }
     return "DEP";
 }

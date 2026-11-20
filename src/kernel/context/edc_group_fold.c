@@ -180,32 +180,70 @@ int edc_group_fold_hold_task(struct edc_task *task)
          * the members wait for BOTH: L1 produces the memory, L2 reconciles it into the index. */
         if (!edc_task_is_memory_sink(t) || t->sink_group != task->group)
             continue;
-        if (edc_task_add_dependency(task, t, TASK_DEP_BARRIER))
+        /* Only L1 (GROUP_MEMORY) gets the sticky FOLD_HOLD: that is the edge a failed
+         * round keeps and the retry rebinds. The chained L2 curation uses the ordinary
+         * BARRIER -- it is released by its source ending either way (a dead curation
+         * must not permanently freeze a task that joined mid-round). */
+        edc_task_dep_type type =
+            (t->sink == EDC_SINK_GROUP_MEMORY) ? TASK_DEP_FOLD_HOLD : TASK_DEP_BARRIER;
+        if (edc_task_add_dependency(task, t, type))
             added++;
     }
     return added;
+}
+
+bool edc_group_fold_is_volume_failure(int task_fail)
+{
+    /* TRANSPORT is http_status == 0: DNS/TCP/TLS OR the 300s non-streaming timeout.
+     * The real DB's failure census (m148) is dominated by the latter, so treating the
+     * whole class as "shrink the corpus" is the only workable classification today;
+     * a pure network blip costs one extra halving and nothing else. Auth / rate limit /
+     * other 4xx never get better by sending less text, and must not consume the
+     * three-attempt budget. NONE covers landing-semantic failures (empty summary,
+     * unresolved cut), which are corpus problems by definition. */
+    return task_fail == EDC_FAIL_NONE || task_fail == EDC_FAIL_TRANSPORT ||
+           task_fail == EDC_FAIL_CONTEXT_OVERFLOW;
 }
 
 void edc_group_fold_note_failure(struct edc_task_group *group)
 {
     if (!group)
         return;
-    group->fold_failures++;
+    group->fold_held = true;
+    /* Cap the streak: a manual fold / new task may restart a group that is already at
+     * the cap, and another failure must keep it held rather than count to 4, 5, ...
+     * (all the gates use >= EDC_FOLD_MAX_FAILURES; keeping the number at the cap just
+     * makes `/group info` honest). The corpus budget still shrinks on every failure
+     * (down to its floor), regardless of the counter. */
+    if (group->fold_failures < EDC_FOLD_MAX_FAILURES)
+        group->fold_failures++;
+    /* Retry SMALLER, not byte-identical: the next round must not rebuild the same
+     * corpus that just timed out. Shared with the L2 extraction failures. */
+    edc_group_fold_shrink_corpus(group);
     if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
-        log_error("L1 fold: group %s failed %d times in a row — automatic folding is paused for this group "
-                  "(do new work in it, or run /group fold %s, to try again)",
+        log_error("L1 fold: group %s failed %d times in a row — automatic retries stop here; the fold "
+                  "barrier stays held until /group fold %s or a new task joins the group",
                   edc_id_str(group->group_id), group->fold_failures, edc_id_str(group->group_id));
     else
-        log_info("L1 fold: group %s fold failure %d/%d", edc_id_str(group->group_id), group->fold_failures,
-                 EDC_FOLD_MAX_FAILURES);
+        log_info("L1 fold: group %s fold failure %d/%d; retrying with a smaller corpus",
+                 edc_id_str(group->group_id), group->fold_failures, EDC_FOLD_MAX_FAILURES);
 }
 
 void edc_group_fold_note_progress(struct edc_task_group *group)
 {
-    if (!group || group->fold_failures == 0)
+    if (!group)
         return;
-    log_info("L1 fold: group %s failure streak cleared (was %d)", edc_id_str(group->group_id), group->fold_failures);
-    group->fold_failures = 0;
+    group->fold_held = false;
+    if (group->fold_failures > 0)
+    {
+        log_info("L1 fold: group %s failure streak cleared (was %d)", edc_id_str(group->group_id),
+                 group->fold_failures);
+        group->fold_failures = 0;
+    }
+    /* A successful landing is the ONLY proof the corpus size is workable again.
+     * Neither starting a retry, a manual fold, nor new content may restore the full
+     * cap: those are triggers, not evidence. */
+    group->fold_corpus_budget = 0;
 }
 
 bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *conf)
@@ -213,11 +251,13 @@ bool edc_group_fold_due(struct edc_task_group *group, const struct edc_config *c
     if (!group || edc_task_group_count_foldable(group) == 0)
         return false;
 
-    /* (c) Consecutive failures at the cap => automatic folding stops (manual
-     * /group fold goes through start and skips this gate). Without it, "fail -> group
-     * still due -> retry unchanged" is a perpetual motion machine: measured ~one real
-     * call every ~40s, members parked over and over. */
-    if (group->fold_failures >= EDC_FOLD_MAX_FAILURES)
+    /* A held fold (ANY failed round, volume-related or not) suspends window-based
+     * automatic folding: the shrink-and-retry chain is driven explicitly after each
+     * failure while under the cap, and once the cap is hit ONLY /group fold or a new
+     * task joining the group may restart it. Without this gate "fail -> group still
+     * due -> retry unchanged" is a perpetual motion machine: measured ~one real call
+     * every ~40s, members parked over and over. */
+    if (group->fold_held || group->fold_failures >= EDC_FOLD_MAX_FAILURES)
         return false;
 
     /* The only predicate = the token axis (the message-count axis is fully retired).
@@ -473,13 +513,18 @@ int edc_group_fold_tracked_files(const struct edc_task_group *group, sds *out_re
 /* The implementation; the public wrapper below keeps its three-argument shape for the tests
  * and callers that only want the prompt. */
 static sds fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut,
-                             struct edc_fold_files **out_files)
+                             struct edc_fold_scope *out_scope, struct edc_fold_files **out_files)
 {
     if (out_cut)
     {
         out_cut->task_id = 0;
         out_cut->turn = 0;
         out_cut->prefix = 0;
+    }
+    if (out_scope)
+    {
+        out_scope->task_ids = NULL;
+        out_scope->count = 0;
     }
     if (!group)
         return NULL;
@@ -534,10 +579,11 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
      * EDC_FOLD_MAX_CORPUS_TOKENS; if it cannot (the first message alone exceeds the
      * cap) keep one and let the failure cap above catch it -- never move the cut to 0,
      * which is a "due but yields nothing" spin. */
+    const int64_t corpus_cap = edc_group_fold_corpus_cap(group);
     int64_t corpus = 0;
     for (size_t i = 0; i < cut_at; i++)
         corpus += ps[i].tokens;
-    while (cut_at > 1 && corpus > EDC_FOLD_MAX_CORPUS_TOKENS)
+    while (cut_at > 1 && corpus > corpus_cap)
     {
         cut_at--;
         corpus -= ps[cut_at].tokens;
@@ -570,9 +616,9 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         out_cut->turn = (uint32_t)cut_piece->turn_index;
         out_cut->prefix = cut_prefix;
     }
-    log_info("L1 fold: group %s fold %zu/%zu msgs (%" PRId64 " corpus tokens, cap %d; keep_recent ~%d), "
-             "cut at task %s turn %zu msg %u",
-             edc_id_str(group->group_id), cut_at, cnt, corpus, EDC_FOLD_MAX_CORPUS_TOKENS, EDC_FOLD_KEEP_RECENT_TOKENS,
+    log_info("L1 fold: group %s fold %zu/%zu msgs (%" PRId64 " corpus tokens, cap %" PRId64
+             "; keep_recent ~%d), cut at task %s turn %zu msg %u",
+             edc_id_str(group->group_id), cut_at, cnt, corpus, corpus_cap, EDC_FOLD_KEEP_RECENT_TOKENS,
              edc_id_str(cut_piece->task->task_id), cut_piece->turn_index, cut_prefix);
 
     bool has_memory = (group->memory && sdslen(group->memory) > 0);
@@ -586,6 +632,17 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
         if (tk != cur)
         {
             cur = tk;
+            /* The corpus walk is the single pass that knows exactly which members
+             * this round covers; collect them here for the task description. */
+            if (out_scope)
+            {
+                int64_t *grown = realloc(out_scope->task_ids, (out_scope->count + 1) * sizeof(*grown));
+                if (grown)
+                {
+                    out_scope->task_ids = grown;
+                    out_scope->task_ids[out_scope->count++] = tk->task_id;
+                }
+            }
             prompt = sdscatprintf(prompt, "\n### [task %s] %s\n", edc_id_str(tk->task_id), tk->description ? tk->description : "");
         }
         cJSON *m = ps[i].msg;
@@ -650,7 +707,104 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
 
 sds edc_group_fold_build_prompt(struct edc_task_group *group, const char *focus, struct edc_fold_cut *out_cut)
 {
-    return fold_build_prompt(group, focus, out_cut, NULL);
+    return fold_build_prompt(group, focus, out_cut, NULL, NULL);
+}
+
+int64_t edc_group_fold_corpus_cap(const struct edc_task_group *group)
+{
+    if (!group || group->fold_corpus_budget <= 0)
+        return EDC_FOLD_MAX_CORPUS_TOKENS;
+    int64_t cap = group->fold_corpus_budget;
+    if (cap < EDC_FOLD_MIN_CORPUS_TOKENS)
+        cap = EDC_FOLD_MIN_CORPUS_TOKENS;
+    if (cap > EDC_FOLD_MAX_CORPUS_TOKENS)
+        cap = EDC_FOLD_MAX_CORPUS_TOKENS;
+    return cap;
+}
+
+/* One more consecutive failure: halve the NEXT round's corpus. The old behaviour
+ * rebuilt a byte-identical ~131k-token prompt after every timeout (the real DB's
+ * group 130 did it 33 times). A smaller corpus is more likely to finish inside
+ * the 300s non-streaming deadline, so the watermark can actually advance; the
+ * remaining messages are left for later rounds. The floor keeps the round useful
+ * (at least one message still fits, so the cut never collapses to 0). */
+void edc_group_fold_shrink_corpus(struct edc_task_group *group)
+{
+    if (!group)
+        return;
+    int64_t cur = group->fold_corpus_budget > 0 ? group->fold_corpus_budget : EDC_FOLD_MAX_CORPUS_TOKENS;
+    cur /= 2;
+    if (cur < EDC_FOLD_MIN_CORPUS_TOKENS)
+        cur = EDC_FOLD_MIN_CORPUS_TOKENS;
+    group->fold_corpus_budget = cur;
+    log_info("L1 fold: group %s corpus budget cut to %" PRId64 " tokens after a failure",
+             edc_id_str(group->group_id), cur);
+}
+
+void edc_fold_scope_free(struct edc_fold_scope *scope)
+{
+    if (!scope)
+        return;
+    free(scope->task_ids);
+    scope->task_ids = NULL;
+    scope->count = 0;
+}
+
+/* One line for the task list: a bare "fold group memory" cannot say WHICH of a
+ * session's groups, WHICH tasks' messages, or where the round stopped. Keep it a
+ * single line and bounded: the sidebar renders it next to the task id, and the
+ * fold/extract corpus also reuses task->description as a section header. */
+sds edc_group_fold_scope_desc(const char *kind, int64_t session_id, int64_t group_id, const int64_t *covered,
+                              size_t covered_n, int64_t cut_task, uint32_t cut_turn, uint32_t cut_prefix)
+{
+    /* At most three ids, then "+N more": a group can have hundreds of members. */
+    enum
+    {
+        kShowMax = 3
+    };
+    size_t shown = covered_n < kShowMax ? covered_n : (size_t)kShowMax;
+
+    sds out = sdscatprintf(sdsempty(), "%s (session %" PRId64 ", group %" PRId64 ", tasks ",
+                           kind ? kind : "memory task", session_id, group_id);
+    if (shown == 0)
+        out = sdscat(out, "(none)");
+    for (size_t i = 0; i < shown; i++)
+    {
+        /* edc_id_str uses four rotating buffers, so append one at a time -- never
+         * let a second call overwrite a pointer still waiting to be formatted. */
+        if (i)
+            out = sdscat(out, ",");
+        out = sdscat(out, edc_id_str(covered[i]));
+    }
+    if (covered_n > shown)
+        out = sdscatprintf(out, " +%zu more", covered_n - shown);
+    out = sdscat(out, "; cut ");
+    out = sdscat(out, edc_id_str(cut_task));
+    out = sdscatprintf(out, "/t%u/m%u)", cut_turn, cut_prefix);
+    return out;
+}
+
+/* A failed fold keeps its TASK_DEP_FOLD_HOLD edges live (the group stays frozen), but
+ * the failed task itself is terminal and will never produce again. A retry is a NEW
+ * task, so point every surviving edge at it before the member sweep below runs: the
+ * sweep then dedups by source instead of stacking a second edge on the same member. */
+static int fold_rebind_held_edges(struct edc_session *session, struct edc_task_group *group,
+                                  struct edc_task *fresh)
+{
+    struct edc_task_group *sys = edc_session_find_system_group(session);
+    if (!sys)
+        return 0;
+    int rebound = 0;
+    struct edc_task *t;
+    LL_FOREACH2(sys->members, t, group_next)
+    {
+        if (t == fresh || t->sink != EDC_SINK_GROUP_MEMORY || t->sink_group != group)
+            continue;
+        if (!edc_task_is_finished(t))
+            continue;
+        rebound += edc_task_rebind_fold_holds(t, fresh);
+    }
+    return rebound;
 }
 
 struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_session *session,
@@ -665,18 +819,25 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
 
     struct edc_fold_cut cut;
     memset(&cut, 0, sizeof(cut));
+    struct edc_fold_scope scope;
+    memset(&scope, 0, sizeof(scope));
     struct edc_fold_files *files = edc_fold_files_new();
-    sds prompt = fold_build_prompt(group, focus, &cut, &files);
+    sds prompt = fold_build_prompt(group, focus, &cut, &scope, &files);
     if (!prompt)
     {
+        edc_fold_scope_free(&scope);
         edc_fold_files_free(files);
         return NULL;
     }
 
-    struct edc_task *task = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
+    sds desc = edc_group_fold_scope_desc("fold group memory", session->session_id, group->group_id, scope.task_ids,
+                                         scope.count, cut.task_id, cut.turn, cut.prefix);
+    struct edc_task *task = edc_scheduler_spawn_system_task(sched, session, desc);
+    sdsfree(desc);
     if (!task)
     {
         sdsfree(prompt);
+        edc_fold_scope_free(&scope);
         edc_fold_files_free(files);
         return NULL;
     }
@@ -707,21 +868,32 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
          * dependents (SEQUENCE). */
         edc_task_mark_failed(task);
         sdsfree(prompt);
+        edc_fold_scope_free(&scope);
         return NULL;
     }
 
+    /* Before the member sweep: a previous failed fold left TASK_DEP_FOLD_HOLD edges
+     * naming its (terminal) task. Rebind them to THIS task, so the sweep below dedups
+     * by source and the group remains frozen under one coherent barrier. */
+    int rebound = fold_rebind_held_edges(session, group, task);
+    if (rebound > 0)
+        log_info("L1 fold: group %s retry rebound %d held task(s) from the failed round",
+                 edc_id_str(group->group_id), rebound);
+
     /* Barrier: every non-terminal member now waits for this fold (see the note at
-     * the top of the file). A READY member takes the SEQUENCE edge and lands in
-     * AWAIT_DEPS at once; a member already in flight keeps running, and the
-     * executor parks it at its next request boundary (tool_done refuses the next
-     * LLM send while a dep is outstanding). Either way the release is the same:
-     * the fold completing notifies its dependents. */
+     * the top of the file). A READY member takes the edge and lands in AWAIT_DEPS at
+     * once; a member already in flight keeps running, and the executor parks it at its
+     * next request boundary (tool_done refuses the next LLM send while a dep is
+     * outstanding). TASK_DEP_FOLD_HOLD, not BARRIER: a failed fold does NOT release the
+     * group (that would let new history grow the corpus we are trying to shrink). The
+     * retry rebinds these edges to its own task; only a successful landing releases
+     * them. */
     struct edc_task *m;
     LL_FOREACH2(group->members, m, group_next)
     {
         if (edc_task_is_completed(m) || edc_task_is_cancelled(m) || edc_task_has_failed(m))
             continue;
-        edc_task_add_dependency(m, task, TASK_DEP_BARRIER);
+        edc_task_add_dependency(m, task, TASK_DEP_FOLD_HOLD);
     }
 
     /* L2 and the fold are built TOGETHER: the whole chain is visible at once
@@ -729,7 +901,8 @@ struct edc_task *edc_group_fold_start(struct edc_scheduler *sched, struct edc_se
      * L1 runs first; only after it lands is L2 driven (the JOIN edge plus injecting its
      * output as material); members wait for both. L1 failing/cancelling => L2 fails/
      * cancels automatically (JOIN cascade) => members are released -- no extra logic. */
-    edc_session_memory_start(sched, session, group, task);
+    edc_session_memory_start(sched, session, group, task, &scope);
+    edc_fold_scope_free(&scope);
 
     /* The prompt is dispatched by the message-end scan, like any task. */
     log_info("L1 fold: prompt attached to system task %s (it will be dispatched by the scheduler)",
@@ -936,8 +1109,13 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     group->fold_epoch++;
     /* The memory now covers up to the newest message it folded. */
     group->memory_covers_to = group_memory_covers_to(group);
-    /* (c) Successful landing => clear the consecutive-failure count. */
+    /* (c) Successful landing => clear the consecutive-failure count AND release the
+     * fold barrier. Until this point the group is frozen: no new history could grow
+     * the corpus, and a failed round left the FOLD_HOLD edges live for the retry to
+     * rebind. A landing that wrote memory but could not apply the cut (the two early
+     * returns above) does NOT release -- that is still a failed round. */
     edc_group_fold_note_progress(group);
+    edc_group_fold_release_holds(task);
     log_info("L1 fold done: group %s folded %zu turns (%zu msgs), cut at task %s turn %u msg %u", edc_id_str(group->group_id),
              folded_turns, folded_msgs, edc_id_str(task->fold_cut_task_id), task->fold_cut_turn, task->fold_cut_prefix);
     return true;
