@@ -759,6 +759,53 @@ static void test_extract_budget_is_independent(void)
     edc_config_free(cfg);
 }
 
+/* Direct coverage of the extract budget helpers (public API, every branch). */
+static void test_extract_budget_helpers(void)
+{
+    TEST("extract budget helpers: cap clamp, shrink halving/floor, NULL guards");
+
+    /* NULL guards. */
+    CHECK(edc_group_extract_corpus_cap(NULL) == EDC_FOLD_MAX_CORPUS_TOKENS,
+          "corpus_cap(NULL) = full cap");
+    edc_group_extract_shrink_budget(NULL); /* must not crash */
+
+    struct edc_config *cfg = make_config();
+    struct edc_session *session = edc_session_new(cfg, edc_test_session_id("sess-budget-helpers"), "BudgetHelpers");
+    struct edc_task_group *group = make_finished_user_group(session, "g1", "work", OLD_TS, 1);
+
+    /* Default (=0) means full cap. */
+    group->extract_summary_budget = 0;
+    CHECK(edc_group_extract_corpus_cap(group) == EDC_FOLD_MAX_CORPUS_TOKENS,
+          "budget 0 -> full cap");
+    /* Clamp: below floor and above max. */
+    group->extract_summary_budget = EDC_FOLD_MIN_CORPUS_TOKENS / 2;
+    CHECK(edc_group_extract_corpus_cap(group) == EDC_FOLD_MIN_CORPUS_TOKENS,
+          "budget below floor clamps to floor");
+    group->extract_summary_budget = EDC_FOLD_MAX_CORPUS_TOKENS * 2;
+    CHECK(edc_group_extract_corpus_cap(group) == EDC_FOLD_MAX_CORPUS_TOKENS,
+          "budget above max clamps to max");
+
+    /* Shrink halves, and floors at EDC_FOLD_MIN_CORPUS_TOKENS. */
+    group->extract_summary_budget = 65536;
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == 32768, "shrink halves 65536 -> 32768");
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == EDC_FOLD_MIN_CORPUS_TOKENS,
+          "shrink floors at minimum (32768/2=16384)");
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == EDC_FOLD_MIN_CORPUS_TOKENS,
+          "shrink stays at floor (does not underflow)");
+
+    /* Shrink from default also halves from the full cap. */
+    group->extract_summary_budget = 0;
+    edc_group_extract_shrink_budget(group);
+    CHECK(group->extract_summary_budget == EDC_FOLD_MAX_CORPUS_TOKENS / 2,
+          "shrink from default halves the full cap");
+
+    edc_session_free(session);
+    edc_config_free(cfg);
+}
+
 /* ══════════════════════════════════════════════════════════════
  *  main
  *  ══════════════════════════════════════════════════════════════ */
@@ -778,6 +825,7 @@ int main(void)
     test_prompts_have_recency_rule();
     test_two_stage_never_prunes_group();
     test_extract_budget_is_independent();
+    test_extract_budget_helpers();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
     return test_failed ? 1 : 0;

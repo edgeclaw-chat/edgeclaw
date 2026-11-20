@@ -1515,12 +1515,11 @@ static size_t extract_collect(struct edc_task *const *members, size_t n, struct 
     return cnt;
 }
 
-/* summary_mode: build the L1 "knowledge candidate" prompt (tools=none, no entry index)
- * instead of the legacy direct-extract prompt (memory tools + entry index). Both share
- * the same per-group corpus collection, cap and cut -- only the payload tail differs. */
+/* Build the L1 "knowledge candidate" prompt (tools=none, no entry index): a bounded
+ * span of raw unfolded history that the one-shot summary task compresses into candidates.
+ * The entry index and memory-tool instructions belong to the chained L2 curator, not here. */
 static sds build_extract_prompt(struct edc_session *session, struct edc_task_group *group,
-                                struct edc_extract_cut *out_cut, struct edc_fold_scope *out_scope,
-                                bool summary_mode)
+                                struct edc_extract_cut *out_cut, struct edc_fold_scope *out_scope)
 {
     if (out_cut)
     {
@@ -1557,7 +1556,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
      * advances at least one message, so the loop terminates). Never move the cut to 0
      * (a "due but yields nothing" spin). */
     const int64_t corpus_cap =
-        summary_mode ? edc_group_extract_corpus_cap(group) : edc_group_fold_corpus_cap(group);
+        edc_group_extract_corpus_cap(group);
     size_t cut_at = cnt; /* index of the first NOT-covered piece */
     if (total > corpus_cap)
     {
@@ -1602,18 +1601,12 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         }
     }
 
-    sds out = summary_mode
-                  ? sdscatprintf(sdsempty(),
-                                 "## Group history to compress into knowledge candidates\n"
-                                 "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
-                                 "content order) that has NOT reached the session memory yet. Compress it into\n"
-                                 "the candidate list your instructions ask for; do NOT answer the conversation.\n\n",
-                                 edc_id_str(group->group_id))
-                  : sdscatprintf(sdsempty(),
-                                 "## Group history to extract from\n"
-                                 "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
-                                 "content order) that has NOT reached the session memory yet.\n\n",
-                                 edc_id_str(group->group_id));
+    sds out = sdscatprintf(sdsempty(),
+                           "## Group history to compress into knowledge candidates\n"
+                           "Group %s. Everything below is raw, un-folded conversation history (tasks in\n"
+                           "content order) that has NOT reached the session memory yet. Compress it into\n"
+                           "the candidate list your instructions ask for; do NOT answer the conversation.\n\n",
+                           edc_id_str(group->group_id));
     if (group->memory && sdslen(group->memory) > 0)
     {
         /* Neither the group memory's text nor its entries are here, but its recency is:
@@ -1662,31 +1655,12 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
         }
     }
 
-    if (summary_mode)
-    {
-        /* L1: no entry index (that is the L2 curator's job, injected by its own prompt),
-         * and no memory-tool instructions -- this task has tools=none. Just tell it the
-         * candidate format; kExtractSummarySystemPrompt carries the detailed rules. */
-        out = sdscat(out, "\n\nOutput the KNOWLEDGE CANDIDATES now (markdown bullets grouped by "
-                          "subject; each with source task and timestamp). Do not answer the "
-                          "conversation.\n");
-    }
-    else
-    {
-        out = sdscat(out, "\n## Existing session entries\n");
-        size_t total_entries = 0;
-        sds index = edc_session_memory_index_lines(session->memo, 0, EDC_SESSION_MEMORY_MAX_ENTRIES + 1, &total_entries);
-        if (sdslen(index))
-            out = sdscatsds(out, index);
-        else
-            out = sdscat(out, "(none yet)");
-        sdsfree(index);
-        out = sdscat(out, "\n\nNow use the memory tools on the material above:\n"
-                          "1) RECONCILE -- find the existing entries it covers (memory_search / memory_list),\n"
-                          "   read each (memory_get), and update or retire any whose facts it has changed;\n"
-                          "2) EXTRACT -- update a related entry, or memory_write a new one when nothing\n"
-                          "   related exists.\n");
-    }
+    /* No entry index and no memory-tool instructions here: that is the L2 curator's
+     * job, injected by its own prompt. This task has tools=none; the detailed candidate
+     * rules live in kExtractSummarySystemPrompt. */
+    out = sdscat(out, "\n\nOutput the KNOWLEDGE CANDIDATES now (markdown bullets grouped by "
+                      "subject; each with source task and timestamp). Do not answer the "
+                      "conversation.\n");
 
     free(members);
     extract_free_pieces(ps, cnt);
@@ -1813,7 +1787,7 @@ static struct edc_task *extract_start(struct edc_scheduler *sched, struct edc_se
     memset(&cut, 0, sizeof(cut));
     struct edc_fold_scope scope;
     memset(&scope, 0, sizeof(scope));
-    sds prompt = build_extract_prompt(session, group, &cut, &scope, /*summary_mode=*/true);
+    sds prompt = build_extract_prompt(session, group, &cut, &scope);
     if (!prompt)
     {
         edc_fold_scope_free(&scope);
