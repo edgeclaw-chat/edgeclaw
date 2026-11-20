@@ -439,6 +439,39 @@ static bool verify_v9(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v9 -> v10: persist the reduced memory-round corpus budget on each group.
+ * Purely additive (one ALTER TABLE ADD COLUMN, constant default), so a 462 MB v9
+ * database migrates with zero data rewrite. 0 is the documented "full cap" value, which
+ * is exactly what every pre-v10 group had in memory before the restart. */
+static bool step_v9_to_v10(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db,
+                   "ALTER TABLE groups ADD COLUMN fold_corpus_budget INTEGER NOT NULL DEFAULT 0",
+                   "add groups.fold_corpus_budget", err, cap);
+}
+
+static bool verify_v10(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "fold_corpus_budget"))
+    {
+        set_err(err, cap, "v10 is stamped but groups has no fold_corpus_budget column");
+        return false;
+    }
+    /* The default is load-bearing: 0 means "full cap", not "fold nothing". A migration
+     * that wrote any other value would silently shrink every existing group's corpus. */
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE fold_corpus_budget != 0", &n, err,
+                       cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have a non-default fold_corpus_budget after migration",
+                (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -449,6 +482,7 @@ static bool verify_v9(sqlite3 *db, char *err, size_t cap)
 static const struct edc_migration EDC_MIGRATIONS[] = {
     {7, step_v7_to_v8, verify_v8},
     {8, step_v8_to_v9, verify_v9},
+    {9, step_v9_to_v10, verify_v10},
     {0, NULL, NULL}, /* terminator */
 };
 

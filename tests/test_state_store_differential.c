@@ -272,6 +272,11 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     struct edc_task_group *g1 = edc_task_group_new(leader);
     edc_session_add_group(s, g1);
     install_sessions(sched, s);
+    /* v10: a NON-DEFAULT corpus budget, set through the same field the failure backoff
+     * writes. 0 means "full cap", so leaving the default would let a column that is never
+     * persisted pass the byte-for-byte dump unnoticed -- the absolute assertion below is
+     * what actually catches a restart restoring the giant fold/extract prompt. */
+    g1->fold_corpus_budget = 32768;
 
     struct edc_turn *t1 = edc_turn_new();
     add_msg(t1, "user", "first question", "mid-a");
@@ -345,7 +350,8 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     /* An integer, like every other timestamp now. */
     s->last_active = 1790000000ULL;
 
-    /* v8 columns get NON-DEFAULT values here, otherwise the row-for-row comparison below
+    /* Columns added after the base schema get NON-DEFAULT values here (v8's task/event
+     * columns below, v10's group budget above), otherwise the row-for-row comparison
      * proves nothing about them: the dump reads every column, so a flush/load mismatch
      * would only show up if the stored value differs from the fresh default. */
     leader->memo_baseline_done = true; /* a task that has already received the catalogue */
@@ -378,6 +384,15 @@ static void test_roundtrip(void)
     install_sessions(sched1, s1);
     build_fixture(s1, sched1);
 
+    /* Defend against a vacuous pass: find the group the fixture actually gave a reduced
+     * budget, and remember its id. Group ids come from the leader's task id, so hardcoding
+     * "g-1" here would silently compare a different group and prove nothing. */
+    int64_t budget_group_id = 0;
+    for (struct edc_task_group *gp = s1->groups; gp; gp = gp->next)
+        if (gp->fold_corpus_budget == 32768)
+            budget_group_id = gp->group_id;
+    CHECK(budget_group_id != 0, "v10: the fixture really set a non-default budget on a group");
+
     CHECK(edc_state_store_flush(s1, sched1), "flush into the database");
 
     sds before = dump_rows("s-diff");
@@ -407,6 +422,20 @@ static void test_roundtrip(void)
             if (s2->memo->events[i].changed == (EDC_MEMO_F_SUMMARY | EDC_MEMO_F_DETAIL))
                 mask_ok = true;
         CHECK(mask_ok, "v8: the changed mask survives a restart (0 would mean 'unknown')");
+
+        /* v10: the reduced corpus budget must come back after a restart. Without this
+         * column a reboot silently restores the full cap and re-sends the same giant
+         * fold/extract prompt that failed before the restart (and the in-memory failure
+         * streak is gone too, so the 3-failure brake starts over). Compare by group id,
+         * not "any group": g2 below keeps the default 0, so a loose scan would pass the
+         * wrong group and prove nothing. */
+        struct edc_task_group *reloaded_g1 = NULL;
+        for (struct edc_task_group *gp = s2->groups; gp; gp = gp->next)
+            if (gp->group_id == budget_group_id)
+                reloaded_g1 = gp;
+        CHECK(reloaded_g1 != NULL, "v10: the reduced-budget group was loaded back");
+        CHECK(reloaded_g1 && reloaded_g1->fold_corpus_budget == 32768,
+              "v10: fold_corpus_budget survives a restart (32768, not the full-cap 0)");
     }
 
     CHECK(edc_state_store_flush(s2, sched2), "flush the reloaded session");

@@ -141,6 +141,10 @@ static const char *const EDC_SCHEMA_SQL =
     "  memory_created_at  INTEGER NOT NULL DEFAULT 0,"
     "  memory_updated_at  INTEGER NOT NULL DEFAULT 0,"
     "  memory_covers_to   INTEGER NOT NULL DEFAULT 0,"
+    /* v10: the reduced L1/L2 corpus budget after consecutive memory-round failures.
+     * 0 = the full cap. Persisted so a restart cannot restore a giant prompt that just
+     * timed out and re-send it with the failure streak (in-memory) already cleared. */
+    "  fold_corpus_budget INTEGER NOT NULL DEFAULT 0,"
     "  ord                INTEGER NOT NULL DEFAULT 0,"
     "  PRIMARY KEY (session_id, group_id)"
     ");"
@@ -1181,13 +1185,13 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
 
 static const char *INSERT_GROUP =
     "INSERT INTO groups(session_id,group_id,is_orphaned,kind,memory,fold_epoch,"
-    "memory_created_at,memory_updated_at,memory_covers_to,ord) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?) "
+    "memory_created_at,memory_updated_at,memory_covers_to,fold_corpus_budget,ord) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(session_id,group_id) DO UPDATE SET is_orphaned=excluded.is_orphaned,"
     "kind=excluded.kind,memory=excluded.memory,"
     "fold_epoch=excluded.fold_epoch,memory_created_at=excluded.memory_created_at,"
     "memory_updated_at=excluded.memory_updated_at,memory_covers_to=excluded.memory_covers_to,"
-    "ord=excluded.ord";
+    "fold_corpus_budget=excluded.fold_corpus_budget,ord=excluded.ord";
 
 struct group_bind
 {
@@ -1209,7 +1213,8 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     bind_num(st, 7, (double)g->memory_created_at);
     bind_num(st, 8, (double)g->memory_updated_at);
     bind_num(st, 9, (double)g->memory_covers_to);
-    sqlite3_bind_int(st, 10, b->ord);
+    bind_num(st, 10, (double)g->fold_corpus_budget);
+    sqlite3_bind_int(st, 11, b->ord);
 }
 
 static const char *INSERT_TASK =
@@ -2423,7 +2428,8 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     {
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,fold_epoch,"
-                                     "memory_created_at,memory_updated_at,memory_covers_to "
+                                     "memory_created_at,memory_updated_at,memory_covers_to,"
+                                     "fold_corpus_budget "
                                      "FROM groups WHERE session_id=? ORDER BY ord",
                                -1, &st, NULL) != SQLITE_OK)
             goto done;
@@ -2482,6 +2488,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             group->memory_created_at = (uint64_t)col_i64(st, 5);
             group->memory_updated_at = (uint64_t)col_i64(st, 6);
             group->memory_covers_to = (uint64_t)col_i64(st, 7);
+            group->fold_corpus_budget = col_i64(st, 8);
 
             /* members, in the stored order; the leader is already on the list */
             {

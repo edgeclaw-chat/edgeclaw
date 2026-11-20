@@ -236,6 +236,9 @@ static bool make_v7_db(const char *path)
                * necessarily sent one. */
               exec_ok(db, "INSERT INTO tasks(task_id, memo_seen_seq) VALUES (1, 0)") &&
               exec_ok(db, "INSERT INTO tasks(task_id, memo_seen_seq) VALUES (2, 5)") &&
+              /* One group, so the v10 backfill assertion below has a real row to read;
+               * an empty table would make "no non-default rows" pass vacuously. */
+              exec_ok(db, "INSERT INTO groups(group_id) VALUES (10)") &&
               exec_ok(db, "PRAGMA user_version=7");
     sqlite3_close(db);
     return ok;
@@ -513,6 +516,15 @@ static void test_real_v7_to_v8(void)
     CHECK(query_int64(db, "SELECT count(*) FROM sqlite_master "
                            "WHERE type='table' AND name='chat_bubbles'") == 1,
           "chat_bubbles exists after migrating through v9");
+    /* v10 is additive too: the column exists on a migrated database, and its default
+     * keeps every pre-v10 group at the full cap (0). A non-zero default here would
+     * silently shrink the corpus of every group in a user's existing database. */
+    CHECK(column_exists(db, "groups", "fold_corpus_budget"),
+          "groups.fold_corpus_budget exists after migrating through v10");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups WHERE group_id=10") == 1,
+          "the v10 backfill assertion has a real pre-existing group to read");
+    CHECK(query_int64(db, "SELECT fold_corpus_budget FROM groups WHERE group_id=10") == 0,
+          "v10 backfills the full-cap sentinel 0 into an existing group");
 
     /* And the backup is the v7 file, so a user can go back. */
     char backup[800] = {0};

@@ -102,7 +102,10 @@ struct edc_scheduler;
 /* v9: chat_bubbles -- the TUI's durable, paged view state (was chat.jsonl).
  * Migration step_v8_to_v9 creates the table/index and nothing else: no existing
  * table is altered, so a v8 database migrates with zero data rewrite. */
-#define EDC_DB_VERSION 9
+/* v10: groups.fold_corpus_budget -- the reduced L1/L2 corpus budget after consecutive
+ * memory-round failures. step_v9_to_v10 is one O(1) ADD COLUMN with DEFAULT 0 (the
+ * documented "full cap"), so every pre-v10 group keeps its old behaviour. */
+#define EDC_DB_VERSION 10
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
