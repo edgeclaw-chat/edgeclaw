@@ -156,9 +156,29 @@ sed -i "s#^\\\$Feed = .*#\$Feed = 'http://127.0.0.1:${PORT}/releases.atom'#" "$R
     perl -0pi -e "s{^\\\$Feed = .*}{\$Feed = 'http://127.0.0.1:${PORT}/releases.atom'}m" "$RUN_PS1"
 grep -q "127.0.0.1:${PORT}/releases.atom" "$RUN_PS1" || { echo "could not point the release feed at the fixture server" >&2; exit 1; }
 # "No API calls" is a promise of the feed design, not of a comment: assert the script has
-# no API endpoint left to contact even by accident.
-if grep -q 'api.github.com' "$RUN_PS1"; then
+# no API endpoint left to contact even by accident. PowerShell comments start with '#';
+# the installer explains the migration in a comment that literally says "not api.github.com"
+# -- that prose is NOT a call. Strip comment-only lines before grepping so the assertion
+# checks CODE (a URL/Invoke-WebRequest argument), which is what the promise is about.
+# Guard (below the loop) proves this filter still catches a real API call in code.
+api_refs_in_code() {
+    grep -vE '^[[:space:]]*#' "$1" | grep -q 'api\.github\.com'
+}
+if api_refs_in_code "$RUN_PS1"; then
     echo "install.ps1 still references api.github.com after the feed migration" >&2
+    exit 1
+fi
+# Anti-vacuous: the filter must ignore a comment mention yet still catch a real code URL,
+# otherwise the assertion above could never fail and the "no API" promise is untested.
+cprobe="${WORK}/api-filter-probe.ps1"
+printf '%s\n' '# api.github.com in a comment' > "$cprobe"
+if api_refs_in_code "$cprobe"; then
+    echo "the API-call filter wrongly counts a comment (assertion is vacuous)" >&2
+    exit 1
+fi
+printf '%s\n' '# comment' '$Feed = "https://api.github.com/repos/x/y/releases"' > "$cprobe"
+if ! api_refs_in_code "$cprobe"; then
+    echo "the API-call filter misses a real code URL (assertion is vacuous)" >&2
     exit 1
 fi
 
