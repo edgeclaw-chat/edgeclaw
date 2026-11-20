@@ -112,6 +112,39 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
     return EDC_IN_MESSAGE;
 }
 
+/* `-g/--group <id>` names an EXISTING group. Resolve it into the ONE placement value
+ * the spawn layer understands (target_group), while the AST walk still has the session.
+ * The old AST executor did exactly this lookup (edc_shell_ast.c); the flex/bison
+ * rewrite (ce5224b7) replaced it with a text copy into opts.group_id, which nobody
+ * consumed -- the option parsed and did nothing. There are no two ways to say "which
+ * group": the caller resolves the name to a pointer, edc_shell_spawn_task only sees
+ * that pointer. A bad id is a refusal, never a silent fall-back to the group in front.
+ *
+ * Same checks as /prompt's --group: no system group, no conversation whose leader is
+ * gone (a group with no leader cannot be revived by adding a member). */
+static struct edc_task_group *shell_named_group(struct edc_session *session, const char *text, sds *err)
+{
+    *err = NULL;
+    struct edc_task_group *g = edc_session_find_group(session, (int64_t)strtoll(text, NULL, 10));
+    if (!g)
+    {
+        *err = sdscatprintf(sdsempty(), "**No group** named `%s`.\n\nRun `/group list` to see them.", text);
+        return NULL;
+    }
+    if (edc_task_group_is_system(g))
+    {
+        *err = sdsnew("`-g|--group` cannot name the system group — it does not take new work.");
+        return NULL;
+    }
+    if (g->is_orphaned || !g->leader)
+    {
+        *err = sdsnew("`-g|--group` cannot name a conversation whose leader is gone — "
+                      "start a fresh one with `+`.");
+        return NULL;
+    }
+    return g;
+}
+
 bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                       struct edc_channel_message *message, const edc_ast *ast)
 {
@@ -181,6 +214,10 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
                     edc_commands_reply(to, verr ? verr : "bad task reference");
                     if (verr)
                         sdsfree(verr);
+                    if (r_out)
+                        sdsfree(r_out);
+                    if (r_err)
+                        sdsfree(r_err);
                     continue; /* 这一条 stage 不建任务，其余照旧 */
                 }
                 stage_text = processed;
@@ -212,38 +249,62 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
                 free(vdeps);
                 vdeps = NULL;
             }
+            /* Resolve the group BEFORE spawning: this stage's `-g/--group` overrides
+             * the walk's group. Everything downstream sees only a target_group pointer. */
+            sds group_err = NULL;
+            struct edc_task_group *stage_group = group;
             if (s->group)
-                opts.group_id = sdsdup(s->group);
+            {
+                stage_group = shell_named_group(session, s->group, &group_err);
+                /* The group is now target_group. The only remaining fact is a FOREGROUND
+                 * policy: an explicitly named group leaves the front alone, but still
+                 * queues there (background stays false unless the line ended with `&`). */
+                opts.leave_foreground = true;
+            }
 
             struct edc_task_group *out_group = NULL;
             sds spawn_err = NULL;
             /* 前一个任务和"怎么等它"是一个整体：没有前一个就没有这一类边（见 edc_prev_dep）。 */
             const struct edc_prev_dep link = {prev, dep};
-            struct edc_task *task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, prev ? &link : NULL,
-                                                         group, ast->new_group ? "+" : "task", &out_group, r_out,
-                                                         r_out_app, r_err, &spawn_err);
-            if (spawn_err)
+            struct edc_task *task = NULL;
+            if (group_err)
             {
-                edc_commands_reply(to, spawn_err);
-                sdsfree(spawn_err);
+                edc_commands_reply(to, group_err);
+                sdsfree(group_err);
             }
-            if (task)
+            else
             {
-                if (message)
-                    edc_task_set_user_origin(task, message->mid, message->payload);
-                if (r_err_app)
-                    task->redirect_stderr_append = true;
-                /* `{{<id>}}` 是**唯一**形式，所以「有待展开的引用」就等于
-                 * 「收集到了引用」。只按文本里有 `{{` 就置位会让 `{{LAST}}` /
-                 * `{{ var }}` 这类纯文本永远触发一次空展开（它们不再被识别），
-                 * 也等于对下游谎报"有替换待做"。 */
-                if (collected)
-                    task->has_deferred_vars = 1;
-                edc_commands_announce_task(to, task);
-                if (out_group)
-                    group = out_group; /* 后续 stage 进同一个组 */
+                task = edc_shell_spawn_task(sm, sched, EDC_COMMANDS_CHANNEL, session, &opts, prev ? &link : NULL,
+                                            stage_group, ast->new_group ? "+" : "task", &out_group, r_out,
+                                            r_out_app, r_err, &spawn_err);
+                if (spawn_err)
+                {
+                    edc_commands_reply(to, spawn_err);
+                    sdsfree(spawn_err);
+                }
+                if (task)
+                {
+                    if (message)
+                        edc_task_set_user_origin(task, message->mid, message->payload);
+                    if (r_err_app)
+                        task->redirect_stderr_append = true;
+                    /* `{{<id>}}` 是**唯一**形式，所以「有待展开的引用」就等于
+                     * 「收集到了引用」。只按文本里有 `{{` 就置位会让 `{{LAST}}` /
+                     * `{{ var }}` 这类纯文本永远触发一次空展开（它们不再被识别），
+                     * 也等于对下游谎报"有替换待做"。 */
+                    if (collected)
+                        task->has_deferred_vars = 1;
+                    edc_commands_announce_task(to, task);
+                    if (out_group)
+                        group = out_group; /* 后续 stage 进同一个组 */
+                }
             }
             edc_cmd_task_opts_free(&opts);
+            /* r_out / r_err were borrowed by spawn_task (it copies what it keeps). */
+            if (r_out)
+                sdsfree(r_out);
+            if (r_err)
+                sdsfree(r_err);
 
             prev = task ? task : prev;
             dep = TASK_DEP_JOIN; /* 同一 pipeline 内：JOIN（注入源输出） */

@@ -100,7 +100,9 @@ static void test_flags_after_quotes(void)
     T_STREQ(o.input, "work", "\"\"\" flags input");
     T_CHECK(o.dep_count == 1, "\"\"\" flags dep_count");
     T_CHECK(o.dep_ids != NULL && strcmp(o.dep_ids[0], "dep1") == 0, "\"\"\" flags dep id");
-    T_STREQ(o.group_id, "g1", "\"\"\" flags group id");
+    /* `-g/--group` has NO field in edc_cmd_task_opts any more: the group is
+     * resolved to a target_group pointer by the caller before spawn. This parser
+     * merely consumes the option (it must not become part of the input). */
     edc_cmd_task_opts_free(&o);
 }
 

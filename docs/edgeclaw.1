@@ -260,7 +260,11 @@ SHELL SYNTAX (on by default)
        --bg              Run in background (command layer only: a shell line uses `&`).
        --new-group       Open a group of its own (a fresh conversation).
        -d <id>           Wait for this task before executing (repeatable).
-       --group <id>      Create in this group (-g is a shortcut).
+       --group <id>      Create in this existing group (-g is a shortcut). On a
+                          shell line this is the option area AFTER the quoted
+                          description; the task queues there if the group is busy,
+                          and the group in front is left alone. An unknown id is
+                          refused rather than silently joining the current group.
 
 SHELL ARCHITECTURE
      Input processing follows a Unix-style pipeline:

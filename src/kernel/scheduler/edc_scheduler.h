@@ -266,9 +266,11 @@ struct edc_task_spec
     bool take_foreground;
     /* The caller said "run this alongside" (`&` / `--bg`). Such a task is not queued
      * behind the group's current holder; everything else that lands in the group in
-     * front waits its turn. Distinct from !take_foreground: `--group <the group in
-     * front>` also leaves the front alone, but it IS part of that conversation and must
-     * queue. */
+     * front waits its turn. Distinct from !take_foreground: a task explicitly placed
+     * into a background group (`-g/--group <id>`) leaves the front alone
+     * (take_foreground=false), but it IS part of that conversation and must queue
+     * (background=false). The group itself is always `place` + `group_id`, never this
+     * flag. */
     bool background;
     edc_sink sink; /* EDC_TASK_PLACE_SYSTEM: where this task's output goes */
 

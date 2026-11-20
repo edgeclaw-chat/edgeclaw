@@ -210,7 +210,10 @@ expressible.
 
 What follows the closing quote of a **shell line** is the **option area** (`-d <id>`,
 `-g <group>`, `2>`, …). Anything else there is refused rather than dropped, so `"hello" and
-more` is an error — not a task quietly called `hello`.
+more` is an error — not a task quietly called `hello`. `-g <id>` / `--group <id>` put that
+stage's task in an existing group (it queues there if the group is busy, and leaves the group
+in front where it was); `+` opens a new group instead, and `&` means "run alongside". An
+unknown or unusable group id is refused, not quietly turned into a task in the current group.
 
 A `/` command is different: its words are handed to the command, which reads its own
 options out of them (the way `ls` reads `-l`). So there is no "option area" on a command
