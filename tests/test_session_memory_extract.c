@@ -18,6 +18,7 @@
 #include "edc_session.h"
 #include "edc_session_manager.h"
 #include "edc_session_memory.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -255,7 +256,9 @@ static void test_material_excludes_group_memory(void)
     install_resolver(sched, session);
 
     struct edc_task_group *group = make_finished_user_group(session, "g1", "hello world", OLD_TS, 1);
-    group->memory = sdsnew("# Old group memory\n- SECRET_REMEMBERED_FACT");
+    edc_state_store_group_memory_save(session->session_id, group->group_id,
+                                      "# Old group memory\n- SECRET_REMEMBERED_FACT", 0, 0, 0);
+    group->memory_tokens = 30;
     group->memory_updated_at = (uint64_t)time(NULL);
 
     /* One existing entry, so the index has a row to carry. */
@@ -434,7 +437,11 @@ static void test_fold_landing_clamps_memo_prefix(void)
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
 
-    CHECK(group->memory != NULL, "the fold landed a memory");
+    {
+        sds landed = edc_state_store_group_memory_load(session->session_id, group->group_id, NULL, NULL, NULL);
+        CHECK(landed != NULL, "the fold landed a memory (DB)");
+        if (landed) sdsfree(landed);
+    }
     CHECK(turn->folded_prefix > 0, "the fold advanced the folded watermark");
     CHECK(turn->memo_prefix >= turn->folded_prefix, "memo_prefix was clamped up to folded_prefix (folded => on L2)");
     CHECK(group->memory_created_at > 0 && group->memory_updated_at > 0, "the landing stamps the group memory times");

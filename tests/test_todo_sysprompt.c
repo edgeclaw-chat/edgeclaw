@@ -34,6 +34,8 @@
 #include "edc_config.h"
 #include "edc_context.h"
 #include "edc_error.h"
+#include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox.h"
@@ -556,7 +558,15 @@ static void test_append_system_part(void)
     /* ── history 分支: **system prompt 在前、group memory 在后** (常量在前, 易变的在后
      *    —— cache 友好, 2026-10-10) + 有 todo → 头部仍纯净, todo 只在队尾 reminder;
      *    共享 history[0] 不被改动 ── */
-    g1->memory = sdsnew("MEM-SUMMARY");
+    /* group memory text is DB-only; attach a session so the head assembler can read it. */
+    {
+        struct edc_config *mcfg = g_new0(struct edc_config, 1);
+        mcfg->workspace = sdsnew(edc_test_workspace());
+        struct edc_session *msess = edc_session_new(mcfg, edc_test_session_id("s"), "S");
+        g1->session = msess;
+        edc_state_store_group_memory_save(msess->session_id, g1->group_id, "MEM-SUMMARY", 0, 0, 0);
+        g1->memory_tokens = 11;
+    }
     t1->todos = cJSON_Parse("[{\"content\":\"do it\",\"status\":\"pending\",\"priority\":\"high\"}]");
     C(t1->todos != NULL && cJSON_GetArraySize(t1->todos) == 1, "attached 1 todo item");
     msgs = cJSON_CreateArray();

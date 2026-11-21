@@ -165,6 +165,8 @@ struct edc_session *edc_session_new_with_workdir(struct edc_config *config, int6
     }
     session->next_completion_seq = 1;
     session->memo = edc_session_memory_new();
+    if (session->memo)
+        session->memo->session_id = session_id;
 
     if (workdir && workdir[0])
     {

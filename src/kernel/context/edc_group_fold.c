@@ -10,6 +10,7 @@
 #include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_token_estimate.h"
@@ -621,7 +622,13 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
              edc_id_str(group->group_id), cut_at, cnt, corpus, corpus_cap, EDC_FOLD_KEEP_RECENT_TOKENS,
              edc_id_str(cut_piece->task->task_id), cut_piece->turn_index, cut_prefix);
 
-    bool has_memory = (group->memory && sdslen(group->memory) > 0);
+    /* The previous summary is DB-only: read it once here. Using memory_tokens as the
+     * cheap "is there a summary" test avoids a DB read when no fold ever landed. */
+    sds prev_memory = (group->memory_tokens > 0 && group->session)
+                          ? edc_state_store_group_memory_load(group->session->session_id, group->group_id,
+                                                              NULL, NULL, NULL)
+                          : NULL;
+    bool has_memory = (prev_memory && sdslen(prev_memory) > 0);
     sds prompt = sdsempty();
     prompt = sdscat(prompt, "<group-transcript>\n");
 
@@ -676,9 +683,11 @@ static sds fold_build_prompt(struct edc_task_group *group, const char *focus, st
     if (has_memory)
     {
         prompt = sdscat(prompt, "<previous-summary>\n");
-        prompt = sdscat(prompt, group->memory);
+        prompt = sdscatsds(prompt, prev_memory);
         prompt = sdscat(prompt, "\n</previous-summary>\n\n");
     }
+    if (prev_memory)
+        sdsfree(prev_memory);
     /* The corpus ends on an unfinished turn: the cut falls inside a turn (later
      * messages stay as detail), or the last corpus piece was already a running active
      * turn (content not finished generating). */
@@ -981,6 +990,19 @@ static uint64_t group_memory_covers_to(struct edc_task_group *group)
     return best;
 }
 
+/* Persist the summary body to the DB and refresh the resident token estimate. The text
+ * itself is never kept on the group struct; only this number is. */
+static void fold_save_memory_body(struct edc_task_group *group, sds body)
+{
+    if (!group)
+        return;
+    group->memory_tokens = edc_token_estimate_text(body);
+    if (group->session)
+        edc_state_store_group_memory_save(group->session->session_id, group->group_id, body,
+                                          group->memory_created_at, group->memory_updated_at,
+                                          group->memory_covers_to);
+}
+
 bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
 {
     struct edc_task_group *group = task ? task->sink_group : NULL;
@@ -1005,10 +1027,11 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_fold_files_free(task->fold_files);
         task->fold_files = NULL;
     }
+    /* The summary body goes ONLY to the DB (groups.memory); it is not resident. Keep it
+     * in a local until the cut is applied and memory_covers_to is final (below), then
+     * save once. The `<read-files>`/`<modified-files>` blocks are rendered from
+     * fold_files on every request, so a summary echoing them cannot corrupt the lists. */
     sds body = edc_fold_files_body(content);
-    if (group->memory)
-        sdsfree(group->memory);
-    group->memory = body;
     /* Wall-clock about the memory: first write + last write. The covered-to bound is
      * refreshed only where the cut really advanced (below), so a landing that wrote the
      * memory without folding anything does not claim new coverage. */
@@ -1030,6 +1053,8 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) no prefix applied = nothing really folded */
+        fold_save_memory_body(group, body);
+        sdsfree(body);
         return true; /* memory written -- new material to L2 */
     }
 
@@ -1066,6 +1091,8 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
         edc_task_group_rebuild_history(group);
         group->fold_epoch++;
         edc_group_fold_note_failure(group); /* (c) wasted round: nothing folded */
+        fold_save_memory_body(group, body);
+        sdsfree(body);
         return true; /* memory written -- L2 should still digest it (else this material never reaches the session) */
     }
 
@@ -1109,6 +1136,8 @@ bool edc_group_fold_deliver_memory(struct edc_task *task, const char *content)
     group->fold_epoch++;
     /* The memory now covers up to the newest message it folded. */
     group->memory_covers_to = group_memory_covers_to(group);
+    fold_save_memory_body(group, body); /* persist body + covers_to now final */
+    sdsfree(body);
     /* (c) Successful landing => clear the consecutive-failure count AND release the
      * fold barrier. Until this point the group is frozen: no new history could grow
      * the corpus, and a failed round left the FOLD_HOLD edges live for the retry to

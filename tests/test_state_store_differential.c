@@ -325,7 +325,7 @@ static void build_fixture(struct edc_session *s, struct edc_scheduler *sched)
     sys->fail = EDC_FAIL_OTHER;
     edc_queue_init(&sys->turns);
     struct edc_task_group *g2 = edc_task_group_new(sys);
-    g2->memory = sdsnew("folded summary text");
+    g2->memory_tokens = 42; /* resident estimate only; text is DB-only via the store API */
     g2->fold_epoch = 3;
     g2->memory_created_at = 1700000000;
     g2->memory_updated_at = 1700000500;

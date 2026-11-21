@@ -77,7 +77,8 @@ struct edc_memo_entry
     char *id;
     char *title;
     char *summary;
-    sds detail;        /* full detail: not resident in context, fetched by memory_get */
+    /* `detail` is NOT resident: it lives only in memo_entries.detail (DB) and is read on
+     * demand by memory_get / update-compare. This struct is the resident INDEX row. */
     char *sources;     /* origin: group id / completion_seq range covered (audit) */
     char *proposed_by; /* who proposed it (foreground memory_write's task id; NULL for the curator) */
     uint64_t created_seq;
@@ -102,6 +103,10 @@ struct edc_memo_entry
 
 struct edc_session_memory
 {
+    /* Owning session id. Set by edc_session_new / the load path. Needed so detail reads
+     * and writes can address DB rows without changing every API signature: detail is no
+     * longer resident, it lives only in memo_entries.detail. */
+    int64_t session_id;
     struct edc_memo_event *events;
     size_t event_count, event_cap;
 
@@ -175,7 +180,7 @@ extern struct edc_memo_event *edc_session_memory_restore_event(struct edc_sessio
                                                               uint32_t changed);
 extern struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
                                                               const char *title, const char *summary,
-                                                              const char *detail, const char *sources,
+                                                              const char *sources,
                                                               const char *proposed_by, uint64_t created_seq,
                                                               uint64_t updated_seq, uint64_t created_at,
                                                               uint64_t updated_at, uint64_t get_count,

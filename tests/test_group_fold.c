@@ -16,6 +16,7 @@
 #include "edc_session.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_token_estimate.h"
@@ -27,6 +28,44 @@
 #include <string.h>
 /* The session store: folding itself needs none, but scheduling does, since the
  * message-end scan enumerates tasks through it. A simple in-memory manager. */
+/* group memory text is DB-only now; these helpers bridge the tests to the store. */
+static void fold_test_set_memory(struct edc_session *session, struct edc_task_group *g, const char *text)
+{
+    if (!session || !g)
+        return;
+    edc_state_store_group_memory_save(session->session_id, g->group_id, text, 0, 0, 0);
+    g->memory_tokens = edc_token_estimate_text(text);
+}
+static sds fold_test_get_memory(struct edc_session *session, struct edc_task_group *g)
+{
+    if (!session || !g)
+        return NULL;
+    return edc_state_store_group_memory_load(session->session_id, g->group_id, NULL, NULL, NULL);
+}
+static bool fold_test_memory_contains(struct edc_session *session, struct edc_task_group *g, const char *sub)
+{
+    sds m = fold_test_get_memory(session, g);
+    bool ok = m && strstr(m, sub) != NULL;
+    if (m) sdsfree(m);
+    return ok;
+}
+static bool fold_test_memory_equals(struct edc_session *session, struct edc_task_group *g, const char *text)
+{
+    sds m = fold_test_get_memory(session, g);
+    bool ok = m && strcmp(m, text) == 0;
+    if (m) sdsfree(m);
+    return ok;
+}
+static sds fold_test_memory_render(struct edc_session *session, struct edc_task_group *g)
+{
+    sds m = fold_test_get_memory(session, g);
+    if (!m)
+        return NULL;
+    sds r = edc_fold_files_render(m, g->fold_files);
+    sdsfree(m);
+    return r;
+}
+
 static void install_resolver(struct edc_scheduler *sched, struct edc_session *sess)
 {
     struct edc_session_manager *sm = g_new0(struct edc_session_manager, 1);
@@ -202,7 +241,7 @@ static void test_prompt_and_due(void)
 
     /* 先给这个组一份旧记忆: 它同时是 (a) token 估算的一个来源 —— 让 ctx 有非零值,
      * 好把"窗口 vs reserve"那个不等式两侧各钉一次, 和 (b) 后面迭代 prompt 的输入。 */
-    group->memory = sdsnew("# Old memory\n- something remembered");
+    fold_test_set_memory(session, group, "# Old memory\n- something remembered");
 
     /* 判据只有 token 轴。窗口宽 → 不折 (哪怕组里消息再多: 见本函数末尾的 500 条用例)。 */
     CHECK(!edc_group_fold_due(group, cfg_win(cfg, 1000000)), "窗口 1M: 这段小组远没到线 → 不折");
@@ -221,7 +260,7 @@ static void test_prompt_and_due(void)
               "ctx 超过 window - reserve → 折");
     }
 
-    group->memory = sdsnew("# Old memory\n- something remembered");
+    fold_test_set_memory(session, group, "# Old memory\n- something remembered");
 
     /* 再加三个已完成任务: seq 2,3,4,各 4 条消息 → 未折叠 = 4*3 + leader的1 = 13 */
     add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
@@ -357,7 +396,7 @@ static void test_fold_runs_as_a_system_task(void)
     CHECK(!edc_group_fold_due(sg, cfg_win(cfg, 1000000)), "系统组永远不会触发折叠");
     CHECK(!edc_group_fold_due(sg, cfg_win(cfg, 1)), "窗口紧到 ctx 必然过线, 系统组仍不折 (排除靠 sink)");
 
-    CHECK(group->memory != NULL && strstr(group->memory, "# Merged memory") != NULL, "记忆被写进目标组");
+    CHECK(fold_test_memory_contains(session, group, "# Merged memory"), "记忆被写进目标组");
     CHECK(count_folded(group) == 3, "leader + task 2 整折, task 3 半折 (三个都带折叠前缀)");
     CHECK(edc_task_unfolded_msg_count(leader) == 0, "最老的 leader 整条进了语料 (没有未折叠消息)");
     CHECK(group->fold_epoch == epoch_before + 1, "折叠落地 bump 了 fold_epoch (旧锚失效)");
@@ -439,7 +478,7 @@ static void test_fold_failure_keeps_memory(void)
     edc_turn_add_message(lturn, lm);
     edc_task_add_turn(leader, lturn);
     add_foldable_task(session, group, edc_test_id("2"), 2, 6, "work");
-    group->memory = sdsnew("# memory before");
+    fold_test_set_memory(session, group, "# memory before");
     uint32_t epoch_before = group->fold_epoch;
 
     CHECK(edc_group_fold_start(sched, session, group, NULL) != NULL, "起了一次折叠");
@@ -456,7 +495,7 @@ static void test_fold_failure_keeps_memory(void)
     /* executor 只报事实; 告诉谁 在策略点 (契约见 edc_scheduler.h)。 */
     edc_scheduler_apply_advance(sched, fold, fold_req, &fold_res);
 
-    CHECK(strcmp(group->memory, "# memory before") == 0, "记忆没被改");
+    CHECK(fold_test_memory_equals(session, group, "# memory before"), "记忆没被改");
     CHECK(count_folded(group) == 0, "没有任何任务被标已折叠");
     CHECK(group->fold_epoch == epoch_before, "折叠没落地: fold_epoch 没动");
     /* 2026-11-20: 失败置 fold_held, 窗口自动路径停手; scheduler 会显式缩小预算后
@@ -505,6 +544,16 @@ static void test_fold_task_is_persisted(void)
     CHECK(fold != NULL, "折叠在飞");
     pump_schedule(sched);
 
+    /* NEW CONTRACT: group memory text is DB-only; write it directly, then verify it
+     * survives the generic flush and that the resident token estimate is recomputed on
+     * load (the flush must never overwrite the DB-owned text). */
+    {
+        const char *body = "# Disk memory\n- work done";
+        CHECK(edc_state_store_group_memory_save(session->session_id, group->group_id, body, 0, 0, 0),
+              "group memory written to DB (outside flush)");
+        group->memory_tokens = 999; /* deliberately wrong: load must recompute */
+    }
+
     CHECK(edc_state_store_flush(session, sched), "可落盘");
 
     struct edc_session *s2 = edc_session_new(cfg, edc_test_session_id("sess-disk"), "Disk");
@@ -523,6 +572,19 @@ static void test_fold_task_is_persisted(void)
           "未完成的折叠任务读回后置回就绪 (重启续跑), 不是 INTERRUPTED");
     CHECK(fold2 && fold2->sink_group && fold2->sink_group->group_id == group->group_id,
           "sink_group 解析回目标组");
+
+    /* group memory: DB text survived the flush, and tokens were recomputed at load. */
+    {
+        sds disk_mem = edc_state_store_group_memory_load(s2->session_id, group->group_id, NULL, NULL, NULL);
+        CHECK(disk_mem && strstr(disk_mem, "work done") != NULL,
+              "DB-owned group memory not overwritten by flush");
+        if (disk_mem) sdsfree(disk_mem);
+        struct edc_task_group *loaded_g = NULL;
+        for (struct edc_task_group *gg = s2->groups; gg; gg = gg->next)
+            if (gg->group_id == group->group_id) loaded_g = gg;
+        CHECK(loaded_g != NULL && loaded_g->memory_tokens == edc_token_estimate_text("# Disk memory\n- work done"),
+              "memory_tokens recomputed at load (not the stale 999)");
+    }
 
     edc_session_free(session);
     edc_scheduler_free(sched);
@@ -796,7 +858,7 @@ static void test_group_held_until_fold_lands(void)
     void *fold_req = fold->current_request_id;
     struct edc_advance_result fr = edc_executor_advance_llm_resp(&sched->executor, fold, fold_req, &resp);
     edc_scheduler_apply_advance(sched, fold, fold_req, &fr);
-    CHECK(group->memory && strstr(group->memory, "# merged") != NULL, "记忆已写入");
+    CHECK(fold_test_memory_contains(session, group, "# merged"), "记忆已写入");
     /* P4d: 落地后成员等的是链上的 L2, 要等策展结算才恢复 */
     struct edc_task_group *sys = edc_session_find_system_group(session);
     struct edc_task *l2 = NULL;
@@ -1414,12 +1476,12 @@ static void test_fold_tracks_touched_files(void)
 
         /* 落地后：结构持有清单，memory 只有正文。 */
         CHECK(group->fold_files && group->fold_files->modified_n == 2, "改过的文件进了结构（edit 与 write 同桶）");
-        CHECK(group->memory && strstr(group->memory, "<read-files>") == NULL,
+        CHECK(!fold_test_memory_contains(session, group, "<read-files>"),
               "memory 里不再存块（块是渲染物，模型改不动数据）");
-        CHECK(group->memory && strcmp(group->memory, "# Summary\n- work done") == 0, "memory 就是摘要正文");
+        CHECK(fold_test_memory_equals(session, group, "# Summary\n- work done"), "memory 就是摘要正文");
 
         /* 渲染出来才是模型看到的东西。 */
-        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        sds rendered = fold_test_memory_render(session, group);
         CHECK(strstr(rendered, "<read-files>\nsrc/a.c\n</read-files>") != NULL, "读块按首次出现顺序渲染");
         CHECK(strstr(rendered, "<modified-files>\nsrc/b.c\nsrc/c.c\n</modified-files>") != NULL, "改块渲染出来");
         CHECK(strstr(rendered, "src/\n") == NULL, "目录没有混进读块");
@@ -1470,7 +1532,7 @@ static void test_fold_files_accumulate_across_folds(void)
     }
 
     CHECK(group->fold_files && group->fold_files->modified_n == 2, "旧条目还在，新条目并入");
-    sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+    sds rendered = fold_test_memory_render(session, group);
     CHECK(strstr(rendered, "<modified-files>\na.c\nb.c\n</modified-files>") != NULL,
           "并集按旧->新顺序，无重复");
     CHECK(count_occurrences(rendered, "\na.c\n") == 1, "a.c 只出现一次");
@@ -1512,7 +1574,7 @@ static void test_fold_files_are_capped_and_idempotent(void)
     /* 60 条里只留最近 50 条：f00..f09 丢掉，f10 起保留。 */
     CHECK(group->fold_files && group->fold_files->read_n == 50, "正好 50 条");
     {
-        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        sds rendered = fold_test_memory_render(session, group);
         CHECK(strstr(rendered, "src/f00.c") == NULL, "最老的被挤出（上限 50）");
         CHECK(strstr(rendered, "src/f10.c") != NULL, "第 11 条是保留区间的第一条");
         CHECK(strstr(rendered, "src/f59.c") != NULL, "最新的在");
@@ -1521,10 +1583,10 @@ static void test_fold_files_are_capped_and_idempotent(void)
     }
 
     /* 幂等：同一份 content 再落一次，结构与渲染都不该涨（回显的块被剥掉）。 */
-    sds before = edc_fold_files_render(group->memory, group->fold_files);
+    sds before = fold_test_memory_render(session, group);
     if (fold)
         edc_group_fold_deliver_memory(fold, "# Summary");
-    sds after = edc_fold_files_render(group->memory, group->fold_files);
+    sds after = fold_test_memory_render(session, group);
     CHECK(strcmp(before, after) == 0, "重复落地得到同一份渲染结果");
     CHECK(group->fold_files && group->fold_files->read_n == 50, "结构也没涨");
     sdsfree(before);
@@ -1586,8 +1648,8 @@ static void test_fold_echoed_blocks_are_stripped(void)
 
     /* 回显的块进不了 memory：body 只有正文。模型改写块既不能重复条目，也不能新增条目
      * —— 这是"数据在结构里、块只是投影"最直接的收益。 */
-    CHECK(group->memory && strcmp(group->memory, "# Summary 2") == 0, "落地的 memory 只剩正文");
-    sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+    CHECK(fold_test_memory_equals(session, group, "# Summary 2"), "落地的 memory 只剩正文");
+    sds rendered = fold_test_memory_render(session, group);
     CHECK(strncmp(rendered, "# Summary 2", 11) == 0, "渲染后新摘要在最前面");
     CHECK(count_occurrences(rendered, "<read-files>") == 1, "只剩一份 read 块");
     CHECK(count_occurrences(rendered, "<modified-files>") == 1, "只剩一份 modified 块");
@@ -1735,7 +1797,7 @@ static void test_prompt_initial_variant_names_the_sections(void)
 
     struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-initial"), "old leader");
     add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
-    CHECK(group->memory == NULL, "组还没有记忆 (首次)");
+    CHECK(fold_test_get_memory(session, group) == NULL, "组还没有记忆 (首次)");
 
     struct edc_fold_cut cut;
     memset(&cut, 0, sizeof(cut));
@@ -1786,7 +1848,7 @@ static void test_truncated_summary_discards_fold(void)
 
     struct edc_task_group *group = make_foldable_group(session, edc_test_session_id("sess-trunc"), "old leader");
     add_foldable_task(session, group, edc_test_id("2"), 2, 4, "task two");
-    group->memory = sdsnew("# Full memory\n- everything remembered");
+    fold_test_set_memory(session, group, "# Full memory\n- everything remembered");
 
     struct edc_task *fold = edc_group_fold_start(sched, session, group, NULL);
     CHECK(fold != NULL, "折叠起来了");
@@ -1804,7 +1866,7 @@ static void test_truncated_summary_discards_fold(void)
     sdsfree(resp.content);
 
     CHECK(edc_task_has_failed(fold), "折叠任务 ERROR (不是 COMPLETED)");
-    CHECK(group->memory && strcmp(group->memory, "# Full memory\n- everything remembered") == 0,
+    CHECK(fold_test_memory_equals(session, group, "# Full memory\n- everything remembered"),
           "记忆原样 (半截摘要没有顶掉它)");
     CHECK(count_folded(group) == 0, "一条也没折 (切点没动)");
     CHECK(res.notice && strstr(res.notice, "truncated") != NULL, "提示直说被截断 (可诊断, 不是 ‘unknown finish reason’)");
@@ -1932,7 +1994,7 @@ static void test_unresolvable_cut_folds_nothing(void)
     fold->fold_cut_task_id = edc_test_id("no-such-task");
     edc_group_fold_deliver_memory(fold, "# Merged\n- nothing folded");
 
-    CHECK(group->memory && strstr(group->memory, "nothing folded") != NULL, "记忆照写");
+    CHECK(fold_test_memory_contains(session, group, "nothing folded"), "记忆照写");
     CHECK(count_folded(group) == 0, "一条也没折 (fail-closed, 不是 fail-open)");
     CHECK(running->active_turn && running->active_turn->folded_prefix == 0, "在飞 turn 的前缀没动");
     CHECK(group->fold_epoch == epoch_before + 1, "epoch 照 bump (系统提示变了, 旧锚一样过期)");

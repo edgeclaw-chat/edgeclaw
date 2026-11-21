@@ -154,7 +154,10 @@ int main(void)
     struct edc_task *leader = edc_task_new(edc_test_id("675"), edc_test_session_id("sess-memo"), edc_test_id("675"), "leader", edc_channel_adapter);
     struct edc_task_group *g = edc_task_group_new(leader);
     edc_session_add_group(sess, g);
-    g->memory = sdsnew("group 675 memory: 构建入口是 bazelisk");
+    /* group memory text is DB-only; all_groups curation reads it from the DB. */
+    edc_state_store_group_memory_save(sess->session_id, g->group_id,
+                                      "group 675 memory: 构建入口是 bazelisk", 0, 0, 0);
+    g->memory_tokens = 30;
 
     TEST("show (空记忆): 给出说明而不是空回话");
     sds text = edc_session_memory_show_text(sess->memo, NULL);
@@ -190,7 +193,7 @@ int main(void)
     CHECK(text && strstr(text, "1 hit") != NULL && strstr(text, "[m1]") != NULL, "命中摘要");
     sdsfree(text);
     text = edc_session_memory_search_text(sess->memo, "明细一");
-    CHECK(text && strstr(text, "1 hit") != NULL, "命中明细");
+    CHECK(text && strstr(text, "nothing matches") != NULL, "detail 内容不再被搜到 (DB-only, 只搜索引)");
     sdsfree(text);
     drive_command(cfg, sm, sched, "/session memo search bazelisk");
 

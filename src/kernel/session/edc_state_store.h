@@ -213,6 +213,22 @@ bool edc_state_store_flush_measured(struct edc_session *session, struct edc_sche
  * directly once the column mapping has been proven by the differential test. */
 bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sched);
 
+/* ── Large-text fields that are NOT kept resident in the in-memory tree ──────────
+ * These two texts live ONLY in the database; the flush path deliberately skips them.
+ * All calls must come from the scheduler actor thread (the store's single-writer rule).
+ * Returned sds is owned by the caller (sdsfree). A missing row/field yields NULL.
+ * group_memory_save also updates memory_created_at/updated_at/covers_to atomically.
+ * Spelled char* (sds == char*) so this header stays includable from C++. */
+char *edc_state_store_group_memory_load(int64_t session_id, int64_t group_id,
+                                      uint64_t *out_created_at, uint64_t *out_updated_at,
+                                      uint64_t *out_covers_to);
+bool edc_state_store_group_memory_save(int64_t session_id, int64_t group_id, const char *body,
+                                       uint64_t created_at, uint64_t updated_at, uint64_t covers_to);
+/* A single memo entry's detail. No batch API: memory_search matches only the resident
+ * index (title/summary); detail is read one at a time by memory_get / update-compare. */
+char *edc_state_store_memo_detail_load(int64_t session_id, const char *entry_id);
+bool edc_state_store_memo_detail_save(int64_t session_id, const char *entry_id, const char *detail);
+
 /* Delete every row belonging to a session (`/session remove`). Cascades handle the
  * children. Returns false only on a SQL error. */
 bool edc_state_store_forget(int64_t session_id);

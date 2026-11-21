@@ -8,6 +8,7 @@
 #include "edc_compat.h"
 #include "edc_config.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "log.h"
 #include <stdio.h>
@@ -95,22 +96,27 @@ static void test_events(void)
 
 static void test_entries(void)
 {
-    TEST("条目: 按 id upsert; 索引与明细分开存");
+    TEST("条目: 按 id upsert; 索引常驻, 明细在 DB");
     struct edc_session_memory *m = edc_session_memory_new();
+    m->session_id = edc_test_session_id("m-detail");
 
     struct edc_memo_entry *e = edc_session_memory_upsert_entry(m, "m1", "构建系统", "唯一入口 bazelisk",
                                                               "明细: 迁到 bazel 的完整经过……", "group 768");
     CHECK(e != NULL && m->entry_count == 1, "第一次 upsert = 新建");
     CHECK_STREQ(e->id, "m1", "id 存住");
     CHECK_STREQ(e->title, "构建系统", "title 存住");
-    CHECK(e->detail && strstr(e->detail, "完整经过") != NULL, "明细存住 (sds)");
+    {
+        sds d = edc_state_store_memo_detail_load(m->session_id, e->id);
+        CHECK(d && strstr(d, "完整经过") != NULL, "明细写进 DB");
+        if (d) sdsfree(d);
+    }
     CHECK_STREQ(e->sources, "group 768", "来源存住");
 
     struct edc_memo_entry *again =
         edc_session_memory_upsert_entry(m, "m1", "构建系统 v2", "入口换成 bazel", NULL, "group 768");
     CHECK(again == e && m->entry_count == 1, "同 id 再 upsert = 就地更新 (不新增)");
     CHECK_STREQ(e->title, "构建系统 v2", "title 被替换");
-    CHECK(e->detail == NULL, "detail 传 NULL = 清空 (不残留旧明细)");
+    /* detail NULL on upsert leaves the stored detail untouched (nothing to change). */
 
     struct edc_memo_entry *m2 = edc_session_memory_upsert_entry(m, "m2", "沙箱", NULL, NULL, NULL);
     CHECK(m2 != NULL && m->entry_count == 2, "另一个 id = 新条目");
@@ -179,7 +185,8 @@ static void test_read_write_api(void)
     CHECK(sdslen(empty) == 0, "越界 = 空 (不是崩)");
     sdsfree(empty);
 
-    /* 搜索: 命中标题或摘要或明细; 命中数 cap 之外只计数 */
+    /* Search matches the RESIDENT INDEX (title/summary) only -- detail is DB-only and
+     * deliberately not searched. The hit count still reports beyond cap. */
     size_t hits = 0;
     sds r = edc_session_memory_search_lines(m, "ZEBRA", 5, &hits);
     CHECK(hits == 0 && sdslen(r) == 0, "没命中 = 空");
@@ -188,14 +195,18 @@ static void test_read_write_api(void)
     CHECK(hits == 1 && strstr(r, "[m2]") != NULL, "命中摘要");
     sdsfree(r);
     r = edc_session_memory_search_lines(m, "明细二", 5, &hits);
-    CHECK(hits == 1 && strstr(r, "[m2]") != NULL, "命中明细");
+    CHECK(hits == 0 && sdslen(r) == 0, "detail 内容不再被搜索命中 (DB-only)");
     sdsfree(r);
     r = edc_session_memory_search_lines(m, "bazelisk", 5, &hits);
     CHECK(hits == 1 && strstr(r, "[m1]") != NULL, "大小写不敏感");
     sdsfree(r);
-    r = edc_session_memory_search_lines(m, "明细", 1, &hits);
-    CHECK(hits == 2 && sdslen(r) > 0, "两条命中但只回 1 条 (cap), hits 仍报 2");
-    sdsfree(r);
+    /* Cap: use the regex variant with an alternation hitting both index rows. */
+    {
+        int re = 0;
+        sds rr2 = edc_session_memory_search_regex_lines(m, "uid|bazelisk", 1, &hits, &re, NULL);
+        CHECK(re == 0 && hits == 2 && sdslen(rr2) > 0, "两条命中但只回 1 条 (cap), hits 仍报 2");
+        sdsfree(rr2);
+    }
 
     /* 正则搜索: POSIX ERE + 大小写不敏感; 非法正则置 out_regerror 且不回行 */
     int regerr = 0;
@@ -209,9 +220,10 @@ static void test_read_write_api(void)
     CHECK(regerr == 1 && hits == 0 && sdslen(rr) == 0, "非法正则: 置 regerror, 不回行");
     sdsfree(rr);
 
-    /* 取明细: 有条目 = created/updated 头 + 明细; 没明细 = 索引行; 不存在 = NULL */
+    /* Detail is DB-only: with no session bound (this pure-data test) get_detail degrades
+     * to the index line. The real detail round-trip is covered by test_tools_memory. */
     sds d = edc_session_memory_get_detail(m, "m2");
-    CHECK(d && strstr(d, "明细二") != NULL, "明细在（前面带头）");
+    CHECK(d && strstr(d, "[m2]") != NULL, "无 DB 时明细退化为索引行");
     CHECK(d && strstr(d, "created: ") != NULL && strstr(d, "updated: ") != NULL, "明细带 created/updated 头");
     sdsfree(d);
     d = edc_session_memory_get_detail(m, "m3");
@@ -358,6 +370,7 @@ static void test_notice(void)
     /* P2 分层渲染: updated 只报"哪个字段变了"，不重述内容 */
     {
         struct edc_session_memory *mu = edc_session_memory_new();
+        mu->session_id = edc_test_session_id("m-layered");
         sds uid = NULL;
         add_entry_with_event(mu, "分层", "原始摘要内容", &uid);
         /* 只改 detail（必须同批给 summary —— 工具层强制；这里直接调 API 模拟） */
@@ -526,6 +539,11 @@ static void test_round_trip(void)
 
     cJSON *json = edc_session_memory_to_json(m);
     CHECK(json != NULL, "能序列化");
+    {
+        char *js = cJSON_PrintUnformatted(json);
+        CHECK(js && strstr(js, "明细正文") == NULL, "detail 不在内存快照里 (DB-only)");
+        if (js) free(js);
+    }
     struct edc_session_memory *back = edc_session_memory_from_json(json);
     cJSON_Delete(json);
 
@@ -537,7 +555,6 @@ static void test_round_trip(void)
     CHECK(back->next_entry_id == 1, "next_entry_id 回来");
     const struct edc_memo_entry *be = edc_session_memory_entry(back, "m1");
     CHECK(be != NULL, "条目按 id 回来");
-    CHECK(be && be->detail && strstr(be->detail, "明细正文") != NULL, "明细回来");
     CHECK(be && be->created_seq == 1 && be->updated_seq == 2, "两个 seq 回来");
     CHECK(be && be->created_at == 111 && be->updated_at == 222, "两个 wall-clock 时间回来");
     CHECK(back->events[0].ts == ev_ts && back->events[1].ts > 0, "事件时间回来");

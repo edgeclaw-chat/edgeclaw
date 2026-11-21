@@ -2,7 +2,9 @@
 #include "edc_file_utils.h"
 #include "edc_fold_files.h"
 #include "edc_resources.h"
+#include "edc_session.h"
 #include "edc_skills.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_token_estimate.h"
@@ -638,15 +640,20 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
 
     /* 2. GROUP memory summary (a condensation of folded turns) -- the mutable part last (see the function head).
      *
-     * The tracked-file blocks are RENDERED here, from `group->fold_files`, not stored in
-     * `group->memory`: the text is a projection of the data. It must be deterministic --
-     * same (body, lists) => same bytes -- because this message sits in the cached prefix
-     * and a single different byte invalidates it from token 0. */
-    if (group && group->memory && sdslen(group->memory) > 0)
+     * The body lives only in groups.memory (DB); read it on demand. memory_tokens is the
+     * cheap "is there a summary" signal (0 = never folded), so no DB read in the common
+     * no-memory case. The tracked-file blocks are RENDERED here from `group->fold_files`
+     * -- same (body, lists) => same bytes, because this message sits in the cached prefix
+     * and one different byte invalidates it from token 0. */
+    sds group_memory_text = NULL;
+    if (group && group->memory_tokens > 0 && group->session)
+        group_memory_text = edc_state_store_group_memory_load(group->session->session_id, group->group_id,
+                                                              NULL, NULL, NULL);
+    if (group_memory_text && sdslen(group_memory_text) > 0)
     {
         cJSON *mem = cJSON_CreateObject();
         cJSON_AddStringToObject(mem, "role", "system");
-        sds rendered = edc_fold_files_render(group->memory, group->fold_files);
+        sds rendered = edc_fold_files_render(group_memory_text, group->fold_files);
         sds mc = sdscatprintf(sdsempty(), "## Group Memory\n%s", rendered);
         cJSON_AddStringToObject(mem, "content", mc);
         cJSON_AddItemToArray(msgs, mem);
@@ -654,6 +661,8 @@ int edc_context_append_system_part(cJSON *msgs, struct edc_config *conf, struct 
         sdsfree(rendered);
         appended++;
     }
+    if (group_memory_text)
+        sdsfree(group_memory_text);
 
     return appended;
 }
@@ -734,8 +743,10 @@ extern int64_t edc_context_group_ctx_tokens(struct edc_task_group *group, bool *
 
     /* 2) no usable anchor: estimate what the group's next request would carry */
     int64_t est = 0;
-    if (group->memory)
-        est += edc_token_estimate_text(group->memory);
+    /* The summary token count is maintained at write time (and recomputed at load);
+     * never read the text back just to estimate it. */
+    if (group)
+        est += group->memory_tokens;
     /* The blocks are rendered on top of the body at request time; leaving them out here
      * would make the estimate low by exactly the part the model is told about. */
     est += edc_fold_files_token_estimate(group->fold_files);

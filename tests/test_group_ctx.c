@@ -161,12 +161,13 @@ static void test_fallback_estimate(void)
     add_history(g, user_msg40());
     CHECK(edc_context_group_ctx_tokens(g, NULL) == 19 + 19, "unfolded history is counted");
 
-    /* 一段记忆 (纯文本, 没有消息开销: 40 ASCII -> 10) */
+    /* A resident token estimate (text itself is DB-only): 40 ASCII chars -> 10 tokens.
+     * Context estimation reads this number, not the text (no DB read at request time). */
     char body[41];
     memset(body, 'a', 40);
     body[40] = '\0';
-    g->memory = sdsnew(body);
-    CHECK(edc_context_group_ctx_tokens(g, NULL) == 10 + 19 + 19, "group memory is counted as text");
+    g->memory_tokens = 10;
+    CHECK(edc_context_group_ctx_tokens(g, NULL) == 10 + 19 + 19, "group memory estimate is counted");
 
     /* 正在跑的成员带着自己的 turn */
     struct edc_turn *turn = edc_turn_new();
