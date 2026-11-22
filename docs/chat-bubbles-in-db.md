@@ -10,6 +10,11 @@
   `edc_chat_bubble_line.{c,h}` 拼成 transcript 行后 `edc_chat_bubble_append()`；
   控制消息（snapshot / tree-changed / history / page reply / payload）按白名单排除。
   `session_id` 补成必填，无 owner 的气泡拒绝写入并记警告。UI 线程只展示，不写存储。
+  **每一个上屏气泡都走这条收口**：用户输入回声（`edc_app_publish_bubble`，写用户看到的
+  `shown` 文本，折叠块保留占位符）、finish notice 同理由 channel actor 写库；interrupted
+  hint 由 `edc_scheduler_close()` 在退出、store 仍开且 actor 已停时直接 `edc_chat_bubble_append()`
+  写库，UI 不再按 snapshot 现场生成（否则重启会重复）。因此 cursor-0 页读回的是完整集合，
+  `LoadFromPage` 重建不会丢气泡。
 - **读路径**：`TUIWindow::LoadChatTranscript` 只发
   `RequestChatBubblePage(id, 0, 200)`，cursor-0 回包经 `ApplyChatBubblePage`
   调 `ChatModel::LoadFromPage`；滚到顶由 `MessageList` 回调触发

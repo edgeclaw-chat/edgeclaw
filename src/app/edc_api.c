@@ -562,6 +562,35 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
     send_user_message_impl(app, session_id, content, payload_json, mid);
 }
 
+void edc_app_publish_bubble(struct edc_app *app, const char *session_id, const char *kind, const char *content)
+{
+    edc_actor_t *channel = edc_app_channel_actor(app);
+    if (!channel || !content)
+        return;
+
+    edc_channel_message_type type;
+    if (kind && strcmp(kind, "user") == 0)
+        type = EDC_CHANNEL_MESSAGE_USER_TYPE;
+    else if (kind && strcmp(kind, "sys") == 0)
+        type = EDC_CHANNEL_MESSAGE_SYS_TYPE;
+    else
+        return; /* unknown kind: refuse rather than guess a bubble type */
+
+    struct edc_channel_message *msg =
+        edc_channel_message_new(edc_channel_adapter, type, sdsnew(content));
+    if (session_id && *session_id)
+        msg->session_id = sdsnew(session_id);
+    /* No active task produced this bubble; the TUI's display gate would drop it
+     * otherwise. Mark it as interface feedback so it shows on the current tab. */
+    msg->interface_feedback = true;
+
+    /* BC_ACTOR_MSG_CHANNEL_SEND is the single funnel: the channel actor persists
+     * this bubble to chat_bubbles BEFORE handing it back for display (m109). */
+    edc_actor_send(channel,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter, NULL, NULL, msg,
+                                              (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
 /* Request a task tree (the frontend pulls only the one it displays); built on the
  * scheduler thread and answered as TASK_SNAPSHOT through the channel adapter. */
 void edc_app_request_message_payload(struct edc_app *app, const char *mid)

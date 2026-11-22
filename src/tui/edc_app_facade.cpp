@@ -361,6 +361,12 @@ void AppFacade::SendUserMessage(const std::string &session_id, const std::string
                                   mid.empty() ? nullptr : mid.c_str());
 }
 
+void AppFacade::PublishBubble(const std::string &session_id, const std::string &kind, const std::string &content)
+{
+    if (app_)
+        edc_app_publish_bubble(app_, session_id.c_str(), kind.c_str(), content.c_str());
+}
+
 void AppFacade::RequestMessagePayload(const std::string &mid)
 {
     if (app_)
