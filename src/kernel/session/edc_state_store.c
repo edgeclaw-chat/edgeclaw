@@ -384,23 +384,39 @@ static const char *const EDC_SCHEMA_SQL =
      * the bubbles in their own table gives the UI one durable, paged authority
      * without touching any model-side reader. See docs/chat-bubbles-in-db.md.
      *
-     * `line` is the ENCODED transcript line (EncodeTranscriptLine), verbatim: the
-     * one-time importer can copy each file line byte-for-byte and every reader reuses
-     * DecodeTranscriptLine, so no escape rule is duplicated. session_id is TEXT
-     * because that is the identity the frontend and channel events carry. */
+     * `line` is the ENCODED transcript line (EncodeTranscriptLine), verbatim; every
+     * reader reuses DecodeTranscriptLine, so no escape rule is duplicated. session_id
+     * is TEXT because that is the identity the frontend and channel events carry. */
     "CREATE TABLE IF NOT EXISTS chat_bubbles ("
     "  session_id TEXT NOT NULL,"
     "  seq        INTEGER NOT NULL,"
     "  line       TEXT NOT NULL,"
     "  PRIMARY KEY (session_id, seq)"
     ");"
-    "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session ON chat_bubbles(session_id, seq DESC);";
+    "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session ON chat_bubbles(session_id, seq DESC);"
+
+    /* v15: scheduled jobs. Replaces workspace/jobs.json. Each row is one job; the
+     * schedule fields are regular columns so they can be inspected in SQL. `channel`
+     * is the one structured-but-never-queried field, kept as a JSON text column. */
+    "CREATE TABLE IF NOT EXISTS jobs ("
+    "  job_id         TEXT PRIMARY KEY,"
+    "  name           TEXT NOT NULL DEFAULT '',"
+    "  message        TEXT NOT NULL DEFAULT '',"
+    "  channel        TEXT NOT NULL DEFAULT '',"
+    "  kind           TEXT NOT NULL,"          /* 'at' | 'every' | 'cron' */
+    "  tz             TEXT NOT NULL DEFAULT '',"
+    "  every_seconds  INTEGER NOT NULL DEFAULT 0,"
+    "  cron_expr      TEXT NOT NULL DEFAULT '',"
+    "  next_run_at    INTEGER NOT NULL DEFAULT 0,"
+    "  once           INTEGER NOT NULL DEFAULT 0"
+    ");"
+    "CREATE INDEX IF NOT EXISTS jobs_by_next_run ON jobs(next_run_at);";
 
 /* The tables a healthy database must contain. Used by the post-DDL sanity check so a
  * half-applied schema fails here rather than as a mysterious SQL error later. */
 static const char *const EDC_EXPECTED_TABLES[] = {
     "sessions", "groups", "group_fold_files", "tasks", "task_deps", "task_tool_calls",
-    "turns", "messages", "memo_entries", "memo_events", "chat_bubbles", NULL};
+    "turns", "messages", "memo_entries", "memo_events", "chat_bubbles", "jobs", NULL};
 
 /* ── Small SQL helpers ─────────────────────────────────────────────────────── */
 
@@ -4014,3 +4030,217 @@ int64_t edc_chat_bubble_count(const char *session_id)
     return out;
 }
 
+
+/* ── jobs: scheduled jobs (v15) ────────────────────────────────────────────────
+ * Only the scheduler runner thread calls these. Plain SQL against the `jobs`
+ * table; no in-memory mirror, because schedule scans are rare and cheap. */
+
+bool edc_state_store_job_add(const struct edc_job_row *job)
+{
+    if (!g_db || !job || !job->job_id || !*job->job_id || !job->kind || !*job->kind)
+        return false;
+    sqlite3_stmt *st = NULL;
+    static const char *SQL =
+        "INSERT OR REPLACE INTO jobs(job_id,name,message,channel,kind,tz,every_seconds,"
+        "cron_expr,next_run_at,once) VALUES(?,?,?,?,?,?,?,?,?,?)";
+    if (sqlite3_prepare_v2(g_db, SQL, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, job->job_id);
+    bind_str(st, 2, job->name ? job->name : "");
+    bind_str(st, 3, job->message ? job->message : "");
+    bind_str(st, 4, job->channel ? job->channel : "");
+    bind_str(st, 5, job->kind);
+    bind_str(st, 6, job->tz ? job->tz : "");
+    sqlite3_bind_int64(st, 7, job->every_seconds);
+    bind_str(st, 8, job->cron_expr ? job->cron_expr : "");
+    sqlite3_bind_int64(st, 9, job->next_run_at);
+    sqlite3_bind_int(st, 10, job->once ? 1 : 0);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static char *job_dup_col(sqlite3_stmt *st, int i)
+{
+    const char *s = col_str(st, i);
+    return s ? strdup(s) : strdup("");
+}
+
+void edc_job_rows_free(struct edc_job_row *rows, int n)
+{
+    if (!rows)
+        return;
+    for (int i = 0; i < n; i++)
+    {
+        free(rows[i].job_id);
+        free(rows[i].name);
+        free(rows[i].message);
+        free(rows[i].channel);
+        free(rows[i].kind);
+        free(rows[i].tz);
+        free(rows[i].cron_expr);
+    }
+    free(rows);
+}
+
+bool edc_state_store_job_list(struct edc_job_row **out, int *n)
+{
+    if (!g_db || !out || !n)
+        return false;
+    *out = NULL;
+    *n = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "SELECT job_id,name,message,channel,kind,tz,every_seconds,"
+                           "cron_expr,next_run_at,once FROM jobs ORDER BY job_id",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int cap = 0;
+    struct edc_job_row *rows = NULL;
+    int count = 0;
+    while (sqlite3_step(st) == SQLITE_ROW)
+    {
+        if (count == cap)
+        {
+            cap = cap ? cap * 2 : 8;
+            struct edc_job_row *grown = realloc(rows, (size_t)cap * sizeof(*rows));
+            if (!grown)
+                break;
+            rows = grown;
+        }
+        struct edc_job_row *r = &rows[count];
+        memset(r, 0, sizeof(*r));
+        r->job_id = job_dup_col(st, 0);
+        r->name = job_dup_col(st, 1);
+        r->message = job_dup_col(st, 2);
+        r->channel = job_dup_col(st, 3);
+        r->kind = job_dup_col(st, 4);
+        r->tz = job_dup_col(st, 5);
+        r->every_seconds = sqlite3_column_int64(st, 6);
+        r->cron_expr = job_dup_col(st, 7);
+        r->next_run_at = sqlite3_column_int64(st, 8);
+        r->once = sqlite3_column_int(st, 9);
+        count++;
+    }
+    sqlite3_finalize(st);
+    if (!rows && count == 0)
+        return true; /* empty table */
+    *out = rows;
+    *n = count;
+    return true;
+}
+
+bool edc_state_store_job_remove(const char *job_id)
+{
+    if (!g_db || !job_id || !*job_id)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "DELETE FROM jobs WHERE job_id=?", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, job_id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok && sqlite3_changes(g_db) > 0;
+}
+
+bool edc_state_store_job_set_next_run(const char *job_id, int64_t next_run_at)
+{
+    if (!g_db || !job_id || !*job_id)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "UPDATE jobs SET next_run_at=? WHERE job_id=?", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, next_run_at);
+    bind_str(st, 2, job_id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool edc_state_store_job_clear(void)
+{
+    if (!g_db)
+        return false;
+    return exec_sql(g_db, "DELETE FROM jobs", "clear jobs");
+}
+
+struct cJSON *edc_state_store_jobs_json(void)
+{
+    cJSON *db = cJSON_CreateObject();
+    cJSON *jobs = cJSON_AddArrayToObject(db, "jobs");
+    struct edc_job_row *rows = NULL;
+    int n = 0;
+    if (!edc_state_store_job_list(&rows, &n))
+    {
+        cJSON_Delete(db);
+        return NULL;
+    }
+    for (int i = 0; i < n; i++)
+    {
+        const struct edc_job_row *r = &rows[i];
+        cJSON *job = cJSON_CreateObject();
+        cJSON_AddStringToObject(job, "job_id", r->job_id);
+        cJSON_AddStringToObject(job, "name", r->name);
+        cJSON_AddStringToObject(job, "message", r->message);
+        if (r->channel && *r->channel)
+        {
+            cJSON *ch = cJSON_Parse(r->channel);
+            cJSON_AddItemToObject(job, "channel", ch ? ch : cJSON_CreateNull());
+        }
+        else
+            cJSON_AddNullToObject(job, "channel");
+        cJSON *schedule = cJSON_AddObjectToObject(job, "schedule");
+        cJSON_AddStringToObject(schedule, "kind", r->kind);
+        cJSON_AddStringToObject(schedule, "tz", r->tz);
+        cJSON_AddStringToObject(schedule, "cron_expr", r->cron_expr);
+        if (strcmp(r->kind, "every") == 0)
+            cJSON_AddNumberToObject(schedule, "every_seconds", r->every_seconds);
+        cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", r->next_run_at);
+        cJSON_AddBoolToObject(schedule, "once", r->once ? 1 : 0);
+        cJSON_AddItemToArray(jobs, job);
+    }
+    edc_job_rows_free(rows, n);
+    return db;
+}
+
+bool edc_state_store_jobs_replace(const struct cJSON *db)
+{
+    if (!db)
+        return false;
+    const cJSON *jobs = cJSON_GetObjectItem((cJSON *)db, "jobs");
+    if (!jobs || !cJSON_IsArray(jobs))
+        return false;
+    if (!edc_state_store_job_clear())
+        return false;
+    int n = cJSON_GetArraySize(jobs);
+    for (int i = 0; i < n; i++)
+    {
+        const cJSON *j = cJSON_GetArrayItem(jobs, i);
+        const cJSON *s = cJSON_GetObjectItem((cJSON *)j, "schedule");
+        struct edc_job_row r = {0};
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)j, "job_id"));
+        if (!id || !*id)
+            continue;
+        r.job_id = (char *)id;
+        r.name = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)j, "name"));
+        r.message = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)j, "message"));
+        const cJSON *ch = cJSON_GetObjectItem((cJSON *)j, "channel");
+        char *ch_text = ch ? cJSON_PrintUnformatted(ch) : NULL;
+        r.channel = ch_text;
+        const char *kind = s ? cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)s, "kind")) : NULL;
+        r.kind = (char *)(kind ? kind : "at");
+        r.tz = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)s, "tz"));
+        r.cron_expr = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)s, "cron_expr"));
+        const cJSON *ev = s ? cJSON_GetObjectItem((cJSON *)s, "every_seconds") : NULL;
+        r.every_seconds = (ev && cJSON_IsNumber(ev)) ? (int64_t)ev->valuedouble : 0;
+        const cJSON *ts = s ? cJSON_GetObjectItem((cJSON *)s, "next_run_at_unix_ts") : NULL;
+        r.next_run_at = (ts && cJSON_IsNumber(ts)) ? (int64_t)ts->valuedouble : 0;
+        const cJSON *once = s ? cJSON_GetObjectItem((cJSON *)s, "once") : NULL;
+        r.once = (once && cJSON_IsTrue(once)) ? 1 : 0;
+        bool ok = edc_state_store_job_add(&r);
+        cJSON_free(ch_text);
+        if (!ok)
+            return false;
+    }
+    return true;
+}

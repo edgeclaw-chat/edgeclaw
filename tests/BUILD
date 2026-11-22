@@ -813,6 +813,20 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+cc_test(
+    name = "test_state_jobs",
+    srcs = ["test_state_jobs.c", "test_ws.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # The schema-upgrade runner (edc_state_migrate.c). Drives the runner with synthetic steps
 # -- success, failure before a write, failure AFTER a write, a verify that fails, a hole in
 # the chain -- and then exercises the real v7 -> v8 step against a hand-built v7 database.

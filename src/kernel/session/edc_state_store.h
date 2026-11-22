@@ -28,6 +28,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+struct cJSON; /* forward declaration; jobs JSON bridge uses cJSON* only */
 #ifdef __cplusplus
 extern "C"
 {
@@ -117,7 +119,9 @@ struct edc_scheduler;
  * (memory_search hit, new column default 0). step_v12_to_v13 is O(1). */
 /* v14: groups.extract_summary_budget -- the two-stage extract's INDEPENDENT corpus
  * budget, separate from fold_corpus_budget. O(1) ADD COLUMN DEFAULT 0. */
-#define EDC_DB_VERSION 14
+/* v15: the `jobs` table -- scheduled jobs, replacing workspace/jobs.json. New table;
+ * the old jobs.json is NOT imported (user decision). */
+#define EDC_DB_VERSION 15
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
@@ -449,6 +453,48 @@ bool edc_chat_bubble_page(const char *session_id, int64_t before_seq, int limit,
                           struct edc_chat_bubble_row **out, int *n);
 void edc_chat_bubble_rows_free(struct edc_chat_bubble_row *rows, int n);
 int64_t edc_chat_bubble_count(const char *session_id);
+
+/* ── jobs: the scheduled jobs table (v15) ───────────────────────────────────
+ * SAME THREAD INVARIANT: scheduler actor thread only (the toolbox and command
+ * dispatchers run on that same runner thread, so they may call these directly).
+ * All strings are owned copies; the caller frees them with edc_job_rows_free. */
+struct edc_job_row
+{
+    char *job_id;
+    char *name;
+    char *message;
+    char *channel;    /* JSON text */
+    char *kind;       /* "at" | "every" | "cron" */
+    char *tz;
+    int64_t every_seconds;
+    char *cron_expr;
+    int64_t next_run_at; /* unix seconds */
+    int once;            /* 0/1 */
+};
+
+/* Insert one job. Returns false on a DB error or a duplicate job_id. */
+bool edc_state_store_job_add(const struct edc_job_row *job);
+
+/* List all jobs ordered by job_id (the caller does prefix matching / scheduling).
+ * An empty table is a valid result (*n = 0, *out = NULL). */
+bool edc_state_store_job_list(struct edc_job_row **out, int *n);
+void edc_job_rows_free(struct edc_job_row *rows, int n);
+
+/* Remove one job by exact id. Returns true if a row was deleted. */
+bool edc_state_store_job_remove(const char *job_id);
+
+/* Remove all jobs (used by the full rewrite path, where callers load the whole
+ * table, mutate it, and write it back as one unit). */
+bool edc_state_store_job_clear(void);
+
+/* Convenience bridge for the crontab tool and /jobs command, which work on a
+ * cJSON `{"jobs":[...]}` document. These convert to/from the row API above so the
+ * job JSON shape stays in one place. Caller owns the returned cJSON. */
+struct cJSON *edc_state_store_jobs_json(void);
+bool edc_state_store_jobs_replace(const struct cJSON *db);
+
+/* Update one job's next_run timestamp (used after a recurring job fires). */
+bool edc_state_store_job_set_next_run(const char *job_id, int64_t next_run_at);
 
 #ifdef __cplusplus
 }

@@ -1,6 +1,6 @@
 /* tests/test_commands_jobs.c -- `/jobs`: the scheduled jobs, visible to a person.
  *
- * The schedules are data (<workspace>/jobs.json) that the crontab tool writes and a
+ * The schedules are data in the edgeclaw.db `jobs` table that the crontab tool writes and a
  * background service ticks. These tests drive the command entry and check what a user can
  * observe: a list that does not touch anything, `run` that puts the job's instruction
  * through the input pipeline (and leaves the schedule alone), `rm` that removes THAT job,
@@ -20,6 +20,7 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -128,38 +129,25 @@ static const char *last_task_input(struct edc_session *sess)
 
 static void write_jobs(const char *workspace, const char *json)
 {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/jobs.json", workspace);
-    FILE *f = fopen(path, "w");
-    if (!f)
-        return;
-    fputs(json, f);
-    fclose(f);
+    (void)workspace;
+    cJSON *db = cJSON_Parse(json);
+    if (db)
+    {
+        edc_state_store_jobs_replace(db);
+        cJSON_Delete(db);
+    }
 }
 
-/* How many jobs the file holds now, and whether |name| is one of them. */
+/* How many jobs the table holds now, and whether |name| is one of them. */
 static int jobs_in_file(const char *workspace, const char *name, bool *found)
 {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/jobs.json", workspace);
+    (void)workspace;
     *found = false;
-    if (!edc_file_is_regular(path))
-        return -1;
-
-    EdcError *error = NULL;
-    sds content = edc_file_read(path, &error);
-    if (error)
-        edc_error_free(error);
-    if (!content)
-        return -1;
-
-    cJSON *db = cJSON_Parse(content);
-    sdsfree(content);
+    cJSON *db = edc_state_store_jobs_json();
     if (!db)
         return -1;
-
     cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
-    const int n = cJSON_GetArraySize(jobs);
+    const int n = jobs ? cJSON_GetArraySize(jobs) : 0;
     for (int i = 0; i < n; i++)
     {
         cJSON *job = cJSON_GetArrayItem(jobs, i);
@@ -215,7 +203,7 @@ int main(void)
         CHECK(count_tasks(sess) == before, "no task was created");
         CHECK(g_llm_calls == 0, "and nothing ran");
         bool found = false;
-        CHECK(jobs_in_file(ws, "nightly", &found) == 2 && found, "the file still holds both jobs");
+        CHECK(jobs_in_file(ws, "nightly", &found) == 2 && found, "the table still holds both jobs");
     }
 
     /* ── run：把指令送进输入流水线，不改日程 ──────────────────────── */
@@ -256,7 +244,7 @@ int main(void)
         const int before = count_tasks(sess);
         drive_command(cfg, sm, sched, "/jobs rm zzzz");
         bool probe = false;
-        CHECK(jobs_in_file(ws, "probe", &probe) == 1 && probe, "the file is untouched");
+        CHECK(jobs_in_file(ws, "probe", &probe) == 1 && probe, "the table is untouched");
         drive_command(cfg, sm, sched, "/jobs run zzzz");
         CHECK(count_tasks(sess) == before, "and no task was created");
     }
@@ -278,21 +266,19 @@ int main(void)
         CHECK(count_tasks(sess) == before, "and nothing ran");
     }
 
-    /* ── 没有 jobs.json：不是错误，也不炸 ────────────────────────── */
+    /* ── 没有 jobs：不是错误，也不炸 ──────────────────────────────── */
 
-    TEST("no jobs.json: list is empty and run/rm do nothing");
+    TEST("no jobs: list is empty and run/rm do nothing");
     {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/jobs.json", ws);
-        remove(path);
-
+        edc_test_store_reset();
         const int before = count_tasks(sess);
         drive_command(cfg, sm, sched, "/jobs");
         CHECK(count_tasks(sess) == before, "no task");
 
         drive_command(cfg, sm, sched, "/jobs run whatever");
         CHECK(count_tasks(sess) == before, "still no task");
-        CHECK(!edc_file_is_regular(path), "and no file was invented by a read");
+        bool any = true;
+        CHECK(jobs_in_file(ws, NULL, &any) == 0, "and the jobs table stays empty");
     }
 
     /* store still open: nothing to remove */

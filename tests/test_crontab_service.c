@@ -1,5 +1,7 @@
 /* crontab migrated onto the shared background service: a due job fires and the
- * schedule advances, all driven by the single service pump (jobs.json format kept). */
+ * schedule advances, all driven by the single service pump. Schedules live in the
+ * edgeclaw.db `jobs` table (not jobs.json); the service runs on the scheduler runner
+ * thread, so it reads/writes that table directly. */
 
 #include "edc_compat.h"
 #include "test_ws.h"
@@ -7,6 +9,7 @@
 #include "edc_file_utils.h"
 #include "edc_scheduler.h"
 #include "edc_service.h"
+#include "edc_state_store.h"
 #include "edc_toolbox.h"
 #include "log.h"
 #include "sds.h"
@@ -14,24 +17,10 @@
 #include <cJSON.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 
 static int test_failed = 0;
 static int test_passed = 0;
-
-/* Scratch root for the three cases, under Bazel's per-test TEST_TMPDIR. These used to be fixed
- * "/tmp/test_crontab_service_[abc]" paths: that assumes /tmp exists, which a Windows machine
- * does not provide ("/tmp" there means "\tmp" on the current drive) -- mkdir() then failed
- * silently, write_jobs() wrote nothing, and the cases failed with no readable cause. */
-static char g_base[1024];
-
-static const char *case_dir(const char *which)
-{
-    static char buf[1024];
-    snprintf(buf, sizeof(buf), "%s/%s", g_base, which);
-    return buf;
-}
 
 #define TEST(name)                                                                                                     \
     do                                                                                                                 \
@@ -52,40 +41,26 @@ static const char *case_dir(const char *which)
         }                                                                                                              \
     } while (0)
 
-static void write_jobs(const char *dir, const char *json)
+/* Seed the jobs table from a cJSON {"jobs":[...]} document (the old fixture shape). */
+static void write_jobs(const char *json)
 {
-    sds path = edc_path_join(dir, "jobs.json", NULL);
-    FILE *f = fopen(path, "w");
-    if (f)
+    cJSON *db = cJSON_Parse(json);
+    if (db)
     {
-        fputs(json, f);
-        fclose(f);
+        edc_state_store_jobs_replace(db);
+        cJSON_Delete(db);
     }
-    sdsfree(path);
 }
 
-static cJSON *read_jobs(const char *dir)
+static cJSON *read_jobs(void)
 {
-    sds path = edc_path_join(dir, "jobs.json", NULL);
-    cJSON *db = NULL;
-    FILE *f = fopen(path, "r");
-    if (f)
-    {
-        char buf[4096] = {0};
-        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-        buf[n] = 0;
-        fclose(f);
-        db = cJSON_Parse(buf);
-    }
-    sdsfree(path);
-    return db;
+    return edc_state_store_jobs_json();
 }
 
-static struct edc_config *make_config(const char *dir)
+static struct edc_config *make_config(void)
 {
-    mkdir(dir, 0755);
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew(dir);
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
@@ -93,15 +68,15 @@ static struct edc_config *make_config(const char *dir)
 static void test_due_once_job_fires_and_is_removed(void)
 {
     TEST("crontab service: a due one-shot job fires on the pump and is dropped");
-    const char *dir = case_dir("a");
-    struct edc_config *cfg = make_config(dir);
+    edc_test_store_reset();
+    struct edc_config *cfg = make_config();
     long long past = (long long)time(NULL) - 10;
     char json[512];
     snprintf(json, sizeof(json),
              "{\"jobs\":[{\"job_id\":\"j1\",\"name\":\"n\",\"message\":\"m\","
              "\"schedule\":{\"kind\":\"at\",\"tz\":\"\",\"once\":true,\"next_run_at_unix_ts\":%lld}}]}",
              past);
-    write_jobs(dir, json);
+    write_jobs(json);
 
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     struct edc_toolbox *tb = edc_toolbox_new(cfg, edc_scheduler_get_actor(sched), NULL);
@@ -110,7 +85,7 @@ static void test_due_once_job_fires_and_is_removed(void)
 
     edc_services_pump(sched, 1000); /* the service was armed for the due job */
 
-    cJSON *db = read_jobs(dir);
+    cJSON *db = read_jobs();
     cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
     CHECK(jobs && cJSON_GetArraySize(jobs) == 0, "the fired one-shot job is gone");
     if (db)
@@ -125,8 +100,8 @@ static void test_due_once_job_fires_and_is_removed(void)
 static void test_due_every_job_advances(void)
 {
     TEST("crontab service: a due recurring job fires and its next_run advances");
-    const char *dir = case_dir("b");
-    struct edc_config *cfg = make_config(dir);
+    edc_test_store_reset();
+    struct edc_config *cfg = make_config();
     long long past = (long long)time(NULL) - 10;
     char json[512];
     snprintf(json, sizeof(json),
@@ -134,14 +109,14 @@ static void test_due_every_job_advances(void)
              "\"schedule\":{\"kind\":\"every\",\"tz\":\"\",\"once\":false,\"every_seconds\":3600,"
              "\"next_run_at_unix_ts\":%lld}}]}",
              past);
-    write_jobs(dir, json);
+    write_jobs(json);
 
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     struct edc_toolbox *tb = edc_toolbox_new(cfg, edc_scheduler_get_actor(sched), NULL);
 
     edc_services_pump(sched, 1000);
 
-    cJSON *db = read_jobs(dir);
+    cJSON *db = read_jobs();
     cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
     cJSON *job = jobs ? cJSON_GetArrayItem(jobs, 0) : NULL;
     cJSON *schedule = job ? cJSON_GetObjectItem(job, "schedule") : NULL;
@@ -162,8 +137,8 @@ static void test_due_every_job_advances(void)
 static void test_future_job_not_disturbed(void)
 {
     TEST("crontab service: an idle scan does not advance a not-yet-due job");
-    const char *dir = case_dir("c");
-    struct edc_config *cfg = make_config(dir);
+    edc_test_store_reset();
+    struct edc_config *cfg = make_config();
     long long future = (long long)time(NULL) + 100000;
     char json[512];
     snprintf(json, sizeof(json),
@@ -171,14 +146,14 @@ static void test_future_job_not_disturbed(void)
              "\"schedule\":{\"kind\":\"every\",\"tz\":\"\",\"once\":false,\"every_seconds\":10,"
              "\"next_run_at_unix_ts\":%lld}}]}",
              future);
-    write_jobs(dir, json);
+    write_jobs(json);
 
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     struct edc_toolbox *tb = edc_toolbox_new(cfg, edc_scheduler_get_actor(sched), NULL);
 
     edc_services_pump(sched, 100000000); /* force the service to run its scan */
 
-    cJSON *db = read_jobs(dir);
+    cJSON *db = read_jobs();
     cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
     cJSON *job = jobs ? cJSON_GetArrayItem(jobs, 0) : NULL;
     cJSON *schedule = job ? cJSON_GetObjectItem(job, "schedule") : NULL;
@@ -195,17 +170,12 @@ static void test_future_job_not_disturbed(void)
 
 int main(void)
 {
-    edc_test_workspace(); /* disposable store for anything that writes state */
-    test_tmp_template(g_base, sizeof(g_base), "edc_crontab_svc");
-    if (!mkdtemp(g_base))
-    {
-        perror("mkdtemp");
-        return 1;
-    }
+    edc_test_workspace();
     test_due_once_job_fires_and_is_removed();
     test_due_every_job_advances();
     test_future_job_not_disturbed();
 
     log_info("  ====== %d passed, %d failed ======", test_passed, test_failed);
+    edc_test_store_down(NULL);
     return test_failed ? 1 : 0;
 }

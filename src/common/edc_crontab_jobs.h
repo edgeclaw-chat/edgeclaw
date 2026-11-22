@@ -3,7 +3,7 @@
 
 /* Pieces of the scheduled-job format that more than one layer needs.
  *
- * The jobs themselves live in <workspace>/jobs.json and are owned by the crontab tool;
+ * The jobs themselves live in the edgeclaw.db `jobs` table and are owned by the crontab tool;
  * this header only holds what the command layer (`/jobs`) and the ticker must agree on
  * -- currently the text a fired job hands to the input pipeline. Keeping it in one place
  * is the point: `/jobs run` must produce exactly what a timer-fired job produces, or the

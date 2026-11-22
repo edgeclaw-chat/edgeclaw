@@ -689,8 +689,8 @@ and a missing value is a usage error.
 
 ### Scheduling
 
-Scheduled jobs live in `workspace/jobs.json` and are created by the assistant (the
-`crontab` tool). These commands are how a person sees and manages them:
+Scheduled jobs live in the `jobs` table of `edgeclaw.db` and are created by the
+assistant (the `crontab` tool). These commands are how a person sees and manages them:
 
 | Command | Description |
 |---------|-------------|
