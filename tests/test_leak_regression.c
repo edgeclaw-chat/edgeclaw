@@ -15,8 +15,6 @@
  * operation actually allocated (otherwise "no growth" is a vacuous pass).
  *
  * NOT covered here (honest scope):
- *  - app_import_legacy_chat_logs' old leak is impossible in current code
- *    (list_sessions frees rows on every early return); its defensive free is kept.
  *  - edc_https_request_new's teardown race is a forced-exit path that cannot be
  *    reproduced deterministically in a unit test.
  */

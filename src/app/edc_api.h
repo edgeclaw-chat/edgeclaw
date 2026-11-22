@@ -149,10 +149,6 @@ extern void edc_app_file_candidates_reset(void);
 
 extern size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
 
-/* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
- * Built by convention, does not query the store; |session_id| must be an id (as
- * carried by snapshots/messages), not a display name. */
-extern bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap);
 /* The frontend's command history file (`<bc_home>/.tui_history`). */
 extern bool edc_app_history_path(char *buf, size_t cap);
 

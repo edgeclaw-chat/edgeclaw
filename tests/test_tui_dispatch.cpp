@@ -873,8 +873,7 @@ void TestInputModeTag(edc::TUIWindow &win)
     clear();
 }
 
-// Startup uses an ordinary cursor-0 page. The harness HOME also contains no
-// chat.jsonl: this must still show the DB row and never read a legacy file.
+// Startup uses an ordinary cursor-0 page; this must show the DB row.
 void TestStartupPageLoadsDbTail(edc::TUIWindow &win)
 {
     std::cout << "启动分页直接加载 DB 尾页\n";

@@ -9,7 +9,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <fstream>
 
 namespace edc
 {
@@ -137,122 +136,11 @@ size_t BuildChatBubbleRefsFromPage(const int64_t *seqs, const char *const *lines
     return out->size();
 }
 
-size_t BuildChatBubbleRefs(const std::string &path, std::vector<ChatBubbleRef> *out)
-{
-    if (!out)
-        return 0;
-    out->clear();
-    if (path.empty())
-        return 0;
-
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        return 0;
-
-    /* Read the file sequentially in bounded chunks. Only line boundaries are
-     * retained; the chunk is released as soon as it has been scanned, so the
-     * peak cost is one chunk plus the descriptors -- never the whole log. */
-    constexpr size_t kChunk = 256 * 1024;
-    std::string chunk;
-    chunk.resize(kChunk);
-    std::string carry;          /* bytes of the current, not-yet-terminated line */
-    uint64_t carry_start = 0;   /* absolute offset of carry's first byte */
-    uint64_t chunk_base = 0;    /* absolute offset of chunk[0] in the file */
-
-    while (file)
-    {
-        file.read(&chunk[0], static_cast<std::streamsize>(kChunk));
-        const size_t got = static_cast<size_t>(file.gcount());
-        if (got == 0)
-            break;
-
-        std::string_view view(chunk.data(), got);
-        size_t pos = 0;
-        while (pos < view.size())
-        {
-            const void *hit = std::memchr(view.data() + pos, '\n', view.size() - pos);
-            if (!hit)
-                break;
-            const size_t nl = static_cast<const char *>(hit) - view.data();
-            /* The whole line is carry + [pos, nl], and it began either where the
-             * carry began or at pos in this chunk when there was no carry. */
-            const uint64_t abs_start = carry.empty() ? chunk_base + pos : carry_start;
-            std::string line = carry;
-            line.append(view.data() + pos, nl - pos + 1);
-
-            std::string_view parts[5];
-            if (SplitUnescaped(line, parts))
-            {
-                ChatBubbleRef ref;
-                ref.offset = abs_start;
-                ref.length = static_cast<uint32_t>(line.size());
-                ref.source = ChatBubbleSource::kFile;
-                ref.kind = ClassifyKind(std::string(parts[0]));
-                ref.render_pref = static_cast<uint8_t>(std::atoi(std::string(parts[1]).c_str()));
-                ref.task_id = UnescapeSmall(parts[2]);
-                ref.task_id_off = static_cast<uint32_t>(parts[0].size() + 1 + parts[1].size() + 1);
-                ref.task_id_len = static_cast<uint32_t>(ref.task_id.size());
-                ref.header_len = static_cast<uint32_t>(parts[3].size());
-                ref.content_len = static_cast<uint32_t>(parts[4].size());
-                ref.est_lines = EstimateLines(ref.kind);
-                out->push_back(ref);
-            }
-
-            pos = nl + 1;
-            carry.clear();
-            carry_start = chunk_base + pos;
-        }
-
-        /* Whatever is left has no newline yet: it is the start of the next line
-         * (possibly continued into the following chunk). */
-        if (pos < view.size())
-        {
-            if (carry.empty())
-                carry_start = chunk_base + pos;
-            carry.append(view.data() + pos, view.size() - pos);
-        }
-        chunk_base += got;
-    }
-    /* A trailing fragment without '\n' is dropped, exactly like LoadTranscript. */
-    return out->size();
-}
-
-bool DecodeChatBubbleAt(const std::string &path, const ChatBubbleRef &ref, std::string *kind, int *render_pref,
-                        std::string *task_id, std::string *header, std::string *content)
-{
-    if (path.empty() || ref.length == 0 || !kind || !render_pref || !task_id || !header || !content)
-        return false;
-
-    std::ifstream file(path, std::ios::binary);
-    if (!file)
-        return false;
-    file.seekg(static_cast<std::streamoff>(ref.offset), std::ios::beg);
-    if (!file)
-        return false;
-
-    std::string raw(ref.length, '\0');
-    file.read(&raw[0], static_cast<std::streamsize>(ref.length));
-    if (static_cast<size_t>(file.gcount()) != ref.length)
-        return false;
-
-    ChatTranscriptEntry entry;
-    if (!DecodeTranscriptLine(raw, &entry))
-        return false;
-
-    *kind = std::move(entry.kind);
-    *render_pref = entry.render_pref;
-    *task_id = std::move(entry.task_id);
-    *header = std::move(entry.header);
-    *content = std::move(entry.content);
-    return true;
-}
-
-MessageWindow::MessageWindow(std::string path, std::vector<ChatBubbleRef> *refs)
-    : path_(std::move(path)), refs_(refs)
-{
-}
-
 MessageWindow::MessageWindow() : refs_owned_(new std::vector<ChatBubbleRef>()), refs_(refs_owned_)
+{
+}
+
+MessageWindow::MessageWindow(std::vector<ChatBubbleRef> *refs) : refs_(refs)
 {
 }
 
@@ -363,7 +251,7 @@ bool MessageWindow::Fields(size_t index, std::string *kind, int *render_pref, st
         *render_pref = e.render_pref;
         return true;
     }
-    return DecodeChatBubbleAt(path_, ref, kind, render_pref, task_id, header, content);
+    return false;
 }
 
 std::shared_ptr<Message> MessageWindow::Get(size_t index)

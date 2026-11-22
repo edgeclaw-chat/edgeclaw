@@ -491,32 +491,6 @@ size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf,
     return count;
 }
 
-/* Where a transcript lives -- path resolution only; encode/append/replay are the
- * frontend's own concern (see edc_chat_transcript.hpp).
- *
- * The path is assembled by convention, not by querying the store: a session dir is
- * `<workspace>/<session_id>` (the same rule edc_session_new_with_workdir uses on
- * the kernel side; tests/test_session_workdir.c pins it), so the frontend never
- * touches the session store (mutated by the actor thread).
- *
- * |session_id| must be a session id (as carried by snapshots/messages). */
-bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap)
-{
-    if (buf && cap > 0)
-        buf[0] = '\0';
-    struct edc_config *cfg = edc_app_config(app);
-    if (!cfg || !cfg->workspace || sdslen(cfg->workspace) == 0 || !session_id || !*session_id || !buf || cap == 0)
-        return false;
-
-    sds path = edc_path_join(cfg->workspace, session_id, "chat.jsonl", NULL);
-    const bool ok = path && strlen(path) < cap;
-    if (ok)
-        memcpy(buf, path, strlen(path) + 1);
-    if (path)
-        sdsfree(path);
-    return ok;
-}
-
 /* The frontend's command history file (`<bc_home>/.tui_history`). */
 bool edc_app_history_path(char *buf, size_t cap)
 {

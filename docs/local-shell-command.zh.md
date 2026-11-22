@@ -246,8 +246,8 @@ if (task->tool_only) return;   /* 它不发请求，没有上下文要压缩 */
 
 ### 5.5 显示（全部白拿）
 
-- **用户气泡**：`TUIWindow::Submit()` 照旧（`!git status` 画成用户气泡 + 写 chat.jsonl +
-  进 ArrowUp 历史）；选中该任务时由 `raw_input` 重画；
+- **用户气泡**：`TUIWindow::Submit()` 照旧（`!git status` 画成用户气泡 + 由 channel actor
+  写入 `chat_bubbles` + 进 ArrowUp 历史）；选中该任务时由 `raw_input` 重画；
 - **输出气泡**：`exec_shell` 自己的 `edc_toolbox_emit_tool_message_plain(ctx, ctx->command, result)`
   → `sched_handle_tool_emit` → `send_tool_message(header=命令, content=输出, PLAIN)`
   → TUI 画一个 **tool 气泡**（等宽、header 是命令）。**不需要任何新代码**；
@@ -272,7 +272,7 @@ if (task->tool_only) return;   /* 它不发请求，没有上下文要压缩 */
 
 ```
 TUI Submit()
-  ├─ 画用户气泡(!git status) + 写 chat.jsonl + 进 ArrowUp 历史
+  ├─ 画用户气泡(!git status) + 写 chat_bubbles + 进 ArrowUp 历史
   └─ edc_app_send_user_message(sid, "!git status")
         └─ (actor) sched_handle_input          ← 设好 sched->input_raw
               └─ sched->handle_command == edc_commands_cb_handle_command

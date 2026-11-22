@@ -25,13 +25,13 @@ if (sdslen(result) > conf->tool_max_output_size) {
 | tool-only 任务的 `task->output`（→ `$VAR` / `|` 注入的内容） | ✅ | 同一个 sds 传下去 |
 | **内存里捕获**（`sdscatlen`） | ❌ | 数据进来时就已经全在内存 |
 | **TUI 工具气泡**（TOOL_EMIT） | ❌ | `emit` 先 `sdsnew(content)` 拷一份，之后那行 `sdsrange` 改的是原 sds，动不到副本 |
-| **chat.jsonl** | ❌ | TUI 原样写 `entry.content`（`edc_chat_transcript.cpp:76`） |
+| **chat_bubbles 行** | ❌ | channel actor 原样编码 `content` 写 DB 行（`edc_chat_bubble_line.c`） |
 
 三个要点：
 
 1. **它是事后裁剪**。截断发生时完整输出早已全在内存里；`shell_ctx_complete` 拼 `result` 时还会再复制一份（峰值 ≈ 2×）。所以 `tool_max_output_size` 对 OOM **毫无帮助**。
 2. **界面的渲染已经是有界的**：`ToolMessage` 折叠时只画前 `kPreviewLines` 行（`edc_message.cpp` 的 `FirstLines`）。所以"界面这条路"的真实成本是**持有 + 落盘**，不是画。
-   → 推论：**只要在捕获层就限住，内存、气泡、chat.jsonl 会一起变得有界**。
+   → 推论：**只要在捕获层就限住，内存、气泡、chat_bubbles 行会一起变得有界**。
 3. 附带缺陷：截断文案里的 **10000 是写死的**，实际裁剪用配置值——配置改成 30000，提示就说谎。
 
 **同一类无上限的地方还有**（都属于"把外部数据无限攒进内存"）：
@@ -152,7 +152,7 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
 
 **为什么两档**：只留 Tier 1，`!yes` 内存安全但**永不结束**（任务一直占前台）；只留 Tier 2 就是 CC 的做法（它在 **5 GB** 才杀），一个正常 verbose 的 build（几 MB 日志）会被误杀。分开之后各治一个病。
 
-**副作用是白拿的**：由 §1.2 的结论，捕获层一限住，**TUI 气泡与 chat.jsonl 同时有界**，不需要另外改。
+**副作用是白拿的**：由 §1.2 的结论，捕获层一限住，**TUI 气泡与 chat_bubbles 行同时有界**，不需要另外改。
 
 ### 3.3 顺手修
 
@@ -215,7 +215,7 @@ void edc_output_buf_size_str(size_t n, char *buf, size_t cap);   /* 812 B / 1.0 
   普通命令不受影响 / 洪亮但有限的命令只截断不被杀（且提示在开头）/ `yes` 被跑飞上限杀掉
   （**调用能返回本身就是证据**——`yes` 永不自己退出）/ 同样的量走 stderr 也一样被杀。
 - **pty 端到端**（真二进制、沙箱关）：`!yes` 让命令吐完 **256.1 MiB**，任务正常收敛为
-  `DONE/COMPLETED`，而 app 的 `VmRSS` **峰值 11.0 MB**（基线 10.9 MB）；`chat.jsonl` 里
+  `DONE/COMPLETED`，而 app 的 `VmRSS` **峰值 11.0 MB**（基线 10.9 MB）；`chat_bubbles` 里
   工具气泡的**第一行**就是
   `[output truncated: kept the first 1.0 MiB of 256.1 MiB]` +
   `[output exceeded 256.0 MiB — command killed]`。

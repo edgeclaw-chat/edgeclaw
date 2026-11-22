@@ -69,13 +69,12 @@ struct edc_scheduler;
 /* v6: session_id is an INTEGER PRIMARY KEY AUTOINCREMENT, assigned by the INSERT -- the
  *     same change v5 made for task_id, for the same reason. The counter and
  *     <ws>/.session_seq are gone; AUTOINCREMENT guarantees an id is never reused, which is
- *     what stops a new session from landing on a removed one's directory and replaying its
- *     chat.jsonl. Every table that references a session (groups, group_fold_files, tasks,
+ *     what stops a new session from landing on a removed one's directory. Every table that
+ *     references a session (groups, group_fold_files, tasks,
  *     messages, memo_entries, memo_events) follows.
  *
- *     The on-disk DIRECTORY is named with the bare id (edc_session_dir_name): those
- *     directories hold live chat.jsonl transcripts, and renaming them would be a data
- *     migration for a formatting decision. */
+ *     The on-disk DIRECTORY is named with the bare id (edc_session_dir_name); renaming
+ *     them would be a data migration for a formatting decision. */
 /* v7: group_fold_files gained a `kind` column.
  *
  *     A group's tracked-file state is TWO lists (read, modified) and the table only had room
@@ -99,7 +98,7 @@ struct edc_scheduler;
  *     memo_baseline_done = (memo_seen_seq > 0) -- a task that had already consumed
  *     events has necessarily been through the index -- and leaves changed = 0, which is
  *     the documented "unknown, render the content" value, not a guess. */
-/* v9: chat_bubbles -- the TUI's durable, paged view state (was chat.jsonl).
+/* v9: chat_bubbles -- the TUI's durable, paged view state.
  * Migration step_v8_to_v9 creates the table/index and nothing else: no existing
  * table is altered, so a v8 database migrates with zero data rewrite. */
 /* v10: groups.fold_corpus_budget -- the reduced L1/L2 corpus budget after consecutive
@@ -450,15 +449,6 @@ bool edc_chat_bubble_page(const char *session_id, int64_t before_seq, int limit,
                           struct edc_chat_bubble_row **out, int *n);
 void edc_chat_bubble_rows_free(struct edc_chat_bubble_row *rows, int n);
 int64_t edc_chat_bubble_count(const char *session_id);
-
-/* One-time importer for legacy <workspace>/<sid>/chat.jsonl files. Called from
- * the scheduler actor thread at startup. Idempotent: INSERT OR IGNORE with a
- * deterministic seq (line number), and a <path>.imported marker file makes a
- * successful import cheap to skip on the next start. The chat.jsonl itself is
- * NEVER renamed or deleted: a downgrade to v8 can still read it, and keeping the
- * bytes is the rollback path. Returns the number of rows inserted (0 when the
- * marker says it was already imported), or -1 on failure. */
-int64_t edc_chat_bubble_import_file(const char *session_id, const char *path);
 
 #ifdef __cplusplus
 }

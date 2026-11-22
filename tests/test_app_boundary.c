@@ -741,33 +741,6 @@ static void native_sep(char *s)
 #endif
 }
 
-static void test_chat_log_path_is_built_by_convention()
-{
-    TEST("the transcript path is <workspace>/<session_id>/chat.jsonl");
-    char buf[512];
-    CHECK(edc_app_chat_log_path_for(g_app, "sess-1", buf, sizeof(buf)), "a session id resolves");
-    char expected[700];
-    snprintf(expected, sizeof(expected), "%s/sess-1/chat.jsonl", g_workspace);
-    native_sep(expected);
-    CHECK(strcmp(buf, expected) == 0, "path: got '%s' want '%s'", buf, expected);
-
-    /* The guard list, in one place: an empty id, a missing buffer, a too-small buffer and no
-     * app all answer false, and the buffer is cleared first. */
-    memset(buf, 'X', sizeof(buf));
-    CHECK(!edc_app_chat_log_path_for(g_app, "", buf, sizeof(buf)), "an empty session id is refused");
-    CHECK(buf[0] == '\0', "cleared");
-    CHECK(!edc_app_chat_log_path_for(g_app, NULL, buf, sizeof(buf)), "a NULL session id is refused");
-    CHECK(!edc_app_chat_log_path_for(g_app, "sess-1", NULL, 16), "a NULL buffer is refused");
-    CHECK(!edc_app_chat_log_path_for(g_app, "sess-1", buf, 0), "cap 0 is refused");
-    CHECK(!edc_app_chat_log_path_for(NULL, "sess-1", buf, sizeof(buf)), "no app, no path");
-
-    char tiny[8];
-    memset(tiny, 'X', sizeof(tiny));
-    CHECK(!edc_app_chat_log_path_for(g_app, "a-very-long-session-id", tiny, sizeof(tiny)),
-          "a buffer too small for the path is refused");
-    CHECK(tiny[0] == '\0', "and cleared");
-}
-
 static void test_history_path_lives_under_the_home()
 {
     TEST("the command history path is <bc_home>/.tui_history");
@@ -1351,7 +1324,6 @@ int main(int argc, char **argv)
     test_prompts_and_skills_are_listed_as_name_tab_description();
     test_prompt_and_skill_readers_need_a_workspace();
 
-    test_chat_log_path_is_built_by_convention();
     test_history_path_lives_under_the_home();
 
     /* The write paths last: they mutate config.json, and the cases after each other assert

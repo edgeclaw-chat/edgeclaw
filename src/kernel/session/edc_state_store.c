@@ -97,7 +97,8 @@ static const char *const EDC_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS sessions ("
     /* AUTOINCREMENT for the same reason tasks.task_id uses it: a session id must never
      * be reused. A recycled id would land a new session on a removed one's directory and
-     * replay its chat.jsonl. This is the invariant <ws>/.session_seq used to provide. */
+     * land on a removed one's directory. This is the invariant <ws>/.session_seq used to
+     * provide. */
     "  session_id            INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  name                  TEXT NOT NULL,"
     "  created_at            INTEGER,"
@@ -377,7 +378,7 @@ static const char *const EDC_SCHEMA_SQL =
     ");"
 
     /* v9: the TUI's view state. This is the chat transcript (one bubble per line)
-     * that used to live in <workspace>/<session_id>/chat.jsonl. It is NOT part of
+     * that used to live in a per-session transcript file. It is NOT part of
      * `messages`: that table is model state (wire messages under a task/turn) and
      * feeding interface feedback into it would change LLM context assembly. Keeping
      * the bubbles in their own table gives the UI one durable, paged authority
@@ -4013,118 +4014,3 @@ int64_t edc_chat_bubble_count(const char *session_id)
     return out;
 }
 
-int64_t edc_chat_bubble_import_file(const char *session_id, const char *path)
-{
-    if (!g_db || !session_id || !*session_id || !path || !*path)
-        return -1;
-
-    /* Successful imports leave a marker. Never rename or delete chat.jsonl: a
-     * v8 binary must still be able to read it after a downgrade, and keeping the
-     * bytes is the rollback path. */
-    char marker[4096];
-    if (snprintf(marker, sizeof(marker), "%s.imported", path) >= (int)sizeof(marker))
-        return -1;
-    struct stat mst;
-    if (stat(marker, &mst) == 0)
-        return 0;
-
-    FILE *file = fopen(path, "rb");
-    if (!file)
-        return 0; /* no legacy transcript is not an error */
-
-    if (!exec_sql(g_db, "BEGIN IMMEDIATE", "chat bubble import BEGIN"))
-    {
-        fclose(file);
-        return -1;
-    }
-
-    sqlite3_stmt *ins = NULL;
-    bool ok = sqlite3_prepare_v2(
-                  g_db,
-                  "INSERT OR IGNORE INTO chat_bubbles(session_id,seq,line) VALUES(?,?,?)",
-                  -1, &ins, NULL) == SQLITE_OK;
-    int64_t inserted = 0;
-    int64_t seq = 0;
-    /* Fixed buffer + explicit growth: getline() is POSIX-only and this store
-     * builds on MSVC too. A transcript line is one encoded bubble; grow until
-     * the whole line (including its '\n') fits, rather than silently splitting
-     * a long tool output into two bubbles. */
-    size_t cap = 4096;
-    char *buf = (char *)malloc(cap);
-    if (!buf)
-        ok = false;
-    while (ok && buf && !feof(file))
-    {
-        size_t len = 0;
-        for (;;)
-        {
-            if (len + 1 >= cap)
-            {
-                char *grown = (char *)realloc(buf, cap * 2);
-                if (!grown)
-                {
-                    ok = false;
-                    break;
-                }
-                buf = grown;
-                cap *= 2;
-            }
-            if (!fgets(buf + len, (int)(cap - len), file))
-            {
-                len = 0; /* EOF or error with nothing read on this round */
-                break;
-            }
-            len += strlen(buf + len);
-            if (len && buf[len - 1] == '\n')
-                break;
-            if (feof(file))
-                break;
-        }
-        if (!ok || len == 0)
-            break;
-        /* A crash can leave a partial final line without its newline. The file
-         * reader drops that fragment too, so skipping it here keeps the two
-         * authorities byte-for-byte identical. */
-        if (buf[len - 1] != '\n')
-            continue;
-        buf[len - 1] = '\0';
-        if (!*buf)
-            continue;
-        seq++;
-        sqlite3_reset(ins);
-        sqlite3_clear_bindings(ins);
-        sqlite3_bind_text(ins, 1, session_id, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(ins, 2, (sqlite3_int64)seq);
-        sqlite3_bind_text(ins, 3, buf, -1, SQLITE_TRANSIENT);
-        ok = sqlite3_step(ins) == SQLITE_DONE;
-        if (ok)
-            inserted += (int64_t)sqlite3_changes(g_db);
-    }
-    free(buf);
-    fclose(file);
-    if (ins)
-        sqlite3_finalize(ins);
-
-    if (!ok)
-    {
-        exec_sql(g_db, "ROLLBACK", "chat bubble import ROLLBACK");
-        return -1;
-    }
-    if (!exec_sql(g_db, "COMMIT", "chat bubble import COMMIT"))
-    {
-        exec_sql(g_db, "ROLLBACK", "chat bubble import ROLLBACK");
-        return -1;
-    }
-
-    /* The marker is best-effort: failing to write it only means the next start
-     * re-runs an idempotent import (INSERT OR IGNORE), never duplicate rows. */
-    FILE *m = fopen(marker, "wb");
-    if (m)
-    {
-        fputs("imported\n", m);
-        fclose(m);
-    }
-    log_info("state_store: imported %" PRId64 " chat bubbles from %s for session %s",
-             inserted, path, session_id);
-    return inserted;
-}

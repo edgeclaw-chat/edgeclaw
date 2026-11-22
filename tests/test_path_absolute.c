@@ -169,10 +169,9 @@ static void test_nested_dir_and_write_containment(void)
     free(root);
 }
 
-/* The transcript append is edc_file_fopen_safe(path, "a", root). Its guard compared
- * resolved[len] == '/' only, so on Windows every write under a root was refused:
- * chat.jsonl was never written and the chat area came back empty after a restart (the
- * same test also gated jobs.json, the skill files and prompt files). */
+/* edc_file_fopen_safe(path, "a", root) is the guarded-append primitive (used by
+ * jobs.json, skill files and prompt files). Its guard compared resolved[len] == '/'
+ * only, so on Windows every write under a root was refused. */
 static void test_guarded_append_under_root(void)
 {
     log_info("  TEST: guarded append under a root");
@@ -192,7 +191,7 @@ static void test_guarded_append_under_root(void)
     if (err)
         edc_error_free(err);
 
-    sds file = edc_path_join(dir, "chat.jsonl", NULL);
+    sds file = edc_path_join(dir, "guarded-append.txt", NULL);
     FILE *f = edc_file_fopen_safe(file, "a", root);
     CHECK(f != NULL, "append under the root is allowed");
     if (f)

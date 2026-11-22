@@ -544,18 +544,16 @@ static void test_task_workdir_owner(void)
 }
 
 /* ── 10. 会话目录的约定 ─────────────────────────────────────
- * `edc_app_chat_log_path_for` (src/app/edc_api.c) 现在**按约定直接拼**路径
- * `<workspace>/<session_id>/chat.jsonl`, 不再问 session 仓库 (仓库由 actor 线程改)。
- * 那条推导的根据就是这里钉住的约定 —— 它一旦变了, 前端会静默写到另一个地方,
- * 所以两边都得看得见这条断言。 */
+ * 会话状态目录按约定就是 `<workspace>/<session_id>`, 由 edc_session_new 拼出。
+ * 这里钉住这条约定, 免得它悄悄改变。 */
 static void test_history_dir_convention(void)
 {
-    TEST("session dir is <workspace>/<session_id> (frontend derives chat.jsonl from it)");
+    TEST("session dir is <workspace>/<session_id>");
     struct edc_config *cfg = make_config(case_ws());
     struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-dir"), "D");
 
-    /* The directory keeps the historical "s<id>" spelling (edc_session_dir_name): it
-     * holds live chat.jsonl transcripts, so the ids became numbers but the names did not. */
+    /* The directory keeps the historical "s<id>" spelling (edc_session_dir_name):
+     * the ids became numbers but the directory names did not. */
     sds expected = edc_path_join(cfg->workspace,
                                  edc_session_dir_name(edc_test_session_id("sess-dir")), NULL);
     CHECK(s->history_dir != NULL, "history_dir is set");

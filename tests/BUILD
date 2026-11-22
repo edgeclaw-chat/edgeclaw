@@ -1988,19 +1988,6 @@ cc_test(
     }),
 )
 cc_test(
-    name = "test_chat_refs",
-    srcs = ["test_chat_refs.cpp", "test_fs_util.h"],
-    deps = [
-        "//src/tui:tui",
-    ],
-    linkstatic = True,
-    linkopts = TUI_TEST_LINK_OPTS,
-    local_defines = select({
-        "//:debug": ["EDGECLAW_DEBUG"],
-        "//conditions:default": [],
-    }),
-)
-cc_test(
     name = "test_chat_window",
     srcs = ["test_chat_window.cpp", "test_fs_util.h"],
     deps = [

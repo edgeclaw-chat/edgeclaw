@@ -21,7 +21,7 @@ struct edc_session_manager
     /* Session ids come from the database now (sessions.session_id is an INTEGER PRIMARY KEY
      * AUTOINCREMENT, see edc_state_store_insert_session_new): there is no counter here and
      * no <workspace>/.session_seq. AUTOINCREMENT is what guarantees an id is never reused --
-     * reuse would make a new session inherit a removed one's directory and its chat.jsonl. */
+     * reuse would make a new session inherit a removed one's directory. */
     sds sessions_dir; /* workspace/ -- session dirs live here */
     struct edc_config *config;
 

@@ -91,7 +91,7 @@ bool ChatModel::LoadFromPage(const std::string &session_id, const std::string &p
         seqs.push_back(row.seq);
     }
     BuildChatBubbleRefsFromPage(seqs.data(), lines.data(), lines.size(), refs_holder_.get());
-    window_ = std::make_unique<MessageWindow>("", refs_holder_.get());
+    window_ = std::make_unique<MessageWindow>(refs_holder_.get());
 
     all_.clear();
     all_.reserve(window_->RefCount());

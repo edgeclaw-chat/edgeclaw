@@ -349,10 +349,9 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
     // Populate the sidebar once the app is running (its response is routed
     // through the adapter into the dispatcher), and learn from that
-    // first snapshot which session we are showing. Its reply carries the
-    // session's own transcript path, which the live path below appends to -- so
-    // nothing here reads the session store: it belongs to the actor thread, and
-    // the snapshot already names what we need.
+    // first snapshot which session we are showing. Nothing here reads the
+    // session store: it belongs to the actor thread, and the snapshot already
+    // names what we need.
     RequestTaskSnapshot();
 }
 
@@ -787,11 +786,10 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
     const std::string id = session_id ? session_id : "";
     session_model_->Reset(id);
 
-    /* chat_bubbles is the only runtime source. Request the newest page and let
-     * its reply LoadFromPage() replace the model: no synchronous 3s wait, no
-     * chat.jsonl fallback, and no actor runner blocked waiting for its own
-     * reply. The authoritative page may clear live bubbles when it arrives;
-     * until then the switched-to session starts empty, never from a file.
+    /* chat_bubbles is the only source. Request the newest page and let its reply
+     * LoadFromPage() replace the model: no synchronous 3s wait and no actor runner
+     * blocked waiting for its own reply. The authoritative page may clear live
+     * bubbles when it arrives; until then the switched-to session starts empty.
      *
      * EDGECLAW_TUI_NO_PULL is the same harness switch RequestTaskSnapshot uses:
      * with no ftxui screen, a real actor reply would run inline on the runner
@@ -1643,9 +1641,9 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
 //
 // Events are handled by control::ChannelDispatcher; this window only does two
 // things: marshal tasks onto the UI thread (IUiDispatcher), and perform the
-// dispatcher's out-of-model view actions (IChannelHost) -- transcript replay and
-// writes, sidebar refresh, animation, repaint, tree pull. Everything runs on the
-// UI thread: production marshals through Post(); with no screen Post() runs the
+// dispatcher's out-of-model view actions (IChannelHost) -- chat bubble pages,
+// sidebar refresh, animation, repaint, tree pull. Everything runs on the UI
+// thread: production marshals through Post(); with no screen Post() runs the
 // task synchronously.
 
 void TUIWindow::Post(std::function<void()> task)

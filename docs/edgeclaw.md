@@ -975,8 +975,7 @@ nothing.
 | `~/.edgeclaw/` | EdgeClaw home directory |
 | `~/.edgeclaw/config.json` | Configuration (API key, model) |
 | `~/.edgeclaw/workspace/` | Workspace root |
-| `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
-| `~/.edgeclaw/workspace/<sid>/chat.jsonl` | Legacy v8 transcript; imported once into `chat_bubbles`, never read at runtime |
+| `~/.edgeclaw/workspace/<sid>/` | Per-session directory (transcript lives in the `chat_bubbles` table of `edgeclaw.db`) |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from
