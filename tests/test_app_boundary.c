@@ -49,7 +49,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <fcntl.h>
-#include <time.h>
 #include <uv.h>
 #include <sys/stat.h>
 #ifndef _WIN32
@@ -988,8 +987,8 @@ static void test_publish_bubble_reaches_the_channel(void)
     edc_app_publish_bubble(g_app, "s42", "user", NULL);
     edc_app_publish_bubble(NULL, "s42", "user", "nope");
     edc_app_publish_bubble(g_app, NULL, "sys", "no-session-sent"); /* empty session is allowed */
-    struct timespec ts = {0, 200 * 1000 * 1000};
-    nanosleep(&ts, NULL);
+    /* The refused calls return synchronously without queueing, so no wait is
+     * needed: if any had slipped through it would already have hit the observer. */
     uv_mutex_lock(&g_pub_lock);
     CHECK(!g_pub_refused_seen, "unknown kind / NULL app send no bubble (refused content never seen)");
     uv_mutex_unlock(&g_pub_lock);
