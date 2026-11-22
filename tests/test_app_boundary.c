@@ -49,6 +49,8 @@
 #include <errno.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <time.h>
+#include <uv.h>
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <sys/wait.h>
@@ -920,6 +922,84 @@ static void test_channel_adapter_registration()
     CHECK(1, "registering on a NULL app is a no-op");
 }
 
+/* Capture the channel message produced by edc_app_publish_bubble. The channel actor
+ * receives BC_ACTOR_MSG_CHANNEL_SEND and calls this observer on the runner thread; a
+ * mutex + cond make the handoff race-free (same shape as test_chat_bubble_session). */
+static uv_mutex_t g_pub_lock;
+static uv_cond_t g_pub_cond;
+/* The app has unrelated async channel traffic (snapshots, etc.), so match on the
+ * exact content we publish rather than assuming the first message is ours. */
+static int g_pub_user_ok = 0, g_pub_sys_ok = 0, g_pub_refused_seen = 0;
+
+static void on_publish_send(void *instance, struct edc_channel_message *msg)
+{
+    (void)instance;
+    const char *content = edc_app_message_content(msg);
+    const char *sid = edc_app_message_session_id(msg);
+    uv_mutex_lock(&g_pub_lock);
+    if (content)
+    {
+        if (strcmp(content, "nope") == 0)
+            g_pub_refused_seen = 1;
+        if (sid && strcmp(sid, "s42") == 0)
+        {
+            if (strcmp(content, "the echo") == 0 && edc_app_message_is_user(msg) &&
+                edc_app_message_is_interface_feedback(msg))
+                g_pub_user_ok = 1;
+            if (strcmp(content, "task 7 finished") == 0 && edc_app_message_is_sys(msg) &&
+                edc_app_message_is_interface_feedback(msg))
+                g_pub_sys_ok = 1;
+        }
+    }
+    uv_cond_signal(&g_pub_cond);
+    uv_mutex_unlock(&g_pub_lock);
+}
+
+static bool wait_publish(void)
+{
+    uv_mutex_lock(&g_pub_lock);
+    while (!g_pub_user_ok || !g_pub_sys_ok)
+    {
+        if (uv_cond_timedwait(&g_pub_cond, &g_pub_lock, 2ULL * 1000000000ULL) != 0)
+            break;
+    }
+    bool ok = g_pub_user_ok && g_pub_sys_ok;
+    uv_mutex_unlock(&g_pub_lock);
+    return ok;
+}
+
+static void test_publish_bubble_reaches_the_channel(void)
+{
+    TEST("publish_bubble sends a typed, owned, interface-feedback bubble");
+    uv_mutex_init(&g_pub_lock);
+    uv_cond_init(&g_pub_cond);
+    edc_app_channel_adapter_init(g_app, NULL, on_publish_send);
+
+    edc_app_publish_bubble(g_app, "s42", "user", "the echo");
+    edc_app_publish_bubble(g_app, "s42", "sys", "task 7 finished");
+    CHECK(wait_publish(), "both bubbles reached the channel observer");
+    CHECK(g_pub_user_ok, "user bubble: USER type, session 's42', shown bytes, interface_feedback");
+    CHECK(g_pub_sys_ok, "sys bubble: SYS type, session 's42', shown bytes, interface_feedback");
+
+    /* Unknown kinds and a NULL app are refused, not guessed. Cover the guard
+     * branches too: NULL kind, NULL/empty content, NULL/empty session. */
+    edc_app_publish_bubble(g_app, "s42", "bogus", "nope");
+    edc_app_publish_bubble(g_app, "s42", NULL, "nope");
+    edc_app_publish_bubble(g_app, "s42", "user", NULL);
+    edc_app_publish_bubble(NULL, "s42", "user", "nope");
+    edc_app_publish_bubble(g_app, NULL, "sys", "no-session-sent"); /* empty session is allowed */
+    struct timespec ts = {0, 200 * 1000 * 1000};
+    nanosleep(&ts, NULL);
+    uv_mutex_lock(&g_pub_lock);
+    CHECK(!g_pub_refused_seen, "unknown kind / NULL app send no bubble (refused content never seen)");
+    uv_mutex_unlock(&g_pub_lock);
+
+    /* Restore the no-op adapter the update tests expect. */
+    edc_app_channel_adapter_init(g_app, NULL, NULL);
+    uv_cond_destroy(&g_pub_cond);
+    uv_mutex_destroy(&g_pub_lock);
+}
+
 static void test_lifecycle_entry_points_tolerate_null()
 {
     TEST("the lifecycle and setup entry points tolerate a NULL app");
@@ -1284,9 +1364,12 @@ int main(int argc, char **argv)
     {
         edc_app_set_update_observer(g_app, on_update_found_recording, NULL);
 
-        /* The check runs on a worker thread and posts back through the loop, so this waits for
-         * the loop to deliver it. Bounded well above the fetch's own timeout. */
-        for (int i = 0; i < 400 && !g_found_fired; i++)
+        /* The check runs on a worker thread and posts back through the loop, so this waits
+         * for the loop to deliver it. The check fires ~10s after launch and its fetch has
+         * its own timeout; under the slower k8-dbg AddressSanitizer build that combination
+         * can exceed 10s (a CI run saw the observer fire just after a 10s poll gave up).
+         * Wait 30s so the assertion is about the check working, not about build speed. */
+        for (int i = 0; i < 1200 && !g_found_fired; i++)
             usleep(25 * 1000);
 
         CHECK(g_found_fired == 1, "the app's own check found the release and called the observer");
@@ -1338,6 +1421,7 @@ int main(int argc, char **argv)
 
     test_requests_refuse_an_empty_id();
     test_channel_adapter_registration();
+    test_publish_bubble_reaches_the_channel();
     test_lifecycle_entry_points_tolerate_null();
 
     test_write_file_and_ensure_parent_dir();

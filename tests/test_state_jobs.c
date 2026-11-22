@@ -161,12 +161,53 @@ static void test_update_remove_clear(void)
     edc_job_rows_free(rows, n);
 }
 
+/* The job CRUD guards are the API contract: a NULL store/argument is refused
+ * rather than crashing or silently writing a half-row. */
+static void test_guards(void)
+{
+    printf("\n-- NULL / malformed arguments --\n");
+    reset();
+    CHECK(!edc_state_store_job_add(NULL), "job_add(NULL) refused");
+    struct edc_job_row no_id = {0};
+    no_id.kind = "every";
+    CHECK(!edc_state_store_job_add(&no_id), "job_add without job_id refused");
+    struct edc_job_row no_kind = {0};
+    no_kind.job_id = "x";
+    CHECK(!edc_state_store_job_add(&no_kind), "job_add without kind refused");
+    CHECK(!edc_state_store_job_remove(NULL), "job_remove(NULL) refused");
+    CHECK(!edc_state_store_job_remove(""), "job_remove(\"\") refused");
+    CHECK(!edc_state_store_job_set_next_run(NULL, 1), "set_next_run(NULL,..) refused");
+    CHECK(!edc_state_store_job_set_next_run("", 1), "set_next_run(\"\") refused");
+    CHECK(!edc_state_store_jobs_replace(NULL), "jobs_replace(NULL) refused");
+
+    cJSON *no_jobs = cJSON_CreateObject();
+    CHECK(!edc_state_store_jobs_replace(no_jobs), "jobs_replace without a jobs array refused");
+    cJSON_Delete(no_jobs);
+    cJSON *bad_jobs = cJSON_CreateObject();
+    cJSON_AddStringToObject(bad_jobs, "jobs", "not an array");
+    CHECK(!edc_state_store_jobs_replace(bad_jobs), "jobs_replace with non-array jobs refused");
+    cJSON_Delete(bad_jobs);
+
+    /* A malformed row (no job_id) is skipped, not added as an empty key. */
+    cJSON *skip = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(skip, "jobs");
+    cJSON_AddItemToArray(arr, cJSON_CreateObject());
+    CHECK(edc_state_store_jobs_replace(skip), "jobs_replace skips rows without job_id");
+    struct edc_job_row *rows = NULL;
+    int n = 0;
+    edc_state_store_job_list(&rows, &n);
+    CHECK(n == 0, "the skipped row did not create a job");
+    edc_job_rows_free(rows, n);
+    cJSON_Delete(skip);
+}
+
 int main(void)
 {
     edc_test_workspace();
     test_add_list_roundtrip();
     test_bridge_roundtrip();
     test_update_remove_clear();
+    test_guards();
     edc_test_store_down(NULL);
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;
