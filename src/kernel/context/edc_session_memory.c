@@ -6,6 +6,8 @@
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
+#include "edc_state_store.h"
+
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_token_estimate.h"
@@ -79,8 +81,7 @@ static void memo_entry_free(struct edc_memo_entry *e)
     free(e->summary);
     free(e->sources);
     free(e->proposed_by);
-    if (e->detail)
-        sdsfree(e->detail);
+    /* detail is DB-only; nothing resident to free. */
 }
 
 void edc_session_memory_free(struct edc_session_memory *m)
@@ -171,7 +172,7 @@ struct edc_memo_event *edc_session_memory_restore_event(struct edc_session_memor
 }
 
 struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memory *m, const char *id,
-                                                       const char *title, const char *summary, const char *detail,
+                                                       const char *title, const char *summary,
                                                        const char *sources, const char *proposed_by,
                                                        uint64_t created_seq, uint64_t updated_seq,
                                                        uint64_t created_at, uint64_t updated_at,
@@ -189,7 +190,6 @@ struct edc_memo_entry *edc_session_memory_restore_entry(struct edc_session_memor
     e->id = dup_or_null(id);
     e->title = dup_or_null(title);
     e->summary = dup_or_null(summary);
-    e->detail = detail ? sdsnew(detail) : NULL;
     e->sources = dup_or_null(sources);
     e->proposed_by = dup_or_null(proposed_by);
     e->created_seq = created_seq;
@@ -273,12 +273,13 @@ struct edc_memo_entry *edc_session_memory_upsert_entry(struct edc_session_memory
     free(e->title);
     free(e->summary);
     free(e->sources);
-    if (e->detail)
-        sdsfree(e->detail);
     e->title = dup_or_null(title);
     e->summary = dup_or_null(summary);
     e->sources = dup_or_null(sources);
-    e->detail = detail ? sdsnew(detail) : NULL;
+    /* The detail text is DB-only. A new entry's row is created by the flush; save the
+     * detail when the row already exists (the common write path after creation). */
+    if (detail && m->session_id > 0 && e->id)
+        edc_state_store_memo_detail_save(m->session_id, e->id, detail);
     return e;
 }
 
@@ -470,8 +471,8 @@ sds edc_session_memory_search_lines(const struct edc_session_memory *m, const ch
     for (size_t i = 0; i < m->entry_count; i++)
     {
         const struct edc_memo_entry *e = &m->entries[i];
-        if (contains_ci(e->title, query) || contains_ci(e->summary, query) ||
-            (e->detail && contains_ci(e->detail, query)))
+        /* Index-only search: detail is not resident (and deliberately not searched). */
+        if (contains_ci(e->title, query) || contains_ci(e->summary, query))
         {
             size_t j = nhits++;
             while (j > 0)
@@ -548,8 +549,7 @@ sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, co
     {
         const struct edc_memo_entry *e = &m->entries[i];
         bool hit = (e->title && regexec(&re, e->title, 0, NULL, 0) == 0) ||
-                   (e->summary && regexec(&re, e->summary, 0, NULL, 0) == 0) ||
-                   (e->detail && regexec(&re, e->detail, 0, NULL, 0) == 0);
+                   (e->summary && regexec(&re, e->summary, 0, NULL, 0) == 0);
         if (!hit)
             continue;
         size_t j = nhits++;
@@ -603,7 +603,12 @@ sds edc_session_memory_get_detail(const struct edc_session_memory *m, const char
         const struct edc_memo_entry *e = &m->entries[i];
         if (e->id && strcmp(e->id, id) == 0)
         {
-            sds body = (e->detail && sdslen(e->detail) > 0) ? sdsdup(e->detail) : index_line_for(e);
+            /* Detail is DB-only: read this one entry on demand. An entry with no stored
+             * detail (legacy / never written) degrades to its index line. */
+            sds stored = (m->session_id > 0) ? edc_state_store_memo_detail_load(m->session_id, id) : NULL;
+            sds body = (stored && sdslen(stored) > 0) ? stored : index_line_for(e);
+            if (stored && stored != body)
+                sdsfree(stored);
             /* Both timestamps up front: the reader judges freshness before the detail. */
             sds created = edc_datetime_format((time_t)e->created_at);
             sds updated = edc_datetime_format((time_t)e->updated_at);
@@ -1114,13 +1119,21 @@ static sds build_curate_prompt(struct edc_session *session, struct edc_task_grou
         {
             DL_FOREACH(session->groups, g)
             {
-                if (!g->memory || sdslen(g->memory) == 0)
+                if (g->memory_tokens <= 0)
                     continue;
+                sds body = edc_state_store_group_memory_load(session->session_id, g->group_id,
+                                                             NULL, NULL, NULL);
+                if (!body || sdslen(body) == 0)
+                {
+                    if (body) sdsfree(body);
+                    continue;
+                }
                 any = true;
                 sds when = edc_datetime_format_min((time_t)g->memory_updated_at);
                 out = sdscatprintf(out, "\n### group %s (memory last updated %s)\n%s", edc_id_str(g->group_id),
-                                   when, g->memory);
+                                   when, body);
                 sdsfree(when);
+                sdsfree(body);
             }
         }
         if (!any)
@@ -1607,7 +1620,7 @@ static sds build_extract_prompt(struct edc_session *session, struct edc_task_gro
                            "content order) that has NOT reached the session memory yet. Compress it into\n"
                            "the candidate list your instructions ask for; do NOT answer the conversation.\n\n",
                            edc_id_str(group->group_id));
-    if (group->memory && sdslen(group->memory) > 0)
+    if (group->memory_tokens > 0)
     {
         /* Neither the group memory's text nor its entries are here, but its recency is:
          * it tells the curator whether the existing entries already reflect it. */
@@ -2088,8 +2101,15 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
         changed |= EDC_MEMO_F_TITLE;
     if (summary && (!e->summary || strcmp(summary, e->summary) != 0))
         changed |= EDC_MEMO_F_SUMMARY;
-    if (detail && (!e->detail || strcmp(detail, e->detail) != 0))
-        changed |= EDC_MEMO_F_DETAIL;
+    if (detail)
+    {
+        /* Old detail is DB-only: read it once to decide whether this update changes it. */
+        sds old = (m->session_id > 0) ? edc_state_store_memo_detail_load(m->session_id, id) : NULL;
+        if (!old || strcmp(detail, old) != 0)
+            changed |= EDC_MEMO_F_DETAIL;
+        if (old)
+            sdsfree(old);
+    }
     /* Given fields overwrite; missing ones stay. */
     if (title)
     {
@@ -2101,11 +2121,10 @@ enum edc_memo_write_result edc_session_memory_update(struct edc_session_memory *
         free(e->summary);
         e->summary = strdup(summary);
     }
-    if (detail)
+    if (detail && m->session_id > 0)
     {
-        if (e->detail)
-            sdsfree(e->detail);
-        e->detail = sdsnew(detail);
+        /* Detail is DB-only; the row exists (created by the write tool / a prior flush). */
+        edc_state_store_memo_detail_save(m->session_id, id, detail);
     }
     uint64_t seq = edc_session_memory_add_event(m, id, EDC_MEMO_UPDATED, e->title, e->summary);
     e->updated_seq = seq;
@@ -2458,8 +2477,7 @@ cJSON *edc_session_memory_to_json(const struct edc_session_memory *m)
         json_add_str(o, "id", e->id);
         json_add_str(o, "title", e->title);
         json_add_str(o, "summary", e->summary);
-        if (e->detail)
-            cJSON_AddStringToObject(o, "detail", e->detail);
+        /* detail is DB-only: not part of the state snapshot any more. */
         json_add_str(o, "sources", e->sources);
         json_add_str(o, "proposed_by", e->proposed_by);
         cJSON_AddNumberToObject(o, "created_seq", (double)e->created_seq);
@@ -2528,8 +2546,10 @@ struct edc_session_memory *edc_session_memory_from_json(const cJSON *json)
                 m->next_entry_id = (uint64_t)entry_id_num(id);
             continue;
         }
+        /* No detail in the snapshot any more (DB is its sole home). An old archive's
+         * detail field is intentionally ignored, not restored. */
         struct edc_memo_entry *e = edc_session_memory_upsert_entry(m, id, json_str(en, "title"),
-                                                                   json_str(en, "summary"), json_str(en, "detail"),
+                                                                   json_str(en, "summary"), NULL,
                                                                    json_str(en, "sources"));
         if (!e)
             continue;

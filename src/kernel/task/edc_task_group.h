@@ -74,14 +74,14 @@ struct edc_task_group
      * the notices only explain a change to the model within this process's lifetime. */
     cJSON *tool_deltas;
 
-    /* L1 fold state: the summarized memory. What has been folded is tracked per
-     * turn (edc_turn.folded_prefix) — the history below only ever holds what is
-     * still sent, so no group-level watermark is needed.
-     *
-     * `memory` is the summary BODY only. The `<read-files>`/`<modified-files>` blocks the
-     * model sees are rendered from `fold_files` on every request; keeping them out of the
-     * text is what stops a summary that rewrites a block from corrupting the list. */
-    sds memory;
+    /* L1 fold state. The summary BODY is NOT resident: it lives only in
+     * groups.memory (DB) and is read on demand by the request assembler / fold prompt /
+     * curation. What stays here is the token estimate of that text (computed at write
+     * time and recomputed at load), so request-side context estimation never has to read
+     * the text back. What has been folded is tracked per turn (edc_turn.folded_prefix).
+     * The `<read-files>`/`<modified-files>` blocks the model sees are rendered from
+     * `fold_files` on every request; they stay out of the stored text on purpose. */
+    int64_t memory_tokens;
     struct edc_fold_files *fold_files;
 
     /* Wall-clock about `memory` (epoch seconds; 0 = unknown / never written).

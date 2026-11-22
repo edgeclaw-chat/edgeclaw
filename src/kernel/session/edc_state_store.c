@@ -23,6 +23,7 @@
 #include "edc_path.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
+#include "edc_token_estimate.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_turn.h"
@@ -1196,12 +1197,14 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
 }
 
 static const char *INSERT_GROUP =
-    "INSERT INTO groups(session_id,group_id,is_orphaned,kind,memory,fold_epoch,"
+    /* `memory` is deliberately absent: that text is DB-only, written by fold landing via
+     * edc_state_store_group_memory_save(). A generic flush must never overwrite it. */
+    "INSERT INTO groups(session_id,group_id,is_orphaned,kind,fold_epoch,"
     "memory_created_at,memory_updated_at,memory_covers_to,fold_corpus_budget,"
     "fold_failure_state,fold_held,extract_summary_budget,ord) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(session_id,group_id) DO UPDATE SET is_orphaned=excluded.is_orphaned,"
-    "kind=excluded.kind,memory=excluded.memory,"
+    "kind=excluded.kind,"
     "fold_epoch=excluded.fold_epoch,memory_created_at=excluded.memory_created_at,"
     "memory_updated_at=excluded.memory_updated_at,memory_covers_to=excluded.memory_covers_to,"
     "fold_corpus_budget=excluded.fold_corpus_budget,"
@@ -1223,16 +1226,16 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     sqlite3_bind_int64(st, 2, (sqlite3_int64)g->group_id);
     sqlite3_bind_int(st, 3, g->is_orphaned ? 1 : 0);
     bind_str(st, 4, edc_task_group_kind_name(g->kind));
-    bind_str(st, 5, g->memory);
-    bind_num(st, 6, (double)g->fold_epoch);
-    bind_num(st, 7, (double)g->memory_created_at);
-    bind_num(st, 8, (double)g->memory_updated_at);
-    bind_num(st, 9, (double)g->memory_covers_to);
-    bind_num(st, 10, (double)g->fold_corpus_budget);
-    sqlite3_bind_int(st, 11, g->fold_failures);
-    sqlite3_bind_int(st, 12, g->fold_held ? 1 : 0);
-    bind_num(st, 13, (double)g->extract_summary_budget);
-    sqlite3_bind_int(st, 14, b->ord);
+    /* memory column intentionally not bound (DB-only text, see INSERT_GROUP). */
+    bind_num(st, 5, (double)g->fold_epoch);
+    bind_num(st, 6, (double)g->memory_created_at);
+    bind_num(st, 7, (double)g->memory_updated_at);
+    bind_num(st, 8, (double)g->memory_covers_to);
+    bind_num(st, 9, (double)g->fold_corpus_budget);
+    sqlite3_bind_int(st, 10, g->fold_failures);
+    sqlite3_bind_int(st, 11, g->fold_held ? 1 : 0);
+    bind_num(st, 12, (double)g->extract_summary_budget);
+    sqlite3_bind_int(st, 13, b->ord);
 }
 
 static const char *INSERT_TASK =
@@ -1767,26 +1770,35 @@ static bool flush_memo(sqlite3 *db, int64_t session_id, const struct edc_session
         const struct edc_memo_entry *e = &memo->entries[i];
         sqlite3_stmt *st = NULL;
         if (sqlite3_prepare_v2(db,
-                               "INSERT OR REPLACE INTO memo_entries(session_id,entry_id,title,"
-                               "summary,detail,sources,proposed_by,created_seq,updated_seq,"
+                               /* detail is DB-only, written by edc_state_store_memo_detail_save.
+                                * Use ON CONFLICT DO UPDATE (NOT REPLACE, which would reset
+                                * unmentioned columns) and never touch detail here. */
+                               "INSERT INTO memo_entries(session_id,entry_id,title,"
+                               "summary,sources,proposed_by,created_seq,updated_seq,"
                                "created_at,updated_at,superseded,get_count,search_count) "
-                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                               "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                               "ON CONFLICT(session_id,entry_id) DO UPDATE SET "
+                               "title=excluded.title,summary=excluded.summary,"
+                               "sources=excluded.sources,proposed_by=excluded.proposed_by,"
+                               "created_seq=excluded.created_seq,updated_seq=excluded.updated_seq,"
+                               "created_at=excluded.created_at,updated_at=excluded.updated_at,"
+                               "superseded=excluded.superseded,get_count=excluded.get_count,"
+                               "search_count=excluded.search_count",
                                -1, &st, NULL) != SQLITE_OK)
             return false;
         sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
         bind_str(st, 2, e->id);
         bind_str(st, 3, e->title);
         bind_str(st, 4, e->summary);
-        bind_str(st, 5, e->detail);
-        bind_str(st, 6, e->sources);
-        bind_str(st, 7, e->proposed_by);
-        bind_num(st, 8, (double)e->created_seq);
-        bind_num(st, 9, (double)e->updated_seq);
-        bind_num(st, 10, (double)e->created_at);
-        bind_num(st, 11, (double)e->updated_at);
-        sqlite3_bind_int(st, 12, e->superseded ? 1 : 0);
-        bind_num(st, 13, (double)e->get_count);
-        bind_num(st, 14, (double)e->search_count);
+        bind_str(st, 5, e->sources);
+        bind_str(st, 6, e->proposed_by);
+        bind_num(st, 7, (double)e->created_seq);
+        bind_num(st, 8, (double)e->updated_seq);
+        bind_num(st, 9, (double)e->created_at);
+        bind_num(st, 10, (double)e->updated_at);
+        sqlite3_bind_int(st, 11, e->superseded ? 1 : 0);
+        bind_num(st, 12, (double)e->get_count);
+        bind_num(st, 13, (double)e->search_count);
         const bool ok = sqlite3_step(st) == SQLITE_DONE;
         sqlite3_finalize(st);
         if (!ok)
@@ -2277,6 +2289,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             sqlite3_finalize(st);
             goto done;
         }
+        session->memo->session_id = (int64_t)session_id;
         session->memo->next_seq = (uint64_t)col_i64(st, 7);
         session->memo->next_entry_id = (uint64_t)col_i64(st, 8);
         session->memo->pruned_before = (uint64_t)col_i64(st, 9);
@@ -2501,9 +2514,10 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                 group->is_orphaned = true;
             group->kind = edc_task_group_classify_kind(col_str(st, 2));
             {
+                /* The summary text is DB-only, not resident. Recompute the cheap token
+                 * estimate once at load so request-side estimation never reads the text. */
                 const char *mem = col_str(st, 3);
-                if (mem)
-                    group->memory = sdsnew(mem);
+                group->memory_tokens = mem ? edc_token_estimate_text(mem) : 0;
             }
             group->fold_epoch = (uint32_t)col_i64(st, 4);
             group->memory_created_at = (uint64_t)col_i64(st, 5);
@@ -2752,7 +2766,8 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
     }
     {
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT entry_id,title,summary,detail,sources,proposed_by,"
+        /* detail is DB-only: the resident index load does not fetch it. */
+        if (sqlite3_prepare_v2(g_db, "SELECT entry_id,title,summary,sources,proposed_by,"
                                      "created_seq,updated_seq,created_at,updated_at,get_count,search_count,superseded "
                                      "FROM memo_entries WHERE session_id=? ORDER BY entry_id",
                                -1, &st, NULL) == SQLITE_OK)
@@ -2761,11 +2776,11 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             while (sqlite3_step(st) == SQLITE_ROW)
                 edc_session_memory_restore_entry(session->memo, col_str(st, 0), col_str(st, 1),
                                                  col_str(st, 2), col_str(st, 3), col_str(st, 4),
-                                                 col_str(st, 5), (uint64_t)col_i64(st, 6),
+                                                 (uint64_t)col_i64(st, 5), (uint64_t)col_i64(st, 6),
                                                  (uint64_t)col_i64(st, 7), (uint64_t)col_i64(st, 8),
-                                                 (uint64_t)col_i64(st, 9), (uint64_t)col_i64(st, 10),
-                                                 (uint64_t)col_i64(st, 11),   /* search_count */
-                                                 sqlite3_column_int(st, 12) != 0);
+                                                 (uint64_t)col_i64(st, 9),   /* get_count */
+                                                 (uint64_t)col_i64(st, 10),  /* search_count */
+                                                 sqlite3_column_int(st, 11) != 0);
         }
         sqlite3_finalize(st);
     }
@@ -2778,6 +2793,137 @@ done:
     free(tasks);
     if (!ok)
         log_error("state_store: load failed for %s", edc_id_str(session_id));
+    return ok;
+}
+
+/* ── Large-text fields kept only in the DB (see header) ───────────────────────── */
+
+sds edc_state_store_group_memory_load(int64_t session_id, int64_t group_id,
+                                      uint64_t *out_created_at, uint64_t *out_updated_at,
+                                      uint64_t *out_covers_to)
+{
+    if (out_created_at) *out_created_at = 0;
+    if (out_updated_at) *out_updated_at = 0;
+    if (out_covers_to) *out_covers_to = 0;
+    if (!g_db || session_id <= 0 || group_id <= 0)
+        return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "SELECT memory,memory_created_at,memory_updated_at,memory_covers_to "
+                                 "FROM groups WHERE session_id=? AND group_id=?", -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)group_id);
+    sds out = NULL;
+    if (sqlite3_step(st) == SQLITE_ROW)
+    {
+        const char *mem = col_str(st, 0);
+        if (mem && *mem)
+            out = sdsnew(mem);
+        if (out_created_at) *out_created_at = (uint64_t)col_i64(st, 1);
+        if (out_updated_at) *out_updated_at = (uint64_t)col_i64(st, 2);
+        if (out_covers_to) *out_covers_to = (uint64_t)col_i64(st, 3);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+bool edc_state_store_group_memory_save(int64_t session_id, int64_t group_id, const char *body,
+                                       uint64_t created_at, uint64_t updated_at, uint64_t covers_to)
+{
+    if (!g_db || session_id <= 0 || group_id <= 0 || !body)
+        return false;
+    /* Ensure the parent rows exist (a fold/test may save memory before the first flush).
+     * INSERT OR IGNORE is a no-op once the normal flush has written them; the defaults on
+     * every other column make these minimal rows valid placeholders. */
+    {
+        sqlite3_stmt *se = NULL;
+        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) "
+                                     "VALUES(?,'(pending)',strftime('%s','now'))", -1, &se, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(se, 1, (sqlite3_int64)session_id);
+            sqlite3_step(se);
+            sqlite3_finalize(se);
+        }
+        sqlite3_stmt *ge = NULL;
+        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO groups(session_id,group_id) VALUES(?,?)",
+                               -1, &ge, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(ge, 1, (sqlite3_int64)session_id);
+            sqlite3_bind_int64(ge, 2, (sqlite3_int64)group_id);
+            sqlite3_step(ge);
+            sqlite3_finalize(ge);
+        }
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "UPDATE groups SET memory=?,memory_created_at=?,memory_updated_at=?,"
+                                 "memory_covers_to=? WHERE session_id=? AND group_id=?", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, body);
+    bind_num(st, 2, (double)created_at);
+    bind_num(st, 3, (double)updated_at);
+    bind_num(st, 4, (double)covers_to);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)session_id);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)group_id);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+sds edc_state_store_memo_detail_load(int64_t session_id, const char *entry_id)
+{
+    if (!g_db || session_id <= 0 || !entry_id || !*entry_id)
+        return NULL;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "SELECT detail FROM memo_entries WHERE session_id=? AND entry_id=?",
+                           -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
+    bind_str(st, 2, entry_id);
+    sds out = NULL;
+    if (sqlite3_step(st) == SQLITE_ROW)
+    {
+        const char *detail = col_str(st, 0);
+        if (detail && *detail)
+            out = sdsnew(detail);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
+bool edc_state_store_memo_detail_save(int64_t session_id, const char *entry_id, const char *detail)
+{
+    if (!g_db || session_id <= 0 || !entry_id || !*entry_id)
+        return false;
+    /* The entry row may not have been flushed yet (a write tool creates the in-memory
+     * entry then saves its detail immediately). Ensure parent + row exist. */
+    {
+        sqlite3_stmt *se = NULL;
+        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) "
+                                     "VALUES(?,'(pending)',strftime('%s','now'))", -1, &se, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(se, 1, (sqlite3_int64)session_id);
+            sqlite3_step(se);
+            sqlite3_finalize(se);
+        }
+        sqlite3_stmt *ee = NULL;
+        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO memo_entries(session_id,entry_id) VALUES(?,?)",
+                               -1, &ee, NULL) == SQLITE_OK)
+        {
+            sqlite3_bind_int64(ee, 1, (sqlite3_int64)session_id);
+            bind_str(ee, 2, entry_id);
+            sqlite3_step(ee);
+            sqlite3_finalize(ee);
+        }
+    }
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "UPDATE memo_entries SET detail=? WHERE session_id=? AND entry_id=?",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, detail);
+    sqlite3_bind_int64(st, 2, (sqlite3_int64)session_id);
+    bind_str(st, 3, entry_id);
+    const bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
     return ok;
 }
 

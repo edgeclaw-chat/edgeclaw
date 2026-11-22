@@ -33,7 +33,7 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
      * system task's creator (see edc_group_kind in task_group.h). */
     group->kind = EDC_GROUP_KIND_USER;
     group->history = NULL; /* slots are added as the history is built */
-    group->memory = NULL;
+    group->memory_tokens = 0;
     group->fold_files = NULL;
     group->fold_epoch = 0;
 
@@ -92,8 +92,7 @@ void edc_task_group_free(struct edc_task_group *group)
         cJSON_Delete(group->tools_decl);
     if (group->tool_deltas)
         cJSON_Delete(group->tool_deltas);
-    if (group->memory)
-        sdsfree(group->memory);
+    /* memory text is DB-only (no free here); fold_files stays in memory. */
     edc_fold_files_free(group->fold_files);
     free(group);
 }

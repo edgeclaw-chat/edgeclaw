@@ -436,8 +436,9 @@ int main(void)
         if (session->memo->entries[i].title && strcmp(session->memo->entries[i].title, "历史条目") == 0)
             leg = &session->memo->entries[i];
     CHECK(leg != NULL, "找到刚写的条目");
-    sdsfree(leg->detail);
-    leg->detail = sdsnew("明细里没有那个号"); /* 模拟旧二进制写下的数据：缺口 = 1 */
+    /* Simulate legacy non-compliant data by rewriting the DB detail (DB is the sole home). */
+    CHECK(edc_state_store_memo_detail_save(session->session_id, leg->id, "明细里没有那个号"),
+          "legacy detail written to DB");
 
     char leg_upd[256];
     snprintf(leg_upd, sizeof(leg_upd),
@@ -512,6 +513,17 @@ int main(void)
     const struct edc_memo_entry *e_re = edc_session_memory_entry(reloaded->memo, "m1");
     CHECK(e_re && e_re->get_count == expect_get, "get_count survives flush → load");
     CHECK(e_re && e_re->search_count == expect_search, "search_count survives flush → load");
+
+    /* NEW CONTRACT: detail is DB-only and survives restart; the kernel reader on the
+     * reloaded memo fetches it from the DB, not from any resident copy. */
+    {
+        sds det = edc_session_memory_get_detail(reloaded->memo, "m1");
+        sds stored = edc_state_store_memo_detail_load(reloaded->session_id, "m1");
+        CHECK(det && stored && strstr(det, stored) != NULL,
+              "memory_get path reads detail from DB after restart");
+        if (det) sdsfree(det);
+        if (stored) sdsfree(stored);
+    }
     edc_session_free(reloaded);
 
     edc_toolbox_free(tb);

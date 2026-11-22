@@ -505,7 +505,7 @@ static void test_fold_tool_call_is_failure(void)
     struct edc_task *user = edc_task_new(edc_test_id("u-1"), edc_test_session_id("sess-hygiene"), edc_test_id("u-1"), "user task", edc_channel_adapter);
     struct edc_task_group *group = edc_task_group_new(user);
     edc_task_group_add_task(group, user);
-    group->memory = sdsnew("old memory: keep me");
+    group->memory_tokens = 42; /* sentinel: a landed fold would rewrite this estimate */
 
     /* 折叠任务: sink=GROUP_MEMORY + 自己的 input (停在 AWAIT_EXEC)。 */
     struct edc_task *fold = edc_scheduler_spawn_system_task(sched, session, "fold group memory");
@@ -527,7 +527,7 @@ static void test_fold_tool_call_is_failure(void)
     CHECK(fold->step != EDC_TASKSTEP_AWAIT_TOOLS, "没有被当成一次工具往返");
     CHECK(fold->tool_calls == NULL, "工具调用没进账本");
     CHECK(g_dispatch_calls == 0, "一次工具都没派发");
-    CHECK(group->memory && strcmp(group->memory, "old memory: keep me") == 0, "组记忆一字不动");
+    CHECK(group->memory_tokens == 42, "组记忆一字不动 (token 估计未变)");
     CHECK(res.notice && strstr(res.notice, "tool") != NULL, "提示语点名 tool");
     CHECK(fold->tokens_prompt == 7 && fold->tokens_completion == 3,
           "废掉的那次摘要调用照样记用量 (公共段在分支之前)");
@@ -541,8 +541,6 @@ static void test_fold_tool_call_is_failure(void)
     CHECK(g_dispatch_calls == 1, "普通任务照常派发");
     CHECK(user->tool_calls != NULL && strcmp(user->tool_calls->name, "exec_shell") == 0, "账本记了 PENDING");
 
-    sdsfree(group->memory);
-    group->memory = NULL;
     edc_session_free(session);
     edc_scheduler_free(sched);
     edc_config_free(cfg);

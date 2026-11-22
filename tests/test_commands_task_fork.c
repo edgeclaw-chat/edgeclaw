@@ -18,6 +18,7 @@
 #include "edc_config.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
@@ -137,7 +138,9 @@ int main(void)
 
     /* Give the parent group a memory and a transcript to snapshot: history[0] is the
      * system prompt, history[1] the first message. */
-    parent->group->memory = sdsnew("PARENT-MEMORY");
+    /* group memory text is DB-only; the resident token estimate is the "has memory" signal. */
+    edc_state_store_group_memory_save(sess->session_id, parent->group->group_id, "PARENT-MEMORY", 0, 0, 0);
+    parent->group->memory_tokens = 13;
     /* A COMMITTED turn gives the parent a transcript to snapshot. Injecting entries into
      * group->history by hand does not survive: that array is derived (rebuilt from the
      * turns), so the next rebuild would drop them and the fork would have nothing to copy.
@@ -175,8 +178,11 @@ int main(void)
 
         /* ── ② 继承 ─────────────────────────────────────────────── */
 
-        CHECK(child->group && child->group->memory && strcmp(child->group->memory, "PARENT-MEMORY") == 0,
-              "inherits the parent group's memory");
+        {
+            sds cm = edc_state_store_group_memory_load(sess->session_id, child->group->group_id, NULL, NULL, NULL);
+            CHECK(cm && strcmp(cm, "PARENT-MEMORY") == 0, "inherits the parent group's memory (DB copy)");
+            if (cm) sdsfree(cm);
+        }
         CHECK(child->group && (size_t)edc_task_group_history_count(child->group) == 2,
               "inherits the system prompt + the snapshot message");
         CHECK(child->turns.tail - child->turns.head == 1, "the snapshot turn is attached to the child");

@@ -20,6 +20,7 @@
 #include "edc_llm_request.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "edc_session_memory.h"
 #include "edc_session_manager.h"
 #include "edc_task.h"
@@ -428,7 +429,9 @@ static void test_head_blocks_cache_layout(void)
     harness_up(&h);
     struct edc_task *leader = NULL;
     struct edc_task_group *g = make_group(&h, &leader, edc_test_session_id("sess-head"));
-    g->memory = sdsnew("MEM-SUMMARY"); /* 非空 ⇒ 两块都出现 */
+    /* group memory text is DB-only; a nonzero estimate makes the head block appear. */
+    edc_state_store_group_memory_save(h.sess->session_id, g->group_id, "MEM-SUMMARY", 0, 0, 0);
+    g->memory_tokens = 11;
 
     struct edc_task *t2 = edc_task_new(edc_test_id("h-2"), edc_test_session_id("sess-head"), g->group_id, "second task", edc_channel_adapter);
     edc_task_group_add_task(g, t2);

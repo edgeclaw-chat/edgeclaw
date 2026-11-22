@@ -18,6 +18,7 @@
 #include "edc_prompts.h"
 #include "edc_resources.h"
 #include "edc_skills.h"
+#include "edc_state_store.h"
 #include "edc_string_utils.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
@@ -1790,10 +1791,23 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
 
     if (parent->group)
     {
-        /* inherit the parent group's memory summary (body + tracked-file lists: the child
-         * continues the same work, so it starts from the same knowledge) */
-        if (parent->group->memory)
-            child_group->memory = sdsdup(parent->group->memory);
+        /* Inherit the parent group's memory summary (body + tracked-file lists): the child
+         * continues the same work. The body is DB-only, so copy the parent's row into the
+         * child's row; only the token estimate stays resident. */
+        if (parent->group->memory_tokens > 0 && session)
+        {
+            sds pbody = edc_state_store_group_memory_load(session->session_id, parent->group->group_id,
+                                                          NULL, NULL, NULL);
+            if (pbody)
+            {
+                edc_state_store_group_memory_save(session->session_id, child_group->group_id, pbody,
+                                                  parent->group->memory_created_at,
+                                                  parent->group->memory_updated_at,
+                                                  parent->group->memory_covers_to);
+                child_group->memory_tokens = parent->group->memory_tokens;
+                sdsfree(pbody);
+            }
+        }
         if (parent->group->fold_files)
             child_group->fold_files = edc_fold_files_dup(parent->group->fold_files);
 
@@ -2283,7 +2297,7 @@ sds edc_commands_group_files_text(struct edc_task_group *group)
 
     if (nr + nw == 0)
     {
-        if (!group->memory || sdslen(group->memory) == 0)
+        if (group->memory_tokens <= 0)
             out = sdscat(out, "This group has never been folded, so nothing is tracked yet.\n");
         else
             out = sdscat(out, "No files recorded. Either this group was folded before the lists existed, or the "
@@ -2335,7 +2349,7 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
                            ctx > line ? "above" : "below",
                            edc_group_fold_due(group, conf) ? " — the next message folds it" : "");
     out = sdscatprintf(out, "- **fold epoch** %u · **memory** %s · **failure streak** %d/%d\n", group->fold_epoch,
-                       (group->memory && sdslen(group->memory) > 0) ? "present" : "none (never folded)",
+                       (group->memory_tokens > 0) ? "present" : "none (never folded)",
                        group->fold_failures, EDC_FOLD_MAX_FAILURES);
     if (group->fold_held)
         out = sdscat(out, "- **fold failed: barrier held** — the group is frozen until a retry lands "
@@ -2351,7 +2365,7 @@ sds edc_commands_group_info_text(struct edc_session *session, struct edc_task_gr
         if (nr + nw > 0)
             out = sdscatprintf(out, "- **tracked files** %zu read · %zu modified (`/group files %s`)\n", nr, nw,
                                edc_id_str(group->group_id));
-        else if (group->memory && sdslen(group->memory) > 0)
+        else if (group->memory_tokens > 0)
             out = sdscatprintf(out, "- **tracked files** none recorded — this group was folded before the lists "
                                     "existed, or its corpus touched no readable/writable file\n");
         sdsfree(reads);

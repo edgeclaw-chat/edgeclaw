@@ -294,7 +294,7 @@ int main(void)
     sdsfree(files);
 
     /* ② 结构里有清单（折叠落地写出来的形状） */
-    gf->memory = sdsnew("# Summary\n- work done");
+    gf->memory_tokens = 100; /* folded sentinel */
     gf->fold_files = edc_fold_files_new();
     edc_fold_files_add_read(gf->fold_files, "src/a.c");
     edc_fold_files_add_read(gf->fold_files, "src/");
@@ -312,7 +312,7 @@ int main(void)
 
     /* ③ 有 memory 但结构为空（旧档案 / 语料没碰文件）：不能说成"没折过"；
      *    同时钉住"文本块不再是数据源"——往 memory 里塞块不会凭空变成清单。 */
-    gf->memory = sdsnew("# Summary\n- only prose <read-files>\nfake.c\n</read-files>\n");
+    gf->memory_tokens = 100; /* folded but no tracked files */
     edc_fold_files_free(gf->fold_files);
     gf->fold_files = NULL;
     files = edc_commands_group_files_text(gf);
@@ -320,8 +320,6 @@ int main(void)
     CHECK(files && strstr(files, "never been folded") == NULL, "不能说成没折过");
     CHECK(files && strstr(files, "fake.c") == NULL, "memory 里的文本块不再被当成清单解析");
     sdsfree(files);
-    sdsfree(gf->memory);
-    gf->memory = NULL;
 
     /* ④ NULL 组 / 命令路径不崩、不带 id 看前台组 */
     files = edc_commands_group_files_text(NULL);

@@ -6,6 +6,7 @@
 #include "edc_param_types.h"
 #include "edc_session.h"
 #include "edc_session_memory.h"
+#include "edc_state_store.h"
 #include "edc_task.h"
 #include "edc_task_group.h"
 #include "edc_toolbox.h"
@@ -468,6 +469,10 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
                 dup = true;
 
         struct edc_memo_entry *e = (id && id[0]) ? edc_session_memory_entry(m, id) : NULL;
+        /* Detail is DB-only: read this entry's current detail once for the checks below. */
+        sds old_detail = (e && m->session_id > 0)
+                             ? edc_state_store_memo_detail_load(m->session_id, e->id) : NULL;
+        const char *old_det = old_detail ? old_detail : "";
         const char *pfx = sdslen(bad) ? "; " : "";
         if (!id || !id[0])
             bad = sdscatprintf(bad, "%s#%d: missing id", pfx, i), ok = false;
@@ -482,7 +487,7 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
             bad = sdscatprintf(bad, "%s%s: duplicate id in batch", pfx, id), ok = false;
         else if (!title && !summary && !detail)
             bad = sdscatprintf(bad, "%s%s: no field to update", pfx, id), ok = false;
-        else if (detail && e->detail && strcmp(detail, e->detail) != 0 && !summary)
+        else if (detail && old_detail && strcmp(detail, old_detail) != 0 && !summary)
             /* A CHANGED detail must be accompanied by a restated summary. summary is the
              * materialized view of detail: if the base changes and the view is not rebuilt,
              * the view describes a state that no longer exists -- it says something FALSE,
@@ -510,14 +515,14 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
              * so the invariant is about the pair as it will read AFTER the write, not about
              * the fields this item happens to carry. */
             const char *eff_sum = summary ? summary : e->summary;
-            const char *eff_det = detail ? detail : e->detail;
+            const char *eff_det = detail ? detail : old_det;
             /* Grandfather clause: an entry written before this check existed can ALREADY
              * violate it. Refusing every later write would freeze that entry forever -- even
              * a title-only fix or a step-by-step repair would be blocked. So compare: a write
              * is refused only when it makes the gap WORSE than the entry's current state. */
             sds before_rep = NULL;
             sds uncovered_rep = NULL;
-            size_t before = edc_session_memory_uncovered_facts(e->summary, e->detail, &before_rep);
+            size_t before = edc_session_memory_uncovered_facts(e->summary, old_det, &before_rep);
             size_t uncovered = edc_session_memory_uncovered_facts(eff_sum, eff_det, &uncovered_rep);
             sdsfree(before_rep);
             if (uncovered > before)
@@ -537,6 +542,8 @@ static void memory_update_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
                 revs[i] = rev;
             }
         }
+        if (old_detail)
+            sdsfree(old_detail);
     }
     if (!ok)
     {
