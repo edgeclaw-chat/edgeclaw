@@ -596,6 +596,47 @@ static bool verify_v14(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v14 -> v15: the `jobs` table (scheduled jobs, replacing workspace/jobs.json).
+ * Two DDL statements: the table and its next_run index. The old jobs.json is NOT
+ * imported -- those schedules are intentionally dropped. */
+static bool step_v14_to_v15(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db,
+                   "CREATE TABLE IF NOT EXISTS jobs ("
+                   "  job_id         TEXT PRIMARY KEY,"
+                   "  name           TEXT NOT NULL DEFAULT '',"
+                   "  message        TEXT NOT NULL DEFAULT '',"
+                   "  channel        TEXT NOT NULL DEFAULT '',"
+                   "  kind           TEXT NOT NULL,"
+                   "  tz             TEXT NOT NULL DEFAULT '',"
+                   "  every_seconds  INTEGER NOT NULL DEFAULT 0,"
+                   "  cron_expr      TEXT NOT NULL DEFAULT '',"
+                   "  next_run_at    INTEGER NOT NULL DEFAULT 0,"
+                   "  once           INTEGER NOT NULL DEFAULT 0"
+                   ");",
+                   "create jobs table", err, cap) &&
+           run_sql(db, "CREATE INDEX IF NOT EXISTS jobs_by_next_run ON jobs(next_run_at);",
+                   "create jobs_by_next_run index", err, cap);
+}
+
+static bool verify_v15(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "jobs", "job_id") || !has_column(db, "jobs", "next_run_at"))
+    {
+        set_err(err, cap, "v15 is stamped but jobs table is missing or malformed");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='jobs'", &n, err, cap))
+        return false;
+    if (n != 1)
+    {
+        set_err(err, cap, "v15: expected exactly one jobs table, found %lld", (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -611,6 +652,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {11, step_v11_to_v12, verify_v12},
     {12, step_v12_to_v13, verify_v13},
     {13, step_v13_to_v14, verify_v14},
+    {14, step_v14_to_v15, verify_v15},
     {0, NULL, NULL}, /* terminator */
 };
 

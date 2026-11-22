@@ -3483,69 +3483,30 @@ typedef bool (*edc_cmd_fn)(struct edc_config *cfg, struct edc_session_manager *s
 
 /* ── /jobs — what is scheduled ───────────────────────────────
  *
- * The schedules are DATA (<workspace>/jobs.json), owned by the crontab tool; the ticking
- * is a background service. Until now only the model could touch them: a person could not
- * see what was going to run, remove a stale entry, or run one now. This family is that
- * window. It reads and writes the same file through the guarded file helpers, and `run`
- * injects the job's text into the input pipeline exactly the way the ticker does -- so
- * "run now" and "the timer fired" produce the same task.
- */
-#define EDC_JOBS_MAX_BYTES (4 * 1024 * 1024)
-
-static sds jobs_file_path(struct edc_config *cfg)
-{
-    return edc_path_join(cfg && cfg->workspace ? cfg->workspace : "", "jobs.json", NULL);
-}
-
-/* NULL with |*error| set when the file exists but cannot be used. A MISSING file is not
- * an error: it means "nothing scheduled yet". */
+ * The schedules are DATA in the edgeclaw.db `jobs` table, owned by the crontab tool;
+ * the ticking is a background service. This family is the human's window onto them:
+ * list / run now / remove. `run` injects the job's text into the input pipeline exactly
+ * the way the ticker does, so "run now" and "the timer fired" produce the same task.
+ * These commands run on the scheduler runner thread, the one thread allowed to touch
+ * the store, so the jobs bridge is a direct call. */
 static cJSON *jobs_load(struct edc_config *cfg, EdcError **error)
 {
-    sds path = jobs_file_path(cfg);
-    struct edc_path_rules rules = {
-        .root = cfg ? cfg->workspace : NULL,
-        .refuse_symlink = true,
-        .deny_paths = (cfg && cfg->enable_sandbox) ? cfg->sandbox_deny_paths : NULL,
-    };
-    sds content = edc_path_guard_read(&rules, path, EDC_JOBS_MAX_BYTES, error);
-    bool missing = !content && !edc_file_is_regular(path);
-    sdsfree(path);
-    if (!content)
-    {
-        if (missing)
-        {
-            if (error)
-                *error = NULL;
-            return cJSON_CreateObject(); /* nothing scheduled */
-        }
-        return NULL;
-    }
-    cJSON *db = cJSON_Parse(content);
-    sdsfree(content);
-    if (!db)
-    {
-        edc_error_set(error, EDC_ERR_INVAL, "jobs.json is not valid JSON");
-        return NULL;
-    }
-    if (!cJSON_GetObjectItem(db, "jobs"))
-        cJSON_AddArrayToObject(db, "jobs");
-    return db;
+    (void)cfg;
+    (void)error;
+    cJSON *db = edc_state_store_jobs_json();
+    return db ? db : cJSON_CreateObject();
 }
 
 static bool jobs_save(struct edc_config *cfg, cJSON *db, sds *err)
 {
-    sds path = jobs_file_path(cfg);
-    char *text = cJSON_Print(db);
-    EdcError *error = NULL;
-    const bool ok = text && edc_file_write_safe(path, text, (ssize_t)strlen(text), cfg->workspace, &error);
-    if (!ok && err)
-        *err = sdsnew(error && error->message ? error->message : "cannot write jobs.json");
-    if (error)
-        edc_error_free(error);
-    if (text)
-        cJSON_free(text);
-    sdsfree(path);
-    return ok;
+    (void)cfg;
+    if (!edc_state_store_jobs_replace(db))
+    {
+        if (err)
+            *err = sdsnew("cannot write scheduled jobs to the state store");
+        return false;
+    }
+    return true;
 }
 
 /* Host-local wall clock (the schedules without an IANA tz are host-local). */

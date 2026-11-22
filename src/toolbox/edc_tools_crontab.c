@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "edc_config.h"
+#include "edc_state_store.h"
 #include "edc_tools_crontab.h"
 #include "ccronexpr.h"
 #include "edc_actor.h"
@@ -88,14 +89,13 @@ static char *edc_uuid_gen(void)
     return s;
 }
 
-/* The crontab schedules are DATA (workspace/jobs.json); the ticking is a background
+/* The crontab schedules are DATA (the edgeclaw.db jobs table); the ticking is a background
  * SERVICE (edc_service.h) -- ONE shared process-wide timer, not a uv_timer per tool.
  * This state is owned by the tool (tool->priv) and freed with it. */
 struct edc_tool_crontab_svc
 {
     struct edc_scheduler *sched;  /* service registry owner */
     edc_actor_t *scheduler_actor; /* where a fired job's message is injected */
-    sds workspace;
     struct edc_service *service;
 };
 
@@ -103,63 +103,33 @@ static void edc_tool_crontab_state_free(struct edc_tool_crontab_svc *state)
 {
     if (!state)
         return;
-    if (state->workspace)
-        sdsfree(state->workspace);
     free(state);
 }
 
 static void edc_tool_crontab_reschedule(struct edc_tool_crontab_svc *state, cJSON *jobs);
 static void edc_tool_crontab_scan(struct edc_service *svc, void *ud);
 
+/* Schedules live in the edgeclaw.db `jobs` table, not workspace/jobs.json. The
+ * service and the tool both run on the scheduler runner thread, the one thread
+ * allowed to touch the store, so these are direct calls (no actor round-trip). */
 static cJSON *edc_tool_crontab_load_jobs_db(const char *workspace, EdcError **error)
 {
-    sds jobs_path = edc_path_join(workspace, "jobs.json", NULL);
-
-    cJSON *db = NULL;
-
-    if (edc_file_is_regular(jobs_path))
-    {
-        EdcError *gerror = NULL;
-        sds content = edc_file_read(jobs_path, &gerror);
-        if (!content)
-        {
-            edc_error_set(error, EDC_ERR_FAILED, "%s", gerror->message);
-            edc_error_free(gerror);
-            goto out;
-        }
-
-        db = cJSON_Parse(content);
-        sdsfree(content);
-    }
-
-out:
-    sdsfree(jobs_path);
-    return db;
+    (void)workspace;
+    (void)error;
+    /* Always returns a `{"jobs":[...]}` document, empty when nothing is scheduled. */
+    cJSON *db = edc_state_store_jobs_json();
+    return db ? db : cJSON_CreateObject();
 }
 
 static bool edc_tool_crontab_save_jobs_db(const char *workspace, cJSON *db, EdcError **error)
 {
-    sds jobs_path = edc_path_join(workspace, "jobs.json", NULL);
-    /* jobs.json lives in the model-writable workspace: refuse to follow a
-     * symlink (or write outside the workspace) so it cannot be used to redirect
-     * this unsandboxed write into a protected path. */
-    FILE *fout = edc_file_fopen_safe(jobs_path, "w+", workspace);
-
-    if (!fout)
+    (void)workspace;
+    if (!edc_state_store_jobs_replace(db))
     {
-        const char *s = strerror(errno);
-        edc_error_set(error, EDC_ERR_INVAL, "open %s for writing failed: %s", jobs_path, s);
-        sdsfree(jobs_path);
+        if (error)
+            edc_error_set(error, EDC_ERR_FAILED, "cannot write scheduled jobs to the state store");
         return false;
     }
-    sdsfree(jobs_path);
-
-    char *tmp = cJSON_PrintUnformatted(db);
-    fprintf(fout, "%s", tmp);
-    fflush(fout);
-    fclose(fout);
-    cJSON_free(tmp);
-
     return true;
 }
 
@@ -339,8 +309,8 @@ static int64_t edc_tool_crontab_next_delta_ms(cJSON *jobs, time_t now)
     {
         cJSON *schedule = cJSON_GetObjectItem(cJSON_GetArrayItem(jobs, i), "schedule");
         cJSON *ts = schedule ? cJSON_GetObjectItem(schedule, "next_run_at_unix_ts") : NULL;
-        if (!ts || !cJSON_IsNumber(ts))
-            continue;
+        if (!ts || !cJSON_IsNumber(ts) || ts->valuedouble <= 0)
+            continue; /* 0 = never scheduled: do not fire it or busy-loop on it */
         int64_t delta = (int64_t)ts->valuedouble - (int64_t)now;
         if (!any || delta < best)
             best = delta;
@@ -372,7 +342,7 @@ static void edc_tool_crontab_scan(struct edc_service *svc, void *ud)
     (void)svc;
     struct edc_tool_crontab_svc *state = ud;
     EdcError *error = NULL;
-    cJSON *db = edc_tool_crontab_load_jobs_db(state->workspace, &error);
+    cJSON *db = edc_tool_crontab_load_jobs_db(NULL, &error);
     if (!db)
     {
         if (error)
@@ -393,7 +363,7 @@ static void edc_tool_crontab_scan(struct edc_service *svc, void *ud)
         cJSON *job = cJSON_GetArrayItem(jobs, i);
         cJSON *schedule = cJSON_GetObjectItem(job, "schedule");
         cJSON *ts = schedule ? cJSON_GetObjectItem(schedule, "next_run_at_unix_ts") : NULL;
-        if (!ts || !cJSON_IsNumber(ts) || (time_t)ts->valuedouble > now)
+        if (!ts || !cJSON_IsNumber(ts) || ts->valuedouble <= 0 || (time_t)ts->valuedouble > now)
         {
             i++;
             continue;
@@ -420,7 +390,7 @@ static void edc_tool_crontab_scan(struct edc_service *svc, void *ud)
         }
     }
 
-    if (!edc_tool_crontab_save_jobs_db(state->workspace, db, &error))
+    if (!edc_tool_crontab_save_jobs_db(NULL, db, &error))
     {
         log_error("crontab: failed to save jobs db: %s", error && error->message ? error->message : "?");
         if (error)
@@ -480,9 +450,9 @@ static void edc_tool_crontab_exec_add_async(struct edc_toolbox_call_ctx *ctx, st
     if (db)
     {
         jobs = cJSON_GetObjectItem(db, "jobs");
-        /* A jobs.json can exist without the "jobs" key -- a truncated write, an older
-         * shape, or something the model wrote. cJSON_AddItemToArray() silently does
-         * nothing for a NULL array, so without this the new job would be dropped while
+        /* The bridge always returns a jobs array, but guard against a missing one:
+         * cJSON_AddItemToArray() silently does nothing for a NULL array, so without
+         * this the new job would be dropped while
          * the tool reported "Add job ... done": the user is told it was scheduled and it
          * is nowhere. Create the array instead of trusting the key to be there. */
         if (!jobs || !cJSON_IsArray(jobs))
@@ -680,12 +650,11 @@ static void edc_tool_create_crontab(struct edc_toolbox *tb)
         edc_tool_new("crontab", "Schedule reminders and recurring tasks. Actions: add, list, remove.", params,
                      edc_tool_crontab_exec_async);
 
-    /* The schedule data stays in jobs.json; the ticking is one shared background
+    /* The schedule data stays in the jobs table; the ticking is one shared background
      * service. The service's state is owned by the tool (tool->priv). */
     struct edc_tool_crontab_svc *state = calloc(1, sizeof(*state));
     state->sched = tb->scheduler ? tb->scheduler->state : NULL;
     state->scheduler_actor = tb->scheduler;
-    state->workspace = sdsnew(tb->conf->workspace);
     tool->priv = state;
     tool->priv_free_fn = (EdcDestroyNotify)edc_tool_crontab_state_free;
 

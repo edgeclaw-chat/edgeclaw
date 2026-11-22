@@ -1,5 +1,6 @@
 ﻿#include "edc_scheduler.h"
 #include "edc_state_store.h"
+#include "edc_chat_bubble_line.h"
 #include "edc_cmd_parse.h"
 #include "edc_datetime_utils.h"
 #include "edc_compat.h"
@@ -232,6 +233,47 @@ void edc_scheduler_services_start(struct edc_scheduler *sched)
     edc_service_register(sched, "extract-scan", EDC_MEMO_EXTRACT_SCAN_MS, sched_service_extract_scan, sched);
 }
 
+/* ── Startup "interrupted" hint, persisted at shutdown ─────────────────────
+ * Every on-screen bubble is now durable in chat_bubbles, including interface
+ * feedback. The old UI generated the "N tasks were interrupted" hint from the
+ * first snapshot after a restart, which meant it was never durable and could
+ * duplicate a persisted copy. Instead, at shutdown (store still open, actors
+ * already stopped) we write one sys bubble per session listing its interrupted
+ * tasks; the next start reads it back through the ordinary chat_bubbles page. */
+
+struct sched_hint_group
+{
+    int64_t session_id;
+    sds task_ids; /* comma-joined, in traversal order */
+};
+
+struct sched_hint_ctx
+{
+    struct sched_hint_group *groups;
+    int n;
+    int cap;
+};
+
+static struct sched_hint_group *hint_group_for(struct sched_hint_ctx *ctx, int64_t session_id)
+{
+    for (int i = 0; i < ctx->n; i++)
+        if (ctx->groups[i].session_id == session_id)
+            return &ctx->groups[i];
+    if (ctx->n == ctx->cap)
+    {
+        int cap = ctx->cap ? ctx->cap * 2 : 4;
+        struct sched_hint_group *grown = realloc(ctx->groups, (size_t)cap * sizeof(*ctx->groups));
+        if (!grown)
+            return NULL; /* OOM: skip the hint, never crash shutdown */
+        ctx->groups = grown;
+        ctx->cap = cap;
+    }
+    struct sched_hint_group *g = &ctx->groups[ctx->n++];
+    g->session_id = session_id;
+    g->task_ids = sdsempty();
+    return g;
+}
+
 /* Shutdown pass: nothing will advance any more, so every task that is not already
  * terminal says so in its own state -- READY and waiting ones included: the queue they
  * were sitting in is over, and each of them needs a decision now. Memory-sink tasks
@@ -239,15 +281,64 @@ void edc_scheduler_services_start(struct edc_scheduler *sched)
  * which is what a background round wants. */
 static void sched_interrupt_all(void *ctx, struct edc_task *task)
 {
-    (void)ctx;
     if (!task || edc_task_is_finished(task) || edc_task_is_memory_sink(task))
         return;
 
     edc_task_mark_interrupted(task);
+
+    /* Collect ONLY the tasks this pass newly interrupted (not ones already
+     * INTERRUPTED from a previous exit) so the persisted hint never accumulates
+     * duplicates across restarts. */
+    struct sched_hint_ctx *hctx = ctx;
+    if (hctx)
+    {
+        struct sched_hint_group *g = hint_group_for(hctx, task->session_id);
+        if (g)
+        {
+            if (sdslen(g->task_ids) > 0)
+                g->task_ids = sdscat(g->task_ids, ",");
+            char idbuf[24];
+            snprintf(idbuf, sizeof(idbuf), "%" PRId64, (int64_t)task->task_id);
+            g->task_ids = sdscat(g->task_ids, idbuf);
+        }
+    }
     /* The broadcast moved dependents as a side effect and nobody will settle those
      * reports now. The flags they carried are what gets persisted, so dropping the list
      * only releases the bookkeeping (its owner is still alive at this point). */
     edc_task_drain_moves(task, NULL, NULL);
+}
+
+static void sched_write_interrupted_hints(struct edc_scheduler *sched, struct sched_hint_ctx *ctx)
+{
+    (void)sched;
+    for (int i = 0; i < ctx->n; i++)
+    {
+        struct sched_hint_group *g = &ctx->groups[i];
+        if (sdslen(g->task_ids) == 0)
+            continue;
+
+        const bool single = strchr(g->task_ids, ',') == NULL;
+        sds line = single
+                       ? sdscatprintf(sdsempty(), "task %s was interrupted — `/task resume %s` to continue it",
+                                      g->task_ids, g->task_ids)
+                       : sdscatprintf(sdsempty(),
+                                      "tasks %s were interrupted — `/task resume <id>` brings one back, one at a time",
+                                      g->task_ids);
+
+        char sid[24];
+        snprintf(sid, sizeof(sid), "%" PRId64, (int64_t)g->session_id);
+        char *encoded = edc_chat_bubble_encode("sys", 0, NULL, NULL, line);
+        if (encoded)
+        {
+            int64_t seq = 0;
+            if (!edc_chat_bubble_append(sid, encoded, &seq))
+                log_warn("interrupted hint not persisted for session %s -- is the state store open?", sid);
+            free(encoded);
+        }
+        sdsfree(line);
+        sdsfree(g->task_ids);
+    }
+    free(ctx->groups);
 }
 
 bool edc_scheduler_close(struct edc_scheduler *sched)
@@ -261,7 +352,11 @@ bool edc_scheduler_close(struct edc_scheduler *sched)
      * by one -- hence no CANCELLED and no second save after cancelling. The interrupt
      * also broadcasts, so a task queued behind another one is not left waiting for a
      * predecessor that will never run on its own. */
-    edc_session_manager_foreach_task(sched->sessions, sched_interrupt_all, NULL);
+    struct sched_hint_ctx hints = {0};
+    edc_session_manager_foreach_task(sched->sessions, sched_interrupt_all, &hints);
+    /* Actors are already stopped and the store is still open: write one durable
+     * sys bubble per session so the next start shows the hint from chat_bubbles. */
+    sched_write_interrupted_hints(sched, &hints);
     edc_session_store_save_all_sessions_state(sched->sessions, sched);
 
     /* Nothing is in flight any more: forget the pending requests (a late reply must not

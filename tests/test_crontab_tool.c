@@ -29,6 +29,7 @@
 #include "edc_file_utils.h"
 #include "edc_path.h"
 #include "edc_scheduler.h"
+#include "edc_state_store.h"
 #include "edc_service.h"
 #include "edc_toolbox.h"
 #include "log.h"
@@ -78,21 +79,16 @@ static void capture_reset(void)
     }
 }
 
-static char g_dir[512];
-
 static struct edc_config *make_config(void)
 {
     struct edc_config *cfg = g_new0(struct edc_config, 1);
-    cfg->workspace = sdsnew(g_dir);
+    cfg->workspace = sdsnew(edc_test_workspace());
     return cfg;
 }
 
 static void reset_dir(void)
 {
-    char cmd[1400];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'", g_dir, g_dir);
-    if (test_sh(cmd) != 0)
-        fprintf(stderr, "    (warning: could not reset %s)\n", g_dir);
+    edc_test_store_reset();
 }
 
 /* Run one crontab action and leave the outcome in g_result / g_err. */
@@ -111,25 +107,25 @@ static void run(struct edc_toolbox *tb, const char *args_json)
     cJSON_Delete(args);
 }
 
-/* Writes jobs.json verbatim (used by the service-side cases further down). */
+/* Jobs live in edgeclaw.db; helpers use the JSON bridge. */
 static void write_jobs_file(const char *json);
 
 static cJSON *read_jobs_file(void)
 {
-    sds path = edc_path_join(g_dir, "jobs.json", NULL);
-    cJSON *db = NULL;
-    FILE *f = fopen(path, "r");
-    if (f)
-    {
-        char buf[8192] = {0};
-        const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-        buf[n] = '\0';
-        fclose(f);
-        db = cJSON_Parse(buf);
-    }
-    sdsfree(path);
-    return db;
+    return edc_state_store_jobs_json();
 }
+
+static int jobs_count(void)
+{
+    cJSON *db = read_jobs_file();
+    if (!db)
+        return -1;
+    cJSON *jobs = cJSON_GetObjectItem(db, "jobs");
+    int n = jobs ? cJSON_GetArraySize(jobs) : 0;
+    cJSON_Delete(db);
+    return n;
+}
+
 
 /* The one job in the file (or NULL). */
 static cJSON *only_job(cJSON *db)
@@ -153,6 +149,21 @@ static const char *job_str(cJSON *job, const char *a, const char *b)
     return x ? cJSON_GetStringValue(x) : NULL;
 }
 
+/* jobs_json() orders by job_id, not insertion order: look up by id. */
+static cJSON *job_by_id(cJSON *jobs, const char *id)
+{
+    if (!jobs || !id)
+        return NULL;
+    for (int i = 0; i < cJSON_GetArraySize(jobs); i++)
+    {
+        cJSON *j = cJSON_GetArrayItem(jobs, i);
+        const char *jid = job_str(j, "job_id", NULL);
+        if (jid && strcmp(jid, id) == 0)
+            return j;
+    }
+    return NULL;
+}
+
 /* ── add: every_seconds ─────────────────────────────────────────────────────── */
 static void test_add_every(void)
 {
@@ -170,7 +181,7 @@ static void test_add_every(void)
 
     cJSON *db = read_jobs_file();
     cJSON *job = only_job(db);
-    CHECK(job != NULL, "the job was written to jobs.json");
+    CHECK(job != NULL, "the job was written to the jobs table");
     const long long next = job_next_run(job);
     CHECK(next >= before + 3600 && next <= after + 3600, "next_run is now + the interval");
     CHECK(job_str(job, "schedule", "kind") && strcmp(job_str(job, "schedule", "kind"), "every") == 0,
@@ -265,7 +276,7 @@ static void test_add_at(void)
     CHECK(g_err != NULL, "a malformed at is refused");
     CHECK(g_err && g_err->message && strstr(g_err->message, "not iso8601") != NULL,
           "and says the format is wrong");
-    CHECK(read_jobs_file() == NULL, "no jobs.json is written for a refused add");
+    CHECK(jobs_count() == 0, "nothing is written for a refused add");
 
     edc_toolbox_free(tb);
     edc_config_free(cfg);
@@ -333,7 +344,7 @@ static void test_add_cron(void)
     reset_dir();
     run(tb, "{\"action\":\"add\",\"message\":\"x\",\"cron_expr\":\"not a cron\"}");
     CHECK(g_err != NULL, "a malformed cron expression is refused");
-    CHECK(read_jobs_file() == NULL, "and nothing is written");
+    CHECK(jobs_count() == 0, "and nothing is written");
 
     edc_toolbox_free(tb);
     edc_config_free(cfg);
@@ -400,22 +411,7 @@ static void test_list(void)
 
     /* Nothing scheduled yet: an empty list, not an error. */
     run(tb, "{\"action\":\"list\"}");
-    CHECK(g_err == NULL, "list with no jobs.json is not an error");
-    CHECK(g_result != NULL && sdslen(g_result) == 0, "and returns an empty result");
-
-    /* A jobs.json that has no "jobs" key at all. */
-    {
-        sds p = edc_path_join(g_dir, "jobs.json", NULL);
-        FILE *f = fopen(p, "w");
-        if (f)
-        {
-            fputs("{\"something_else\":1}", f);
-            fclose(f);
-        }
-        sdsfree(p);
-    }
-    run(tb, "{\"action\":\"list\"}");
-    CHECK(g_err == NULL, "list on a jobs.json without a jobs key is not an error");
+    CHECK(g_err == NULL, "list with no jobs is not an error");
     CHECK(g_result != NULL && sdslen(g_result) == 0, "and returns an empty result");
 
     /* With a job in it, both the name and the id are reported. */
@@ -443,8 +439,7 @@ static void test_remove(void)
     CHECK(g_err && strstr(g_err->message, "job_id is not provided") != NULL, "and names the missing id");
 
     run(tb, "{\"action\":\"remove\",\"job_id\":\"whatever\"}");
-    CHECK(g_err != NULL, "remove with no jobs.json is refused");
-    CHECK(g_err && strstr(g_err->message, "no jobs database found") != NULL, "and says there is no database");
+    CHECK(g_err == NULL, "removing from an empty table is idempotent");
 
     /* Add one, capture its id, remove it. */
     reset_dir();
@@ -468,7 +463,7 @@ static void test_remove(void)
 
     db = read_jobs_file();
     cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
-    CHECK(jobs && cJSON_GetArraySize(jobs) == 0, "the job is gone from jobs.json");
+    CHECK(jobs && cJSON_GetArraySize(jobs) == 0, "the job is gone from the jobs table");
     cJSON_Delete(db);
 
     /* Removing an id that is not there: still "succeeds" (idempotent), nothing breaks. */
@@ -490,16 +485,13 @@ static void test_remove(void)
  */
 static void write_jobs_file(const char *json)
 {
-    sds p = edc_path_join(g_dir, "jobs.json", NULL);
-    FILE *f = fopen(p, "w");
-    if (f)
+    cJSON *parsed = cJSON_Parse(json);
+    if (parsed)
     {
-        fputs(json, f);
-        fclose(f);
+        edc_state_store_jobs_replace(parsed);
+        cJSON_Delete(parsed);
     }
-    sdsfree(p);
 }
-
 static void test_service_advances_due_cron_job(void)
 {
     printf("\n── service: a due cron job advances ──\n");
@@ -579,30 +571,13 @@ static void test_service_scan_guards(void)
      * runs and a "does not crash" assertion would pass while testing nothing. */
     const long long past_interval = 3600LL * 1000 + 1000;
 
-    /* No jobs.json at all: the scan returns quietly. */
+    /* No jobs at all: the scan returns quietly. */
     reset_dir();
     struct edc_config *cfg = make_config();
     struct edc_scheduler *sched = edc_scheduler_new(cfg);
     struct edc_toolbox *tb = edc_toolbox_new(cfg, edc_scheduler_get_actor(sched), NULL);
     edc_services_pump(sched, past_interval);
-    CHECK(read_jobs_file() == NULL, "a scan with no jobs.json writes nothing");
-    edc_toolbox_free(tb);
-    edc_scheduler_free(sched);
-    edc_config_free(cfg);
-
-    /* A jobs.json without a jobs key. */
-    reset_dir();
-    write_jobs_file("{\"note\":\"no jobs array here\"}");
-    cfg = make_config();
-    sched = edc_scheduler_new(cfg);
-    tb = edc_toolbox_new(cfg, edc_scheduler_get_actor(sched), NULL);
-    edc_services_pump(sched, past_interval);
-    {
-        cJSON *db = read_jobs_file();
-        CHECK(db != NULL && cJSON_GetObjectItem(db, "note") != NULL,
-              "a scan on a jobs.json without a jobs key leaves the file alone");
-        cJSON_Delete(db);
-    }
+    CHECK(jobs_count() == 0, "a scan with no scheduled jobs writes nothing");
     edc_toolbox_free(tb);
     edc_scheduler_free(sched);
     edc_config_free(cfg);
@@ -630,10 +605,10 @@ static void test_service_scan_guards(void)
     {
         cJSON *db = read_jobs_file();
         cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
-        cJSON *no_ts = jobs ? cJSON_GetArrayItem(jobs, 0) : NULL;
-        cJSON *advanced = jobs ? cJSON_GetArrayItem(jobs, 1) : NULL;
+        cJSON *no_ts = job_by_id(jobs, "j-no-ts");
+        cJSON *advanced = job_by_id(jobs, "j-due");
         CHECK(jobs && cJSON_GetArraySize(jobs) == 2, "both jobs survive the scan");
-        CHECK(no_ts && job_next_run(no_ts) == -1, "the job with no timestamp is untouched");
+        CHECK(no_ts && job_next_run(no_ts) == 0, "the job with no timestamp is untouched (0)");
         CHECK(advanced && job_next_run(advanced) > (long long)time(NULL),
               "the due job was advanced -- so the scan really ran");
         cJSON_Delete(db);
@@ -643,21 +618,18 @@ static void test_service_scan_guards(void)
     edc_config_free(cfg);
 }
 
-/* ── add: a jobs.json that exists but has no "jobs" key ────────────────────── */
-static void test_add_to_file_without_jobs_key(void)
+/* ── add: into an empty jobs table ─────────────────────────────────────────── */
+static void test_add_into_empty_table(void)
 {
-    printf("\n── add: jobs.json without a jobs key ──\n");
+    printf("\n── add: empty jobs table ──\n");
     reset_dir();
-    /* A jobs.json can legitimately be missing the key (truncated write, an older shape,
-     * or something the model wrote). Adding must still land the job: the alternative is
-     * a silent loss, where the tool reports "done" and the job is nowhere. */
-    write_jobs_file("{\"note\":\"no jobs array here\"}");
-
+    /* With no jobs at all, adding must still land the job: the alternative is a silent
+     * loss, where the tool reports "done" and the job is nowhere. */
     struct edc_config *cfg = make_config();
     struct edc_toolbox *tb = edc_toolbox_new(cfg, NULL, NULL);
 
     run(tb, "{\"action\":\"add\",\"message\":\"must survive\",\"every_seconds\":60}");
-    CHECK(g_err == NULL, "add into a jobs.json without a jobs key does not error");
+    CHECK(g_err == NULL, "add into an empty jobs table does not error");
 
     cJSON *db = read_jobs_file();
     cJSON *jobs = db ? cJSON_GetObjectItem(db, "jobs") : NULL;
@@ -675,13 +647,7 @@ static void test_add_to_file_without_jobs_key(void)
 int main(void)
 {
     edc_test_workspace(); /* disposable store for anything that writes state */
-    const char *tmp = getenv("TEST_TMPDIR");
-    if (!tmp || !*tmp)
-        tmp = getenv("TMPDIR");
-    snprintf(g_dir, sizeof(g_dir), "%s/edc_test_crontab_tool_%ld",
-             (tmp && *tmp) ? tmp : "/tmp", (long)getpid());
-
-    printf("workspace: %s\n", g_dir);
+    printf("workspace: %s\n", edc_test_workspace());
 
     test_add_every();
     test_add_name_and_truncation();
@@ -690,7 +656,7 @@ int main(void)
     test_add_cron();
     test_add_cron_tz();
     test_add_validation();
-    test_add_to_file_without_jobs_key();
+    test_add_into_empty_table();
     test_list();
     test_remove();
     test_service_advances_due_cron_job();
@@ -698,10 +664,6 @@ int main(void)
     test_service_scan_guards();
 
     capture_reset();
-    char cmd[1400];
-    snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);
-    if (test_sh(cmd) != 0)
-        fprintf(stderr, "(warning: could not clean %s)\n", g_dir);
 
     printf("\n=== %d passed, %d failed ===\n", g_passed, g_failed);
     return g_failed > 0 ? 1 : 0;

@@ -873,8 +873,7 @@ void TestInputModeTag(edc::TUIWindow &win)
     clear();
 }
 
-// Startup uses an ordinary cursor-0 page. The harness HOME also contains no
-// chat.jsonl: this must still show the DB row and never read a legacy file.
+// Startup uses an ordinary cursor-0 page; this must show the DB row.
 void TestStartupPageLoadsDbTail(edc::TUIWindow &win)
 {
     std::cout << "启动分页直接加载 DB 尾页\n";
@@ -888,35 +887,43 @@ void TestStartupPageLoadsDbTail(edc::TUIWindow &win)
 
 // 键盘中断：Esc 只在有任务在跑时被吃掉（停下来）；Ctrl+C 第一次清空输入框、连按两次
 // 才退出。Ctrl+C 不走 OnEvent（main() 的 CatchEvent 把它路由到 OnInterrupt）。
-// 重启后侧栏里那批 INTERRUPTED 任务：启动时在聊天流里说一次，并给出恢复方式。
-// 只出一次（同一个 session），而且不写 transcript —— 换会话就看不到。
+// The interrupted-task hint is now a durable sys bubble written at shutdown by the
+// scheduler and read back through chat_bubbles -- the UI never generates it from a
+// snapshot. Feed it as a DB page row and verify it shows with its session and gives a
+// recovery hint; a bare INTERRUPTED snapshot must NOT conjure one.
 void TestInterruptedStartupHint(edc::TUIWindow &win)
 {
     std::cout << "启动提示：被中断的任务\n";
 
-    // 切到一个别的 session：切会话会重置"只提示一次"的开关（生产路径同一条）。
+    const char *hint_lines[] = {"sys\t0\t\t\ttask 42 was interrupted — `/task resume 42` to continue it"};
+    const int64_t hint_seqs[] = {9001};
+
+    // Switch to another session and load its page, which carries the persisted hint.
     AdoptDisplayedSession(win, kOther);
-    const std::string empty_page = edc::EncodeChatBubblePageReply(kOther, 0, nullptr, nullptr, 0, false);
-    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, empty_page.c_str(), "", kOther));
+    const std::string hint_page =
+        edc::EncodeChatBubblePageReply(kOther, 0, hint_lines, hint_seqs, 1, false);
+    Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, hint_page.c_str(), "", kOther));
+    // A snapshot with an INTERRUPTED task alone must NOT generate a second hint.
     Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
                       kOther));
     {
         const std::string f = FrameOf(win);
-        Check(CountOf(f, "was interrupted") == 1, "一行提示说有个任务被中断");
+        Check(CountOf(f, "was interrupted") == 1, "DB 页里的提示上屏");
         Check(Has(f, "/task resume"), "并给出恢复方式");
     }
 
-    // 同一会话再来一帧：不再重复。
+    // Another snapshot for the same session: still exactly one (no UI regeneration).
     Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kOther, "HARNESS_INT", "INTERRUPTED", "INTERRUPTED").c_str(),
                       kOther));
-    Check(CountOf(FrameOf(win), "was interrupted") == 1, "同一个 session 只提示一次");
+    Check(CountOf(FrameOf(win), "was interrupted") == 1, "snapshot 不再重复生成提示");
 
-    // 换回原会话：提示不在 transcript 里，所以看不到它了。
+    // Switch back: that session's page has no hint, so none shows (it lives in the DB
+    // row, not in some global UI flag).
     AdoptDisplayedSession(win, kShown);
     const std::string shown_page = edc::EncodeChatBubblePageReply(kShown, 0, nullptr, nullptr, 0, false);
     Feed(win, MakeMsg(HARNESS_MSG_CHAT_BUBBLE_PAGE, shown_page.c_str(), "", kShown));
     Feed(win, MakeMsg(HARNESS_MSG_TASK_SNAPSHOT, SnapJsonEnd(kShown, "HARNESS_IDLE", "IDLE", "NONE").c_str(), kShown));
-    Check(!Has(FrameOf(win), "was interrupted"), "提示不写 transcript：换个会话就没了");
+    Check(!Has(FrameOf(win), "was interrupted"), "提示随 session 的 DB 页走，换会话就没了");
 }
 
 void TestInterruptKeys(edc::TUIWindow &win)

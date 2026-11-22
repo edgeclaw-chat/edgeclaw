@@ -97,7 +97,8 @@ static const char *const EDC_SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS sessions ("
     /* AUTOINCREMENT for the same reason tasks.task_id uses it: a session id must never
      * be reused. A recycled id would land a new session on a removed one's directory and
-     * replay its chat.jsonl. This is the invariant <ws>/.session_seq used to provide. */
+     * land on a removed one's directory. This is the invariant <ws>/.session_seq used to
+     * provide. */
     "  session_id            INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  name                  TEXT NOT NULL,"
     "  created_at            INTEGER,"
@@ -377,29 +378,45 @@ static const char *const EDC_SCHEMA_SQL =
     ");"
 
     /* v9: the TUI's view state. This is the chat transcript (one bubble per line)
-     * that used to live in <workspace>/<session_id>/chat.jsonl. It is NOT part of
+     * that used to live in a per-session transcript file. It is NOT part of
      * `messages`: that table is model state (wire messages under a task/turn) and
      * feeding interface feedback into it would change LLM context assembly. Keeping
      * the bubbles in their own table gives the UI one durable, paged authority
      * without touching any model-side reader. See docs/chat-bubbles-in-db.md.
      *
-     * `line` is the ENCODED transcript line (EncodeTranscriptLine), verbatim: the
-     * one-time importer can copy each file line byte-for-byte and every reader reuses
-     * DecodeTranscriptLine, so no escape rule is duplicated. session_id is TEXT
-     * because that is the identity the frontend and channel events carry. */
+     * `line` is the ENCODED transcript line (EncodeTranscriptLine), verbatim; every
+     * reader reuses DecodeTranscriptLine, so no escape rule is duplicated. session_id
+     * is TEXT because that is the identity the frontend and channel events carry. */
     "CREATE TABLE IF NOT EXISTS chat_bubbles ("
     "  session_id TEXT NOT NULL,"
     "  seq        INTEGER NOT NULL,"
     "  line       TEXT NOT NULL,"
     "  PRIMARY KEY (session_id, seq)"
     ");"
-    "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session ON chat_bubbles(session_id, seq DESC);";
+    "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session ON chat_bubbles(session_id, seq DESC);"
+
+    /* v15: scheduled jobs. Replaces workspace/jobs.json. Each row is one job; the
+     * schedule fields are regular columns so they can be inspected in SQL. `channel`
+     * is the one structured-but-never-queried field, kept as a JSON text column. */
+    "CREATE TABLE IF NOT EXISTS jobs ("
+    "  job_id         TEXT PRIMARY KEY,"
+    "  name           TEXT NOT NULL DEFAULT '',"
+    "  message        TEXT NOT NULL DEFAULT '',"
+    "  channel        TEXT NOT NULL DEFAULT '',"
+    "  kind           TEXT NOT NULL,"          /* 'at' | 'every' | 'cron' */
+    "  tz             TEXT NOT NULL DEFAULT '',"
+    "  every_seconds  INTEGER NOT NULL DEFAULT 0,"
+    "  cron_expr      TEXT NOT NULL DEFAULT '',"
+    "  next_run_at    INTEGER NOT NULL DEFAULT 0,"
+    "  once           INTEGER NOT NULL DEFAULT 0"
+    ");"
+    "CREATE INDEX IF NOT EXISTS jobs_by_next_run ON jobs(next_run_at);";
 
 /* The tables a healthy database must contain. Used by the post-DDL sanity check so a
  * half-applied schema fails here rather than as a mysterious SQL error later. */
 static const char *const EDC_EXPECTED_TABLES[] = {
     "sessions", "groups", "group_fold_files", "tasks", "task_deps", "task_tool_calls",
-    "turns", "messages", "memo_entries", "memo_events", "chat_bubbles", NULL};
+    "turns", "messages", "memo_entries", "memo_events", "chat_bubbles", "jobs", NULL};
 
 /* ── Small SQL helpers ─────────────────────────────────────────────────────── */
 
@@ -4013,118 +4030,217 @@ int64_t edc_chat_bubble_count(const char *session_id)
     return out;
 }
 
-int64_t edc_chat_bubble_import_file(const char *session_id, const char *path)
+
+/* ── jobs: scheduled jobs (v15) ────────────────────────────────────────────────
+ * Only the scheduler runner thread calls these. Plain SQL against the `jobs`
+ * table; no in-memory mirror, because schedule scans are rare and cheap. */
+
+bool edc_state_store_job_add(const struct edc_job_row *job)
 {
-    if (!g_db || !session_id || !*session_id || !path || !*path)
-        return -1;
+    if (!g_db || !job || !job->job_id || !*job->job_id || !job->kind || !*job->kind)
+        return false;
+    sqlite3_stmt *st = NULL;
+    static const char *SQL =
+        "INSERT OR REPLACE INTO jobs(job_id,name,message,channel,kind,tz,every_seconds,"
+        "cron_expr,next_run_at,once) VALUES(?,?,?,?,?,?,?,?,?,?)";
+    if (sqlite3_prepare_v2(g_db, SQL, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, job->job_id);
+    bind_str(st, 2, job->name ? job->name : "");
+    bind_str(st, 3, job->message ? job->message : "");
+    bind_str(st, 4, job->channel ? job->channel : "");
+    bind_str(st, 5, job->kind);
+    bind_str(st, 6, job->tz ? job->tz : "");
+    sqlite3_bind_int64(st, 7, job->every_seconds);
+    bind_str(st, 8, job->cron_expr ? job->cron_expr : "");
+    sqlite3_bind_int64(st, 9, job->next_run_at);
+    sqlite3_bind_int(st, 10, job->once ? 1 : 0);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
 
-    /* Successful imports leave a marker. Never rename or delete chat.jsonl: a
-     * v8 binary must still be able to read it after a downgrade, and keeping the
-     * bytes is the rollback path. */
-    char marker[4096];
-    if (snprintf(marker, sizeof(marker), "%s.imported", path) >= (int)sizeof(marker))
-        return -1;
-    struct stat mst;
-    if (stat(marker, &mst) == 0)
-        return 0;
+static char *job_dup_col(sqlite3_stmt *st, int i)
+{
+    const char *s = col_str(st, i);
+    return s ? strdup(s) : strdup("");
+}
 
-    FILE *file = fopen(path, "rb");
-    if (!file)
-        return 0; /* no legacy transcript is not an error */
-
-    if (!exec_sql(g_db, "BEGIN IMMEDIATE", "chat bubble import BEGIN"))
+void edc_job_rows_free(struct edc_job_row *rows, int n)
+{
+    if (!rows)
+        return;
+    for (int i = 0; i < n; i++)
     {
-        fclose(file);
-        return -1;
+        free(rows[i].job_id);
+        free(rows[i].name);
+        free(rows[i].message);
+        free(rows[i].channel);
+        free(rows[i].kind);
+        free(rows[i].tz);
+        free(rows[i].cron_expr);
     }
+    free(rows);
+}
 
-    sqlite3_stmt *ins = NULL;
-    bool ok = sqlite3_prepare_v2(
-                  g_db,
-                  "INSERT OR IGNORE INTO chat_bubbles(session_id,seq,line) VALUES(?,?,?)",
-                  -1, &ins, NULL) == SQLITE_OK;
-    int64_t inserted = 0;
-    int64_t seq = 0;
-    /* Fixed buffer + explicit growth: getline() is POSIX-only and this store
-     * builds on MSVC too. A transcript line is one encoded bubble; grow until
-     * the whole line (including its '\n') fits, rather than silently splitting
-     * a long tool output into two bubbles. */
-    size_t cap = 4096;
-    char *buf = (char *)malloc(cap);
-    if (!buf)
-        ok = false;
-    while (ok && buf && !feof(file))
+bool edc_state_store_job_list(struct edc_job_row **out, int *n)
+{
+    if (!g_db || !out || !n)
+        return false;
+    *out = NULL;
+    *n = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db,
+                           "SELECT job_id,name,message,channel,kind,tz,every_seconds,"
+                           "cron_expr,next_run_at,once FROM jobs ORDER BY job_id",
+                           -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int cap = 0;
+    struct edc_job_row *rows = NULL;
+    int count = 0;
+    while (sqlite3_step(st) == SQLITE_ROW)
     {
-        size_t len = 0;
-        for (;;)
+        if (count == cap)
         {
-            if (len + 1 >= cap)
-            {
-                char *grown = (char *)realloc(buf, cap * 2);
-                if (!grown)
-                {
-                    ok = false;
-                    break;
-                }
-                buf = grown;
-                cap *= 2;
-            }
-            if (!fgets(buf + len, (int)(cap - len), file))
-            {
-                len = 0; /* EOF or error with nothing read on this round */
+            cap = cap ? cap * 2 : 8;
+            struct edc_job_row *grown = realloc(rows, (size_t)cap * sizeof(*rows));
+            if (!grown)
                 break;
-            }
-            len += strlen(buf + len);
-            if (len && buf[len - 1] == '\n')
-                break;
-            if (feof(file))
-                break;
+            rows = grown;
         }
-        if (!ok || len == 0)
-            break;
-        /* A crash can leave a partial final line without its newline. The file
-         * reader drops that fragment too, so skipping it here keeps the two
-         * authorities byte-for-byte identical. */
-        if (buf[len - 1] != '\n')
-            continue;
-        buf[len - 1] = '\0';
-        if (!*buf)
-            continue;
-        seq++;
-        sqlite3_reset(ins);
-        sqlite3_clear_bindings(ins);
-        sqlite3_bind_text(ins, 1, session_id, -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(ins, 2, (sqlite3_int64)seq);
-        sqlite3_bind_text(ins, 3, buf, -1, SQLITE_TRANSIENT);
-        ok = sqlite3_step(ins) == SQLITE_DONE;
-        if (ok)
-            inserted += (int64_t)sqlite3_changes(g_db);
+        struct edc_job_row *r = &rows[count];
+        memset(r, 0, sizeof(*r));
+        r->job_id = job_dup_col(st, 0);
+        r->name = job_dup_col(st, 1);
+        r->message = job_dup_col(st, 2);
+        r->channel = job_dup_col(st, 3);
+        r->kind = job_dup_col(st, 4);
+        r->tz = job_dup_col(st, 5);
+        r->every_seconds = sqlite3_column_int64(st, 6);
+        r->cron_expr = job_dup_col(st, 7);
+        r->next_run_at = sqlite3_column_int64(st, 8);
+        r->once = sqlite3_column_int(st, 9);
+        count++;
     }
-    free(buf);
-    fclose(file);
-    if (ins)
-        sqlite3_finalize(ins);
+    sqlite3_finalize(st);
+    if (!rows && count == 0)
+        return true; /* empty table */
+    *out = rows;
+    *n = count;
+    return true;
+}
 
-    if (!ok)
-    {
-        exec_sql(g_db, "ROLLBACK", "chat bubble import ROLLBACK");
-        return -1;
-    }
-    if (!exec_sql(g_db, "COMMIT", "chat bubble import COMMIT"))
-    {
-        exec_sql(g_db, "ROLLBACK", "chat bubble import ROLLBACK");
-        return -1;
-    }
+bool edc_state_store_job_remove(const char *job_id)
+{
+    if (!g_db || !job_id || !*job_id)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "DELETE FROM jobs WHERE job_id=?", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    bind_str(st, 1, job_id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok && sqlite3_changes(g_db) > 0;
+}
 
-    /* The marker is best-effort: failing to write it only means the next start
-     * re-runs an idempotent import (INSERT OR IGNORE), never duplicate rows. */
-    FILE *m = fopen(marker, "wb");
-    if (m)
+bool edc_state_store_job_set_next_run(const char *job_id, int64_t next_run_at)
+{
+    if (!g_db || !job_id || !*job_id)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "UPDATE jobs SET next_run_at=? WHERE job_id=?", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, next_run_at);
+    bind_str(st, 2, job_id);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+bool edc_state_store_job_clear(void)
+{
+    if (!g_db)
+        return false;
+    return exec_sql(g_db, "DELETE FROM jobs", "clear jobs");
+}
+
+struct cJSON *edc_state_store_jobs_json(void)
+{
+    cJSON *db = cJSON_CreateObject();
+    cJSON *jobs = cJSON_AddArrayToObject(db, "jobs");
+    struct edc_job_row *rows = NULL;
+    int n = 0;
+    if (!edc_state_store_job_list(&rows, &n))
     {
-        fputs("imported\n", m);
-        fclose(m);
+        cJSON_Delete(db);
+        return NULL;
     }
-    log_info("state_store: imported %" PRId64 " chat bubbles from %s for session %s",
-             inserted, path, session_id);
-    return inserted;
+    for (int i = 0; i < n; i++)
+    {
+        const struct edc_job_row *r = &rows[i];
+        cJSON *job = cJSON_CreateObject();
+        cJSON_AddStringToObject(job, "job_id", r->job_id);
+        cJSON_AddStringToObject(job, "name", r->name);
+        cJSON_AddStringToObject(job, "message", r->message);
+        if (r->channel && *r->channel)
+        {
+            cJSON *ch = cJSON_Parse(r->channel);
+            cJSON_AddItemToObject(job, "channel", ch ? ch : cJSON_CreateNull());
+        }
+        else
+            cJSON_AddNullToObject(job, "channel");
+        cJSON *schedule = cJSON_AddObjectToObject(job, "schedule");
+        cJSON_AddStringToObject(schedule, "kind", r->kind);
+        cJSON_AddStringToObject(schedule, "tz", r->tz);
+        cJSON_AddStringToObject(schedule, "cron_expr", r->cron_expr);
+        if (strcmp(r->kind, "every") == 0)
+            cJSON_AddNumberToObject(schedule, "every_seconds", r->every_seconds);
+        cJSON_AddNumberToObject(schedule, "next_run_at_unix_ts", r->next_run_at);
+        cJSON_AddBoolToObject(schedule, "once", r->once ? 1 : 0);
+        cJSON_AddItemToArray(jobs, job);
+    }
+    edc_job_rows_free(rows, n);
+    return db;
+}
+
+bool edc_state_store_jobs_replace(const struct cJSON *db)
+{
+    if (!db)
+        return false;
+    const cJSON *jobs = cJSON_GetObjectItem((cJSON *)db, "jobs");
+    if (!jobs || !cJSON_IsArray(jobs))
+        return false;
+    if (!edc_state_store_job_clear())
+        return false;
+    int n = cJSON_GetArraySize(jobs);
+    for (int i = 0; i < n; i++)
+    {
+        const cJSON *j = cJSON_GetArrayItem(jobs, i);
+        const cJSON *s = cJSON_GetObjectItem((cJSON *)j, "schedule");
+        struct edc_job_row r = {0};
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)j, "job_id"));
+        if (!id || !*id)
+            continue;
+        r.job_id = (char *)id;
+        r.name = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)j, "name"));
+        r.message = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)j, "message"));
+        const cJSON *ch = cJSON_GetObjectItem((cJSON *)j, "channel");
+        char *ch_text = ch ? cJSON_PrintUnformatted(ch) : NULL;
+        r.channel = ch_text;
+        const char *kind = s ? cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)s, "kind")) : NULL;
+        r.kind = (char *)(kind ? kind : "at");
+        r.tz = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)s, "tz"));
+        r.cron_expr = (char *)cJSON_GetStringValue(cJSON_GetObjectItem((cJSON *)s, "cron_expr"));
+        const cJSON *ev = s ? cJSON_GetObjectItem((cJSON *)s, "every_seconds") : NULL;
+        r.every_seconds = (ev && cJSON_IsNumber(ev)) ? (int64_t)ev->valuedouble : 0;
+        const cJSON *ts = s ? cJSON_GetObjectItem((cJSON *)s, "next_run_at_unix_ts") : NULL;
+        r.next_run_at = (ts && cJSON_IsNumber(ts)) ? (int64_t)ts->valuedouble : 0;
+        const cJSON *once = s ? cJSON_GetObjectItem((cJSON *)s, "once") : NULL;
+        r.once = (once && cJSON_IsTrue(once)) ? 1 : 0;
+        bool ok = edc_state_store_job_add(&r);
+        cJSON_free(ch_text);
+        if (!ok)
+            return false;
+    }
+    return true;
 }

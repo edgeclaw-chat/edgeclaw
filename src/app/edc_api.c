@@ -491,32 +491,6 @@ size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf,
     return count;
 }
 
-/* Where a transcript lives -- path resolution only; encode/append/replay are the
- * frontend's own concern (see edc_chat_transcript.hpp).
- *
- * The path is assembled by convention, not by querying the store: a session dir is
- * `<workspace>/<session_id>` (the same rule edc_session_new_with_workdir uses on
- * the kernel side; tests/test_session_workdir.c pins it), so the frontend never
- * touches the session store (mutated by the actor thread).
- *
- * |session_id| must be a session id (as carried by snapshots/messages). */
-bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap)
-{
-    if (buf && cap > 0)
-        buf[0] = '\0';
-    struct edc_config *cfg = edc_app_config(app);
-    if (!cfg || !cfg->workspace || sdslen(cfg->workspace) == 0 || !session_id || !*session_id || !buf || cap == 0)
-        return false;
-
-    sds path = edc_path_join(cfg->workspace, session_id, "chat.jsonl", NULL);
-    const bool ok = path && strlen(path) < cap;
-    if (ok)
-        memcpy(buf, path, strlen(path) + 1);
-    if (path)
-        sdsfree(path);
-    return ok;
-}
-
 /* The frontend's command history file (`<bc_home>/.tui_history`). */
 bool edc_app_history_path(char *buf, size_t cap)
 {
@@ -586,6 +560,35 @@ void edc_app_send_user_message(struct edc_app *app, const char *session_id, cons
                                const char *payload_json, const char *mid)
 {
     send_user_message_impl(app, session_id, content, payload_json, mid);
+}
+
+void edc_app_publish_bubble(struct edc_app *app, const char *session_id, const char *kind, const char *content)
+{
+    edc_actor_t *channel = edc_app_channel_actor(app);
+    if (!channel || !content)
+        return;
+
+    edc_channel_message_type type;
+    if (kind && strcmp(kind, "user") == 0)
+        type = EDC_CHANNEL_MESSAGE_USER_TYPE;
+    else if (kind && strcmp(kind, "sys") == 0)
+        type = EDC_CHANNEL_MESSAGE_SYS_TYPE;
+    else
+        return; /* unknown kind: refuse rather than guess a bubble type */
+
+    struct edc_channel_message *msg =
+        edc_channel_message_new(edc_channel_adapter, type, sdsnew(content));
+    if (session_id && *session_id)
+        msg->session_id = sdsnew(session_id);
+    /* No active task produced this bubble; the TUI's display gate would drop it
+     * otherwise. Mark it as interface feedback so it shows on the current tab. */
+    msg->interface_feedback = true;
+
+    /* BC_ACTOR_MSG_CHANNEL_SEND is the single funnel: the channel actor persists
+     * this bubble to chat_bubbles BEFORE handing it back for display (m109). */
+    edc_actor_send(channel,
+                   edc_actor_msg_new_sub_type(BC_ACTOR_MSG_CHANNEL_SEND, edc_channel_adapter, NULL, NULL, msg,
+                                              (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
 /* Request a task tree (the frontend pulls only the one it displays); built on the

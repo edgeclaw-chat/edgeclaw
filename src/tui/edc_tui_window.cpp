@@ -349,10 +349,9 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
     // Populate the sidebar once the app is running (its response is routed
     // through the adapter into the dispatcher), and learn from that
-    // first snapshot which session we are showing. Its reply carries the
-    // session's own transcript path, which the live path below appends to -- so
-    // nothing here reads the session store: it belongs to the actor thread, and
-    // the snapshot already names what we need.
+    // first snapshot which session we are showing. Nothing here reads the
+    // session store: it belongs to the actor thread, and the snapshot already
+    // names what we need.
     RequestTaskSnapshot();
 }
 
@@ -420,13 +419,17 @@ void TUIWindow::Submit()
         return;
     }
 
-    // The bubble is immediate and names no task: the input predates its task and
-    // nothing here guesses which task it will become. While no selection is
-    // active that is all the log needs; under a selection the input is drawn from
-    // the task's own raw_input, as the first user message of its history
-    // (ChatWidget::SetTaskInputs), so it is hidden here and shown there.
+    // The echo bubble names no task: the input predates its task and nothing here
+    // guesses which task it will become. While no selection is active that is all
+    // the log needs; under a selection the input is drawn from the task's own
+    // raw_input, as the first user message of its history (ChatWidget::SetTaskInputs),
+    // so it is hidden here and shown there. Publish it through the channel actor so
+    // it is persisted to chat_bubbles and survives a restart; the actor hands the
+    // same bytes back for display. |shown| keeps folded pastes as the placeholder
+    // the user saw (not the expanded text), so the stored/read-back bubble matches
+    // what was on screen.
     const std::string &shown = draft_entry.empty() ? message : draft_entry;
-    chat_widget_->AddMessage(std::make_shared<UserMessage>(shown, ::time(nullptr)));
+    app_->PublishBubble(session_model_->displayed_id(), "user", shown);
     // Only what this draft actually references travels with the message.
     const struct edc_payload *draft_payload = input_->DraftPayload();
     std::string payload_json;
@@ -787,11 +790,10 @@ void TUIWindow::LoadChatTranscript(const char *session_id)
     const std::string id = session_id ? session_id : "";
     session_model_->Reset(id);
 
-    /* chat_bubbles is the only runtime source. Request the newest page and let
-     * its reply LoadFromPage() replace the model: no synchronous 3s wait, no
-     * chat.jsonl fallback, and no actor runner blocked waiting for its own
-     * reply. The authoritative page may clear live bubbles when it arrives;
-     * until then the switched-to session starts empty, never from a file.
+    /* chat_bubbles is the only source. Request the newest page and let its reply
+     * LoadFromPage() replace the model: no synchronous 3s wait and no actor runner
+     * blocked waiting for its own reply. The authoritative page may clear live
+     * bubbles when it arrives; until then the switched-to session starts empty.
      *
      * EDGECLAW_TUI_NO_PULL is the same harness switch RequestTaskSnapshot uses:
      * with no ftxui screen, a real actor reply would run inline on the runner
@@ -1643,9 +1645,9 @@ void TUIWindow::RenderTaskHistory(const std::string &payload)
 //
 // Events are handled by control::ChannelDispatcher; this window only does two
 // things: marshal tasks onto the UI thread (IUiDispatcher), and perform the
-// dispatcher's out-of-model view actions (IChannelHost) -- transcript replay and
-// writes, sidebar refresh, animation, repaint, tree pull. Everything runs on the
-// UI thread: production marshals through Post(); with no screen Post() runs the
+// dispatcher's out-of-model view actions (IChannelHost) -- chat bubble pages,
+// sidebar refresh, animation, repaint, tree pull. Everything runs on the UI
+// thread: production marshals through Post(); with no screen Post() runs the
 // task synchronously.
 
 void TUIWindow::Post(std::function<void()> task)
@@ -1721,9 +1723,6 @@ void TUIWindow::PresentHistory(const std::string &payload)
 void TUIWindow::LoadSessionTranscript(const std::string &session_id)
 {
     LoadChatTranscript(session_id.c_str());
-    /* A new session deserves the startup hint again: whether this one has interrupted
-     * tasks is only knowable from its first snapshot. */
-    interrupted_hint_done_ = false;
 }
 
 void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
@@ -1731,8 +1730,9 @@ void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
     task_widget_->SetSnapshot(&snap);
 
     /* A task that ended between the last two snapshots, while the user was not looking
-     * at it: say so once, in the chat pane. The transcript is deliberately NOT written --
-     * this is interface feedback, not something the conversation said. */
+     * at it: say so once, in the chat pane. Like every on-screen bubble it is now
+     * persisted through the channel actor, so it survives a restart as part of the
+     * chat_bubbles log. */
     /* "Seen" wins over "finished": a task whose output was on screen since the last
      * snapshot is read -- no marker, and nothing announced. */
     task_widget_->model()->DropSeen(presented_tasks_);
@@ -1757,32 +1757,12 @@ void TUIWindow::SetTaskTree(const TaskSnapshot &snap)
         }
         line += just_finished.size() == 1 ? " finished · /task output " + just_finished.front()
                                           : " finished";
-        chat_widget_->AddMessage(std::make_shared<Message>(line, ::time(nullptr)));
+        app_->PublishBubble(session_model_->displayed_id(), "sys", line);
     }
 
-    /* Startup hint: tasks the exit interrupted (nothing decided about them). Once per
-     * session, and only from a snapshot that actually carries tasks -- the first pull can
-     * arrive before the session is loaded, and that one says nothing about the archive.
-     * No transcript write, like the finish notice: this is interface feedback. */
-    if (!interrupted_hint_done_ && !snap.groups.empty())
-    {
-        interrupted_hint_done_ = true;
-        std::vector<std::string> interrupted;
-        for (const TaskGroup &g : snap.groups)
-            for (const TaskInfo &t : g.tasks)
-                if (t.end == "INTERRUPTED")
-                    interrupted.push_back(t.task_id);
-        if (interrupted.size() == 1)
-            chat_widget_->AddMessage(std::make_shared<Message>(
-                "task " + interrupted.front() + " was interrupted — `/task resume " + interrupted.front() +
-                    "` to continue it",
-                ::time(nullptr)));
-        else if (!interrupted.empty())
-            chat_widget_->AddMessage(std::make_shared<Message>(
-                std::to_string(interrupted.size()) +
-                    " tasks were interrupted — `/task resume <id>` brings one back, one at a time",
-                ::time(nullptr)));
-    }
+    /* The startup "N tasks were interrupted" hint is no longer generated here: the
+     * scheduler writes it into chat_bubbles at shutdown, and LoadFromPage reads it back
+     * on the next start. Generating it here too would duplicate it after a restart. */
     // The footer's context gauge: the foreground group's current context, the same
     // number the sidebar shows for that group.
     long long ctx = 0;

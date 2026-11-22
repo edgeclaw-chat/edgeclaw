@@ -149,10 +149,6 @@ extern void edc_app_file_candidates_reset(void);
 
 extern size_t edc_app_skills(const struct edc_app *app, const char *workdir, char *buf, size_t cap);
 
-/* The transcript path for a given session (`<workspace>/<session_id>/chat.jsonl`).
- * Built by convention, does not query the store; |session_id| must be an id (as
- * carried by snapshots/messages), not a display name. */
-extern bool edc_app_chat_log_path_for(const struct edc_app *app, const char *session_id, char *buf, size_t cap);
 /* The frontend's command history file (`<bc_home>/.tui_history`). */
 extern bool edc_app_history_path(char *buf, size_t cap);
 
@@ -177,6 +173,16 @@ extern void edc_app_channel_adapter_init(struct edc_app *app, void *instance,
  * edc_app_request_message_payload() hands the payload back by that id. */
 extern void edc_app_send_user_message(struct edc_app *app, const char *session_id, const char *content,
                                       const char *payload_json, const char *mid);
+/* Publish a self-authored bubble (user echo / interface feedback) into the durable
+ * log AND the screen in one shot. The message goes through the channel actor, which
+ * persists every bubble to chat_bubbles before handing it back for display, so the
+ * stored bytes are exactly the ones rendered -- and a subsequent chat_bubbles page
+ * load reproduces them after a restart. |kind| is "user" or "sys"; |session_id|
+ * owns the bubble; |content| is the text as shown (already unexpanded/folded). It is
+ * marked interface_feedback so the display gate shows it on the current tab even
+ * though no active task produced it. */
+extern void edc_app_publish_bubble(struct edc_app *app, const char *session_id, const char *kind,
+                                   const char *content);
 /* Ask for the folded-paste payload of the user message named by |mid|. The store belongs
  * to the scheduler thread, so the answer arrives as a MESSAGE_PAYLOAD channel message
  * (header = the mid, content = the payload JSON, "" = no such message). */

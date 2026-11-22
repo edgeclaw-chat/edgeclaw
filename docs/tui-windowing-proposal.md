@@ -13,8 +13,14 @@
 >   （帧边界清缓存 + 首帧测完后立刻清窗口外 proxy 树）。实测 DHAT 峰值 369 MB → 82 MB、
 >   RSS ≈ 379 MB → ~93 MB。估计值方案反复撞 `prefix_`/滚动锚定的几何契约而未被采用。
 > - 再之后 `chat_bubbles` 迁移（commit `466ff07`、`124103f`）把聊天记录改成 **DB 权威 + 分页**，
->   运行时 `chat.jsonl` 已彻底退役（commit `74bb9b2`）；本文 §2 里以 transcript 文件为视图权威、
+>   运行时 `chat.jsonl` 已彻底退役（commit `74bb9b2`），其后连导入器和文件 I/O 一并删除：
+>   `chat_bubbles` 是唯一来源，磁盘上不再产生 chat.jsonl。本文 §2 里以 transcript 文件为视图权威、
 >   `kFile | kMemory` 双源、`ITranscriptStore::pread` 等描述也**不再是当前架构**。
+> - 再之后（本分支）界面反馈气泡的语义也变了：下文 §6 说的「`task N finished` / interrupted
+>   hint 不落盘」不再是现状。现在**每个上屏气泡都写进 `chat_bubbles`**：用户输入回声经
+>   `edc_app_publish_bubble()`、finish notice 同理由 channel actor 写库；interrupted hint 由
+>   `edc_scheduler_close()` 在退出时直接写库，下一次启动由 `LoadFromPage` 读回，UI 不再按
+>   snapshot 现场生成（否则重启会重复）。
 >
 > 因此：下文作为**历史设计记录**保留（它解释了为什么不走估计高度路线、以及各种几何约束），
 > 但**不要**把其中的"完成/目标达成"字样或 §2.4 当作现状；当前实现以源码、m107/m109 的交付记录
@@ -48,9 +54,10 @@
 - P0：`tests/test_chat_window` 测「常驻实例数必须有界」，在旧实现上实测
   `live=1000 > cap 200`，失败信息精确指向 O(history)；带防空洞守卫。第一批按项目约定标
   `manual` 避免染红全量，**P2 完成后已去掉该 tag 并转绿**。
-- P1 数据层：`src/tui/edc_chat_window.{hpp,cpp}` 提供 `ChatBubbleRef` 索引（单次顺序扫、
-  offset/length 精确寻址、跨 256 KiB chunk 正确）、`MessageWindow`（`kMaxLive=200`、滑动淘汰、
-  状态在 ref 上）。`tests/test_chat_refs` 6/6 通过。
+- P1 数据层：`src/tui/edc_chat_window.{hpp,cpp}` 提供 `ChatBubbleRef` 索引与
+  `MessageWindow`（`kMaxLive=200`、滑动淘汰、状态在 ref 上）。当时的文件索引实现
+  （`tests/test_chat_refs`）已随 chat.jsonl 删除；DB 分页路径由
+  `tests/test_chat_bubble_refs_db.cpp` 覆盖。
 - 共享工厂：`MakeChatBubble()` 提到 `edc_message.cpp`，各路径共用。
 - 第二批见文首「实际交付状态」更正说明（原「P0–P5 全部完成」的说法已被更正，勿当作现状）。
 

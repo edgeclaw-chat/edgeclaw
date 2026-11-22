@@ -57,7 +57,7 @@ static bool within_root(const char *resolved, const char *root)
     if (!root_real)
         return false; /* a root that does not resolve cannot contain anything */
     /* A slash-only boundary test made every backslash path look like an escape, so on
-     * Windows every write under a root was refused (chat.jsonl, jobs.json, skills). */
+     * Windows every write under a root was refused (jobs.json, skills, prompts). */
     const bool ok = edc_path_is_within(resolved, root_real);
     free(root_real);
     return ok;

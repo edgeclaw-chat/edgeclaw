@@ -24,9 +24,8 @@
 /* ── Session number persistence ──────────────────────────────
  * A session id must NEVER be reused. If /session new after /session remove handed
  * back the same id, the new session would land on the deleted session's directory --
- * session.json / chat.jsonl / old sidecars left over from the previous lifecycle:
- * the TUI replays the old chat, and the cross-session task index attributes old
- * tasks to the wrong owner.
+ * old sidecars left over from the previous lifecycle -- and the cross-session task
+ * index would attribute old tasks to the wrong owner.
  *
  * Numbering at "max live session number + 1" (the old implementation) does not
  * prevent reuse: once a deleted session's number is the max, the next create takes
@@ -41,7 +40,7 @@
  * PRIMARY KEY AUTOINCREMENT), so there is no counter, no <ws>/.session_seq, and no
  * "observe the directories to recover the high-water mark" pass. The invariant that file
  * existed for -- an id is NEVER reused, because a new session would otherwise land on a
- * removed session's directory and replay its chat.jsonl -- is what AUTOINCREMENT provides. */
+ * removed session's directory -- is what AUTOINCREMENT provides. */
 
 static sds edc_sm_gen_session_name(struct edc_session_manager *sm)
 {
@@ -363,8 +362,8 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
     /* Allocate an id, then check that its directory is FREE.
      *
      * /session remove takes the session out of the index and the database but leaves its
-     * directory behind (it holds chat.jsonl, which the TUI reads). A fresh id landing on
-     * such a directory would hand a new session the removed one's transcript. The old
+     * directory behind. A fresh id landing on such a directory would hand a new session
+     * the removed one's leftover directory. The old
      * design avoided this with a <ws>/.session_seq high-water mark plus a directory scan;
      * the database allocates now, so the check happens here instead: take an id, and if
      * "s<id>" already exists, drop the row and take the next one. AUTOINCREMENT never

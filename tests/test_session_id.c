@@ -1,10 +1,10 @@
 /* Session-id uniqueness.
  *
- * A session id must never be reused. The id keys the session's whole on-disk
- * footprint — <workspace>/<id>/{session.json,chat.jsonl,tasks.idx} — so if
+ * A session id must never be reused. The id keys the session's on-disk state
+ * directory (<workspace>/<id>) and its rows in the shared database, so if
  * /session remove is followed by /session new handing out the same id, the new
- * session lands on the removed one's directory: it replays the old chat
- * transcript and cross-session task lookups resolve to the wrong owner.
+ * session lands on the removed one's directory and cross-session task lookups
+ * resolve to the wrong owner.
  *
  * Ids are issued from a monotonic high-water persisted in <workspace>/.session_seq
  * and seeded (for pre-existing workspaces) from the ids in sessions.json plus
@@ -200,7 +200,7 @@ static void test_no_reuse_across_restart(void)
  * and asserted `id != 7`, which was true for the wrong reason.
  *
  * Note the directory is NOT removed afterwards — that is the point of the guard: /session
- * remove deletes the row and leaves <ws>/<id> behind to hold chat.jsonl. */
+ * remove deletes the row but leaves <ws>/<id> behind on disk. */
 static void test_taken_directory_gives_the_id_back(void)
 {
     TEST("an id whose directory is already taken is dropped, and the next one is used");

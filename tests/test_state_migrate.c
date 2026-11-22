@@ -615,6 +615,43 @@ static void test_real_v13_to_v14(void)
     drop_dir();
 }
 
+/* The real v14 -> v15 step: the jobs table (and its index) is created; no data is
+ * imported from the old jobs.json; existing rows are untouched. */
+static void test_real_v14_to_v15(void)
+{
+    printf("\n── the real v14 -> v15 step (jobs table) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE chat_bubbles(session_id TEXT, seq INTEGER, line TEXT)") &&
+                 exec_ok(db, "INSERT INTO tasks(task_id) VALUES (42)") &&
+                 exec_ok(db, "PRAGMA user_version=14");
+    CHECK(built, "fixture v14 database with a real task and no jobs table");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 14, err, sizeof err), "v14 migrates to v15");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "jobs", "job_id"), "jobs.job_id exists");
+    CHECK(column_exists(db, "jobs", "next_run_at"), "jobs.next_run_at exists");
+    CHECK(query_int64(db, "SELECT count(*) FROM jobs") == 0, "jobs starts empty (no jobs.json import)");
+    CHECK(query_int64(db,
+                      "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='jobs_by_next_run'") == 1,
+          "jobs_by_next_run index exists");
+    CHECK(query_int64(db, "SELECT count(*) FROM tasks") == 1, "existing task survives migration");
+    sqlite3_close(db);
+    drop_dir();
+}
+
 /* Running it twice: the second run must refuse (there is nothing to do), not "succeed"
  * silently and not corrupt anything. That is what makes a retry after a crash safe. */
 static void test_rerun_is_refused(void)
@@ -653,6 +690,7 @@ int main(void)
     test_real_v7_to_v8();
     test_real_v12_to_v13();
     test_real_v13_to_v14();
+    test_real_v14_to_v15();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);

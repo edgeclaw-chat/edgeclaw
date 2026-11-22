@@ -268,47 +268,6 @@ edc_actor_t *edc_app_channel_actor(const struct edc_app *app)
 
 /* ── Lifetime ──────────────────────────────────────────────── */
 
-/* One-time move of legacy <workspace>/<sid>/chat.jsonl into chat_bubbles.
- * Runs right after edc_scheduler_open(): the store is open, the actor runner is
- * NOT started yet, so this thread is still the only one touching the store --
- * exactly the invariant edc_state_store.h promises. The importer itself is
- * idempotent and keeps the source file for a v8 downgrade. */
-static void app_import_legacy_chat_logs(struct edc_app *app)
-{
-    struct edc_session_row *rows = NULL;
-    int n = 0;
-    if (!edc_state_store_list_sessions(&rows, &n))
-        return;
-    if (n <= 0)
-    {
-        /* list_sessions succeeded but returned no rows: on this path it may still have
-         * allocated the (empty) rows array, which the caller owns. Free it before the
-         * early return -- the old code leaked it on every empty workspace. */
-        edc_session_rows_free(rows, n);
-        return;
-    }
-    for (int i = 0; i < n; i++)
-    {
-        char sid[32];
-        snprintf(sid, sizeof(sid), "%" PRId64, (int64_t)rows[i].session_id);
-        /* Same convention as edc_app_chat_log_path_for, but assembled here:
-         * this file owns struct edc_app and already has the resolved workspace. */
-        char path[4096];
-        sds full = edc_path_join(app->config->workspace, sid, "chat.jsonl", NULL);
-        if (!full || sdslen(full) >= sizeof(path))
-        {
-            sdsfree(full);
-            continue;
-        }
-        snprintf(path, sizeof(path), "%s", full);
-        sdsfree(full);
-        int64_t imported = edc_chat_bubble_import_file(sid, path);
-        if (imported < 0)
-            log_warn("legacy chat log import failed for session %s (%s)", sid, path);
-    }
-    edc_session_rows_free(rows, n);
-}
-
 struct edc_app *edc_app_new(bool setup, int sandbox_override)
 {
     sds edc_home = edc_config_resolve_bc_home();
@@ -383,7 +342,6 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
         edc_app_free(app);
         return NULL;
     }
-    app_import_legacy_chat_logs(app);
 
     /* Wiring: each provider installs its OWN ports onto the scheduler -- the root
      * only "builds objects + tells them to wire", and never appears on a runtime

@@ -198,6 +198,15 @@ class IAppFacade
     // them through the text-layer passes before classifying the line. "" = none.
     virtual void SendUserMessage(const std::string &session_id, const std::string &content,
                                  const std::string &payload_json, const std::string &mid) = 0;
+    /* Publish a self-authored bubble ("user" echo / "sys" interface feedback) through
+     * the channel actor, which persists it to chat_bubbles before showing it. Default
+     * no-op so test facades that do not drive storage stay abstract-free. */
+    virtual void PublishBubble(const std::string &session_id, const std::string &kind, const std::string &content)
+    {
+        (void)session_id;
+        (void)kind;
+        (void)content;
+    }
     virtual void RequestTaskSnapshot(const std::string &session_id) = 0;
     // Ask the scheduler thread for that payload (the store is not ours to read).
     virtual void RequestMessagePayload(const std::string &mid) = 0;
@@ -304,6 +313,7 @@ class AppFacade : public IAppFacade
 
     void SendUserMessage(const std::string &session_id, const std::string &content,
                          const std::string &payload_json, const std::string &mid) override;
+    void PublishBubble(const std::string &session_id, const std::string &kind, const std::string &content) override;
     void RequestTaskSnapshot(const std::string &session_id) override;
     void RequestMessagePayload(const std::string &mid) override;
     void RequestChatBubblePage(const std::string &session_id, int64_t before_seq, int limit) override;

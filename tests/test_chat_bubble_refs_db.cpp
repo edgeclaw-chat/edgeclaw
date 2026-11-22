@@ -63,10 +63,9 @@ int main(void)
               "task_id decoded once for filtering");
 
         /* The real consumer: MessageWindow::Fields() must decode the stored line
-         * with no file I/O and no second DB read. */
-        /* A non-empty path is harmless: kDatabase rows never touch a file.
-         * (MessageWindow() owns an EMPTY refs vector, so we hand it ours.) */
-        edc::MessageWindow window("/unused/chat.jsonl", &refs);
+         * with no file I/O and no second DB read. MessageWindow() owns an EMPTY
+         * refs vector, so we hand it ours. */
+        edc::MessageWindow window(&refs);
         std::string kind, task_id, header, content;
         int render_pref = -1;
         CHECK(window.Fields(1, &kind, &render_pref, &task_id, &header, &content),

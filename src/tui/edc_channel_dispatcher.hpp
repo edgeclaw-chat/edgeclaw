@@ -8,7 +8,7 @@
 // here:
 //   * the dispatcher only does three things -- DECIDE with policies (whose tree may
 //     be shown / where output goes), UPDATE the models (ChatModel / SessionModel),
-//     and ask the host for VIEW ACTIONS (transcript replay/writes, sidebar refresh,
+//     and ask the host for VIEW ACTIONS (chat bubble pages, sidebar refresh,
 //     animation, repaint, tree pull);
 //   * the host is a narrow interface (IChannelHost), implemented by TUIWindow. The
 //     dispatcher therefore does not know ftxui or the concrete window and can be

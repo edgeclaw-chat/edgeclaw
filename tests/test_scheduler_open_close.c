@@ -17,6 +17,7 @@
 #include "edc_scheduler.h"
 #include "edc_session_manager.h"
 #include "edc_session.h"
+#include "edc_state_store.h"
 #include "log.h"
 #include "sds.h"
 #include "sqlite3.h"
@@ -27,6 +28,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "test_fs_util.h"
+#include <inttypes.h>
 
 volatile sig_atomic_t _run_loop = 1;
 
@@ -86,6 +88,27 @@ static sds read_state_text(const char *ws)
         }
         sqlite3_finalize(st);
     }
+    if (sdslen(out) == 0)
+    {
+        sdsfree(out);
+        return NULL;
+    }
+    return out;
+}
+
+/* All chat_bubbles lines for a session, concatenated -- an "is the hint durable?"
+ * question. Read through the store handle (EXCLUSIVE lock; no second connection). */
+static sds read_chat_bubbles(const char *sid)
+{
+    struct edc_chat_bubble_row *rows = NULL;
+    int n = 0;
+    if (!edc_chat_bubble_page(sid, INT64_MAX, 1000, &rows, &n))
+        return NULL;
+    sds out = sdsempty();
+    for (int i = 0; i < n; i++)
+        if (rows[i].line)
+            out = sdscatprintf(out, "%s\n", rows[i].line);
+    edc_chat_bubble_rows_free(rows, n);
     if (sdslen(out) == 0)
     {
         sdsfree(out);
@@ -198,6 +221,83 @@ static void test_close_persists_then_is_idempotent(void)
  * the way back in) for every unfinished task -- queued ones included. The queue's order
  * edge is a BARRIER, so a predecessor that will not run on its own releases whoever was
  * queued behind it instead of taking it down. */
+/* The single-interrupted-task form of the durable hint ("task N was interrupted"),
+ * and the recovery command names that exact task. Complements the multi-task test
+ * below (which pins the "tasks A,B" form). */
+static void test_close_persists_single_task_hint(void)
+{
+    TEST("close() persists the single-task interrupted hint");
+    char ws[256];
+    make_tmpdir(ws, sizeof(ws));
+    struct edc_config *cfg = make_config(ws);
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    CHECK(edc_scheduler_open(sched), "open()");
+    struct edc_session *sess = edc_session_manager_get_active(sched->sessions);
+    CHECK(sess != NULL, "active session");
+    char sidbuf[24];
+    snprintf(sidbuf, sizeof(sidbuf), "%" PRId64, (int64_t)sess->session_id);
+    const char *sid = sidbuf;
+
+    struct edc_task_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.desc = "solo";
+    spec.input = "solo input";
+    spec.place = EDC_TASK_PLACE_FOREGROUND;
+    spec.take_foreground = true;
+    struct edc_task *t = edc_scheduler_task_create(sched, sess, &spec);
+    CHECK(t && edc_task_await_exec(t), "solo task is in flight");
+    const int64_t tid = t->task_id;
+
+    /* A second session with its own interrupted task: exercises hint grouping
+     * across sessions (the realloc / new-group branch of hint_group_for). */
+    struct edc_session *sess2 = edc_session_new(cfg, edc_test_session_id("hint-2"), "hint-2");
+    CHECK(sess2 != NULL, "second session created");
+    struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
+    struct edc_task *t2 = edc_scheduler_task_new(sched2, sess2, "solo2", edc_channel_adapter);
+    struct edc_task_group *g2 = edc_task_group_new(t2);
+    edc_session_add_group(sess2, g2);
+    edc_scheduler_attach_input(sched2, t2, "solo2 input");
+    edc_task_await_exec(t2);
+    const int64_t tid2 = t2->task_id;
+    char sid2buf[24];
+    snprintf(sid2buf, sizeof(sid2buf), "%" PRId64, (int64_t)sess2->session_id);
+    /* Install it into the manager so foreach_task sees it. sessions_owned stays true
+     * (open() created the array); realloc to append, free by the scheduler. */
+    struct edc_session_manager *sm = sched->sessions;
+    struct edc_session **grown = realloc(sm->sessions, (size_t)(sm->session_count + 1) * sizeof(*sm->sessions));
+    CHECK(grown != NULL, "manager array grew");
+    if (grown)
+    {
+        sm->sessions = grown;
+        sm->sessions[sm->session_count++] = sess2;
+    }
+    edc_scheduler_free(sched2); /* borrow only the task; its session now lives in sm */
+
+    CHECK(edc_scheduler_close(sched), "close() settles");
+
+    sds bubbles = read_chat_bubbles(sid);
+    CHECK(bubbles != NULL, "session 1 got a durable hint row");
+    char want[64];
+    snprintf(want, sizeof(want), "task %" PRId64 " was interrupted", (int64_t)tid);
+    CHECK(bubbles && strstr(bubbles, want) != NULL, "single-task hint names the exact task");
+    snprintf(want, sizeof(want), "/task resume %" PRId64, (int64_t)tid);
+    CHECK(bubbles && strstr(bubbles, want) != NULL, "single-task hint gives that task's resume command");
+    sdsfree(bubbles);
+
+    if (grown)
+    {
+        sds bubbles2 = read_chat_bubbles(sid2buf);
+        CHECK(bubbles2 != NULL, "session 2 got its own durable hint row");
+        snprintf(want, sizeof(want), "task %" PRId64 " was interrupted", (int64_t)tid2);
+        CHECK(bubbles2 && strstr(bubbles2, want) != NULL, "session 2's hint names its own task, not session 1's");
+        sdsfree(bubbles2);
+    }
+
+    edc_scheduler_free(sched);
+    free_config(cfg);
+    rmdir(ws);
+}
+
 static void test_close_interrupts_in_flight_and_heals_the_queue(void)
 {
     char ws[256];
@@ -207,6 +307,7 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     CHECK(edc_scheduler_open(sched), "open()");
     struct edc_session *sess = edc_session_manager_get_active(sched->sessions);
     CHECK(sess != NULL, "active session");
+    const char *sid = edc_id_str(sess->session_id);
 
     /* A holds the front and is in flight; B joins the group in front, so it queues. */
     struct edc_task *a = edc_scheduler_task_new(sched, sess, "a", edc_channel_adapter);
@@ -225,7 +326,26 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     struct edc_task *b = edc_scheduler_task_create(sched, sess, &spec);
     CHECK(b && edc_task_awaits_deps(b), "B queued behind A while it runs");
 
+    /* Capture ids before close (the task objects survive until free, but read them now). */
+    const int64_t a_id = a->task_id;
+    const int64_t b_id = b->task_id;
+
     CHECK(edc_scheduler_close(sched), "close() settles");
+
+    TEST("close() persists one durable interrupted hint per session");
+    {
+        sds bubbles = read_chat_bubbles(sid);
+        CHECK(bubbles != NULL, "a chat_bubbles row was written at shutdown");
+        /* A and B were both interrupted, so they land in one "tasks A,B" line. */
+        CHECK(bubbles && strstr(bubbles, "were interrupted") != NULL, "the multi-task hint form is used");
+        char want[64];
+        snprintf(want, sizeof(want), "%" PRId64, (int64_t)a_id);
+        CHECK(bubbles && strstr(bubbles, want) != NULL, "the hint names interrupted task A");
+        snprintf(want, sizeof(want), "%" PRId64, (int64_t)b_id);
+        CHECK(bubbles && strstr(bubbles, want) != NULL, "the hint names interrupted task B");
+        CHECK(bubbles && strstr(bubbles, "/task resume") != NULL, "the hint gives a recovery hint");
+        sdsfree(bubbles);
+    }
 
     TEST("close() interrupts what was in flight, and VOIDS the order edge instead of cascading");
     CHECK(edc_task_is_interrupted(a), "A was in flight -> INTERRUPTED");
@@ -235,8 +355,6 @@ static void test_close_interrupts_in_flight_and_heals_the_queue(void)
     CHECK(b && edc_task_is_resumable(b), "and B can be resumed...");
 
     /* Reopen: the state comes back as stated -- nothing is inferred on the way in. */
-    int64_t a_id = a->task_id;
-    int64_t b_id = b->task_id;
     struct edc_scheduler *sched2 = edc_scheduler_new(cfg);
     CHECK(edc_scheduler_open(sched2), "reopen()");
     struct edc_task *ra = edc_session_manager_find_task_any(sched2->sessions, a_id, 0);
@@ -395,6 +513,7 @@ int main(void)
     log_info("== test_scheduler_open_close ==");
     test_new_is_in_memory_open_is_not();
     test_close_persists_then_is_idempotent();
+    test_close_persists_single_task_hint();
     test_close_interrupts_in_flight_and_heals_the_queue();
     test_running_task_survives_a_kill();
     test_refusals();

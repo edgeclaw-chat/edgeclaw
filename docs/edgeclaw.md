@@ -689,8 +689,8 @@ and a missing value is a usage error.
 
 ### Scheduling
 
-Scheduled jobs live in `workspace/jobs.json` and are created by the assistant (the
-`crontab` tool). These commands are how a person sees and manages them:
+Scheduled jobs live in the `jobs` table of `edgeclaw.db` and are created by the
+assistant (the `crontab` tool). These commands are how a person sees and manages them:
 
 | Command | Description |
 |---------|-------------|
@@ -975,8 +975,7 @@ nothing.
 | `~/.edgeclaw/` | EdgeClaw home directory |
 | `~/.edgeclaw/config.json` | Configuration (API key, model) |
 | `~/.edgeclaw/workspace/` | Workspace root |
-| `~/.edgeclaw/workspace/<sid>/` | Per-session directory |
-| `~/.edgeclaw/workspace/<sid>/chat.jsonl` | Legacy v8 transcript; imported once into `chat_bubbles`, never read at runtime |
+| `~/.edgeclaw/workspace/<sid>/` | Per-session directory (transcript lives in the `chat_bubbles` table of `edgeclaw.db`) |
 | `~/.edgeclaw/workspace/skills/` | Custom skill SKILL.md files |
 
 ### Where prompts and skills come from
