@@ -125,7 +125,8 @@ static bool has_column(sqlite3 *db, const char *table, const char *column)
 
 /* Is |column| declared NOT NULL on |table|? pragma_table_info.notnull is 1 for a
  * NOT NULL column. Returns false when the column is absent or the query fails. */
-static bool column_is_notnull(sqlite3 *db, const char *table, const char *column)
+static bool column_is_notnull(sqlite3 *db, const char *table, const char *column,
+                              char *err, size_t cap)
 {
     /* "notnull" is a keyword in SQLite: quote it or the prepare fails with
      * 'near "notnull": syntax error'. */
@@ -133,10 +134,9 @@ static bool column_is_notnull(sqlite3 *db, const char *table, const char *column
                                        "WHERE name='%s'",
                            table, column);
     sqlite3_int64 n = 0;
-    char err[256];
-    const bool ok = query_one_int(db, sql, &n, err, sizeof err);
+    const bool ok = query_one_int(db, sql, &n, err, cap) && n == 1;
     sdsfree(sql);
-    return ok && n == 1;
+    return ok;
 }
 
 /* ══ Backup ════════════════════════════════════════════════════════════════════════ */
@@ -679,20 +679,10 @@ static bool step_v15_to_v16(sqlite3 *db, char *err, size_t cap)
 
 static bool verify_v16(sqlite3 *db, char *err, size_t cap)
 {
-    if (!column_is_notnull(db, "sessions", "workdir"))
-    {
-        set_err(err, cap, "v16 is stamped but sessions.workdir is not NOT NULL");
-        return false;
-    }
-    sqlite3_int64 n = 0;
-    if (!query_one_int(db, "SELECT count(*) FROM sessions WHERE workdir IS NULL", &n, err, cap))
-        return false;
-    if (n != 0)
-    {
-        set_err(err, cap, "v16: %lld sessions still have a NULL workdir", (long long)n);
-        return false;
-    }
-    return true;
+    /* The NOT NULL constraint itself is the invariant: SQLite rejects any NULL workdir,
+     * so there is no separate "no NULL rows" check to perform (a row could only have a
+     * NULL there if the constraint were absent, which is what this check verifies). */
+    return column_is_notnull(db, "sessions", "workdir", err, cap);
 }
 
 /* ══ The registry ══════════════════════════════════════════════════════════════════

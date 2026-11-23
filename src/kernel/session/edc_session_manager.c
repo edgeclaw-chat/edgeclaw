@@ -410,17 +410,11 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
      *
      * edc_cwd() only fails if the process cwd cannot be read (e.g. deleted); in that rare
      * case leave the session unbound rather than failing creation. */
-    sds default_wd = NULL;
-    if (!workdir || !workdir[0])
-    {
-        default_wd = edc_cwd();
-        if (default_wd && sdslen(default_wd) == 0)
-        {
-            sdsfree(default_wd);
-            default_wd = NULL;
-        }
+    sds default_wd = (!workdir || !workdir[0]) ? edc_cwd() : NULL;
+    /* edc_cwd() returns "" when the cwd cannot be read; the constructor treats an empty
+     * workdir exactly like NULL (leave unbound), so no special case is needed here. */
+    if (default_wd)
         workdir = default_wd;
-    }
 
     struct edc_session *s = edc_session_new_with_workdir(sm->config, id, sname, workdir);
     sdsfree(default_wd);

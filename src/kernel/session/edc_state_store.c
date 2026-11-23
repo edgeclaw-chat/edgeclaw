@@ -1203,12 +1203,12 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
     sqlite3_bind_int64(st, 4, (sqlite3_int64)s->last_active);
     /* workdir is NOT NULL: an unbound session persists as '' and is pinned to the launch
      * dir on load. bind_str() treats "" as NULL (it binds NULL for any empty string), which
-     * the constraint rejects, so bind a real zero-length TEXT value directly. A column
-     * DEFAULT does not help either: it applies only when the column is omitted. */
-    if (s->workdir && *s->workdir)
-        bind_str(st, 5, s->workdir);
-    else
-        sqlite3_bind_text(st, 5, "", 0, SQLITE_STATIC);
+     * the constraint rejects, so bind a real zero-length TEXT directly for the unbound
+     * case. One unconditional bind covers both states: NULL -> "", path -> path. */
+    {
+        const char *wd = s->workdir ? s->workdir : "";
+        sqlite3_bind_text(st, 5, wd, -1, SQLITE_TRANSIENT);
+    }
     /* INTEGER columns: a number bound as text is stored as text and reads back as 0 through
      * sqlite3_column_int64, silently losing the pointer. NULL when there is none, which is
      * what the tree used to leave behind. */
@@ -2316,17 +2316,16 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
              * marked state_loaded) writes the binding back, making it stable thereafter.
              * A session explicitly unbound via set_workdir(NULL) is indistinguishable here
              * from a legacy one, but re-binding it is the documented default anyway. */
+            /* set_workdir resolves and validates the path itself: an unreadable cwd
+             * ("") simply fails the bind and leaves the session unbound, which is the
+             * same outcome the old length guard produced -- no separate guard needed. */
             sds cwd = edc_cwd();
-            if (cwd && sdslen(cwd) > 0)
+            EdcError *werr = NULL;
+            if (!edc_session_set_workdir(session, cwd, &werr))
             {
-                EdcError *werr = NULL;
-                if (!edc_session_set_workdir(session, cwd, &werr))
-                {
-                    log_warn("load: session %s cannot bind launch directory '%s': %s",
-                             edc_id_str(session_id), cwd, werr ? werr->message : "unknown");
-                    if (werr)
-                        edc_error_free(werr);
-                }
+                log_warn("load: session %s cannot bind launch directory '%s': %s",
+                         edc_id_str(session_id), cwd, werr ? werr->message : "unknown");
+                edc_error_free(werr);
             }
             sdsfree(cwd);
         }
