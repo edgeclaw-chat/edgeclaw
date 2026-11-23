@@ -69,24 +69,40 @@ static char g_dir[512];
 static char g_cert[600];
 static char g_key[600];
 
-/* One release for this platform, as the API returns it. The asset name must carry the tag --
- * the picker skips a release whose assets do not include the archive for this build. */
-static char *releases_body(const char *tag)
+/* One release in a GitHub Atom feed, shaped like the real <id>/<entry> the check now reads. */
+static char *feed_body(const char *tag)
 {
     return sdscatprintf(sdsempty(),
-                        "[{\"tag_name\":\"%s\",\"draft\":false,\"prerelease\":false,\"assets\":"
-                        "[{\"name\":\"%s_%s.tar.gz\"}]}]",
-                        tag, edc_update_target(), tag);
+                        "<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\">"
+                        "<entry><id>tag:github.com,2008:Repository/123/%s</id><title>%s</title></entry>"
+                        "</feed>",
+                        tag, tag);
 }
 
-/* A complete HTTP/1.1 response with a JSON body. Connection: close so the client reads to EOF
- * rather than waiting on a keep-alive it will never reuse. */
+/* A feed listing several tags, newest first, the way GitHub serves it. */
+static char *feed_body_tags(const char *const *tags, size_t n)
+{
+    sds out = sdscatprintf(sdsempty(), "<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\">");
+    for (size_t i = 0; i < n; i++)
+        out = sdscatprintf(out, "<entry><id>tag:github.com,2008:Repository/123/%s</id></entry>", tags[i]);
+    return sdscat(out, "</feed>");
+}
+
+/* A complete HTTP/1.1 response with a body. Connection: close so the client reads to EOF. */
 static char *http_response(int status, const char *reason, const char *body)
 {
     return sdscatprintf(sdsempty(),
-                        "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %zu\r\n"
+                        "HTTP/1.1 %d %s\r\nContent-Type: application/atom+xml\r\nContent-Length: %zu\r\n"
                         "Connection: close\r\n\r\n%s",
                         status, reason, strlen(body), body);
+}
+
+/* HEAD probe answer: 200 = this platform's archive exists, 404 = it does not. */
+static char *head_response(int status)
+{
+    return sdscatprintf(sdsempty(),
+                        "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        status, status == 200 ? "OK" : "Not Found");
 }
 
 static void free_body(char *p)
@@ -97,19 +113,36 @@ static void free_body(char *p)
 /* Same, recording WHY it ended that way. The diagnostic is the only consumer of the outcome,
  * but the distinction belongs to the library: what a caller can print depends on what this
  * function is willing to tell it. */
+static bool run_case_diag_full(const char *raw, const char *current, bool allow_pre, size_t max_bytes, int timeout_ms,
+                               sds *tag, sds *asset, edc_update_diag *diag, int probe_status);
+
 static bool run_case_diag(const char *raw, const char *current, bool allow_pre, size_t max_bytes, int timeout_ms,
                           sds *tag, sds *asset, edc_update_diag *diag)
 {
+    return run_case_diag_full(raw, current, allow_pre, max_bytes, timeout_ms, tag, asset, diag, 200);
+}
+
+/* |probe_status| is what the asset HEAD probes answer: 200 = archive present, 404 = absent.
+ * The feed response is |raw|; every later connection on the stub gets the probe response. */
+static bool run_case_diag_full(const char *raw, const char *current, bool allow_pre, size_t max_bytes, int timeout_ms,
+                               sds *tag, sds *asset, edc_update_diag *diag, int probe_status)
+{
     struct tls_stub s;
+    char *probe = head_response(probe_status);
     if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
     {
         printf("    (skipped: cannot start the TLS server)\n");
+        free_body(probe);
         return false;
     }
-    sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
+    s.raw_response_2 = probe;
+    s.multi = true;
+    s.max_requests = 12;
+    sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases.atom", s.port);
     const bool got = edc_update_check_ex(g_cert, url, current, allow_pre, max_bytes, timeout_ms, tag, asset, diag);
     sdsfree(url);
     tls_stub_stop(&s);
+    free_body(probe);
     return got;
 }
 
@@ -123,7 +156,7 @@ static bool run_case(const char *raw, const char *current, bool allow_pre, size_
 static void test_offers_a_newer_release(void)
 {
     printf("\n── a newer release on offer ──\n");
-    char *body = releases_body("v9.9.9");
+    char *body = feed_body("v9.9.9");
     char *raw = http_response(200, "OK", body);
     sds tag = NULL, asset = NULL;
     const bool got = run_case(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset);
@@ -142,7 +175,7 @@ static void test_offers_a_newer_release(void)
 static void test_current_version_is_not_an_offer(void)
 {
     printf("\n── the running version is not an update ──\n");
-    char *body = releases_body("v1.0.0");
+    char *body = feed_body("v1.0.0");
     char *raw = http_response(200, "OK", body);
     sds tag = NULL, asset = NULL;
     const bool got = run_case(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset);
@@ -155,10 +188,8 @@ static void test_current_version_is_not_an_offer(void)
 static void test_prerelease_policy(void)
 {
     printf("\n── pre-release policy ──\n");
-    char *body = sdscatprintf(sdsempty(),
-                              "[{\"tag_name\":\"v9.9.9-rc.1\",\"draft\":false,\"prerelease\":true,\"assets\":"
-                              "[{\"name\":\"%s_v9.9.9-rc.1.tar.gz\"}]}]",
-                              edc_update_target());
+    /* A '-' in the tag is this project's prerelease marker (release.yml / install.sh). */
+    char *body = feed_body("v9.9.9-rc.1");
     char *raw = http_response(200, "OK", body);
 
     sds tag = NULL, asset = NULL;
@@ -187,6 +218,67 @@ static void test_prerelease_policy(void)
     free_body(body);
 }
 
+/* The feed has no assets list, so the check HEAD-probes each candidate archive. A release
+ * whose archive is missing (404) must be skipped in favour of the next-newest one that has it
+ * -- the same protection the JSON `assets` check gave before the feed switch. */
+static void test_missing_archive_falls_through_to_next(void)
+{
+    printf("\n── a newer release without this platform's archive is skipped ──\n");
+
+    const char *tags[] = {"v9.9.9", "v9.8.0"};
+    char *body = feed_body_tags(tags, 2);
+    char *raw = http_response(200, "OK", body);
+    char *probe404 = head_response(404); /* v9.9.9 has no build for this platform */
+    char *probe200 = head_response(200); /* v9.8.0 does */
+
+    struct tls_stub s;
+    if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
+    {
+        printf("    (skipped: cannot start the TLS server)\n");
+    }
+    else
+    {
+        s.raw_response_2 = probe404;
+        s.raw_response_3 = probe200;
+        s.multi = true;
+        s.max_requests = 12;
+        sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases.atom", s.port);
+        sds tag = NULL, asset = NULL;
+        edc_update_diag diag = {0};
+        const bool got = edc_update_check_ex(g_cert, url, "1.0.0", false, 1 << 20, 5000, &tag, &asset, &diag);
+        CHECK(got, "an offer is still found");
+        CHECK(tag && strcmp(tag, "v9.8.0") == 0, "and it is the newest release that HAS the archive");
+        CHECK(asset && strstr(asset, "v9.8.0") != NULL, "with that release's asset name");
+        CHECK(diag.outcome == EDC_UPDATE_OK, "and the outcome is an offer");
+        if (tag)
+            sdsfree(tag);
+        if (asset)
+            sdsfree(asset);
+        sdsfree(url);
+        tls_stub_stop(&s);
+    }
+    free_body(raw);
+    free_body(body);
+    free_body(probe404);
+    free_body(probe200);
+}
+
+/* A feed whose newest release lacks this platform's archive, and so do all others: nothing
+ * is offered, and that is genuinely "up to date for this platform" rather than a failure. */
+static void test_no_archive_anywhere_is_up_to_date(void)
+{
+    printf("\n── no candidate has this platform's archive ──\n");
+    char *body = feed_body("v9.9.9");
+    char *raw = http_response(200, "OK", body);
+    sds tag = NULL, asset = NULL;
+    edc_update_diag diag = {0};
+    const bool got = run_case_diag_full(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset, &diag, 404);
+    CHECK(!got, "nothing is offered when every archive probe is 404");
+    CHECK(diag.outcome == EDC_UPDATE_UP_TO_DATE, "and it is 'up to date', not a failure");
+    free_body(raw);
+    free_body(body);
+}
+
 static void test_http_error_offers_nothing(void)
 {
     printf("\n── a non-200 answer ──\n");
@@ -210,7 +302,7 @@ static void test_http_error_offers_nothing(void)
 static void test_up_to_date_is_its_own_outcome(void)
 {
     printf("\n── up to date, and distinguishable from a failure ──\n");
-    char *body = releases_body("v1.0.0");
+    char *body = feed_body("v1.0.0");
     char *raw = http_response(200, "OK", body);
     sds tag = NULL, asset = NULL;
     edc_update_diag diag;
@@ -244,7 +336,7 @@ static void test_oversized_body_offers_nothing(void)
     printf("\n── a body past the cap ──\n");
     /* A valid list, but the cap is set below its length: the point is that the limit is
      * enforced on the way in rather than after the fact. */
-    char *body = releases_body("v9.9.9");
+    char *body = feed_body("v9.9.9");
     char *raw = http_response(200, "OK", body);
     sds tag = NULL, asset = NULL;
     edc_update_diag diag;
@@ -273,16 +365,17 @@ static void test_response_larger_than_one_tls_record(void)
 {
     printf("\n── a response spanning several TLS records ──\n");
 
-    /* A list whose single release carries enough assets to push the body well past 16 KiB.
-     * The extra assets are for other platforms, so the picker ignores them; what matters is
-     * the byte count. */
-    sds json = sdscatprintf(sdsempty(),
-                            "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"assets\":["
-                            "{\"name\":\"%s_v9.9.9.tar.gz\"}",
-                            edc_update_target());
-    for (int i = 0; i < 400; i++)
-        json = sdscatprintf(json, ",{\"name\":\"unrelated-platform-%03d-aaaaaaaaaaaaaaaaaaaa.tar.gz\"}", i);
-    json = sdscat(json, "]}]");
+    /* A feed with enough entries to push the body well past 16 KiB. The extra entries are
+     * older/unrelated tags; what matters is that the body survives in whole. */
+    const char *tags[400];
+    tags[0] = "v9.9.9";
+    char pad[400][64];
+    for (int i = 1; i < 400; i++)
+    {
+        snprintf(pad[i], sizeof(pad[i]), "v0.0.%d-old", i);
+        tags[i] = pad[i];
+    }
+    sds json = feed_body_tags(tags, 400);
     printf("    body: %zu bytes (one TLS record is 16 KiB)\n", sdslen(json));
     CHECK(sdslen(json) > 16 * 1024, "the body really is larger than one record");
 
@@ -368,7 +461,7 @@ static void test_request_line(void)
      * also what being up to date looks like, so nothing failed loudly.
      *
      * Asserts the SHAPE, not the exact URL: a caller may legitimately ask for any path. */
-    char *body = releases_body("v9.9.9");
+    char *body = feed_body("v9.9.9");
     char *raw = http_response(200, "OK", body);
     sds tag = NULL, asset = NULL;
     run_case(raw, "1.0.0", false, 1 << 20, 5000, &tag, &asset);
@@ -378,10 +471,11 @@ static void test_request_line(void)
         sdsfree(asset);
 
     printf("    request: %.48s\n", tls_stub_last_request);
-    CHECK(strncmp(tls_stub_last_request, "GET /", 5) == 0,
+    /* The last request is the asset HEAD probe; either method must carry an absolute path. */
+    CHECK(strncmp(tls_stub_last_request, "GET /", 5) == 0 || strncmp(tls_stub_last_request, "HEAD /", 6) == 0,
           "the target is an absolute path, starting with '/'");
-    /* The specific shape that was wrong, named so a failure points at the cause. */
-    CHECK(strncmp(tls_stub_last_request, "GET repos", 9) != 0, "and not a bare relative path");
+    CHECK(strncmp(tls_stub_last_request, "GET repos", 9) != 0 && strncmp(tls_stub_last_request, "HEAD repos", 10) != 0,
+          "and not a bare relative path");
     CHECK(strstr(tls_stub_last_request, " HTTP/1.1\r\n") != NULL, "with an HTTP/1.1 request line");
 
     free_body(raw);
@@ -410,6 +504,8 @@ int main(void)
     test_current_version_is_not_an_offer();
     test_up_to_date_is_its_own_outcome();
     test_prerelease_policy();
+    test_missing_archive_falls_through_to_next();
+    test_no_archive_anywhere_is_up_to_date();
     test_http_error_offers_nothing();
     test_malformed_body_offers_nothing();
     test_oversized_body_offers_nothing();

@@ -74,6 +74,18 @@ struct tls_stub
      * tunnel presents to the client, so it exercises the client's CONNECT path end to end
      * without a second process splicing two sockets. */
     bool as_proxy;
+
+    /* Multi-request mode: keep accepting connections (up to |max_requests|) on the same
+     * port until stopped. The first request gets |raw_response|; every subsequent one gets
+     * |raw_response_2|. This is what an update check needs now that it fetches an Atom feed
+     * and then HEAD-probes one or more archives. Each request still gets its own TLS
+     * handshake, so the client really makes every round trip. */
+    bool multi;
+    int max_requests;
+    const char *raw_response_2; /* 2nd connection */
+    const char *raw_response_3; /* 3rd and later connections */
+    volatile int stopping;
+    char first_request[4096]; /* request line captured from the first connection (feed GET) */
 };
 
 /* Generate a self-signed CA-ish certificate (CN=localhost) and its key at the given paths.
@@ -351,9 +363,29 @@ out:
 static void tls_stub_thread(void *arg)
 {
     struct tls_stub *s = arg;
-    const int client_fd = accept(s->listen_fd, NULL, NULL);
-    if (client_fd >= 0)
+    int served = 0;
+    for (;;)
     {
+        const int client_fd = accept(s->listen_fd, NULL, NULL);
+        if (client_fd < 0)
+        {
+            if (s->stopping)
+                break; /* stop() closed the listening socket */
+            continue;
+        }
+        served++;
+
+        /* Multi-request mode: the first connection answers with the feed response, the rest
+         * with the asset-probe response. Swap the borrowed pointer just for this connection;
+         * tls_stub_serve reads it while the connection is live. */
+        const char *saved = s->raw_response;
+        if (s->multi && served == 2 && s->raw_response_2)
+            s->raw_response = s->raw_response_2;
+        else if (s->multi && served > 2 && s->raw_response_3)
+            s->raw_response = s->raw_response_3;
+        else if (s->multi && served > 1 && s->raw_response_2)
+            s->raw_response = s->raw_response_2;
+
         if (s->as_proxy)
         {
             /* The CONNECT preamble, read as plaintext up to the blank line. Kept in
@@ -376,6 +408,10 @@ static void tls_stub_thread(void *arg)
                 s->served = 1;
         }
         tls_stub_serve(s, client_fd);
+        if (served == 1)
+            snprintf(s->first_request, sizeof(s->first_request), "%s", tls_stub_last_request);
+        s->raw_response = saved;
+
         if (s->abrupt_close)
         {
             /* SO_LINGER{on=1, seconds=0}: close() discards the send queue and sends a RST
@@ -388,6 +424,9 @@ static void tls_stub_thread(void *arg)
             setsockopt(client_fd, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
         }
         close(client_fd);
+
+        if (!s->multi || (s->max_requests > 0 && served >= s->max_requests))
+            break;
     }
 }
 
@@ -441,6 +480,11 @@ static int tls_stub_start_ex(struct tls_stub *s, const char *cert_path, const ch
 
 static void tls_stub_stop(struct tls_stub *s)
 {
+    /* Multi mode may still be parked in accept(): flag it and shut the socket down so accept
+     * returns, before joining. Single mode already exited after one connection, so this is a
+     * no-op there. */
+    s->stopping = 1;
+    shutdown(s->listen_fd, SHUT_RDWR);
     uv_thread_join(&s->thread);
     close(s->listen_fd);
 }

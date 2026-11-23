@@ -8,9 +8,12 @@
 #include <string.h>
 #include <uv.h>
 
-/* The public release list. Not /releases/latest: that endpoint skips pre-releases, and every
- * tag this project has published carries a suffix. */
-#define EDC_UPDATE_RELEASES_URL "https://api.github.com/repos/edgeclaw-chat/edgeclaw/releases"
+/* The public release feed. Served by github.com (not api.github.com), so it consumes none of
+ * the 60 anonymous API requests per hour shared by every IP behind a NAT -- the rate limit
+ * that used to turn --update-check into a misleading "up to date". The feed carries one entry
+ * per release with its tag in <id>; archives are probed separately with HEAD, also on
+ * github.com, which redirects to the asset without touching the API budget. */
+#define EDC_UPDATE_RELEASES_URL "https://github.com/edgeclaw-chat/edgeclaw/releases.atom"
 
 /* Default delay before the launch-time request; see edc_update_check_delay_ms(). */
 #define EDC_UPDATE_CHECK_DELAY_MS 10000
@@ -117,6 +120,7 @@ struct update_state
     sds body;    /* accumulated response body */
     size_t max;  /* stop accumulating past this */
     int over;    /* the body exceeded |max| */
+    const char *method; /* "GET" for the feed, "HEAD" for an asset probe */
 };
 
 static void update_on_event(struct edc_https_request *req, int ev, void *data)
@@ -133,12 +137,16 @@ static void update_on_event(struct edc_https_request *req, int ev, void *data)
          * it would be both unnecessary and a leak. */
         const char *path = edc_https_request_get_path(req);
         const char *host = edc_https_request_get_host(req);
+        const char *method = (st->method && *st->method) ? st->method : "GET";
+        /* A HEAD asset probe wants no representation; the feed wants the Atom XML. Neither
+         * endpoint needs a GitHub API token -- both are plain github.com requests. */
+        const char *accept = !strcmp(method, "HEAD") ? "*/*" : "application/atom+xml";
         sds hdr = sdscatprintf(sdsempty(),
-                               "GET %s HTTP/1.1\r\nHost: %s\r\n"
+                               "%s %s HTTP/1.1\r\nHost: %s\r\n"
                                "User-Agent: edgeclaw-update-check\r\n"
-                               "Accept: application/vnd.github+json\r\n"
+                               "Accept: %s\r\n"
                                "Connection: close\r\n\r\n",
-                               path && path[0] ? path : "/", host ? host : "");
+                               method, path && path[0] ? path : "/", host ? host : "", accept);
         edc_https_request_write(req, (const unsigned char *)hdr, (size_t)sdslen(hdr));
         sdsfree(hdr);
         break;
@@ -253,6 +261,131 @@ static bool pick_from_root(cJSON *root, const char *current_version, bool allow_
     return true;
 }
 
+/* Pull release tags out of a GitHub Atom feed. Each entry looks like:
+ *
+ *   <id>tag:github.com,2008:Repository/1447922093/v0.1.14</id>
+ *
+ * The trailing component is the tag; install.sh reads the same place (not <title>, which
+ * other projects fill with arbitrary prose). The feed omits drafts and is newest-first, but
+ * the caller still picks the semver-highest candidate rather than trusting that order.
+ * Returns an array of newly allocated sds tags (NULL-terminated); caller frees each and the
+ * array. Returns NULL when the body holds no recognisable release tags. */
+static sds *feed_tags(const char *feed)
+{
+    if (!feed || !*feed)
+        return NULL;
+
+    size_t n = 0, cap = 8;
+    sds *tags = sds_malloc((cap + 1) * sizeof(*tags));
+    if (!tags)
+        return NULL;
+    tags[0] = NULL;
+
+    /* Only <id>s inside <entry> are releases. The feed itself has a leading <id> whose last
+     * component is "releases" -- not a tag; skipping it is cleaner than relying on semver to
+     * reject it downstream. */
+    const char *p = feed;
+    while ((p = strstr(p, "<entry")) != NULL)
+    {
+        const char *entry_end = strstr(p, "</entry>");
+        const char *id = strstr(p, "<id>");
+        if (!id || (entry_end && id > entry_end))
+            break;
+        p = id + 4;
+        const char *end = strstr(p, "</id>");
+        if (!end || (entry_end && end > entry_end))
+            break;
+        /* The tag is the last '/'-separated component of the id. */
+        const char *slash = NULL;
+        for (const char *q = p; q < end; q++)
+            if (*q == '/')
+                slash = q;
+        const char *tag = slash ? slash + 1 : p;
+        size_t len = (size_t)(end - tag);
+        if (len > 0)
+        {
+            /* A pre-release tag carries '-' by this project's convention (release.yml marks
+             * prereleases that way, and install.sh uses the same rule). Filtering here keeps
+             * stable builds from ever probing a candidate they would refuse. */
+            if (n + 1 >= cap)
+            {
+                cap *= 2;
+                sds *grown = sds_realloc(tags, (cap + 1) * sizeof(*tags));
+                if (!grown)
+                    break;
+                tags = grown;
+            }
+            tags[n++] = sdsnewlen(tag, len);
+            tags[n] = NULL;
+        }
+        p = end + 5;
+    }
+
+    if (n == 0)
+    {
+        sds_free(tags);
+        return NULL;
+    }
+    return tags;
+}
+
+/* Is this tag admissible for the channel? Mirrors install.sh/resolve_tag: a '-' in the tag
+ * means pre-release. Drafts never appear in the feed at all. */
+static bool tag_channel_ok(const char *tag, bool allow_pre)
+{
+    return allow_pre || strchr(tag, '-') == NULL;
+}
+
+/* One fetch, parameterised by method ("GET" for the feed, "HEAD" for an asset probe).
+ *
+ * Fills |out_status| with the final status line and, for GET, accumulates the body into
+ * |out_body|. Returns one of the connection-level outcomes; a non-200 status is NOT an error
+ * here -- the caller decides what a 404 or a 302 means for that particular request. */
+static edc_update_outcome fetch_once(struct edc_https_client *client, const char *url, const char *method,
+                                     sds *out_body, size_t max_bytes, int timeout_ms, int *out_status)
+{
+    struct update_state st;
+    memset(&st, 0, sizeof(st));
+    uv_mutex_init(&st.m);
+    uv_cond_init(&st.c);
+    st.body = sdsempty();
+    st.max = max_bytes > 0 ? max_bytes : 1u << 20;
+    st.method = method;
+
+    edc_update_outcome result = EDC_UPDATE_CONNECT_FAILED;
+    if (edc_https_client_connect(client, url, update_on_event, &st) == 0)
+    {
+        uv_mutex_lock(&st.m);
+        while (!st.done)
+        {
+            if (uv_cond_timedwait(&st.c, &st.m, (uint64_t)(timeout_ms > 0 ? timeout_ms : 1) * 1000000ULL) != 0)
+                break;
+        }
+        const int done = st.done, status = st.status, err = st.err, over = st.over;
+        uv_mutex_unlock(&st.m);
+
+        *out_status = done ? status : 0;
+        if (!done)
+            result = EDC_UPDATE_TIMEOUT;
+        else if (err)
+            result = EDC_UPDATE_CONNECT_FAILED;
+        else if (over)
+            result = EDC_UPDATE_BODY_TOO_LARGE;
+        else
+            result = EDC_UPDATE_OK; /* status classification is the caller's job */
+    }
+
+    if (out_body && result == EDC_UPDATE_OK)
+    {
+        *out_body = st.body;
+        st.body = NULL;
+    }
+    sdsfree(st.body);
+    uv_cond_destroy(&st.c);
+    uv_mutex_destroy(&st.m);
+    return result;
+}
+
 bool edc_update_check_ex(const char *cacert_path, const char *api_url, const char *current_version, bool allow_pre,
                          size_t max_bytes, int timeout_ms, sds *out_tag, sds *out_asset, edc_update_diag *diag)
 {
@@ -272,9 +405,6 @@ bool edc_update_check_ex(const char *cacert_path, const char *api_url, const cha
     struct edc_https_client *client = edc_https_client_new(cacert_path);
     if (!client)
     {
-        /* Only mbedtls initialisation fails here -- a missing or unreadable CA bundle is NOT
-         * this: the bundle is loaded when connecting (see edc_https_client.c), so it surfaces
-         * as EDC_UPDATE_CONNECT_FAILED below. Nothing has been asked either way. */
         if (diag)
             diag->outcome = EDC_UPDATE_CONNECT_FAILED;
         return false;
@@ -282,81 +412,111 @@ bool edc_update_check_ex(const char *cacert_path, const char *api_url, const cha
     if (diag)
         diag->outcome = EDC_UPDATE_CONNECT_FAILED;
 
-    struct update_state st;
-    memset(&st, 0, sizeof(st));
-    uv_mutex_init(&st.m);
-    uv_cond_init(&st.c);
-    st.body = sdsempty();
-    st.max = max_bytes > 0 ? max_bytes : 1u << 20; /* 1 MiB: the release list is far smaller */
+    /* 1. Fetch the Atom feed (one GET on github.com, zero API quota). */
+    int status = 0;
+    sds feed = NULL;
+    const edc_update_outcome fetch_result = fetch_once(client, api_url, "GET", &feed, max_bytes, timeout_ms, &status);
+    if (diag && fetch_result == EDC_UPDATE_OK)
+        diag->http_status = status;
 
     bool ok = false;
-    if (edc_https_client_connect(client, api_url, update_on_event, &st) == 0)
+    if (fetch_result != EDC_UPDATE_OK)
     {
-        uv_mutex_lock(&st.m);
-        while (!st.done)
-        {
-            if (uv_cond_timedwait(&st.c, &st.m, (uint64_t)(timeout_ms > 0 ? timeout_ms : 1) * 1000000ULL) != 0)
-                break; /* deadline */
-        }
-        const int done = st.done, status = st.status, err = st.err, over = st.over;
-        uv_mutex_unlock(&st.m);
-
-        /* Recorded before the outcome is classified, so every branch that has a status line
-         * reports it -- including the 200 that "up to date" comes back from. */
-        if (diag && done)
-            diag->http_status = status;
-
-        if (!done)
-        {
-            /* The deadline fired with no close event. Named separately from a connect failure
-             * because it is the one case that is usually transient. */
-            if (diag)
-                diag->outcome = EDC_UPDATE_TIMEOUT;
-        }
-        else if (err)
+        if (diag)
+            diag->outcome = fetch_result; /* TIMEOUT / CONNECT_FAILED / BODY_TOO_LARGE */
+    }
+    else if (status != 200)
+    {
+        /* github.com serves the feed without an API key, so a non-200 is a real failure;
+         * recorded for the diagnostic, silent for the launch path. */
+        if (diag)
+            diag->outcome = EDC_UPDATE_HTTP_STATUS;
+    }
+    else
+    {
+        /* 2. Parse candidate tags. A body that is not a feed is MALFORMED, not "up to date". */
+        sds *tags = feed_tags(feed);
+        if (!tags)
         {
             if (diag)
-                diag->outcome = EDC_UPDATE_CONNECT_FAILED;
-        }
-        else if (over)
-        {
-            if (diag)
-                diag->outcome = EDC_UPDATE_BODY_TOO_LARGE;
-        }
-        else if (status != 200)
-        {
-            /* A 403 here is the unauthenticated rate limit (60/hour/IP) and is expected on a
-             * shared address. Silent for the launch path -- but recorded, because the
-             * diagnostic has to say "not determined" rather than "up to date". A status of 0
-             * means the peer closed without ever sending a status line, which is the same
-             * class of thing: nothing was determined. */
-            if (diag)
-                diag->outcome = EDC_UPDATE_HTTP_STATUS;
+                diag->outcome = EDC_UPDATE_MALFORMED;
         }
         else
         {
-            cJSON *root = cJSON_Parse(st.body);
-            if (!root || !cJSON_IsArray(root))
+            /* 3. Consider only tags newer than this build and admitted by the channel, highest
+             * semver first. For each, HEAD its archive on github.com; a 404 (or any non-200)
+             * means that release has no build for this platform, so fall through to the next.
+             * This is the feed equivalent of the API's assets check. */
+            sds *ordered = NULL;
+            size_t ordered_n = 0;
+            for (size_t i = 0; tags[i]; i++)
             {
-                if (diag)
-                    diag->outcome = EDC_UPDATE_MALFORMED;
+                if (!tag_channel_ok(tags[i], allow_pre) ||
+                    !edc_semver_is_newer(tags[i], current_version))
+                    continue;
+                /* Insert into |ordered|, keeping semver-descending order. */
+                size_t pos = 0;
+                while (pos < ordered_n && edc_semver_is_newer(ordered[pos], tags[i]))
+                    pos++;
+                sds *grown = sds_realloc(ordered, (ordered_n + 2) * sizeof(*grown));
+                if (!grown)
+                    break;
+                ordered = grown;
+                memmove(ordered + pos + 1, ordered + pos, (ordered_n - pos) * sizeof(*ordered));
+                ordered[pos] = tags[i]; /* ownership moves to |ordered| */
+                ordered[++ordered_n] = NULL;
+                tags[i] = NULL;
             }
-            else
-            {
-                ok = pick_from_root(root, current_version, allow_pre, out_tag, out_asset);
-                if (diag)
-                    diag->outcome = ok ? EDC_UPDATE_OK : EDC_UPDATE_UP_TO_DATE;
-            }
-            /* cJSON_Delete(NULL) is a no-op, so the two failure paths above share this. */
-            cJSON_Delete(root);
-        }
-    }
-    /* A connect() failure leaves the outcome as CONNECT_FAILED with no status, which is what
-     * a caller can report: nothing was asked, or nothing answered. */
 
-    sdsfree(st.body);
-    uv_cond_destroy(&st.c);
-    uv_mutex_destroy(&st.m);
+            /* Derive the asset download base from the feed URL: production's
+             * ".../releases.atom" becomes ".../releases/download", and a test pointing the
+             * feed at a local stub gets its asset probes on that same stub. */
+            sds download_base;
+            const char *atom = strstr(api_url, "/releases.atom");
+            if (atom)
+                download_base = sdscatprintf(sdsnewlen(api_url, (size_t)(atom - api_url)), "/releases/download");
+            else
+                download_base = sdscatprintf(sdsnew(api_url), "/download"); /* generic stub path */
+
+            for (size_t i = 0; i < ordered_n && !ok; i++)
+            {
+                sds asset = asset_name(ordered[i]);
+                sds probe_url = sdscatprintf(sdsempty(), "%s/%s/%s", download_base, ordered[i], asset);
+                int probe_status = 0;
+                const edc_update_outcome pr =
+                    fetch_once(client, probe_url, "HEAD", NULL, max_bytes, timeout_ms, &probe_status);
+                sdsfree(probe_url);
+                if (pr == EDC_UPDATE_OK && probe_status == 200)
+                {
+                    if (out_tag)
+                        *out_tag = sdsdup(ordered[i]);
+                    if (out_asset)
+                        *out_asset = asset;
+                    else
+                        sdsfree(asset);
+                    ok = true;
+                }
+                else
+                {
+                    sdsfree(asset);
+                }
+            }
+            sdsfree(download_base);
+
+            if (diag)
+                diag->outcome = ok ? EDC_UPDATE_OK : EDC_UPDATE_UP_TO_DATE;
+
+            /* |ordered| owns the tags it took; the rest stayed in |tags|. Free both, once. */
+            for (size_t i = 0; ordered && ordered[i]; i++)
+                sdsfree(ordered[i]);
+            sds_free(ordered);
+        }
+        for (size_t i = 0; tags && tags[i]; i++)
+            sdsfree(tags[i]);
+        sds_free(tags);
+    }
+
+    sdsfree(feed);
     edc_https_client_free(client);
     return ok;
 }
