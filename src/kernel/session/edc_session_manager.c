@@ -401,7 +401,23 @@ struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm
         return NULL;
     }
 
+    /* Bind at creation time, not at every launch. A session that is created without an
+     * explicit directory (notably the default session) must remember the directory it was
+     * created in: otherwise an unbound session falls back to edc_cwd() on every start, so
+     * launching edgeclaw from a different directory silently "moves" the session. Resolve
+     * the current directory here and store it on the session, so it is persisted with the
+     * rest of the session row and stays stable across restarts.
+     *
+     * edc_cwd() only fails if the process cwd cannot be read (e.g. deleted); in that rare
+     * case leave the session unbound rather than failing creation. */
+    sds default_wd = (!workdir || !workdir[0]) ? edc_cwd() : NULL;
+    /* edc_cwd() returns "" when the cwd cannot be read; the constructor treats an empty
+     * workdir exactly like NULL (leave unbound), so no special case is needed here. */
+    if (default_wd)
+        workdir = default_wd;
+
     struct edc_session *s = edc_session_new_with_workdir(sm->config, id, sname, workdir);
+    sdsfree(default_wd);
     sdsfree(sname);
 
     if (!s)

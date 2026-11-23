@@ -1,0 +1,4 @@
+# All files are owned by @ComingToy. Combined with the "Require review from
+# Code Owners" rule on master, every pull request needs ComingToy's approval
+# before it can merge -- the final arbiter of what lands on master.
+* @ComingToy

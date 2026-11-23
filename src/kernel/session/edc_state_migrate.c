@@ -123,6 +123,22 @@ static bool has_column(sqlite3 *db, const char *table, const char *column)
     return ok && n == 1;
 }
 
+/* Is |column| declared NOT NULL on |table|? pragma_table_info.notnull is 1 for a
+ * NOT NULL column. Returns false when the column is absent or the query fails. */
+static bool column_is_notnull(sqlite3 *db, const char *table, const char *column,
+                              char *err, size_t cap)
+{
+    /* "notnull" is a keyword in SQLite: quote it or the prepare fails with
+     * 'near "notnull": syntax error'. */
+    sds sql = sdscatprintf(sdsempty(), "SELECT \"notnull\" FROM pragma_table_info('%s') "
+                                       "WHERE name='%s'",
+                           table, column);
+    sqlite3_int64 n = 0;
+    const bool ok = query_one_int(db, sql, &n, err, cap) && n == 1;
+    sdsfree(sql);
+    return ok;
+}
+
 /* ══ Backup ════════════════════════════════════════════════════════════════════════ */
 
 /* Copy one file. On failure the partial destination is removed: a truncated copy that
@@ -637,6 +653,38 @@ static bool verify_v15(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v15 -> v16: sessions.workdir becomes NOT NULL.
+ *
+ * A session that used to be "unbound" had workdir = NULL. From v16 on, the unbound state
+ * is the empty string: load pins '' to the launch directory (edc_state_store_load), and
+ * every writing path persists either a real path or ''. Two statements, both inside the
+ * runner's transaction:
+ *   1. backfill NULL -> '' (SET NOT NULL refuses a column holding NULL);
+ *   2. ALTER COLUMN SET NOT NULL -- supported by SQLite 3.37+ (this build ships 3.53.4),
+ *      O(1) metadata change, and unlike a table rebuild it does not rename the table out
+ *      from under the child tables' ON DELETE CASCADE foreign keys.
+ *
+ * No DEFAULT is set here: this SQLite build has no ALTER COLUMN SET DEFAULT syntax. Every
+ * INSERT that omits workdir was changed (same commit) to pass '' explicitly, so a migrated
+ * database with no column default keeps working. A freshly created database still declares
+ * DEFAULT '' in EDC_SCHEMA_SQL as a convenience; the two shapes differ only in that unused
+ * default, which no code path relies on. */
+static bool step_v15_to_v16(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "UPDATE sessions SET workdir='' WHERE workdir IS NULL",
+                   "backfill sessions.workdir NULL -> ''", err, cap) &&
+           run_sql(db, "ALTER TABLE sessions ALTER COLUMN workdir SET NOT NULL",
+                   "make sessions.workdir NOT NULL", err, cap);
+}
+
+static bool verify_v16(sqlite3 *db, char *err, size_t cap)
+{
+    /* The NOT NULL constraint itself is the invariant: SQLite rejects any NULL workdir,
+     * so there is no separate "no NULL rows" check to perform (a row could only have a
+     * NULL there if the constraint were absent, which is what this check verifies). */
+    return column_is_notnull(db, "sessions", "workdir", err, cap);
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -653,6 +701,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {12, step_v12_to_v13, verify_v13},
     {13, step_v13_to_v14, verify_v14},
     {14, step_v14_to_v15, verify_v15},
+    {15, step_v15_to_v16, verify_v16},
     {0, NULL, NULL}, /* terminator */
 };
 

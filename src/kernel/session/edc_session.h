@@ -80,7 +80,9 @@ struct edc_session
     /* Bound working directory (absolute realpath). NULL = unset -> fall back to the
      * launch directory (config->sandbox_root_real). Tool execution (exec_shell's
      * default cwd, fs tools' relative paths) and the system prompt's {{cwd}} both
-     * use it. */
+     * use it. Production sessions are bound at creation (manager::create) or, for
+     * legacy rows with no stored workdir, on first load -- so a NULL here is the
+     * low-level default, not the normal long-lived state of a session. */
     sds workdir;
 
     uint32_t next_completion_seq; /* completion-order counter (starts at 1) */

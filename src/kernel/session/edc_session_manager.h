@@ -58,11 +58,14 @@ extern struct edc_session *edc_session_manager_session_for_task(struct edc_sessi
  *  persisted state changed behind the manager's back (tests / external tooling). */
 extern void edc_session_manager_reset_task_index(struct edc_session_manager *sm);
 
-/** Create a session (auto-named when name is NULL/empty) and make it active. */
+/** Create a session (auto-named when name is NULL/empty) and make it active. With no
+ *  explicit directory, the session is bound to the current working directory at creation
+ *  time, so it stays fixed across restarts instead of following the launch directory. */
 extern struct edc_session *edc_session_manager_create(struct edc_session_manager *sm, const char *name);
 
 /** Like edc_session_manager_create, but binds |workdir| (an existing directory).
- *  A given-but-unusable directory fails creation. */
+ *  A given-but-unusable directory fails creation; a NULL/empty |workdir| binds the
+ *  creation-time cwd as above. */
 extern struct edc_session *edc_session_manager_create_ex(struct edc_session_manager *sm, const char *name,
                                                          const char *workdir);
 

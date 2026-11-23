@@ -103,7 +103,11 @@ static const char *const EDC_SCHEMA_SQL =
     "  name                  TEXT NOT NULL,"
     "  created_at            INTEGER,"
     "  last_active           INTEGER,"
-    "  workdir               TEXT,"
+    /* NOT NULL: a session without a directory is stored as '' (unbound), never NULL.
+     * A load of '' pins the session to the launch dir (see edc_state_store_load). All
+     * session INSERTs pass workdir explicitly; the DEFAULT is a belt-and-braces guard
+     * for any future INSERT that forgets the column (a migrated v15 db has no default). */
+    "  workdir               TEXT NOT NULL DEFAULT '',"
     "  active_task_id        INTEGER, /* tasks.task_id, 0/NULL = none */"
     "  foreground_group_id   INTEGER, /* groups.group_id, 0/NULL = none */"
     "  next_completion_seq   INTEGER NOT NULL DEFAULT 1,"
@@ -1197,7 +1201,14 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
     bind_str(st, 2, (s->name && *s->name) ? s->name : "");
     sqlite3_bind_int64(st, 3, (sqlite3_int64)s->created_at);
     sqlite3_bind_int64(st, 4, (sqlite3_int64)s->last_active);
-    bind_str(st, 5, s->workdir);
+    /* workdir is NOT NULL: an unbound session persists as '' and is pinned to the launch
+     * dir on load. bind_str() treats "" as NULL (it binds NULL for any empty string), which
+     * the constraint rejects, so bind a real zero-length TEXT directly for the unbound
+     * case. One unconditional bind covers both states: NULL -> "", path -> path. */
+    {
+        const char *wd = s->workdir ? s->workdir : "";
+        sqlite3_bind_text(st, 5, wd, -1, SQLITE_TRANSIENT);
+    }
     /* INTEGER columns: a number bound as text is stored as text and reads back as 0 through
      * sqlite3_column_int64, silently losing the pointer. NULL when there is none, which is
      * what the tree used to leave behind. */
@@ -2297,6 +2308,27 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                     edc_error_free(werr);
             }
         }
+        else
+        {
+            /* A session created before workdir binding existed has no stored directory.
+             * Pin it to the directory we are launched from ONCE, so it stops following
+             * edc_cwd() on every start. The normal exit flush (this session is about to be
+             * marked state_loaded) writes the binding back, making it stable thereafter.
+             * A session explicitly unbound via set_workdir(NULL) is indistinguishable here
+             * from a legacy one, but re-binding it is the documented default anyway. */
+            /* set_workdir resolves and validates the path itself: an unreadable cwd
+             * ("") simply fails the bind and leaves the session unbound, which is the
+             * same outcome the old length guard produced -- no separate guard needed. */
+            sds cwd = edc_cwd();
+            EdcError *werr = NULL;
+            if (!edc_session_set_workdir(session, cwd, &werr))
+            {
+                log_warn("load: session %s cannot bind launch directory '%s': %s",
+                         edc_id_str(session_id), cwd, werr ? werr->message : "unknown");
+                edc_error_free(werr);
+            }
+            sdsfree(cwd);
+        }
 
         /* Session memory: a fresh table carrying the stored counters. */
         edc_session_memory_free(session->memo);
@@ -2854,8 +2886,8 @@ bool edc_state_store_group_memory_save(int64_t session_id, int64_t group_id, con
      * every other column make these minimal rows valid placeholders. */
     {
         sqlite3_stmt *se = NULL;
-        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) "
-                                     "VALUES(?,'(pending)',strftime('%s','now'))", -1, &se, NULL) == SQLITE_OK)
+        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO sessions(session_id,name,workdir,updated_at) "
+                                     "VALUES(?,'(pending)','',strftime('%s','now'))", -1, &se, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(se, 1, (sqlite3_int64)session_id);
             sqlite3_step(se);
@@ -2915,8 +2947,8 @@ bool edc_state_store_memo_detail_save(int64_t session_id, const char *entry_id, 
      * entry then saves its detail immediately). Ensure parent + row exist. */
     {
         sqlite3_stmt *se = NULL;
-        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) "
-                                     "VALUES(?,'(pending)',strftime('%s','now'))", -1, &se, NULL) == SQLITE_OK)
+        if (sqlite3_prepare_v2(g_db, "INSERT OR IGNORE INTO sessions(session_id,name,workdir,updated_at) "
+                                     "VALUES(?,'(pending)','',strftime('%s','now'))", -1, &se, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(se, 1, (sqlite3_int64)session_id);
             sqlite3_step(se);
@@ -2963,8 +2995,8 @@ bool edc_state_store_insert_task_new(int64_t session_id, int64_t group_id, int64
         sqlite3_stmt *st = NULL;
         bool ok = false;
         if (sqlite3_prepare_v2(g_db,
-                               "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) "
-                               "VALUES(?,?,?)",
+                               "INSERT OR IGNORE INTO sessions(session_id,name,workdir,updated_at) "
+                               "VALUES(?,?,'',?)",
                                -1, &st, NULL) == SQLITE_OK)
         {
             sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
@@ -3160,8 +3192,8 @@ bool edc_state_store_insert_session_new(const char *name, int64_t *out_session_i
 
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db,
-                           "INSERT INTO sessions(name,created_at,last_active,updated_at) "
-                           "VALUES(?,?,?,?)",
+                           "INSERT INTO sessions(name,created_at,last_active,workdir,updated_at) "
+                           "VALUES(?,?,?,'',?)",
                            -1, &st, NULL) != SQLITE_OK)
         return false;
     const sqlite3_int64 now = (sqlite3_int64)time(NULL);
@@ -3184,7 +3216,7 @@ bool edc_state_store_ensure_session(int64_t session_id, const char *name, uint64
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db,
                            "INSERT OR IGNORE INTO sessions(session_id,name,created_at,last_active,"
-                           "updated_at) VALUES(?,?,?,?,?)",
+                           "workdir,updated_at) VALUES(?,?,?,?,'',?)",
                            -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)session_id);
@@ -3370,7 +3402,7 @@ bool edc_state_ensure_turn(int64_t session_id, int64_t group_id, int64_t task_id
     static const char *const steps[] = {
         /* Column list and defaults match the DDL: only NOT NULL columns are given a value,
          * everything else keeps its default until the metadata flush fills it in. */
-        "INSERT OR IGNORE INTO sessions(session_id,name,updated_at) VALUES(?,'',0)",
+        "INSERT OR IGNORE INTO sessions(session_id,name,workdir,updated_at) VALUES(?,'','',0)",
         "INSERT OR IGNORE INTO groups(session_id,group_id) VALUES(?,?)",
         "INSERT OR IGNORE INTO tasks(task_id,session_id,group_id,updated_at) VALUES(?,?,?,0)",
         "INSERT OR IGNORE INTO turns(task_id,turn_ord) VALUES(?,?)",

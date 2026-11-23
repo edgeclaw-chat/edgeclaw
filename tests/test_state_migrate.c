@@ -199,7 +199,7 @@ static bool make_v1_db(const char *path, bool seed)
     if (sqlite3_open(path, &db) != SQLITE_OK)
         return false;
     bool ok = exec_ok(db, "PRAGMA journal_mode=WAL") &&
-              exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+              exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, workdir TEXT)") &&
               exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
               exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
               exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
@@ -226,7 +226,7 @@ static bool make_v7_db(const char *path)
     if (sqlite3_open(path, &db) != SQLITE_OK)
         return false;
     bool ok = exec_ok(db, "PRAGMA journal_mode=WAL") &&
-              exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+              exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, workdir TEXT)") &&
               exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
               exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY, "
                           "memo_seen_seq INTEGER NOT NULL DEFAULT 0)") &&
@@ -555,7 +555,7 @@ static void test_real_v12_to_v13(void)
     sqlite3 *db = NULL;
     CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
     bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
-                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, workdir TEXT)") &&
                  exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
                  exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
                  exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY, "
@@ -591,7 +591,7 @@ static void test_real_v13_to_v14(void)
     sqlite3 *db = NULL;
     CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
     bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
-                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, workdir TEXT)") &&
                  exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY, "
                              "fold_corpus_budget INTEGER NOT NULL DEFAULT 0)") &&
                  exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
@@ -626,7 +626,7 @@ static void test_real_v14_to_v15(void)
     sqlite3 *db = NULL;
     CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
     bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
-                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, workdir TEXT)") &&
                  exec_ok(db, "CREATE TABLE groups(group_id INTEGER PRIMARY KEY)") &&
                  exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
                  exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
@@ -648,6 +648,72 @@ static void test_real_v14_to_v15(void)
                       "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='jobs_by_next_run'") == 1,
           "jobs_by_next_run index exists");
     CHECK(query_int64(db, "SELECT count(*) FROM tasks") == 1, "existing task survives migration");
+    sqlite3_close(db);
+    drop_dir();
+}
+
+/* The real v15 -> v16 step: sessions.workdir is made NOT NULL.
+ *
+ * The fixture has a NULL workdir (the legacy "unbound" state), a real path, AND a child
+ * group with an ON DELETE CASCADE foreign key. The last one guards the implementation
+ * choice: an ALTER COLUMN SET NOT NULL keeps the parent table in place, so the child row
+ * must survive -- a table rebuild would rename sessions out from under the child's FK
+ * and the cascade would silently wipe it. */
+static void test_real_v15_to_v16(void)
+{
+    printf("\n── the real v15 -> v16 step (workdir NOT NULL) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "PRAGMA foreign_keys=ON") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, "
+                             "name TEXT NOT NULL, workdir TEXT, "
+                             "is_active INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE UNIQUE INDEX sessions_one_active ON sessions(is_active) "
+                             "WHERE is_active=1") &&
+                 exec_ok(db, "CREATE TABLE groups(session_id INTEGER NOT NULL REFERENCES "
+                             "sessions(session_id) ON DELETE CASCADE, group_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO sessions(session_id,name,workdir) VALUES(1,'legacy',NULL)") &&
+                 exec_ok(db, "INSERT INTO sessions(session_id,name,workdir) VALUES(2,'bound','/a/b')") &&
+                 exec_ok(db, "INSERT INTO groups(session_id,group_id) VALUES(1,10)") &&
+                 exec_ok(db, "PRAGMA user_version=15");
+    CHECK(built, "fixture v15 database with a NULL workdir, a real one and a child row");
+    /* Anti-vacuum: prove the precondition this test is about really exists. */
+    CHECK(query_int64(db, "SELECT count(*) FROM sessions WHERE workdir IS NULL") == 1,
+          "fixture really has one NULL workdir");
+    CHECK(query_int64(db, "SELECT \"notnull\" FROM pragma_table_info('sessions') WHERE name='workdir'") == 0,
+          "fixture workdir is nullable before migration");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 15, err, sizeof err), "v15 migrates to v16");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(query_int64(db, "SELECT \"notnull\" FROM pragma_table_info('sessions') WHERE name='workdir'") == 1,
+          "sessions.workdir is now NOT NULL");
+    CHECK(query_int64(db, "SELECT count(*) FROM sessions WHERE workdir IS NULL") == 0,
+          "no NULL workdir remains");
+    CHECK(query_int64(db, "SELECT count(*) FROM sessions WHERE workdir=''") == 1,
+          "the legacy NULL row was backfilled to '' (unbound)");
+    CHECK(query_int64(db, "SELECT count(*) FROM sessions WHERE workdir='/a/b'") == 1,
+          "an existing real path is unchanged");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups WHERE group_id=10") == 1,
+          "the child group survives (no cascade from a table rebuild)");
+    /* Migrated databases have no column DEFAULT (this SQLite build cannot ALTER one in),
+     * so the writing paths pass workdir explicitly. Prove that shape still inserts. */
+    CHECK(exec_ok(db, "INSERT INTO sessions(session_id,name,workdir,updated_at) "
+                      "VALUES(3,'fresh','',strftime('%s','now'))"),
+          "a new session can be inserted with explicit '' workdir");
+    CHECK(query_int64(db, "SELECT count(*) FROM sessions WHERE workdir=''") == 2,
+          "the freshly inserted unbound session is stored as ''");
+    CHECK(query_int64(db, "SELECT count(*) FROM pragma_foreign_key_check") == 0,
+          "no foreign key violations after migration");
     sqlite3_close(db);
     drop_dir();
 }
@@ -691,6 +757,7 @@ int main(void)
     test_real_v12_to_v13();
     test_real_v13_to_v14();
     test_real_v14_to_v15();
+    test_real_v15_to_v16();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
