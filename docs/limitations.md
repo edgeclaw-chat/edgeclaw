@@ -148,10 +148,12 @@ a log line saying so. Only a tagged build can tell whether a release is newer. T
 banner cannot be observed during development without `--update-check --current <ver>`.
 
 **The check is silent on every failure.** Offline, DNS, a TLS error, a response body over
-1 MiB, malformed JSON, and the unauthenticated API's **60 requests/hour/IP** limit (a 403) all
-produce the same thing: no banner, no message, one `log_debug` line that never reaches the log
-file. That is the intended behaviour — a background check has nothing to tell a user that they
-could act on — but it means "no banner" is not evidence that the check ran.
+1 MiB, or a body that is not a release feed all produce the same thing: no banner, no message,
+one `log_debug` line that never reaches the log file. That is the intended behaviour — a
+background check has nothing to tell a user that they could act on — but it means "no banner"
+is not evidence that the check ran. The check reads the github.com release feed and HEAD-probes
+archives, so it does not consume the anonymous **60 requests/hour/IP** API quota; a shared IP
+running out of that quota no longer turns the check into a misleading "up to date".
 
 **Turning the check off also disables `/update`.** With `update_check: false` no check runs, so
 no version is ever on offer, so `/update` always answers "No update available". The network is
@@ -227,8 +229,10 @@ Not "unverified" — verified, and wrong in a narrow case:
   **A failed check and an up-to-date install print differently.** "up to date", "could not
   check: HTTP 403 (GitHub's unauthenticated rate limit, 60 requests/hour per IP)", "could not
   check: no response before the deadline" are three separate lines, because collapsing them
-  was the command's own worst failure: it exists to tell those apart. The exit status stays 0
-  in every case -- this diagnoses the updater, so a non-zero status would look like a failure
+  was the command's own worst failure: it exists to tell those apart. The 403 line is now
+  largely historical — the check reads the github.com feed and no longer spends API quota —
+  but the outcome plumbing keeps non-200 statuses distinct. The exit status stays 0 in every
+  case -- this diagnoses the updater, so a non-zero status would look like a failure
   of the thing being diagnosed. Read the text, not `$?`. The launch-time check is still silent
   to the user; only its log line names the reason.
 

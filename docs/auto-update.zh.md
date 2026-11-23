@@ -166,12 +166,19 @@ v1 的设计是程序自己完成全部动作：下载归档、解 gzip、解 ta
 
 ## 6. 检查（每次启动一次）
 
-**端点**：`GET https://api.github.com/repos/<owner>/<repo>/releases`
+**端点**：`GET https://github.com/<repo>/releases.atom`（release feed）
 
-不用 `/releases/latest`：它会跳过 prerelease，而 `--pre` 通道需要能看到预发布版本。
-（安装器改用 `github.com/<repo>/releases.atom` 解析 tag，不消耗这里的 API 额度。）
+和安装器共用同一个 github.com feed，**不打 api.github.com**，因此不消耗匿名的
+60 次/小时/IP API 配额——共享出口 IP 上那个额度很容易被别人耗尽，一旦 403，检查就会
+把"没查到"误报成"已是最新"。feed 里每个 `<entry>` 的 `<id>` 尾段就是 tag；prerelease
+按项目约定（tag 含 `-`）判断，draft 不出现在 feed 里。
 
-**传输**：复用 `edc_https_client`（已支持重定向）。该端点不重定向，所以检查功能不依赖重定向支持。
+**归档探测**：feed 没有 assets 列表，所以对每一个比当前版本新的候选 tag，额外发一个
+`HEAD https://github.com/<repo>/releases/download/<tag>/<asset>`：200/302→对象存储=有该平台
+归档，404=没有，跳过。这样"只提供确实能下载的版本"这条保护在 feed 方案下仍然成立。
+所有请求都在 github.com，零 API 配额。
+
+**传输**：复用 `edc_https_client`（已支持重定向）。归档的 302 会跟随到对象存储。
 
 **时序**：
 
@@ -186,16 +193,19 @@ v1 的设计是程序自己完成全部动作：下载归档、解 gzip、解 ta
 - 不重试
 - 结果只在本进程内存里，不落盘
 
-**选择逻辑**（已实现于 `edc_update_pick`）：
+**选择逻辑**（网络部分在 `edc_update_check_ex`，纯 JSON 选版仍在 `edc_update_pick`）：
 
 ```
-候选 = releases 里 draft=false 的项
-若 update_channel == "stable"：只取 prerelease=false
+候选 = feed <id> 里解析出的 tag（draft 不在 feed 中）
+若 update_channel == "stable"：跳过含 '-' 的 tag
 若 update_channel == "pre"   ：全部
-取 semver 最大者，且必须 > 当前版本，且必须带本平台资产（归档 + sums）
+按 semver 从大到小排序，只保留 > 当前版本的
+逐个 HEAD 探测本平台归档：第一个返回 200 的就是要提供的版本；404 的跳过
 ```
 
-**当前版本**取自 `edc_version()`。若等于 `dev`/`unknown` 或含 `dirty`，整条链路禁用（§12）。
+**当前版本**取自 `edc_version()`。非 semver（裸 commit hash）时整条链路禁用（§12）。
+注意 `v1.2.3-13-gabc1234-dirty` 这类 git describe 形式是合法 semver（作为 prerelease），
+开发机上的脏构建仍可能真发起检查——这正是 `--update-check --current` 存在的理由。
 
 ## 7. 探测安装方式
 

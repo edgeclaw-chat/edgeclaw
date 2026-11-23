@@ -87,12 +87,26 @@ static char *http_ok(const char *body)
 /* One release for THIS platform, newer than the version the case passes in. The asset name
  * comes from edc_update_target() rather than a literal: a hardcoded platform makes the
  * picker correctly skip the release on every other machine, which looks like a broken check. */
+/* A one-entry Atom feed naming a release newer than the version the case passes in. */
 static char *newer_release(void)
 {
     return sdscatprintf(sdsempty(),
-                        "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"assets\":"
-                        "[{\"name\":\"%s_v9.9.9.tar.gz\"}]}]",
-                        edc_update_target());
+                        "<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\">"
+                        "<entry><id>tag:github.com,2008:Repository/123/v9.9.9</id></entry></feed>");
+}
+
+/* The archive-HEAD answer: 200 = this platform's build exists. */
+static char *head_ok(void)
+{
+    return sdsnew("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+}
+
+/* Put a stub into feed mode: answer the GET with |raw| and the asset HEAD probe with 200. */
+static void set_feed_mode(struct tls_stub *s, char *head_raw)
+{
+    s->raw_response_2 = head_raw;
+    s->multi = true;
+    s->max_requests = 12;
 }
 
 /* Drive the loop for |ms|, stopping early when |h->count| reaches |want|. */
@@ -128,6 +142,7 @@ int main(void)
     {
         char *body = newer_release();
         char *raw = http_ok(body);
+        char *head_raw = head_ok();
         struct tls_stub s;
         if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
         {
@@ -135,10 +150,11 @@ int main(void)
         }
         else
         {
+            set_feed_mode(&s, head_raw);
             uv_loop_t loop;
             uv_loop_init(&loop);
             struct hits h = {0, {0}};
-            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
+            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases.atom", s.port);
             struct edc_update_service *svc =
                 edc_update_service_start(&loop, g_cert, url, "1.0.0", false, /* delay */ 0, on_found, &h);
             CHECK(svc != NULL, "the service starts");
@@ -158,6 +174,7 @@ int main(void)
         }
         sdsfree(raw);
         sdsfree(body);
+        sdsfree(head_raw);
     }
 
     printf("\n── nothing newer means no callback ──\n");
@@ -165,6 +182,7 @@ int main(void)
         /* The running version is the one published: silence is the contract. */
         char *body = newer_release();
         char *raw = http_ok(body);
+        char *head_raw = head_ok();
         struct tls_stub s;
         if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
         {
@@ -172,10 +190,11 @@ int main(void)
         }
         else
         {
+            set_feed_mode(&s, head_raw);
             uv_loop_t loop;
             uv_loop_init(&loop);
             struct hits h = {0, {0}};
-            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
+            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases.atom", s.port);
             struct edc_update_service *svc =
                 edc_update_service_start(&loop, g_cert, url, "9.9.9", false, 0, on_found, &h);
             CHECK(svc != NULL, "the service starts");
@@ -192,6 +211,7 @@ int main(void)
         }
         sdsfree(raw);
         sdsfree(body);
+        sdsfree(head_raw);
     }
 
     printf("\n── a refused request gets no callback, and is not 'already current' ──\n");
@@ -214,7 +234,7 @@ int main(void)
             uv_loop_t loop;
             uv_loop_init(&loop);
             struct hits h = {0, {0}};
-            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
+            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases.atom", s.port);
             struct edc_update_service *svc =
                 edc_update_service_start(&loop, g_cert, url, "1.0.0", false, 0, on_found, &h);
             CHECK(svc != NULL, "the service starts");
@@ -238,6 +258,7 @@ int main(void)
          * parked, so the handshake has not happened yet. */
         char *body = newer_release();
         char *raw = http_ok(body);
+        char *head_raw = head_ok();
         struct tls_stub s;
         if (tls_stub_start(&s, g_cert, g_key, raw) != 0)
         {
@@ -245,10 +266,11 @@ int main(void)
         }
         else
         {
+            set_feed_mode(&s, head_raw);
             uv_loop_t loop;
             uv_loop_init(&loop);
             struct hits h = {0, {0}};
-            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases", s.port);
+            sds url = sdscatprintf(sdsempty(), "https://localhost:%d/repos/o/r/releases.atom", s.port);
             struct edc_update_service *svc = edc_update_service_start(&loop, g_cert, url, "1.0.0", false,
                                                                      /* delay */ 3000, on_found, &h);
             CHECK(svc != NULL, "the service starts");
@@ -270,6 +292,7 @@ int main(void)
         }
         sdsfree(raw);
         sdsfree(body);
+        sdsfree(head_raw);
     }
 
     printf("\n── degenerate arguments ──\n");

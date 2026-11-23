@@ -1278,16 +1278,8 @@ static void on_update_found_recording(const char *tag, void *ud)
 }
 
 #ifndef _WIN32
-/* The JSON a release list would carry for this platform, one version up. */
-static sds release_json_for_this_platform(void)
-{
-    const char *target = edc_update_target();
-    return sdscatprintf(sdsempty(),
-                        "[{\"tag_name\":\"v9.9.9\",\"draft\":false,\"prerelease\":false,\"assets\":"
-                        "[{\"name\":\"%s_v9.9.9.tar.gz\"}]}]",
-                        target);
-}
-
+/* (The feed-shaped fixture now lives in fake_release_start_newer; the app still discovers
+ * exactly one version up, v9.9.9, through the real check path.) */
 #endif
 
 int main(int argc, char **argv)
@@ -1311,11 +1303,10 @@ int main(int argc, char **argv)
      * first: the server, the endpoint it answers on, and the CA bundle the app will verify it
      * with (the app reads <workspace>/ssl/cacert.pem). */
     {
-        sds json = release_json_for_this_platform();
         char url[256] = {0};
         char cert[600] = {0};
 
-        if (fake_release_start(json, url, sizeof(url), cert, sizeof(cert)) == 0)
+        if (fake_release_start_newer("v9.9.9", url, sizeof(url), cert, sizeof(cert)) == 0)
         {
             char ssl_dir[700], cacert[800];
             snprintf(ssl_dir, sizeof(ssl_dir), "%s/ssl", g_workspace);
@@ -1340,7 +1331,6 @@ int main(int argc, char **argv)
             setenv("EDGECLAW_UPDATE_CURRENT_VERSION", "1.0.0", 1);
             setenv("EDGECLAW_UPDATE_CHECK_DELAY_MS", "0", 1);
         }
-        sdsfree(json);
     }
 #endif
 
