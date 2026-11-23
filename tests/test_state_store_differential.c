@@ -380,6 +380,10 @@ static void test_roundtrip(void)
     CHECK(edc_state_store_open(cfg), "open the store");
 
     struct edc_session *s1 = edc_session_new(cfg, edc_test_session_id("s-diff"), "Differential");
+    /* Production sessions are always bound (a session with no workdir is pinned to the
+     * launch dir on load). Bind explicitly so the round-trip compares a real value and no
+     * load-time pinning can change it between the two dumps. */
+    CHECK(edc_session_set_workdir(s1, g_dir, NULL), "bind s1 workdir");
     struct edc_scheduler *sched1 = edc_scheduler_new(cfg);
     install_sessions(sched1, s1);
     build_fixture(s1, sched1);
@@ -787,6 +791,52 @@ static void test_forget_and_lookup(void)
     edc_scheduler_free(sched);
 }
 
+/* An UNBOUND session (workdir == NULL in memory, the low-level default) must persist as
+ * the empty string, never SQL NULL: sessions.workdir is NOT NULL since v16. This is the
+ * regression for bind_session() using bind_str(), which turned "" into a NULL bind and
+ * made every flush of an unbound session fail with "NOT NULL constraint failed". */
+static void test_unbound_workdir_persists_as_empty_string(void)
+{
+    printf("\n── an unbound session flushes workdir as '' (NOT NULL) ──\n");
+
+    struct edc_config *cfg = g_new0(struct edc_config, 1);
+    cfg->workspace = sdsnew(g_dir);
+
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-unbound-wd"), "Unbound");
+    /* Anti-vacuum: prove this session really is unbound before flushing it. */
+    CHECK(s && edc_session_get_workdir(s) == NULL, "the fixture session is unbound");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_sessions(sched, s);
+    CHECK(edc_state_store_flush(s, sched), "flush an unbound session succeeds");
+
+    sqlite3 *db = edc_state_store_handle();
+    sqlite3_stmt *st = NULL;
+    bool row_ok = false;
+    bool not_sql_null = false;
+    bool is_empty = false;
+    if (db && sqlite3_prepare_v2(db,
+                                 "SELECT workdir FROM sessions WHERE session_id=?",
+                                 -1, &st, NULL) == SQLITE_OK)
+    {
+        sqlite3_bind_int64(st, 1, (sqlite3_int64)s->session_id);
+        if (sqlite3_step(st) == SQLITE_ROW)
+        {
+            row_ok = true;
+            not_sql_null = sqlite3_column_type(st, 0) != SQLITE_NULL;
+            const unsigned char *v = sqlite3_column_text(st, 0);
+            is_empty = v && v[0] == '\0';
+        }
+    }
+    sqlite3_finalize(st);
+    CHECK(row_ok, "the session row exists after flush");
+    CHECK(not_sql_null, "workdir is stored as TEXT, not SQL NULL");
+    CHECK(is_empty, "and the TEXT is the empty string (unbound)");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -809,6 +859,7 @@ int main(void)
     test_normalization();
     test_absent_session();
     test_forget_and_lookup();
+    test_unbound_workdir_persists_as_empty_string();
 
     edc_state_store_close();
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", g_dir);

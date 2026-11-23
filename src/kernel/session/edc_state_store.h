@@ -121,7 +121,9 @@ struct edc_scheduler;
  * budget, separate from fold_corpus_budget. O(1) ADD COLUMN DEFAULT 0. */
 /* v15: the `jobs` table -- scheduled jobs, replacing workspace/jobs.json. New table;
  * the old jobs.json is NOT imported (user decision). */
-#define EDC_DB_VERSION 15
+/* v16: sessions.workdir is NOT NULL. A session without a directory is stored as ''
+ * (empty = unbound) and pinned to the launch dir on load; NULL rows no longer exist. */
+#define EDC_DB_VERSION 16
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

@@ -578,6 +578,94 @@ static void test_history_dir_convention(void)
     edc_config_free(cfg);
 }
 
+/* ── 11. An UNBOUND session pins the launch directory instead of following cwd ──
+ *
+ * The bug: a session with no stored workdir (notably the default one) fell back to
+ * edc_cwd() at every read, so launching edgeclaw from a different directory silently
+ * "moved" it. The fix: when a session row has no workdir, loading pins the CURRENT
+ * directory once; the normal exit flush writes it back, so subsequent launches are
+ * stable. This test drives exactly that legacy-row path through the real store. */
+static void test_legacy_unbound_session_pins_cwd_on_load(void)
+{
+    TEST("a session row with no workdir is pinned to the launch dir on load");
+
+    /* Remember the cwd so this test never leaks a chdir into the others. */
+    sds orig = edc_cwd();
+
+    char dir[256];
+    make_tmpdir(dir, sizeof(dir));
+    char real[PATH_MAX];
+    CHECK(realpath(dir, real) != NULL, "realpath(dir)");
+
+    /* A row with NO workdir, exactly like a pre-binding default session. */
+    int64_t sid = 0;
+    CHECK(edc_state_store_insert_session_new("legacy-default", &sid), "insert row without workdir");
+
+    /* Launch from a different directory. */
+    CHECK(chdir(dir) == 0, "chdir to launch dir");
+
+    struct edc_config *cfg = make_config(case_ws());
+    struct edc_session *s = edc_session_new(cfg, sid, "legacy-default");
+    bool ok = edc_state_store_load(s, NULL);
+    CHECK(ok, "load legacy session");
+    const char *wd = edc_session_get_workdir(s);
+    CHECK(wd != NULL, "legacy session got pinned (no longer unbound)");
+    CHECK(wd && strcmp(wd, real) == 0, "pinned to the launch directory, not the agent workspace");
+
+    /* Persist, then load a fresh object: the binding must survive and stay put. */
+    CHECK(edc_state_store_flush(s, NULL), "flush pinned binding");
+    struct edc_session *s2 = edc_session_new(cfg, sid, "legacy-default");
+    CHECK(edc_state_store_load(s2, NULL), "reload");
+    CHECK(edc_session_get_workdir(s2) && strcmp(edc_session_get_workdir(s2), real) == 0,
+          "binding stays after flush/reload");
+
+    edc_session_free(s2);
+    edc_session_free(s);
+    edc_config_free(cfg);
+
+    CHECK(chdir(orig) == 0, "restore cwd");
+    sdsfree(orig);
+    rmdir(dir);
+}
+
+/* ── 12. Creating a session without a dir binds the creation-time cwd ── */
+static void test_create_binds_creation_cwd(void)
+{
+    TEST("manager::create with no dir binds the directory at creation time");
+
+    sds orig = edc_cwd();
+    char dir[256];
+    make_tmpdir(dir, sizeof(dir));
+    char real[PATH_MAX];
+    CHECK(realpath(dir, real) != NULL, "realpath(dir)");
+
+    CHECK(chdir(dir) == 0, "chdir to creation dir");
+
+    struct edc_config *cfg = make_config(case_ws());
+    struct edc_session_manager *sm = edc_session_manager_new(cfg);
+    CHECK(sm != NULL, "manager created");
+    if (sm)
+    {
+        struct edc_session *s = edc_session_manager_create(sm, "cwd-bound");
+        CHECK(s != NULL, "session created without explicit dir");
+        const char *wd = edc_session_get_workdir(s);
+        CHECK(wd != NULL, "created session is bound");
+        CHECK(wd && strcmp(wd, real) == 0, "bound to the creation-time cwd");
+        /* The directory is granted rw in the sandbox, so tools can run there. */
+        bool granted = false;
+        for (int i = 0; cfg->sandbox_rw_paths && cfg->sandbox_rw_paths[i]; i++)
+            if (strcmp(cfg->sandbox_rw_paths[i], real) == 0)
+                granted = true;
+        CHECK(granted, "creation cwd is writable in the sandbox");
+        edc_session_manager_free(sm);
+    }
+    edc_config_free(cfg);
+
+    CHECK(chdir(orig) == 0, "restore cwd");
+    sdsfree(orig);
+    rmdir(dir);
+}
+
 /* Regression: an absolute path must never be anchored at a base. The old code treated
  * only a leading slash as absolute, so a Windows path like "D:\ws" became "<base>\D:\ws"
  * and realpath failed -- creating a session with an explicit workdir failed outright.
@@ -629,6 +717,8 @@ int main(void)
     test_project_context_discovery();
     test_task_workdir_owner();
     test_history_dir_convention();
+    test_legacy_unbound_session_pins_cwd_on_load();
+    test_create_binds_creation_cwd();
 
     log_info("passed=%d failed=%d", test_passed, test_failed);
     return test_failed == 0 ? 0 : 1;
