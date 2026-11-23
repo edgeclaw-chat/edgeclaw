@@ -657,6 +657,13 @@ static void test_create_binds_creation_cwd(void)
             if (strcmp(cfg->sandbox_rw_paths[i], real) == 0)
                 granted = true;
         CHECK(granted, "creation cwd is writable in the sandbox");
+
+        /* An empty-string workdir is the same as "no directory": it binds the creation
+         * cwd too, rather than failing or leaving the session unbound. */
+        struct edc_session *e = edc_session_manager_create_ex(sm, "empty-wd", "");
+        CHECK(e != NULL, "create_ex with empty-string workdir succeeds");
+        CHECK(e && edc_session_get_workdir(e) && strcmp(edc_session_get_workdir(e), real) == 0,
+              "empty workdir also binds the creation cwd");
         edc_session_manager_free(sm);
     }
     edc_config_free(cfg);
