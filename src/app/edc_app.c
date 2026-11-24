@@ -379,19 +379,22 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     edc_context_set_tool_section_provider(app_tool_section, app->toolbox);
     edc_llm_request_bind_group_tools(app_group_tools, app->toolbox);
 
-    edc_actor_runner_start(app->runner);
-
-    /* The release check, after everything above is running: one check per launch, off the UI
-     * thread and off the actor loop, reported once if a newer release exists.
+    /* The release check: one check per launch, off the UI thread and off the actor loop,
+     * reported once if a newer release exists.
+     *
+     * It is armed BEFORE edc_actor_runner_start(): edc_update_service_start() initialises
+     * uv_async_t/uv_timer_t handles on app->runner->loop, and libuv requires those handles
+     * to be created on the loop's owning thread. Once the runner thread is running uv_run(),
+     * doing it from this (UI/constructor) thread races with the loop and corrupts handle
+     * state -- ASan showed heap-use-after-free in uv__run_closing_handles and a NULL-function
+     * pc=0 in on_actor_wakeup (test_app_boundary, ~12% of runs). Starting the service before
+     * the thread exists keeps every handle init on the thread that will own the loop.
      *
      * A build whose version is not a release (a dev build reports the commit hash) has
      * nothing to compare against, so the feature is off for it -- and that is said at INFO
-     * rather than debug. Silence here is not "nothing to report", it is "this build cannot
-     * check", and a user wondering why they are never told about updates deserves the
-     * difference. Every other reason for no result stays silent.
-     *
-     * The 10s delay is not politeness: at this instant the first model request is in flight,
-     * and a check competing with it would delay the first thing the user sees. */
+     * rather than debug. Every other reason for no result stays silent. The 10s delay is not
+     * politeness: the first model request is in flight at launch and a competing check would
+     * delay the first thing the user sees. */
     if (app->config->update_check)
     {
         const char *current = app_update_current_version();
@@ -415,6 +418,8 @@ struct edc_app *edc_app_new(bool setup, int sandbox_override)
     {
         log_info("update check: disabled in config.json (update_check=false)");
     }
+
+    edc_actor_runner_start(app->runner);
 
     sdsfree(edc_home);
     return app;
