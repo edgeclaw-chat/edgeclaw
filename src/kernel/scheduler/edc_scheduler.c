@@ -1238,6 +1238,12 @@ void edc_scheduler_resume_task(struct edc_scheduler *sched, struct edc_task *tas
     if (!sched || !task)
         return;
 
+    /* A task interrupted right after its LLM returned tool_calls can land with that turn
+     * committed and no active_turn (task 961). Recover it BEFORE the drive so the repair
+     * pass hands the model an [interrupted: ...] result for those calls and it decides
+     * whether to retry -- the tool itself is never replayed. */
+    edc_task_recover_unanswered_tool_turn(task);
+
     /* A task that ended because a dependency never produced carries the cascade's note
      * ("[failed: its dependency … ]") as its output. Resume undoes that state, so the note
      * goes with it -- otherwise /task output reports a failure that is being retried. A

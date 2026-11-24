@@ -783,6 +783,53 @@ static void test_resume_blocked_clears_the_note(void)
     edc_config_free(cfg);
 }
 
+/* ══════════════════════════════════════════════════════════════
+ *  Test: resume a task whose LAST COMMITTED turn ends with an unanswered
+ *  assistant(tool_calls) and no active_turn (task 961). The tool was never
+ *  dispatched -- its result must be synthesised as [interrupted: ...] and
+ *  handed back to the LLM, NOT replayed.
+ *  ══════════════════════════════════════════════════════════════ */
+static void test_resume_committed_turn_with_unanswered_tool(void)
+{
+    TEST("resume: committed turn ending in unanswered tool_calls -> interrupted note to LLM, no replay");
+    struct edc_config *cfg = make_config();
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("sess-961"), "S961");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_resolver(sched, s);
+    sched->send_llm = stub_send_llm;
+    sched->redispatch_tools = stub_redispatch;
+
+    struct edc_task *t = edc_task_new(edc_test_id("s961"), edc_test_session_id("sess-961"), edc_test_id("s961"), "task", edc_channel_adapter);
+    edc_task_await_exec(t);
+    seed_tool_turn(t, "c961", "exec_shell"); /* user + assistant(tool_calls), no tool result */
+    /* Commit the turn: this is what clears the ledger, leaving assistant(tool_calls)
+     * on disk with no matching tool message and no active_turn -- task 961's shape. */
+    edc_task_commit_active_turn(t);
+    CHECK(t->active_turn == NULL, "fixture: no active turn");
+    CHECK(t->tool_calls == NULL, "fixture: empty ledger (commit cleared it)");
+    CHECK(edc_queue_length(&t->turns) == 1, "fixture: one committed turn");
+    force_interrupted(t);
+
+    struct edc_task_group *g = edc_task_group_new(t);
+    edc_session_add_group(s, g);
+
+    g_send_llm_calls = 0;
+    g_redispatch_calls = 0;
+    edc_scheduler_resume_task(sched, t);
+
+    /* The turn is recovered as active and carries a synthetic tool result. */
+    CHECK(t->active_turn != NULL, "committed turn recovered as active_turn");
+    CHECK(t->active_turn && turn_has_tool_msg(t->active_turn, "c961"),
+          "an interrupted tool RESULT is synthesised (handed to LLM, not replayed)");
+    CHECK(edc_task_awaits_exec(t), "resumed -> LLM_PROCESSING (not IDLE)");
+    CHECK(g_send_llm_calls == 1, "LLM re-dispatched once with the interrupted note");
+    CHECK(g_redispatch_calls == 0, "tool NOT replayed (no redispatch)");
+
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    edc_config_free(cfg);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -797,6 +844,7 @@ int main(void)
     test_resume_pending_redispatches();
     test_resume_migrated_task_with_pending_tool();
     test_resume_migrated_task_with_turn();
+    test_resume_committed_turn_with_unanswered_tool();
     test_resume_nothing_left_is_ready();
     test_resume_error_continues_turn();
     test_resume_error_pending_tool_redispatches();

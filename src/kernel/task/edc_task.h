@@ -650,6 +650,13 @@ extern const char *edc_task_interrupted_tool_note(void);
  *  still PENDING (to be re-dispatched) rather than interrupted. */
 extern void edc_task_repair_dangling_tool_calls(struct edc_task *task);
 
+/** Recover a committed turn that ends with unanswered tool_calls into active_turn
+ *  (task interrupted right after its LLM returned tool calls). The calls are registered
+ *  EXECUTING so the repair pass synthesises an [interrupted: ...] result for the model to
+ *  decide on -- the tools are NOT replayed. Returns true when a turn was promoted. Call
+ *  before edc_task_repair_dangling_tool_calls on the resume path. */
+extern bool edc_task_recover_unanswered_tool_turn(struct edc_task *task);
+
 extern void edc_task_set_output(struct edc_task *task, sds output);
 extern sds edc_task_get_output(struct edc_task *task);
 
