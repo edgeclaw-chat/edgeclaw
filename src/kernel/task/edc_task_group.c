@@ -29,6 +29,8 @@ struct edc_task_group *edc_task_group_new(struct edc_task *leader)
     leader->group_next = NULL;
     group->member_count = 1;
     group->is_orphaned = false;
+    group->is_archived = false;
+    group->archived_at = 0;
     /* User group is the default; a system group is only named explicitly by a
      * system task's creator (see edc_group_kind in task_group.h). */
     group->kind = EDC_GROUP_KIND_USER;
@@ -599,6 +601,36 @@ void edc_task_group_mark_orphaned(struct edc_task_group *group)
         group->leader->is_group_leader = 0;
         group->leader = NULL;
     }
+}
+
+void edc_task_group_set_archived(struct edc_task_group *group, bool archived)
+{
+    if (!group || group->is_archived == archived)
+        return;
+    group->is_archived = archived;
+    group->archived_at = archived ? (uint64_t)time(NULL) : 0;
+}
+
+sds edc_task_group_unavailable_reason(const struct edc_task_group *g, const char *flag)
+{
+    if (edc_task_group_accepts_work(g))
+        return NULL;
+    if (!g)
+        return sdsnew("**No group** named — start a fresh one.");
+    if (edc_task_group_is_system(g))
+        return sdscatprintf(sdsempty(), "`%s` cannot name the system group — it does not take new work.", flag);
+    if (g->is_archived)
+    {
+        sds gid = sdsnew(edc_id_str(g->group_id));
+        sds r = sdscatprintf(sdsempty(), "**Group** `%s` is archived — restore it first with "
+                                        "`/group restore %s`, or start a fresh one.", gid, gid);
+        sdsfree(gid);
+        return r;
+    }
+    if (g->is_orphaned || !g->leader)
+        return sdscatprintf(sdsempty(), "`%s` cannot name a conversation whose leader is gone — "
+                                        "start a fresh one.", flag);
+    return sdscatprintf(sdsempty(), "**Group** `%s` is finished — start a fresh one.", edc_id_str(g->group_id));
 }
 
 /* ── Signals ───────────────────────────────────────────────── */

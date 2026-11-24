@@ -573,6 +573,17 @@ COMMAND REFERENCE
      /group history <id>      The whole group's history, one block per member.
      /group fold [id] [focus] Fold the group now, ignoring the trigger
                               (default: the foreground group).
+     /group list [--all]      List groups (--all includes archived ones).
+     /group archive <id>      Retire a group out of the sidebar. Soft: keeps
+       [--force] [--no-       tasks/history/memory, seeds one session-memory
+       harvest] [--curate]    entry, and stops accepting new work. Refuses
+                              unfinished tasks unless --force; --no-harvest
+                              skips the seed, --curate (opt-in) runs an LLM
+                              curation. Batch: --idle 30d [--dry-run].
+     /group restore <id>      Bring an archived group back.
+     /group rm <id> --yes     Hard-delete an archived group (confirmed only);
+                              cross-group dependency edges are dropped, the
+                              memory entry is kept.
 
      Scheduling
      /jobs                     List the scheduled jobs (edgeclaw.db jobs table):

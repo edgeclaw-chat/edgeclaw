@@ -252,12 +252,72 @@ static void test_history_append(void)
 
 /* ── main ──────────────────────────────────────────────────── */
 
+/* ── N. accepts_work / unavailable_reason (one placement rule, all branches) ── */
+static void test_accepts_work(void)
+{
+    TEST("accepts_work rejects system / archived / orphaned / empty, gives one reason each");
+    struct edc_task *leader = edc_task_new(edc_test_id("aw-L"), edc_test_session_id("sess-aw"),
+                                           edc_test_id("aw-L"), "leader", edc_channel_adapter);
+    leader->step = EDC_TASKSTEP_DONE;
+    leader->life = EDC_LIFE_COMPLETED;
+    struct edc_task_group *g = edc_task_group_new(leader);
+
+    /* A finished, non-empty, user group accepts work. */
+    CHECK(edc_task_group_accepts_work(g), "finished user group accepts work");
+    CHECK(edc_task_group_unavailable_reason(g, "-g") == NULL, "no reason when work is accepted");
+
+    /* archived */
+    edc_task_group_set_archived(g, true);
+    CHECK(!edc_task_group_accepts_work(g), "archived group refuses work");
+    sds r = edc_task_group_unavailable_reason(g, "-g");
+    CHECK(r && strstr(r, "archived") != NULL, "archived reason mentions restore");
+    sdsfree(r);
+    edc_task_group_set_archived(g, false);
+
+    /* system */
+    g->kind = EDC_GROUP_KIND_SYSTEM;
+    CHECK(!edc_task_group_accepts_work(g), "system group refuses work");
+    r = edc_task_group_unavailable_reason(g, "-g");
+    CHECK(r && strstr(r, "system") != NULL, "system reason");
+    sdsfree(r);
+    g->kind = EDC_GROUP_KIND_USER;
+
+    /* orphaned (leader gone) */
+    edc_task_group_mark_orphaned(g);
+    CHECK(!edc_task_group_accepts_work(g), "orphaned group refuses work");
+    r = edc_task_group_unavailable_reason(g, "-g");
+    CHECK(r && strstr(r, "leader is gone") != NULL, "orphaned reason");
+    sdsfree(r);
+
+    /* empty group: rebuild a fresh leader to clear orphan, then empty it */
+    struct edc_task *l2 = edc_task_new(edc_test_id("aw-L2"), edc_test_session_id("sess-aw"),
+                                       edc_test_id("aw-L2"), "leader2", edc_channel_adapter);
+    l2->step = EDC_TASKSTEP_DONE;
+    l2->life = EDC_LIFE_COMPLETED;
+    struct edc_task_group *g2 = edc_task_group_new(l2);
+    edc_task_group_remove_task(g2, l2);
+    CHECK(!edc_task_group_accepts_work(g2), "empty group refuses work");
+    r = edc_task_group_unavailable_reason(g2, "-g");
+    CHECK(r && strstr(r, "finished") != NULL, "empty/finished reason");
+    sdsfree(r);
+    edc_task_group_free(g2); /* frees the detached leader too */
+
+    /* NULL group */
+    CHECK(!edc_task_group_accepts_work(NULL), "NULL refuses work");
+    r = edc_task_group_unavailable_reason(NULL, "-g");
+    CHECK(r != NULL, "NULL group still yields a reason");
+    sdsfree(r);
+
+    edc_task_group_free(g);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
     log_info("=== Phase 2: edc_task_group 模块测试 ===");
     log_info("");
 
+    test_accepts_work();
     test_group_lifecycle();
     test_member_management();
     test_leader_management();

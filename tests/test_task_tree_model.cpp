@@ -192,6 +192,24 @@ int main()
         Check(m.IsUnread("4"), "and it stays unread");
     }
 
+    {
+        std::cout << "archived groups are hidden from the sidebar\n";
+        TaskTreeModel m;
+        edc::TaskSnapshot active = Snap(GroupKind::User, {Task("7", "LLM_PROCESSING")});
+        m.Apply(&active);
+        Check(m.groups().size() == 1, "the group shows while active");
+
+        edc::TaskSnapshot archived = Snap(GroupKind::User, {Task("7", "COMPLETED")});
+        archived.groups[0].archived = true;
+        m.Apply(&archived);
+        Check(m.groups().empty(), "an archived group leaves the sidebar");
+        Check(m.TakeFinished().empty(), "its finish does not raise an unread marker");
+
+        edc::TaskSnapshot restored = Snap(GroupKind::User, {Task("7", "COMPLETED")});
+        m.Apply(&restored);
+        Check(m.groups().size() == 1, "restoring brings it back");
+    }
+
     if (g_failures == 0)
         std::cout << "\nall model checks passed\n";
     else

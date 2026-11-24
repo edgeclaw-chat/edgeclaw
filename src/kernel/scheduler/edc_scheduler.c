@@ -625,8 +625,8 @@ static struct edc_task_group *sched_settle_task(struct edc_scheduler *sched, str
     case EDC_TASK_PLACE_FOREGROUND:
     default:
         group = sched_foreground(session);
-        /* A finished, orphaned or system group is not a place to put new work. */
-        if (!group || group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group))
+        /* One predicate for "can this group take work" (system/orphaned/archived/empty). */
+        if (!edc_task_group_accepts_work(group))
             group = edc_scheduler_create_group(sched, session, task);
         else
             edc_task_group_add_task(group, task);
@@ -1974,6 +1974,7 @@ static void sched_handle_task_snapshot(struct edc_scheduler *sched, struct edc_s
         cJSON_AddStringToObject(gj, "kind", edc_task_group_kind_name(g->kind));
         cJSON_AddNumberToObject(gj, "member_count", g->member_count);
         cJSON_AddBoolToObject(gj, "orphaned", g->is_orphaned);
+        cJSON_AddBoolToObject(gj, "archived", g->is_archived); /* retired groups are hidden by the tree model */
         cJSON_AddBoolToObject(gj, "fg", sched_foreground(session) == g);
         /* Committed history (minus the system prompt slot) + its tasks' in-flight turns. */
         size_t g_msg_count = (size_t)edc_task_group_history_count(g);

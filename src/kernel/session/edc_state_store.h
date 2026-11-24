@@ -123,7 +123,12 @@ struct edc_scheduler;
  * the old jobs.json is NOT imported (user decision). */
 /* v16: sessions.workdir is NOT NULL. A session without a directory is stored as ''
  * (empty = unbound) and pinned to the launch dir on load; NULL rows no longer exist. */
-#define EDC_DB_VERSION 16
+/* v17: groups.is_archived / groups.archived_at -- the group retirement lifecycle. An
+ * archived group stays in the tree (and keeps its DB row via flush's mark_seen_group);
+ * the flags only drive display and placement. Also groups.idle_since -- the persistent
+ * "when this group became idle" clock, so a restart does not reset the --idle window.
+ * All three columns default 0 (active / unknown idle). */
+#define EDC_DB_VERSION 17
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

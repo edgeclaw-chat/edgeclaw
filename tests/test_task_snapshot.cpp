@@ -160,7 +160,14 @@ void TestMissingFieldsDegrade()
           "absent kind -> User");
     Check(At(snap.groups, 1).kind == edc::GroupKind::User, "unknown kind -> User");
     Check(At(snap.groups, 0).tasks.empty() && At(snap.groups, 0).msg_count == 0, "absent arrays/counters -> empty/0");
-    Check(!At(snap.groups, 0).fg && !At(snap.groups, 0).orphaned, "absent flags -> false");
+    Check(!At(snap.groups, 0).fg && !At(snap.groups, 0).orphaned && !At(snap.groups, 0).archived,
+          "absent flags -> false (archived included)");
+    {
+        const char *with_archived = R"json({"groups":[{"id":"5","archived":true}]})json";
+        edc::TaskSnapshot a;
+        Check(edc::ParseTaskSnapshot(with_archived, &a), "parses an archived group");
+        Check(a.groups.size() == 1 && At(a.groups, 0).archived, "archived:true reaches the DTO");
+    }
     Check(At(snap.groups, 0).tokens_prompt == 0 && At(snap.groups, 0).tokens_completion == 0 &&
               At(snap.groups, 0).tokens_cached == 0 && At(snap.groups, 0).ctx_tokens == 0,
           "absent group usage -> 0 (an older producer draws no usage line)");

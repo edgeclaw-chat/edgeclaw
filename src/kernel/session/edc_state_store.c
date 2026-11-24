@@ -141,6 +141,11 @@ static const char *const EDC_SCHEMA_SQL =
      * recoverable from the remaining rows. */
     "  group_id           INTEGER NOT NULL,"
     "  is_orphaned        INTEGER NOT NULL DEFAULT 0,"
+    /* v17: group retirement. 0/false = active. */
+    "  is_archived        INTEGER NOT NULL DEFAULT 0,"
+    "  archived_at        INTEGER NOT NULL DEFAULT 0,"
+    /* v17: persistent idle clock (epoch seconds, 0 = busy/unknown). */
+    "  idle_since         INTEGER NOT NULL DEFAULT 0,"
     "  kind               TEXT NOT NULL DEFAULT 'user',"
     "  memory             TEXT,"
     "  fold_epoch         INTEGER NOT NULL DEFAULT 0,"
@@ -1227,11 +1232,13 @@ static void bind_session(sqlite3_stmt *st, void *ctx)
 static const char *INSERT_GROUP =
     /* `memory` is deliberately absent: that text is DB-only, written by fold landing via
      * edc_state_store_group_memory_save(). A generic flush must never overwrite it. */
-    "INSERT INTO groups(session_id,group_id,is_orphaned,kind,fold_epoch,"
+    "INSERT INTO groups(session_id,group_id,is_orphaned,is_archived,archived_at,idle_since,kind,fold_epoch,"
     "memory_created_at,memory_updated_at,memory_covers_to,fold_corpus_budget,"
     "fold_failure_state,fold_held,extract_summary_budget,ord) "
-    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
     "ON CONFLICT(session_id,group_id) DO UPDATE SET is_orphaned=excluded.is_orphaned,"
+    "is_archived=excluded.is_archived,archived_at=excluded.archived_at,"
+    "idle_since=excluded.idle_since,"
     "kind=excluded.kind,"
     "fold_epoch=excluded.fold_epoch,memory_created_at=excluded.memory_created_at,"
     "memory_updated_at=excluded.memory_updated_at,memory_covers_to=excluded.memory_covers_to,"
@@ -1253,17 +1260,20 @@ static void bind_group(sqlite3_stmt *st, void *ctx)
     sqlite3_bind_int64(st, 1, (sqlite3_int64)b->session_id);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)g->group_id);
     sqlite3_bind_int(st, 3, g->is_orphaned ? 1 : 0);
-    bind_str(st, 4, edc_task_group_kind_name(g->kind));
+    sqlite3_bind_int(st, 4, g->is_archived ? 1 : 0);
+    sqlite3_bind_int64(st, 5, (sqlite3_int64)g->archived_at);
+    sqlite3_bind_int64(st, 6, (sqlite3_int64)g->idle_since);
+    bind_str(st, 7, edc_task_group_kind_name(g->kind));
     /* memory column intentionally not bound (DB-only text, see INSERT_GROUP). */
-    bind_num(st, 5, (double)g->fold_epoch);
-    bind_num(st, 6, (double)g->memory_created_at);
-    bind_num(st, 7, (double)g->memory_updated_at);
-    bind_num(st, 8, (double)g->memory_covers_to);
-    bind_num(st, 9, (double)g->fold_corpus_budget);
-    sqlite3_bind_int(st, 10, g->fold_failures);
-    sqlite3_bind_int(st, 11, g->fold_held ? 1 : 0);
-    bind_num(st, 12, (double)g->extract_summary_budget);
-    sqlite3_bind_int(st, 13, b->ord);
+    bind_num(st, 8, (double)g->fold_epoch);
+    bind_num(st, 9, (double)g->memory_created_at);
+    bind_num(st, 10, (double)g->memory_updated_at);
+    bind_num(st, 11, (double)g->memory_covers_to);
+    bind_num(st, 12, (double)g->fold_corpus_budget);
+    sqlite3_bind_int(st, 13, g->fold_failures);
+    sqlite3_bind_int(st, 14, g->fold_held ? 1 : 0);
+    bind_num(st, 15, (double)g->extract_summary_budget);
+    sqlite3_bind_int(st, 16, b->ord);
 }
 
 static const char *INSERT_TASK =
@@ -2510,7 +2520,7 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
      * row keyed on the old id would point at a group that no longer answers to it. */
     {
         sqlite3_stmt *st = NULL;
-        if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,kind,memory,fold_epoch,"
+        if (sqlite3_prepare_v2(g_db, "SELECT group_id,is_orphaned,is_archived,archived_at,idle_since,kind,memory,fold_epoch,"
                                      "memory_created_at,memory_updated_at,memory_covers_to,"
                                      "fold_corpus_budget,fold_failure_state,fold_held,extract_summary_budget "
                                      "FROM groups WHERE session_id=? ORDER BY ord",
@@ -2561,21 +2571,29 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
             }
             if (is_orph)
                 group->is_orphaned = true;
-            group->kind = edc_task_group_classify_kind(col_str(st, 2));
+            /* v17: load the retirement flags directly (never through the setter -- that
+             * would stamp a fresh clock and lose the persisted archived_at). */
+            group->is_archived = sqlite3_column_int(st, 2) != 0;
+            group->archived_at = (uint64_t)col_i64(st, 3);
+            /* Persisted idle clock. edc_task_group_new() and the add_task() calls below
+             * re-stamp idle_since with `now`; restore the saved value AFTER members are
+             * attached (see just before add_group) so a restart does not reset --idle. */
+            const time_t saved_idle_since = (time_t)col_i64(st, 4);
+            group->kind = edc_task_group_classify_kind(col_str(st, 5));
             {
                 /* The summary text is DB-only, not resident. Recompute the cheap token
                  * estimate once at load so request-side estimation never reads the text. */
-                const char *mem = col_str(st, 3);
+                const char *mem = col_str(st, 6);
                 group->memory_tokens = mem ? edc_token_estimate_text(mem) : 0;
             }
-            group->fold_epoch = (uint32_t)col_i64(st, 4);
-            group->memory_created_at = (uint64_t)col_i64(st, 5);
-            group->memory_updated_at = (uint64_t)col_i64(st, 6);
-            group->memory_covers_to = (uint64_t)col_i64(st, 7);
-            group->fold_corpus_budget = col_i64(st, 8);
-            group->fold_failures = sqlite3_column_int(st, 9);
-            group->fold_held = sqlite3_column_int(st, 10) != 0;
-            group->extract_summary_budget = col_i64(st, 11);
+            group->fold_epoch = (uint32_t)col_i64(st, 7);
+            group->memory_created_at = (uint64_t)col_i64(st, 8);
+            group->memory_updated_at = (uint64_t)col_i64(st, 9);
+            group->memory_covers_to = (uint64_t)col_i64(st, 10);
+            group->fold_corpus_budget = col_i64(st, 11);
+            group->fold_failures = sqlite3_column_int(st, 12);
+            group->fold_held = sqlite3_column_int(st, 13) != 0;
+            group->extract_summary_budget = col_i64(st, 14);
 
             /* members, in the stored order; the leader is already on the list */
             {
@@ -2634,6 +2652,12 @@ bool edc_state_store_load(struct edc_session *session, struct edc_scheduler *sch
                 }
                 sqlite3_finalize(f);
             }
+
+            /* Restore the persisted idle clock AFTER all add_task() calls: each one ran
+             * refresh_busy(now), which would otherwise overwrite it. A group whose saved
+             * stamp is 0 was busy at flush time -- keep the derived 0 only if it is still
+             * busy now; otherwise let refresh_busy's fresh stamp stand. */
+            group->idle_since = saved_idle_since;
 
             edc_session_add_group(session, group);
             load_group_put(group_map, group_id, group);

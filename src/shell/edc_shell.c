@@ -659,7 +659,7 @@ bool edc_shell_spawn_plain_task(struct edc_session_manager *sm, struct edc_sched
     struct edc_session *session = edc_session_store_resolve_session(sm, message->session_id);
 
     struct edc_task_group *group = session ? session->foreground_group : NULL;
-    if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
+    if (!edc_task_group_accepts_work(group))
         group = NULL;
 
     /* The payload is what the passes produced: |text| is the final user text, |synthetic|

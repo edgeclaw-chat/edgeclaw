@@ -70,6 +70,9 @@ int main(void)
     CHECK(has(full, "--with"), "/task new --with");
     CHECK(has(full, "/group list"), "/group list (groups live here)");
     CHECK(has(full, "/group fold"), "/group fold");
+    CHECK(has(full, "/group archive <id>"), "/group archive");
+    CHECK(has(full, "/group restore <id>"), "/group restore");
+    CHECK(has(full, "/group rm <id> --yes"), "/group rm");
 
     TEST("full help documents the `+` new-group form");
     CHECK(has(full, "+\"desc\""), "the new-group task form (its description is a quoted string)");

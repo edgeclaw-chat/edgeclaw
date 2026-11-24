@@ -68,6 +68,10 @@ void TaskTreeModel::Apply(const TaskSnapshot *snap)
     std::string active_group_id;
     for (const edc::TaskGroup &g : snap->groups)
     {
+        /* Retired groups stay in the session but leave the sidebar. Skip before any
+         * bookkeeping, so an archived group's finishes cannot raise unread markers. */
+        if (g.archived)
+            continue;
         GroupInfo group;
         group.group_id = g.group_id;
         group.kind = g.kind;

@@ -39,6 +39,13 @@ struct edc_task_group
 
     bool is_orphaned; /* set once the leader exits */
 
+    /* Retirement lifecycle (a user decision, independent of is_orphaned and of the
+     * system kind). An archived group STAYS in session->groups with all its tasks and
+     * edges -- the flush keeps its DB row via mark_seen_group; only the display and
+     * placement layers treat it differently. Set together by edc_task_group_set_archived. */
+    bool is_archived;
+    uint64_t archived_at; /* epoch seconds, 0 while active; persisted (groups.archived_at) */
+
     /* ── The group's shared history: IDS, not copies ──────────────────────
      *
      * This used to be a cJSON array holding a COPY of every unfolded message, which for a
@@ -175,6 +182,30 @@ extern struct edc_task *edc_task_group_find_task(struct edc_task_group *group, i
  * leaving the two fields out of step. The stamp only moves when the group crosses into
  * idle (or is seen idle for the first time); staying idle keeps the original moment. */
 extern void edc_task_group_refresh_busy(struct edc_task_group *group, time_t now);
+
+/* Retirement. set_archived(true) stamps the wall clock once; the false->true edge only
+ * (a repeated archive does not refresh the clock, restore clears it). Idempotent. */
+extern void edc_task_group_set_archived(struct edc_task_group *group, bool archived);
+static inline bool edc_task_group_is_archived(const struct edc_task_group *group)
+{
+    return group && group->is_archived;
+}
+
+/* "Can new work be placed in this group?" -- the ONE predicate behind every named-group
+ * resolver (-g/--group on a shell line, /task new, /prompt, /skill) and the foreground
+ * fallback. A group refuses work when it is a system group, orphaned (no leader to
+ * revive), archived (retired), or empty. Keeping the rule here means adding a new
+ * un-available state is one edit, not a hunt through the command layer. */
+static inline bool edc_task_group_accepts_work(const struct edc_task_group *g)
+{
+    return g && !g->is_orphaned && !g->is_archived && g->member_count > 0 && !edc_task_group_is_system(g);
+}
+
+/* The refusal reason for a group that does NOT accept work, phrased for `flag` (e.g.
+ * "-g|--group" or "--group"); includes how to recover (restore / new group). Returns
+ * NULL when the group DOES accept work. Caller sdsfree. One wording source so the three
+ * resolvers cannot drift apart. */
+extern sds edc_task_group_unavailable_reason(const struct edc_task_group *g, const char *flag);
 
 /* ── Group history: a slot list, not a copy of the conversation ───────────────
  *

@@ -718,6 +718,59 @@ static void test_real_v15_to_v16(void)
     drop_dir();
 }
 
+/* The real v16 -> v17 step: group retirement columns. Both are additive DEFAULT 0, so
+ * every pre-v17 group reads back active; existing groups and their data are untouched. */
+static void test_real_v16_to_v17(void)
+{
+    printf("\n── the real v16 -> v17 step (group archive columns) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "PRAGMA foreign_keys=ON") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, "
+                             "name TEXT NOT NULL, workdir TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE groups(session_id INTEGER NOT NULL REFERENCES "
+                             "sessions(session_id) ON DELETE CASCADE, group_id INTEGER PRIMARY KEY, "
+                             "is_orphaned INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO sessions(session_id,name) VALUES(1,'s')") &&
+                 exec_ok(db, "INSERT INTO groups(session_id,group_id) VALUES(1,10)") &&
+                 exec_ok(db, "INSERT INTO groups(session_id,group_id) VALUES(1,11)") &&
+                 exec_ok(db, "PRAGMA user_version=16");
+    CHECK(built, "fixture v16 database with two groups");
+    CHECK(!column_exists(db, "groups", "is_archived") && !column_exists(db, "groups", "idle_since"),
+          "fixture has no retirement/idle columns before migration");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 16, err, sizeof err), "v16 migrates to v17");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "groups", "is_archived") &&
+              column_exists(db, "groups", "archived_at") &&
+              column_exists(db, "groups", "idle_since"),
+          "all three v17 columns exist");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups WHERE is_archived!=0 OR archived_at!=0 OR idle_since!=0") == 0,
+          "all pre-existing groups default to active / unknown idle");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups") == 2, "group rows survive");
+    /* Defaulted columns accept an explicit write (the writer path binds all three). */
+    CHECK(exec_ok(db, "UPDATE groups SET is_archived=1, archived_at=12345, idle_since=999 WHERE group_id=10"),
+          "retirement/idle fields can be written");
+    CHECK(query_int64(db, "SELECT archived_at FROM groups WHERE group_id=10") == 12345,
+          "archived_at round-trips");
+    CHECK(query_int64(db, "SELECT idle_since FROM groups WHERE group_id=10") == 999,
+          "idle_since round-trips");
+    CHECK(query_int64(db, "SELECT count(*) FROM pragma_foreign_key_check") == 0,
+          "no foreign key violations after migration");
+    sqlite3_close(db);
+    drop_dir();
+}
+
 /* Running it twice: the second run must refuse (there is nothing to do), not "succeed"
  * silently and not corrupt anything. That is what makes a retry after a crash safe. */
 static void test_rerun_is_refused(void)
@@ -758,6 +811,7 @@ int main(void)
     test_real_v13_to_v14();
     test_real_v14_to_v15();
     test_real_v15_to_v16();
+    test_real_v16_to_v17();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);

@@ -837,6 +837,76 @@ static void test_unbound_workdir_persists_as_empty_string(void)
     edc_config_free(cfg);
 }
 
+/* ── Group retirement: archived fields round-trip; delete_stale keeps a group that
+ * stays in the tree and removes one that left it. ───────────────────────────── */
+static void test_group_archive_persistence(void)
+{
+    printf("\n── group retirement columns persist; delete_stale honors the tree ──\n");
+
+    struct edc_config *cfg = g_new0(struct edc_config, 1);
+    cfg->workspace = sdsnew(g_dir);
+    struct edc_session *s = edc_session_new(cfg, edc_test_session_id("s-arch"), "Archive");
+    struct edc_scheduler *sched = edc_scheduler_new(cfg);
+    install_sessions(sched, s);
+
+    struct edc_task *l1 = edc_task_new(edc_test_id("a-1"), s->session_id, edc_test_id("ag-1"), "archived", edc_channel_adapter);
+    l1->is_group_leader = 1;
+    l1->step = EDC_TASKSTEP_DONE;
+    l1->life = EDC_LIFE_COMPLETED;
+    edc_queue_init(&l1->turns);
+    struct edc_task_group *archived = edc_task_group_new(l1);
+    edc_session_add_group(s, archived);
+    edc_task_group_set_archived(archived, true);
+    archived->archived_at = 1234567; /* deterministic clock */
+
+    struct edc_task *l2 = edc_task_new(edc_test_id("a-2"), s->session_id, edc_test_id("ag-2"), "stays", edc_channel_adapter);
+    l2->is_group_leader = 1;
+    l2->step = EDC_TASKSTEP_DONE;
+    l2->life = EDC_LIFE_COMPLETED;
+    edc_queue_init(&l2->turns);
+    struct edc_task_group *stays = edc_task_group_new(l2);
+    edc_session_add_group(s, stays);
+    /* A finished group with a deterministic idle clock: load re-stamps idle_since=now in
+     * edc_task_group_new(), so this pins the restore-from-DB path. */
+    stays->idle_since = 1111111;
+
+    struct edc_task *l3 = edc_task_new(edc_test_id("a-3"), s->session_id, edc_test_id("ag-3"), "removed", edc_channel_adapter);
+    l3->is_group_leader = 1;
+    l3->step = EDC_TASKSTEP_DONE;
+    l3->life = EDC_LIFE_COMPLETED;
+    edc_queue_init(&l3->turns);
+    struct edc_task_group *removed = edc_task_group_new(l3);
+    edc_session_add_group(s, removed);
+
+    CHECK(edc_state_store_flush(s, sched), "flush with two live groups and one to remove");
+
+    /* Remove `removed` from the tree, then flush again: delete_stale must drop its row
+     * but keep the archived group (which is still in the tree). */
+    const int64_t removed_gid = removed->group_id;
+    edc_session_remove_group(s, removed);
+    CHECK(edc_state_store_flush(s, sched), "flush after removing a group from the tree");
+    /* free it only after the flush (the tree no longer owns it here) */
+    edc_task_group_free(removed);
+
+    struct edc_session *probe = edc_session_new(cfg, edc_test_session_id("s-arch"), "Archive");
+    struct edc_scheduler *psched = edc_scheduler_new(cfg);
+    install_sessions(psched, probe);
+    CHECK(edc_state_store_load(probe, psched), "load the flushed archive session");
+    struct edc_task_group *ra = edc_session_find_group(probe, archived->group_id);
+    struct edc_task_group *rs = edc_session_find_group(probe, stays->group_id);
+    CHECK(ra != NULL && edc_task_group_is_archived(ra), "archived group survives load, still archived");
+    CHECK(ra && ra->archived_at == 1234567, "archived_at round-trips exactly");
+    CHECK(rs != NULL && !edc_task_group_is_archived(rs), "active group survives load, still active");
+    CHECK(rs && rs->idle_since == 1111111, "persisted idle_since survives load (not re-stamped to now)");
+    CHECK(edc_session_find_group(probe, removed_gid) == NULL, "removed group row was deleted by delete_stale");
+
+    edc_session_free(probe);
+    edc_scheduler_free(psched);
+    edc_session_free(s);
+    edc_scheduler_free(sched);
+    free(cfg);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* open the disposable store before anything writes */
@@ -854,6 +924,7 @@ int main(void)
 
     test_roundtrip();
     test_flush_is_idempotent();
+    test_group_archive_persistence();
     test_memo_removals_persist();
     test_completed_tool_calls_do_not_resurrect();
     test_normalization();
