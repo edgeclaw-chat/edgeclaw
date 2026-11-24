@@ -280,7 +280,7 @@ model, and continues instead of starting over. The id is required (there is no b
 | General | `/help` `/whoami` `/model` `/prompt` `/skill` `/reload` `/connect` `/sandbox` `/shell` |
 | Session | `/session new · switch · list · info · status · save · stop · remove · rename · memo` |
 | Tasks | `/task new · fork · list · status · output · history · fg · bg · stop · resume` |
-| Groups | `/group list · info · history · fold` |
+| Groups | `/group list · info · history · fold · archive · restore · rm` (archive retires a group out of the sidebar without losing its memory) |
 | Scheduling | `/jobs list · run <id> · rm <id>` |
 
 Common options: `--bg` (same group, background), `--new-group`, `-d <id>` (wait for a task

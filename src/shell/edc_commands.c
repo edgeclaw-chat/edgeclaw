@@ -396,11 +396,15 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "resume an INTERRUPTED / ERROR / CANCELLED task; the id is required (there is no batch form)",
      NULL},
 
-    {"Group", "/group list", "list all groups", NULL},
+    {"Group", "/group list [--all]", "list groups (--all includes archived)", NULL},
     {"Group", "/group info [id]", "a group's context / fold numbers (default: the foreground group)", NULL},
     {"Group", "/group files [id]", "the files the group's folded work read / modified", NULL},
     {"Group", "/group history <id>", "the whole group's history, one block per member", NULL},
     {"Group", "/group fold [id] [focus]", "fold the group now, ignoring the trigger", NULL},
+    {"Group", "/group archive <id> [--force] [--no-harvest] [--curate]",
+     "retire a group out of the sidebar (keeps its knowledge; --idle <30d> for batch)", NULL},
+    {"Group", "/group restore <id>", "bring an archived group back", NULL},
+    {"Group", "/group rm <id> --yes", "hard-delete an archived group (confirmed; memory entry kept)", NULL},
 };
 
 #define EDC_CMD_DOC_COUNT (sizeof(k_cmd_docs) / sizeof(k_cmd_docs[0]))
@@ -1274,15 +1278,26 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
 
     if (group_text)
     {
-        /* The name may not exist yet; the scheduler makes one led by this task. */
-        if (!edc_session_find_group(session, (int64_t)strtoll(group_text, NULL, 10)))
+        /* The name may not exist yet; the scheduler makes one led by this task. An
+         * EXISTING group that cannot take work (system / archived / orphaned / empty) is
+         * refused via the same predicate the other named-group resolvers use. */
+        const int64_t gid = (int64_t)strtoll(group_text, NULL, 10);
+        struct edc_task_group *named = edc_session_find_group(session, gid);
+        if (named && !edc_task_group_accepts_work(named))
+        {
+            sds reply = edc_task_group_unavailable_reason(named, "-g|--group");
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            return;
+        }
+        if (!named)
         {
             sds reply = sdscatprintf(sdsempty(), "Group `%s` not found — creating a new group.", group_text);
             edc_commands_reply(to, reply);
             sdsfree(reply);
         }
         spec.place = EDC_TASK_PLACE_GROUP;
-        spec.group_id = (int64_t)strtoll(group_text, NULL, 10);
+        spec.group_id = gid;
     }
     else
     {
@@ -1877,17 +1892,38 @@ static void edc_commands_handle_task_fork(struct edc_session_manager *sm, struct
     sdsfree(desc);
 }
 
-static void edc_commands_handle_group_list(struct edc_session_manager *sm, struct edc_reply_to to)
+static void edc_commands_handle_group_list(struct edc_session_manager *sm, struct edc_reply_to to, bool all)
 {
     sds out = sdsnew("## Groups\n\n");
     struct edc_task_group *g;
     struct edc_session *sess = edc_session_manager_get_active(sm);
+    size_t shown = 0, hidden = 0;
     DL_FOREACH(sess ? sess->groups : NULL, g)
     {
-        out = sdscatprintf(
-            out, "- %s%s  **%s**  %d members  _%s_\n", edc_scheduler_get_foreground(sess) == g ? "`[fg]` " : "",
-            g->is_orphaned ? "`[orphan]` " : "", edc_id_str(g->group_id), g->member_count, edc_task_group_status_label(g));
+        /* Retired groups stay in the tree but are hidden unless --all. */
+        if (edc_task_group_is_archived(g) && !all)
+        {
+            hidden++;
+            continue;
+        }
+        shown++;
+        sds when = g->is_archived ? edc_datetime_format_min((time_t)g->archived_at) : NULL;
+        out = sdscatprintf(out, "- %s%s%s  **%s**  %d members  _%s_",
+                           edc_scheduler_get_foreground(sess) == g ? "[fg] " : "",
+                           g->is_orphaned ? "[orphan] " : "",
+                           g->is_archived ? "[archived] " : "", edc_id_str(g->group_id), g->member_count,
+                           edc_task_group_status_label(g));
+        if (g->is_archived)
+            out = sdscatprintf(out, " — archived %s", when ? when : "at an unknown time");
+        out = sdscat(out, "\n");
+        if (when)
+            sdsfree(when);
     }
+    if (shown == 0 && hidden == 0)
+        out = sdscat(out, "_No groups._\n");
+    else if (!all && hidden > 0)
+        out = sdscatprintf(out, "\n_%zu archived group%s hidden — `/group list --all` to see them._\n", hidden,
+                           hidden == 1 ? "" : "s");
     edc_commands_reply(to, out);
     sdsfree(out);
 }
@@ -2400,6 +2436,419 @@ static void edc_commands_handle_group_info(struct edc_session_manager *sm, struc
     sdsfree(out);
 }
 
+/* ══ Group retirement (archive / restore / rm / batch --idle) ══════════════
+ * An archived group stays in session->groups with all its tasks/history/edges; only the
+ * display and placement layers treat it differently. It therefore keeps its DB row under
+ * flush (mark_seen_group). Hard delete is a separate, confirmed step. */
+
+/* Resolve a group id the way /group fold does: a task id finds its owning session; a
+ * group's id IS its leader's task id. */
+static struct edc_task_group *retire_resolve_group(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                                   const char *id, struct edc_session **out_session)
+{
+    struct edc_session *owner = NULL;
+    struct edc_task *t = edc_session_store_resolve_task(sm, sched, (int64_t)strtoll(id, NULL, 10), &owner);
+    if (!t || !owner)
+        return NULL;
+    if (out_session)
+        *out_session = owner;
+    return edc_session_find_group(owner, t->group_id);
+}
+
+/* Pick a live group to take the foreground when `departing` is archived: not system,
+ * archived, orphaned or empty; prefer the most recently completed leader. */
+static struct edc_task_group *retire_pick_foreground(struct edc_session *sess, struct edc_task_group *departing)
+{
+    struct edc_task_group *best = NULL, *g;
+    DL_FOREACH(sess->groups, g)
+    {
+        if (g == departing || !edc_task_group_accepts_work(g))
+            continue;
+        if (!best || (g->leader && g->leader->completion_seq > (best->leader ? best->leader->completion_seq : 0)))
+            best = g;
+    }
+    return best;
+}
+
+/* Deterministic knowledge harvest: copy the group's (DB-only) memory into one session
+ * memory entry so /session memo search still reaches it after the group is hidden. */
+static size_t retire_harvest(struct edc_session *sess, struct edc_task_group *group)
+{
+    uint64_t created = 0, updated = 0, covers = 0;
+    /* group_memory_load returns an sds (sdsnew), NOT a malloc'd char*: release it with
+     * sdsfree. Freeing the sds payload pointer with free() corrupts the heap (the sds
+     * header lives before it) -- a guaranteed crash on archive of a folded group. */
+    sds body = edc_state_store_group_memory_load(sess->session_id, group->group_id, &created, &updated, &covers);
+    if (!body || sdslen(body) == 0)
+    {
+        sdsfree(body);
+        return 0;
+    }
+    sds title = sdscatprintf(sdsempty(), "Archived group %s", edc_id_str(group->group_id));
+    sds summary = sdscatprintf(sdsempty(), "Retired group %s — its folded memory, kept searchable.",
+                               edc_id_str(group->group_id));
+    sds id = edc_session_memory_create_entry(sess->memo, title, summary, body, "archive");
+    sdsfree(title);
+    sdsfree(summary);
+    sdsfree(body);
+    if (id)
+    {
+        sdsfree(id);
+        return 1;
+    }
+    return 0;
+}
+
+/* Archive one group. Returns the reply sds (caller frees); never NULL. */
+static sds retire_archive_one(struct edc_session_manager *sm, struct edc_scheduler *sched, const char *id,
+                              bool force, bool harvest, bool curate)
+{
+    struct edc_session *sess = NULL;
+    struct edc_task_group *g = retire_resolve_group(sm, sched, id, &sess);
+    if (!g)
+        return sdscatprintf(sdsempty(), "**Group** `%s` not found — `/group archive <id>`.", id);
+    if (edc_task_group_is_system(g))
+        return sdscatprintf(sdsempty(), "**Group** `%s` is the system group — it cannot be archived.",
+                            edc_id_str(g->group_id));
+    if (edc_task_group_is_archived(g))
+    {
+        sds gid = sdsnew(edc_id_str(g->group_id));
+        sds r = sdscatprintf(sdsempty(), "**Group** `%s` is already archived — `/group restore %s` to bring it back.",
+                             gid, gid);
+        sdsfree(gid);
+        return r;
+    }
+
+    size_t alive = 0;
+    struct edc_task *m;
+    LL_FOREACH2(g->members, m, group_next)
+    {
+        if (!edc_task_is_finished(m))
+            alive++;
+    }
+    if (alive && !force)
+        return sdscatprintf(sdsempty(),
+                            "**Group** `%s` still has %zu unfinished task%s — stop them first, or use "
+                            "`/group archive %s --force` to cancel them.",
+                            edc_id_str(g->group_id), alive, alive == 1 ? "" : "s", id);
+    if (curate && edc_scheduler_has_pending_system_task(sess))
+        return sdscatprintf(sdsempty(),
+                            "**Group** `%s` not archived: a system task is already running in this session; "
+                            "retry `--curate` later (or drop `--curate`).", edc_id_str(g->group_id));
+
+    bool was_fg = (edc_scheduler_get_foreground(sess) == g);
+    if (alive)
+    {
+        LL_FOREACH2(g->members, m, group_next)
+        {
+            if (!edc_task_is_finished(m))
+                edc_scheduler_send_signal_to_task_ptr(sched, m, TASK_SIGTERM);
+        }
+    }
+    size_t seeded = harvest ? retire_harvest(sess, g) : 0;
+    edc_task_group_set_archived(g, true);
+
+    struct edc_task_group *new_fg = was_fg ? retire_pick_foreground(sess, g) : NULL;
+    if (was_fg)
+    {
+        edc_scheduler_set_foreground(sess, new_fg);
+        if (!sess->active_task || !new_fg || !edc_task_group_find_task(new_fg, sess->active_task->task_id))
+            sess->active_task = NULL;
+    }
+    bool curate_started = curate && edc_session_memory_start(sched, sess, g, NULL, NULL) != NULL;
+
+    sds out = sdscatprintf(sdsempty(), "Archived group `%s`%s%s%s%s.", edc_id_str(g->group_id),
+                           alive ? " (cancelled unfinished tasks)" : "",
+                           seeded ? " — 1 memory entry kept" : "",
+                           curate_started ? " — curating into session memory" : "",
+                           was_fg ? (new_fg ? " — foreground moved on" : " — no group left in front") : "");
+    /* Persist the flag now (a command reply is not guaranteed to cross a flush). */
+    edc_session_save_state_tagged(sess, sched, "cmd:archive");
+    return out;
+}
+
+/* Parse `--idle <dur>`; returns seconds or 0 with a usage line in *err. */
+static uint64_t retire_parse_idle(const char *s, sds *err)
+{
+    char *end = NULL;
+    long v = strtol(s, &end, 10);
+    if (v <= 0 || !end || (*end != 'd' && *end != 'h') || end[1] != '\0')
+    {
+        *err = sdsnew("**Group** — `--idle` needs a duration like `30d` or `12h`.");
+        return 0;
+    }
+    return (uint64_t)v * (*end == 'd' ? 86400 : 3600);
+}
+
+static void sub_group_archive(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                              struct edc_channel_message *message, const struct edc_sub_argv *args)
+{
+    (void)message;
+    const char *usage = "Usage: `/group archive <id> [--force] [--no-harvest] [--curate]  |  "
+                        "`/group archive --idle <30d|12h> [--dry-run] [--force] [--no-harvest] [--curate]`";
+    if (args->argc == 0)
+    {
+        edc_commands_reply(to, usage);
+        return;
+    }
+
+    /* Batch form: first word --idle. */
+    if (strcmp(args->argv[0], "--idle") == 0)
+    {
+        if (args->argc < 2)
+        {
+            edc_commands_reply(to, usage);
+            return;
+        }
+        sds err = NULL;
+        uint64_t seconds = retire_parse_idle(args->argv[1], &err);
+        if (!seconds)
+        {
+            edc_commands_reply(to, err);
+            sdsfree(err);
+            return;
+        }
+        bool dry = false, force = false, harvest = true, curate = false;
+        for (int i = 2; i < args->argc; i++)
+        {
+            if (strcmp(args->argv[i], "--dry-run") == 0)
+                dry = true;
+            else if (strcmp(args->argv[i], "--force") == 0)
+                force = true;
+            else if (strcmp(args->argv[i], "--no-harvest") == 0)
+                harvest = false;
+            else if (strcmp(args->argv[i], "--curate") == 0)
+                curate = true;
+            else
+            {
+                sds r = sdscatprintf(sdsempty(), "**Group** — unknown option `%s`. %s", args->argv[i], usage);
+                edc_commands_reply(to, r);
+                sdsfree(r);
+                return;
+            }
+        }
+        struct edc_session *sess = edc_session_manager_get_active(sm);
+        time_t now = time(NULL);
+        sds out = sdsnew("## Groups idle long enough to archive\n\n");
+        size_t n_hit = 0, n_ok = 0;
+        struct edc_task_group *g, *gtmp;
+        DL_FOREACH_SAFE(sess ? sess->groups : NULL, g, gtmp)
+        {
+            if (g->is_archived || edc_task_group_is_system(g) || edc_scheduler_get_foreground(sess) == g)
+                continue;
+            /* idle_since is the group's "became idle" clock; 0 = not known idle. */
+            if (g->idle_since == 0 || now < g->idle_since || (uint64_t)(now - g->idle_since) < seconds)
+                continue;
+            bool alive = false;
+            struct edc_task *m;
+            LL_FOREACH2(g->members, m, group_next)
+            {
+                if (!edc_task_is_finished(m))
+                {
+                    alive = true;
+                    break;
+                }
+            }
+            n_hit++;
+            if (alive && !force)
+            {
+                out = sdscatprintf(out, "- `%s` — SKIP (unfinished tasks; use --force)\n", edc_id_str(g->group_id));
+                continue;
+            }
+            if (dry)
+            {
+                out = sdscatprintf(out, "- `%s` — would archive%s\n", edc_id_str(g->group_id), alive ? " (force)" : "");
+                continue;
+            }
+            sds id = sdsnew(edc_id_str(g->group_id));
+            sds r = retire_archive_one(sm, sched, id, force, harvest, curate);
+            sdsfree(id);
+            if (strncmp(r, "Archived ", 9) == 0)
+            {
+                n_ok++;
+                out = sdscatprintf(out, "- `%s` — archived\n", edc_id_str(g->group_id));
+            }
+            else
+                out = sdscatprintf(out, "- `%s` — FAILED (%s)\n", edc_id_str(g->group_id), r);
+            sdsfree(r);
+        }
+        if (n_hit == 0)
+        {
+            sdsfree(out);
+            out = sdsnew("No groups are idle long enough to archive.");
+        }
+        else if (dry)
+            out = sdscatprintf(out, "\n_%zu group%s matched — dry run, nothing changed._", n_hit, n_hit == 1 ? "" : "s");
+        else
+            out = sdscatprintf(out, "\n_Archived %zu group%s._", n_ok, n_ok == 1 ? "" : "s");
+        edc_commands_reply(to, out);
+        sdsfree(out);
+        return;
+    }
+
+    /* Single-group form: <id> [flags...]. */
+    const char *id = args->argv[0];
+    if (strcmp(id, "--force") == 0 || strcmp(id, "--no-harvest") == 0 || strcmp(id, "--curate") == 0)
+    {
+        edc_commands_reply(to, usage);
+        return;
+    }
+    bool force = false, harvest = true, curate = false;
+    for (int i = 1; i < args->argc; i++)
+    {
+        if (strcmp(args->argv[i], "--force") == 0)
+            force = true;
+        else if (strcmp(args->argv[i], "--no-harvest") == 0)
+            harvest = false;
+        else if (strcmp(args->argv[i], "--curate") == 0)
+            curate = true;
+        else
+        {
+            sds r = sdscatprintf(sdsempty(), "**Group** — unknown option `%s`. %s", args->argv[i], usage);
+            edc_commands_reply(to, r);
+            sdsfree(r);
+            return;
+        }
+    }
+    sds r = retire_archive_one(sm, sched, id, force, harvest, curate);
+    edc_commands_reply(to, r);
+    sdsfree(r);
+}
+
+static void sub_group_restore(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                              struct edc_channel_message *message, const struct edc_sub_argv *args)
+{
+    (void)message;
+    if (!sub_argv_exactly(to, args, 1, "Usage: `/group restore <id>`"))
+        return;
+    const char *id = args->argv[0];
+    struct edc_session *sess = NULL;
+    struct edc_task_group *g = retire_resolve_group(sm, sched, id, &sess);
+    if (!g)
+    {
+        edc_commands_reply(to, "**Group** not found — `/group restore <id>` (see `/group list --all`).");
+        return;
+    }
+    if (!edc_task_group_is_archived(g))
+    {
+        sds r = sdscatprintf(sdsempty(), "**Group** `%s` is not archived.", edc_id_str(g->group_id));
+        edc_commands_reply(to, r);
+        sdsfree(r);
+        return;
+    }
+    edc_task_group_set_archived(g, false);
+    bool took_fg = false;
+    if (!edc_scheduler_get_foreground(sess))
+    {
+        edc_scheduler_set_foreground(sess, g);
+        took_fg = true;
+    }
+    edc_session_save_state_tagged(sess, sched, "cmd:restore");
+    sds r = sdscatprintf(sdsempty(), "Restored group `%s`%s.", edc_id_str(g->group_id),
+                         took_fg ? " — it is in front again" : "");
+    edc_commands_reply(to, r);
+    sdsfree(r);
+}
+
+static void sub_group_rm(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
+                         struct edc_channel_message *message, const struct edc_sub_argv *args)
+{
+    (void)message;
+    const char *usage = "Usage: `/group rm <id> --yes`  (only archived groups; the memory entry is kept)";
+    bool yes = false;
+    const char *id = NULL;
+    for (int i = 0; i < args->argc; i++)
+    {
+        if (strcmp(args->argv[i], "--yes") == 0)
+            yes = true;
+        else if (!id)
+            id = args->argv[i];
+        else
+        {
+            edc_commands_reply(to, usage);
+            return;
+        }
+    }
+    if (!id || !yes)
+    {
+        sds r = sdscatprintf(sdsempty(), "**Group** — hard delete needs an id and confirmation: "
+                                         "`/group rm <id> --yes`. Archive first with `/group archive <id>`; "
+                                         "the memory entry survives.");
+        edc_commands_reply(to, r);
+        sdsfree(r);
+        return;
+    }
+    struct edc_session *sess = NULL;
+    struct edc_task_group *g = retire_resolve_group(sm, sched, id, &sess);
+    if (!g)
+    {
+        edc_commands_reply(to, "**Group** not found — `/group rm <id> --yes`.");
+        return;
+    }
+    if (edc_task_group_is_system(g))
+    {
+        edc_commands_reply(to, "**Group** — the system group cannot be removed.");
+        return;
+    }
+    if (!edc_task_group_is_archived(g))
+    {
+        sds gid = sdsnew(edc_id_str(g->group_id));
+        sds r = sdscatprintf(sdsempty(), "**Group** `%s` is not archived — run `/group archive %s` first, then "
+                                         "`/group rm %s --yes`.", gid, gid, gid);
+        sdsfree(gid);
+        edc_commands_reply(to, r);
+        sdsfree(r);
+        return;
+    }
+
+    /* Drop cross-group dependency edges in both directions so no surviving task waits
+     * on a task we are about to free. */
+    size_t dropped = 0;
+    struct edc_task *m, *mtmp;
+    LL_FOREACH_SAFE2(g->members, m, mtmp, group_next)
+    {
+        struct edc_task_dep *dep, *dtmp;
+        LL_FOREACH_SAFE(m->deps, dep, dtmp)
+        {
+            if (dep->source && dep->source->group != g && edc_task_drop_dep(m, dep->source))
+                dropped++;
+        }
+        struct edc_task_dep *rdep, *rdtmp;
+        LL_FOREACH_SAFE(m->dependents, rdep, rdtmp)
+        {
+            struct edc_task *target = rdep->target;
+            if (target && target->group != g && edc_task_drop_dep(target, m))
+                dropped++;
+        }
+    }
+    if (edc_scheduler_get_foreground(sess) == g)
+        edc_scheduler_set_foreground(sess, NULL);
+    if (sess->active_task)
+    {
+        struct edc_task *at = sess->active_task;
+        bool inside = false;
+        LL_FOREACH2(g->members, m, group_next)
+        {
+            if (m == at)
+            {
+                inside = true;
+                break;
+            }
+        }
+        if (inside)
+            sess->active_task = NULL;
+    }
+    sds saved_id = sdsnew(edc_id_str(g->group_id));
+    edc_session_remove_group(sess, g);
+    edc_task_group_free(g); /* frees every member task */
+
+    sds r = sdscatprintf(sdsempty(), "Removed archived group `%s` and its tasks (%zu cross-group dependencies "
+                                     "dropped). The session-memory entry, if any, was kept.", saved_id, dropped);
+    sdsfree(saved_id);
+    edc_commands_reply(to, r);
+    sdsfree(r);
+}
+
 /* ── /group 的子命令 ─────────────────────────────────────────── */
 /* ── /group 的子命令 ─────────────────────────────────────────── */
 /* `/group fold [id] [focus]`: the id is the first word and the focus is the rest, joined
@@ -2447,9 +2896,14 @@ static void sub_group_list(struct edc_session_manager *sm, struct edc_scheduler 
 {
     (void)sched;
     (void)message;
-    if (!sub_argv_exactly(to, args, 0, "Usage: `/group list`"))
+    bool all = false;
+    if (args->argc > 1 || (args->argc == 1 && strcmp(args->argv[0], "--all") != 0))
+    {
+        edc_commands_reply(to, "Usage: `/group list [--all]`");
         return;
-    edc_commands_handle_group_list(sm, to);
+    }
+    all = (args->argc == 1);
+    edc_commands_handle_group_list(sm, to, all);
 }
 static void sub_group_info(struct edc_session_manager *sm, struct edc_scheduler *sched, struct edc_reply_to to,
                            struct edc_channel_message *message, const struct edc_sub_argv *args)
@@ -2501,6 +2955,9 @@ static const struct edc_sub_argv_entry k_group_subs[] = {
     {"files", sub_group_files},
     {"history", sub_group_history},
     {"fold", sub_group_fold},
+    {"archive", sub_group_archive},
+    {"restore", sub_group_restore},
+    {"rm", sub_group_rm},
 };
 
 static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session_manager *sm,
@@ -2521,19 +2978,24 @@ static bool edc_commands_handle_group(struct edc_config *cfg, struct edc_session
             return true;
         }
         sds reply = sdscatprintf(sdsempty(),
-                                 "**Unknown subcommand** — `/group` knows `list`, `info [id]`, `files [id]`, "
-                                 "`history <id>` and `fold [id] [focus]`, not `%s`.",
+                                 "**Unknown subcommand** — `/group` knows `list [--all]`, `info [id]`, `files [id]`, "
+                                 "`history <id>`, `fold [id] [focus]`, `archive <id>`, `restore <id>` and "
+                                 "`rm <id> --yes`, not `%s`.",
                                  cmd->argv[0]);
         edc_commands_reply(to, reply);
         sdsfree(reply);
         return true;
     }
-    edc_commands_reply(to, "Usage: `/group list`   (all groups of the session)\n\n"
+    edc_commands_reply(to, "Usage: `/group list [--all]`   (all groups of the session)\n\n"
                            "Usage: `/group info [id]`   (context / fold numbers; no id = the foreground group)\n\n"
                            "Usage: `/group files [id]`   (the files the folded work read / modified)\n\n"
                            "Usage: `/group history <id>`   (the id is the group header's)\n\n"
                            "Usage: `/group fold [id] [focus]`   (fold now, ignoring the trigger; "
-                           "no id = the foreground group)");
+                           "no id = the foreground group)\n\n"
+                           "Usage: `/group archive <id> [--force] [--no-harvest] [--curate]  |  "
+                           "`/group archive --idle <30d|12h> [--dry-run]`\n\n"
+                           "Usage: `/group restore <id>`\n\n"
+                           "Usage: `/group rm <id> --yes`   (only archived groups; the memory entry is kept)");
     return true;
 }
 
@@ -3043,20 +3505,11 @@ static bool cmd_resolve_place(struct edc_session *session, const struct cmd_plac
                                 flags->group_id);
             return false;
         }
-        if (edc_task_group_is_system(group))
+        /* One predicate shared with -g on shell lines and /task new: system / archived /
+         * orphaned / empty groups all refuse work, with one wording source. */
+        if (!edc_task_group_accepts_work(group))
         {
-            *err = sdsnew("`--group` cannot name the system group — it does not take new work.");
-            return false;
-        }
-        /* A group whose leader left (or one that was born without a leader) has no
-         * `leader`: adding a member to it would leave "leader == NULL with members",
-         * which every other path assumes cannot happen -- the group is serialized with
-         * the old leader's id and comes back from disk with a DIFFERENT leader object.
-         * Refuse instead of half-reviving it. */
-        if (group->is_orphaned || !group->leader)
-        {
-            *err = sdsnew("`--group` cannot name a conversation whose leader is gone — "
-                          "start a fresh one with `--new-group`.");
+            *err = edc_task_group_unavailable_reason(group, "--group");
             return false;
         }
         *out = group;
@@ -3064,7 +3517,7 @@ static bool cmd_resolve_place(struct edc_session *session, const struct cmd_plac
     }
 
     struct edc_task_group *group = session ? session->foreground_group : NULL;
-    if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
+    if (!edc_task_group_accepts_work(group))
         group = NULL;
     *out = group;
     return true;

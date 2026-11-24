@@ -92,6 +92,7 @@ TaskGroup ParseGroup(const cJSON *item)
     group.member_count = JsonInt(Field(item, "member_count"));
     group.msg_count = JsonInt(Field(item, "msg_count"));
     group.orphaned = JsonBool(Field(item, "orphaned"));
+    group.archived = JsonBool(Field(item, "archived"));
     group.fg = JsonBool(Field(item, "fg"));
     group.tokens_total = JsonInt64(Field(item, "tokens_total"));
     group.tokens_prompt = JsonInt64(Field(item, "tokens_prompt"));

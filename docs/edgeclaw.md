@@ -681,11 +681,41 @@ and a missing value is a usage error.
 
 | Command | Description |
 |---------|-------------|
-| `/group list` | List all process groups |
+| `/group list [--all]` | List groups of the session (`--all` includes archived ones) |
 | `/group info [id]` | A group's context / fold numbers (window, the fold line, how far it is, epoch, failures, fold in flight); no id = the foreground group |
 | `/group files [id]` | The files the group's **folded** work read / modified. A snapshot written when a fold lands, not a live view: later edits are not reflected and `exec_shell` calls (`sed -i`, `cat`, `git checkout`) are never tracked |
 | `/group history <id>` | The whole group's history, one block per member |
 | `/group fold [id] [focus]` | Fold the group now, ignoring the trigger; no id = the foreground group |
+| `/group archive <id> [--force] [--no-harvest] [--curate]` | Retire a group out of the sidebar; keeps its knowledge (see below) |
+| `/group restore <id>` | Bring an archived group back |
+| `/group rm <id> --yes` | Hard-delete an archived group (confirmed); its memory entry is kept |
+
+### Retiring groups
+
+As groups accumulate, `/group archive <id>` retires one out of the sidebar without
+losing its work. The lifecycle is `active → archived → gone` (a confirmed hard delete),
+with `restore` reversing the first step.
+
+- **Archive is soft.** The group stays in the session with all its tasks, history and
+  Group Memory; it just stops being drawn and stops accepting new work (`-g`/`--group`
+  on an archived id is refused). `/group list --all` shows archived groups and when they
+  were archived; `info` and `history` still work on them.
+- **Knowledge is kept.** Before hiding, one deterministic session-memory entry is seeded
+  from the group's folded memory, so `/session memo search` still reaches it.
+  `--no-harvest` skips that. `--curate` (opt-in) additionally runs an L2 curation to
+  merge the material into existing entries — it is a separate LLM task and never runs
+  automatically, including in batch mode.
+- **Unfinished tasks.** Archive refuses while a member is still running and lists what
+  is left; `--force` cancels them like `/task stop`. The system group is never
+  archivable. Archiving the foreground group moves the front to the most recently used
+  remaining group.
+- **Batch.** `/group archive --idle 30d [--dry-run]` retires finished, non-system,
+  non-foreground groups idle for at least that long. `--dry-run` previews the matches;
+  idleness is measured from when a group's last active task finished; that clock is
+  persisted, so it survives a restart.
+- **Hard delete** is a separate, confirmed step: `/group rm <id> --yes` only accepts an
+  archived group, drops cross-group dependency edges, and frees its tasks; the
+  session-memory entry survives.
 
 ### Scheduling
 

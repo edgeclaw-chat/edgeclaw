@@ -685,6 +685,38 @@ static bool verify_v16(sqlite3 *db, char *err, size_t cap)
     return column_is_notnull(db, "sessions", "workdir", err, cap);
 }
 
+/* v16 -> v17: group retirement + a persistent idle clock. Three additive O(1) ADD
+ * COLUMNs, all defaulting to 0, so every pre-v17 group starts un-archived with an
+ * unknown idle clock (which the load path re-derives conservatively). */
+static bool step_v16_to_v17(sqlite3 *db, char *err, size_t cap)
+{
+    return run_sql(db, "ALTER TABLE groups ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+                   "add groups.is_archived", err, cap) &&
+           run_sql(db, "ALTER TABLE groups ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
+                   "add groups.archived_at", err, cap) &&
+           run_sql(db, "ALTER TABLE groups ADD COLUMN idle_since INTEGER NOT NULL DEFAULT 0",
+                   "add groups.idle_since", err, cap);
+}
+
+static bool verify_v17(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "is_archived") || !has_column(db, "groups", "archived_at") ||
+        !has_column(db, "groups", "idle_since"))
+    {
+        set_err(err, cap, "v17 is stamped but groups lacks is_archived / archived_at / idle_since");
+        return false;
+    }
+    sqlite3_int64 n = 0;
+    if (!query_one_int(db, "SELECT count(*) FROM groups WHERE is_archived != 0 OR archived_at != 0", &n, err, cap))
+        return false;
+    if (n != 0)
+    {
+        set_err(err, cap, "%lld groups have non-default retirement fields after migration", (long long)n);
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -702,6 +734,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {13, step_v13_to_v14, verify_v14},
     {14, step_v14_to_v15, verify_v15},
     {15, step_v15_to_v16, verify_v16},
+    {16, step_v16_to_v17, verify_v17},
     {0, NULL, NULL}, /* terminator */
 };
 

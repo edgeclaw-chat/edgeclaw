@@ -65,6 +65,7 @@ struct TaskGroup
     int member_count = 0;
     int msg_count = 0; /* committed messages (no system prompt) + in-flight turns */
     bool orphaned = false;
+    bool archived = false; /* retired: hidden from the sidebar, kept in the session */
     bool fg = false; /* this is the session's foreground group */
     /* Usage rolled up from the members (the sidebar shows the group, never a
      * single task). */

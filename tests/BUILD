@@ -728,6 +728,16 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+cc_test(
+    name = "test_commands_group_retire",
+    srcs = ["test_commands_group_retire.c", "test_ws.h"],
+    deps = [
+        "//src/kernel:kernel",
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # End-to-end cost through the public door (edc_session_save_state/load_state). Manual:
 #   EDGECLAW_STATE_PROBE=/tmp/probe/shell.csv \
 #     bazel run //tests:bench_shell -- <workspace> 40000 3

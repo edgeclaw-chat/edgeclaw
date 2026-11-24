@@ -120,8 +120,9 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
  * group": the caller resolves the name to a pointer, edc_shell_spawn_task only sees
  * that pointer. A bad id is a refusal, never a silent fall-back to the group in front.
  *
- * Same checks as /prompt's --group: no system group, no conversation whose leader is
- * gone (a group with no leader cannot be revived by adding a member). */
+ * Usability is decided by ONE predicate shared with /task new and /prompt --group
+ * (edc_task_group_accepts_work / _unavailable_reason): system / orphaned / archived /
+ * empty groups all refuse new work, with one wording source. */
 static struct edc_task_group *shell_named_group(struct edc_session *session, const char *text, sds *err)
 {
     *err = NULL;
@@ -131,15 +132,9 @@ static struct edc_task_group *shell_named_group(struct edc_session *session, con
         *err = sdscatprintf(sdsempty(), "**No group** named `%s`.\n\nRun `/group list` to see them.", text);
         return NULL;
     }
-    if (edc_task_group_is_system(g))
+    if (!edc_task_group_accepts_work(g))
     {
-        *err = sdsnew("`-g|--group` cannot name the system group — it does not take new work.");
-        return NULL;
-    }
-    if (g->is_orphaned || !g->leader)
-    {
-        *err = sdsnew("`-g|--group` cannot name a conversation whose leader is gone — "
-                      "start a fresh one with `+`.");
+        *err = edc_task_group_unavailable_reason(g, "-g|--group");
         return NULL;
     }
     return g;
@@ -153,7 +148,7 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
         return false;
 
     struct edc_task_group *group = session->foreground_group;
-    if (group && (group->is_orphaned || group->member_count == 0 || edc_task_group_is_system(group)))
+    if (!edc_task_group_accepts_work(group))
         group = NULL;
     if (ast->new_group)
         group = NULL; /* `+`：新组（首个任务会成为 leader） */

@@ -148,10 +148,12 @@ a log line saying so. Only a tagged build can tell whether a release is newer. T
 banner cannot be observed during development without `--update-check --current <ver>`.
 
 **The check is silent on every failure.** Offline, DNS, a TLS error, a response body over
-1 MiB, malformed JSON, and the unauthenticated API's **60 requests/hour/IP** limit (a 403) all
-produce the same thing: no banner, no message, one `log_debug` line that never reaches the log
-file. That is the intended behaviour — a background check has nothing to tell a user that they
-could act on — but it means "no banner" is not evidence that the check ran.
+1 MiB, or a body that is not a release feed all produce the same thing: no banner, no message,
+one `log_debug` line that never reaches the log file. That is the intended behaviour — a
+background check has nothing to tell a user that they could act on — but it means "no banner"
+is not evidence that the check ran. The check reads the github.com release feed and HEAD-probes
+archives, so it does not consume the anonymous **60 requests/hour/IP** API quota; a shared IP
+running out of that quota no longer turns the check into a misleading "up to date".
 
 **Turning the check off also disables `/update`.** With `update_check: false` no check runs, so
 no version is ever on offer, so `/update` always answers "No update available". The network is
@@ -207,7 +209,7 @@ Stated plainly, because "it compiles" is not evidence:
 
 | Area | State |
 |---|---|
-| Line coverage | **63.3%** — what [Codecov](https://app.codecov.io/github/edgeclaw-chat/edgeclaw) reports for `dev` at `e9a7fbf`, over 26348 instrumented lines across 137 files, re-measured 2026-11-12. It counts a line whose branches were not all taken as **not** covered, which is why it reads lower than the ~81% an lcov `LH/LF` total gives for the same run (81.2%, 21849/26899); the difference is the partially-executed lines. For reference, the lcov report from that run also measures functions 91.0% (1888/2074) and branches 58.3% (15475/26524); Codecov reports neither. All of these are measured with the three device tests excluded, the same way CI measures them. The counts move by a line or two between runs, because a few paths are timing-dependent — the percentage does not. The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are covered, so are the first-run wizard, the frontend's C surface, `exec_shell`'s timeout/abort paths and the store's id-collision / measured-flush paths. |
+| Line coverage | **69.49%** — what [Codecov](https://app.codecov.io/github/edgeclaw-chat/edgeclaw) reports for `master` at `0448724`, over 28488 instrumented lines, re-measured 2026-11-23. It counts a line whose branches were not all taken as **not** covered, which is why it reads lower than the ~84% an lcov `LH/LF` total gives for the same run (83.9%, 24376/29049); the difference is the partially-executed lines. For reference, the lcov report from that run also measures functions 93.5% (2107/2254) and branches 66.9% (15104/22585); Codecov reports neither. All of these are measured with the three device tests excluded, the same way CI measures them. The counts move by a line or two between runs, because a few paths are timing-dependent — the percentage does not. The remaining gap is concentrated in paths that are hard to force deterministically: allocation failures, write errors at an exact moment, disk-full, sandbox denials. The LLM 4xx/5xx and HTTPS transport failures are covered, so are the first-run wizard, the frontend's C surface, `exec_shell`'s timeout/abort paths and the store's id-collision / measured-flush paths. |
 | Windows | Builds in CI, and needs **no bash** to build: every `genrule` carries a `cmd_bat`, so Bazel runs those through `cmd.exe` (`tools/check_genrule_portability.py` enforces it). The PPPoS transport and the kernel sandbox do not exist there. The installer (`tools/install.ps1`) is exercised in CI under `pwsh` on Linux against a local TLS fixture server, and **not on real Windows hardware** for this release — so its `Invoke-WebRequest`/`tar`/`Get-FileHash` path is asserted, not observed. The owner-only protections (`~/.edgeclaw` and the workspace at `0700`, `config.json` and the database at `0600`) are **not implemented on Windows**: `edc_file_restrict_owner()` is a documented no-op there rather than a fabricated ACL, so those files keep the inherited ACL. |
 | armv7 | Built locally (cross) and **run under `qemu-arm`**: the released shape of the binary starts and reports `platform linux/arm`. Not run on real armv7 hardware, and the Android device agent is compiled only. |
 | Real-model behaviour | The suite drives a fake LLM. Prompt and tool-choice quality is not asserted anywhere. |
@@ -227,8 +229,10 @@ Not "unverified" — verified, and wrong in a narrow case:
   **A failed check and an up-to-date install print differently.** "up to date", "could not
   check: HTTP 403 (GitHub's unauthenticated rate limit, 60 requests/hour per IP)", "could not
   check: no response before the deadline" are three separate lines, because collapsing them
-  was the command's own worst failure: it exists to tell those apart. The exit status stays 0
-  in every case -- this diagnoses the updater, so a non-zero status would look like a failure
+  was the command's own worst failure: it exists to tell those apart. The 403 line is now
+  largely historical — the check reads the github.com feed and no longer spends API quota —
+  but the outcome plumbing keeps non-200 statuses distinct. The exit status stays 0 in every
+  case -- this diagnoses the updater, so a non-zero status would look like a failure
   of the thing being diagnosed. Read the text, not `$?`. The launch-time check is still silent
   to the user; only its log line names the reason.
 
