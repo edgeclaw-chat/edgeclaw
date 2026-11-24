@@ -431,6 +431,32 @@ std::pair<int, int> FindCell(const std::string &frame, const std::string &needle
     return {-1, -1};
 }
 
+// 终端失焦再回来（DECSET 1004 的 focus-in = CSI I）：这条报告必须被窗口吃掉、
+// 不能落进输入框变成字符，也不能改动草稿。它会唤醒主循环重画一帧 —— 那一帧把
+// ftxui 的 caret 位置/形状/可见性序列重新发给终端，用户不必再点一下输入框。
+void TestFocusInRestoresCaret(edc::TUIWindow &win)
+{
+    std::cout << "切回窗口：focus-in 报告被吃掉且不改草稿\n";
+
+    const std::string draft = "HARNESS_FOCUS_DRAFT";
+    for (char c : draft)
+        win.OnEvent(::ftxui::Event::Character(std::string(1, c)));
+    Check(Has(FrameOf(win), draft), "打字后草稿在输入框里");
+
+    // ftxui 的 terminal_input_parser 把 CSI I 原样交给 Event::Special（I=0x49 是
+    // 合法 CSI 终止字节且没有重映射），所以窗口收到的是 "\x1b[I"。
+    const auto focus_in = ::ftxui::Event::Special("\x1b[I");
+    Check(win.OnEvent(focus_in), "focus-in 报告被窗口吃掉");
+    const std::string after = FrameOf(win);
+    Check(Has(after, draft), "focus-in 不改动草稿（没被当字符打字）");
+    Check(!Has(after, "\x1b[I"), "focus-in 序列没被画到屏幕上");
+
+    // 收尾：清掉草稿，别把脏输入留给后面的用例。提交后 draft 仍会以用户气泡
+    // 出现在聊天区，所以不能拿整帧含不含它判断输入框 —— 看占位符有没有回来。
+    win.OnEvent(::ftxui::Event::Return);
+    Check(Has(FrameOf(win), "Type a message"), "提交后输入框清空（占位符回来）");
+}
+
 void TestUserInputIsEchoedImmediately(edc::TUIWindow &win)
 {
     std::cout << "用户输入立刻回显（归属不由前端管）\n";
@@ -1128,6 +1154,7 @@ int main()
     TestLiveOutputRouting(win);
     TestKindRouting(win);
     TestUnknownMessageIgnored(win);
+    TestFocusInRestoresCaret(win);
     TestUserInputIsEchoedImmediately(win);
     TestTaskHistoryPayloadBecomesBubbles(win);
     TestHistoryMarksTaskRead(win);

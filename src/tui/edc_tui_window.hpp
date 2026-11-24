@@ -295,6 +295,9 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     // True once bracketed paste was enabled, so the destructor only emits the
     // "disable" sequence when the matching "enable" ran.
     bool bracketed_paste_on_ = false;
+    // Focus reporting (DECSET 1004) is enabled alongside bracketed paste; the
+    // destructor emits the matching disable only when we enabled it.
+    bool focus_reporting_on_ = false;
     ::ftxui::ScreenInteractive *screen_ = nullptr;
     ClipboardToast clipboard_toast_;
     // Where the left-button drag started, and whether a copy is still due. The
