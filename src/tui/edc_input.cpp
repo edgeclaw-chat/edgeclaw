@@ -563,10 +563,11 @@ int EdcInput::CaretColumn()
 ::ftxui::Element EdcInput::OnRender()
 {
     const bool is_focused = Focused();
+    // A solid block caret, like opencode/claude. The shape no longer signals insert vs.
+    // overwrite; |insert_mode_| still controls the editing behaviour, not the caret.
     const ::ftxui::Decorator caret = (!is_focused && !hovered_)
                                          ? ::ftxui::Decorator(::ftxui::focus)
-                                         : (insert_mode_ ? ::ftxui::Decorator(::ftxui::focusCursorBarBlinking)
-                                                         : ::ftxui::Decorator(::ftxui::focusCursorBlockBlinking));
+                                         : ::ftxui::Decorator(::ftxui::focusCursorBlockBlinking);
 
     if (content_->empty())
     {

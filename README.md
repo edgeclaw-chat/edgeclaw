@@ -2,11 +2,17 @@
   <h1>EdgeClaw</h1>
   <p><em>A personal AI assistant that fits in one terminal — and runs many tasks at once.</em></p>
   <p>
-    <img src="https://img.shields.io/badge/language-C-blue" alt="Language">
+    <img src="https://img.shields.io/badge/language-C%2FC%2B%2B-00599C?logo=c%2B%2B&amp;logoColor=white" alt="Language: C/C++">
+    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-1f2937" alt="Platforms: Linux, macOS, Windows">
+    <img src="https://img.shields.io/badge/binary-static%20single%20file-orange" alt="Static single-file binary">
+    <a href="https://github.com/edgeclaw-chat/edgeclaw/releases"><img src="https://img.shields.io/github/v/release/edgeclaw-chat/edgeclaw?include_prereleases" alt="Latest release"></a>
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  </p>
+  <p>
     <img src="https://img.shields.io/github/actions/workflow/status/edgeclaw-chat/edgeclaw/build.yml?branch=dev&amp;label=build" alt="Build">
     <img src="https://img.shields.io/github/actions/workflow/status/edgeclaw-chat/edgeclaw/tests.yml?branch=dev&amp;label=tests" alt="Tests">
     <a href="https://codecov.io/gh/edgeclaw-chat/edgeclaw"><img src="https://codecov.io/gh/edgeclaw-chat/edgeclaw/branch/master/graph/badge.svg" alt="Coverage"></a>
-    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+    <a href="docs/edgeclaw.md"><img src="https://img.shields.io/badge/docs-manual-blue?logo=bookstack&amp;logoColor=white" alt="Documentation"></a>
   </p>
 </div>
 

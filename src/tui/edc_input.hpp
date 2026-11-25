@@ -265,7 +265,8 @@ class EdcInput : public ::ftxui::ComponentBase
     int scroll_ = 0;
     // Column kept while moving vertically; -1 = derive from the caret.
     int desired_col_ = -1;
-    // Insert mode (bar caret) vs. overwrite (block caret).
+    // Insert vs. overwrite editing. The caret is always a block; the mode only
+    // decides whether typing inserts a glyph or replaces the one under the caret.
     bool insert_mode_ = true;
     bool hovered_ = false;
 

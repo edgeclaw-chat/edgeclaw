@@ -1261,10 +1261,22 @@ static void try_next_address(struct edc_https_request *req)
 
     if (req->addr_phase == 0 && req->addrs)
     {
-        /* No IPv6 address worked (or there was none). Offer the IPv4 ones now. */
+        /* No IPv6 address worked (or there was none). Offer the IPv4 ones now.
+         *
+         * The socket MUST be re-created for this. libuv only creates a socket for the
+         * address family when the handle was initialised AF_UNSPEC AND no fd exists yet
+         * (maybe_new_socket returns early when sockfd != -1). A failed IPv6 attempt leaves
+         * an AF_INET6 fd on the handle, so connecting an IPv4 address on it fails
+         * synchronously with EINVAL for every candidate -- which is why /update, whose
+         * raw.githubusercontent.com resolves to IPv6 first on an IPv4-only network, could
+         * not fetch its installer while curl (which walks the same list with fresh sockets)
+         * succeeded. Hand the family switch through the close callback, the same path the
+         * per-address connect retry uses, so the socket is re-inited with AF_UNSPEC and
+         * libuv creates an AF_INET one for the first IPv4 connect. A direct recursive call
+         * here would keep the stale AF_INET6 fd. */
         req->addr_phase = 1;
         req->try_addr = req->addrs;
-        try_next_address(req);
+        retry_next_address(req);
         return;
     }
 
@@ -1494,6 +1506,33 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
         free(req);
         edc_https_request_release(http_req);
         return;
+    }
+
+    /* Test seam: force an unreachable IPv6 address into the list so the IPv6-first walk really
+     * fails and hands over to IPv4 -- the exact /update failure, reproducible on a machine that
+     * has no such DNS answer. Production never sets this.
+     *
+     * Build the node with getaddrinfo() rather than malloc: the whole list is freed once with
+     * uv_freeaddrinfo() -> freeaddrinfo(), and each node must carry the allocator's own layout
+     * (ai_addr included). A literal resolves to exactly one node, so no chain walk is needed. */
+    {
+        const char *forced6 = getenv(EDC_HTTPS_TEST_IPV6_FIRST_ENV);
+        if (forced6 && *forced6)
+        {
+            struct addrinfo hints6;
+            struct addrinfo *extra = NULL;
+            memset(&hints6, 0, sizeof(hints6));
+            hints6.ai_family = AF_INET6;
+            hints6.ai_socktype = SOCK_STREAM;
+            hints6.ai_protocol = IPPROTO_TCP;
+            char port_s[16];
+            snprintf(port_s, sizeof(port_s), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
+            if (getaddrinfo(forced6, port_s, &hints6, &extra) == 0)
+            {
+                extra->ai_next = res;
+                res = extra;
+            }
+        }
     }
 
     /* Keep the whole list and walk it: the first address is not always the reachable one (see

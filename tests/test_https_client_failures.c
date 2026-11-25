@@ -992,6 +992,66 @@ static void test_reaches_a_host_that_only_has_ipv6()
     tls_stub_stop(&stub);
 }
 
+/* The exact /update failure, reproduced without GitHub and without depending on the machine's
+ * DNS: a name that resolves to a reachable IPv4 address, but whose address list STARTS with an
+ * unreachable IPv6 address. raw.githubusercontent.com has this shape on an IPv4-only network
+ * (IPv6 first, ::1/2606:... unreachable, then a perfectly good IPv4 address). The client used
+ * to fail every request to such a name: after the IPv6 connect attempt failed it reused the
+ * AF_INET6 socket for the IPv4 pass, so each IPv4 connect() returned EINVAL synchronously and
+ * the request reported "no usable address". curl, which opens a fresh socket per family,
+ * worked -- which is why /update failed while the same URL fetched fine from a shell.
+ *
+ * fd00::1 is a private unique-local address with no route here, and uv_tcp_connect fails it
+ * synchronously with ENETUNREACH (verified), so this exercises the synchronous-failure path
+ * the async handshake-retry test does not cover. The TLS stub listens on 127.0.0.1 with a
+ * localhost certificate, so the only way this test passes is by reaching the IPv4 address in
+ * the list AFTER the injected IPv6 one. */
+static void test_sync_ipv6_failure_falls_back_to_ipv4()
+{
+    TEST("an unreachable IPv6 address hands over to the IPv4 address on a fresh socket");
+
+    char raw[512];
+    tls_stub_response(raw, sizeof(raw), "200 OK", "{\"ok\":true}");
+
+    struct tls_stub stub;
+    if (tls_stub_start(&stub, g_cert, g_key, raw) != 0)
+    {
+        CHECK(false, "could not start the TLS stub");
+        return;
+    }
+
+    char url[160];
+    snprintf(url, sizeof(url), "https://localhost:%d/chat/completions", stub.port);
+
+    setenv(EDC_HTTPS_TEST_IPV6_FIRST_ENV, "fd00::1", 1);
+
+    struct seen s;
+    memset(&s, 0, sizeof(s));
+    uv_sem_init(&s.done, 0);
+    struct edc_https_client *client = edc_https_client_new(g_cert);
+    CHECK(client != NULL, "the client was created");
+    if (client)
+    {
+        CHECK(edc_https_client_connect(client, url, on_event, &s) == 0, "connect() accepted the request");
+        uv_thread_t dog;
+        const bool dog_ok = uv_thread_create(&dog, watchdog, &s) == 0;
+        uv_sem_wait(&s.done);
+        if (dog_ok)
+            uv_thread_join(&dog);
+
+        CHECK(s.closed && !s.timed_out, "the request completed rather than hanging");
+        CHECK(s.error[0] == '\0', "no error was reported: %.90s", s.error);
+        CHECK(s.status == 200, "the IPv4 address was reached after the IPv6 failure: status %d", s.status);
+        CHECK(s.body && strcmp(s.body, "{\"ok\":true}") == 0, "and the body arrived");
+        edc_https_client_free(client);
+    }
+
+    unsetenv(EDC_HTTPS_TEST_IPV6_FIRST_ENV);
+    uv_sem_destroy(&s.done);
+    free_seen(&s);
+    tls_stub_stop(&stub);
+}
+
 int main(void)
 {
     /* The stubs write to sockets whose peer has hung up (that is how the handshake and the
@@ -1027,6 +1087,7 @@ int main(void)
     test_free_while_connect_in_flight();
     test_free_while_lookup_in_flight();
     test_free_at_every_stage();
+    test_sync_ipv6_failure_falls_back_to_ipv4();
     test_reaches_a_host_that_only_has_ipv6();
     test_handshake_failure();
     test_handshake_failure_tries_the_next_address();

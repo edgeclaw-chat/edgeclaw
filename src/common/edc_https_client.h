@@ -45,4 +45,11 @@ extern void *edc_https_request_get_priv(struct edc_https_request *req);
  */
 extern int edc_https_request_get_status(struct edc_https_request *req);
 extern int edc_https_request_write(struct edc_https_request *req, const unsigned char *buf, size_t len);
+
+/* Test seam: name of an IPv6 address to prepend to every DNS result, so a test can force the
+ * "IPv6 first, unreachable, fall back to IPv4" address walk deterministically. Production
+ * code never sets it; the value is read per request, so no client restart is needed. The
+ * address must be a bare IPv6 literal (fd00::1, ::1, ...); it is resolved with getaddrinfo
+ * and prepended to the request's address list, so it is freed as part of that list. */
+#define EDC_HTTPS_TEST_IPV6_FIRST_ENV "EDGECLAW_TEST_HTTPS_IPV6_FIRST"
 #endif
