@@ -732,29 +732,30 @@ static bool verify_v17(sqlite3 *db, char *err, size_t cap)
  * Default 0 matches the original v17 contract (active / unknown idle). */
 static bool step_v17_to_v18(sqlite3 *db, char *err, size_t cap)
 {
-    if (!has_column(db, "groups", "is_archived") &&
-        !run_sql(db, "ALTER TABLE groups ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
-                 "add groups.is_archived (v18 repair)", err, cap))
-        return false;
-    if (!has_column(db, "groups", "archived_at") &&
-        !run_sql(db, "ALTER TABLE groups ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
-                 "add groups.archived_at (v18 repair)", err, cap))
-        return false;
-    if (!has_column(db, "groups", "idle_since") &&
-        !run_sql(db, "ALTER TABLE groups ADD COLUMN idle_since INTEGER NOT NULL DEFAULT 0",
-                 "add groups.idle_since (v18 repair)", err, cap))
-        return false;
+    /* One shape, three names: a broken v17 is missing some suffix of these columns.
+     * Fixed statements (no formatting/allocation) keep the repair trivially auditable. */
+    static const char *const kAdd[] = {
+        "ALTER TABLE groups ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE groups ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE groups ADD COLUMN idle_since INTEGER NOT NULL DEFAULT 0",
+    };
+    static const char *const kCols[] = {"is_archived", "archived_at", "idle_since"};
+    for (size_t i = 0; i < sizeof kCols / sizeof kCols[0]; i++)
+        if (!has_column(db, "groups", kCols[i]) &&
+            !run_sql(db, kAdd[i], "add retirement column (v18 repair)", err, cap))
+            return false;
     return true;
 }
 
 static bool verify_v18(sqlite3 *db, char *err, size_t cap)
 {
-    if (!has_column(db, "groups", "is_archived") || !has_column(db, "groups", "archived_at") ||
-        !has_column(db, "groups", "idle_since"))
-    {
-        set_err(err, cap, "v18 is stamped but groups still lacks a retirement/idle column");
-        return false;
-    }
+    static const char *const kCols[] = {"is_archived", "archived_at", "idle_since"};
+    for (size_t i = 0; i < sizeof kCols / sizeof kCols[0]; i++)
+        if (!has_column(db, "groups", kCols[i]))
+        {
+            set_err(err, cap, "v18 is stamped but groups still lacks a retirement/idle column");
+            return false;
+        }
     return true;
 }
 

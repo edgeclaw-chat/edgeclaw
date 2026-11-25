@@ -822,6 +822,52 @@ static void test_real_v17_repair(void)
     drop_dir();
 }
 
+/* A wholly-unretired v17 (ALL three retirement columns missing) is the other broken
+ * shape the repair must handle. It exercises each idempotent ADD COLUMN: a build that
+ * stamped v17 before adding ANY of the columns must gain all three, all defaulted to 0. */
+static void test_real_v17_repair_all_columns_missing(void)
+{
+    printf("\n── the v17 -> v18 repair (v17 with no retirement/idle columns at all) ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "PRAGMA foreign_keys=ON") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, "
+                             "name TEXT NOT NULL, workdir TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE groups(session_id INTEGER NOT NULL REFERENCES "
+                             "sessions(session_id) ON DELETE CASCADE, group_id INTEGER PRIMARY KEY, "
+                             "is_orphaned INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "INSERT INTO sessions(session_id,name) VALUES(1,'s')") &&
+                 exec_ok(db, "INSERT INTO groups(session_id,group_id) VALUES(1,10)") &&
+                 exec_ok(db, "INSERT INTO groups(session_id,group_id) VALUES(1,11)") &&
+                 exec_ok(db, "PRAGMA user_version=17");
+    CHECK(built, "fixture: a v17 database with none of the retirement/idle columns");
+    CHECK(!column_exists(db, "groups", "is_archived") &&
+              !column_exists(db, "groups", "archived_at") &&
+              !column_exists(db, "groups", "idle_since"),
+          "fixture has none of the three columns before repair");
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 17, err, sizeof err), "v17 with no columns migrates to v18");
+    CHECK(column_exists(db, "groups", "is_archived") &&
+              column_exists(db, "groups", "archived_at") &&
+              column_exists(db, "groups", "idle_since"),
+          "all three columns were added by the repair");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups") == 2, "both group rows survive");
+    CHECK(query_int64(db, "SELECT count(*) FROM groups WHERE is_archived!=0 OR archived_at!=0 OR idle_since!=0") == 0,
+          "all repaired groups default to active / unknown idle");
+    sqlite3_close(db);
+    drop_dir();
+}
+
 /* The same step against a COMPLETE v17 must be a no-op: idempotence is what lets one
  * migration cover both the broken and the healthy upgrade path. */
 static void test_v18_repair_is_idempotent(void)
@@ -903,6 +949,7 @@ int main(void)
     test_real_v15_to_v16();
     test_real_v16_to_v17();
     test_real_v17_repair();
+    test_real_v17_repair_all_columns_missing();
     test_v18_repair_is_idempotent();
     test_rerun_is_refused();
 
