@@ -306,10 +306,36 @@ static void test_empty_input_draws_nothing()
     CHECK(!has_visible, "no visible character is drawn for empty markdown");
 }
 
+/* A dep block header that sits at the start of a line (`[subtask X result]:`) is parsed by
+ * md4c as a link reference definition and silently dropped -- so `/task status` shows only
+ * the FIRST subtask block: the first header trails `- **input**: ` on the same line and is
+ * kept as inline text, while the 2nd/3rd headers start their own line and vanish. */
+static void test_subtask_headers_at_line_start_are_not_swallowed()
+{
+    TEST("subtask block headers at line start stay visible (#1010 /task status)");
+    const std::string md =
+        "## Task `1010`\n\n"
+        "- **input**: [subtask A result]:\n"
+        "  OUT-A\n\n"
+        "  [subtask B result]:\n"
+        "  OUT-B\n\n"
+        "  [subtask C result]:\n"
+        "  OUT-C\n\n"
+        "  MY-OWN-INPUT\n";
+    const std::string f = Draw(md, 72, 30);
+    CHECK(Has(f, "OUT-A"), "first block visible");
+    CHECK(Has(f, "OUT-B"), "second block visible");
+    CHECK(Has(f, "OUT-C"), "third block visible");
+    CHECK(Has(f, "[subtask B result]:"), "second block's header drawn literally (no stray backslash)");
+    CHECK(Has(f, "[subtask C result]:"), "third block's header drawn literally");
+    CHECK(!Has(f, "\\["), "no escape backslash leaks into the output");
+}
+
 int main()
 {
     printf("test_markdown\n");
 
+    test_subtask_headers_at_line_start_are_not_swallowed();
     test_empty_input_draws_nothing();
     test_h1_is_a_banner_without_a_prefix();
     test_h2_keeps_its_prefix();

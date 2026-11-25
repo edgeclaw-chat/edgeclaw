@@ -573,6 +573,84 @@ static void test_join_injection_shape(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
+ *  Case 2d-2: 多个普通 JOIN dep 全部注入 (还原 #1010 的 3-dep 场景)
+ *
+ *  #1010 用了 `-d 1009 -d 1003 -d 998` 三个 dep, 报告说"只有第一个被注入"。
+ *  这里钉死: 三个**普通** (非 memory-sink) 源的输出必须全部按 dep 顺序拼进
+ *  目标的输入, 一个都不能少。
+ *  ══════════════════════════════════════════════════════════════ */
+
+static void test_all_three_join_deps_injected(void)
+{
+    TEST("三个普通 JOIN dep 的输出全部按序注入 (#1010)");
+
+    struct harness h;
+    harness_up(&h);
+    struct edc_task *leader = NULL;
+    make_group(&h, &leader, edc_test_session_id("sess-3dep"));
+
+    const char *names[3] = {"dep-A", "dep-B", "dep-C"};
+    const char *outs[3] = {"OUTPUT-A", "OUTPUT-B", "OUTPUT-C"};
+    struct edc_task *srcs[3];
+    for (int i = 0; i < 3; i++)
+    {
+        char id[32];
+        snprintf(id, sizeof(id), "src3-%d", i);
+        srcs[i] = edc_task_new(edc_test_id(id), edc_test_session_id("sess-3dep"), edc_test_id(id), names[i],
+                               edc_channel_adapter);
+        srcs[i]->output = sdsnew(outs[i]);
+        edc_task_await_exec(srcs[i]);
+        edc_task_mark_completed(srcs[i]);
+    }
+
+    struct edc_task *dst = edc_task_new(edc_test_id("dst3"), edc_test_session_id("sess-3dep"), edc_test_id("dst3"),
+                                        "dst-3dep", edc_channel_adapter);
+    for (int i = 0; i < 3; i++)
+        edc_task_add_dependency(dst, srcs[i], TASK_DEP_JOIN);
+    attach_turn(&h, dst, "MY-OWN-INPUT");
+
+    g_req_msgs = 0;
+    edc_llm_request_send(h.sched, dst, NULL, NULL, h.llm_actor, NULL);
+    pump(&h);
+    CHECK(g_req_msgs == 1, "请求发出去了");
+
+    const char *input = NULL;
+    if (dst->active_turn && dst->active_turn->msg_count > 0)
+    {
+        cJSON *m = edc_turn_msg_at(dst->active_turn, 0);
+        input = cJSON_GetStringValue(cJSON_GetObjectItem(m, "content"));
+    }
+    CHECK(input && strstr(input, "MY-OWN-INPUT") != NULL, "原输入还在");
+    for (int i = 0; i < 3; i++)
+    {
+        char hdr[64];
+        snprintf(hdr, sizeof(hdr), "[subtask %s result]:", names[i]);
+        CHECK(input && strstr(input, hdr) != NULL, "dep 头部在输入里");
+        CHECK(input && strstr(input, outs[i]) != NULL, "dep output 在输入里");
+    }
+    if (input)
+    {
+        const char *a = strstr(input, "OUTPUT-A");
+        const char *b = strstr(input, "OUTPUT-B");
+        const char *c = strstr(input, "OUTPUT-C");
+        CHECK(a && b && c && a < b && b < c, "三段材料按 dep 顺序排列");
+    }
+    /* 真正送上 wire 的 turn_tail 也必须带着全部三段材料, 不只是写进库的那份。 */
+    CHECK(g_req && g_req->turn_tail, "请求带着 turn_tail");
+    if (g_req && g_req->turn_tail)
+    {
+        cJSON *wire = cJSON_GetArrayItem(g_req->turn_tail, 0);
+        const char *wire_content = wire ? cJSON_GetStringValue(cJSON_GetObjectItem(wire, "content")) : NULL;
+        CHECK(wire_content && strstr(wire_content, "OUTPUT-A") && strstr(wire_content, "OUTPUT-B") &&
+                  strstr(wire_content, "OUTPUT-C"),
+              "wire 上的第一条消息含全部三个 dep 的 output");
+    }
+    edc_llm_actor_req_free(g_req);
+    g_req = NULL;
+    harness_down(&h);
+}
+
+/* ══════════════════════════════════════════════════════════════
  *  Case 2e: JOIN 材料是 **数据**, 不是语法
  *  ══════════════════════════════════════════════════════════════
  *
@@ -1154,6 +1232,7 @@ int main(void)
     test_session_memory_notice_reaches_the_tail();
     test_head_blocks_cache_layout();
     test_join_injection_shape();
+    test_all_three_join_deps_injected();
     log_add_callback(capture_log, NULL, LOG_TRACE);
 
     test_join_material_is_data_not_syntax();
