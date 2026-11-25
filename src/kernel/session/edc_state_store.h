@@ -128,7 +128,11 @@ struct edc_scheduler;
  * the flags only drive display and placement. Also groups.idle_since -- the persistent
  * "when this group became idle" clock, so a restart does not reset the --idle window.
  * All three columns default 0 (active / unknown idle). */
-#define EDC_DB_VERSION 17
+/* v18: repair for incomplete v17 databases. An early v17 stamp added only is_archived /
+ * archived_at; idle_since was missing, so load/flush SQL failed to prepare and the whole
+ * session was quarantined (no groups in the sidebar). This idempotent step re-adds any
+ * missing retirement/idle column; a complete v17 file is unchanged. */
+#define EDC_DB_VERSION 18
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *

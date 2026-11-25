@@ -717,6 +717,47 @@ static bool verify_v17(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v17 -> v18: repair incomplete v17 databases.
+ *
+ * Some v17 databases were stamped by an early build of the group-retirement change whose
+ * v17 step added only is_archived / archived_at -- idle_since came later in the same
+ * release. Those files carry `user_version=17` but lack groups.idle_since, so the current
+ * load/flush SQL (which references it) fails to prepare: no group loads and the session
+ * is quarantined -- every group vanishes from the sidebar.
+ *
+ * Because the stamp already says 17, check_or_create_schema() takes the "same version,
+ * nothing to do" branch and never re-runs step_v16_to_v17. This step is deliberately
+ * IDEMPOTENT: it adds only the columns that are actually missing, so both a broken v17
+ * (one or two columns absent) and a complete v17 (all three present) upgrade cleanly.
+ * Default 0 matches the original v17 contract (active / unknown idle). */
+static bool step_v17_to_v18(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "is_archived") &&
+        !run_sql(db, "ALTER TABLE groups ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0",
+                 "add groups.is_archived (v18 repair)", err, cap))
+        return false;
+    if (!has_column(db, "groups", "archived_at") &&
+        !run_sql(db, "ALTER TABLE groups ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0",
+                 "add groups.archived_at (v18 repair)", err, cap))
+        return false;
+    if (!has_column(db, "groups", "idle_since") &&
+        !run_sql(db, "ALTER TABLE groups ADD COLUMN idle_since INTEGER NOT NULL DEFAULT 0",
+                 "add groups.idle_since (v18 repair)", err, cap))
+        return false;
+    return true;
+}
+
+static bool verify_v18(sqlite3 *db, char *err, size_t cap)
+{
+    if (!has_column(db, "groups", "is_archived") || !has_column(db, "groups", "archived_at") ||
+        !has_column(db, "groups", "idle_since"))
+    {
+        set_err(err, cap, "v18 is stamped but groups still lacks a retirement/idle column");
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -735,6 +776,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {14, step_v14_to_v15, verify_v15},
     {15, step_v15_to_v16, verify_v16},
     {16, step_v16_to_v17, verify_v17},
+    {17, step_v17_to_v18, verify_v18},
     {0, NULL, NULL}, /* terminator */
 };
 
