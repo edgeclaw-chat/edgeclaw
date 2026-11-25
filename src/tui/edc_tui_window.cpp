@@ -53,6 +53,28 @@ static void DisableBracketedPaste()
     std::fflush(stdout);
 }
 
+// Focus reporting (DECSET 1004). With it on the terminal sends CSI I on
+// focus-in and CSI O on focus-out. ftxui's parser decodes CSI I as
+// Event::Special("\x1b[I") (CSI O collides with its SCO F3 mapping, but we only
+// need the focus-in edge). Without it a window switch produces no input at
+// all, so the app stays idle and never re-emits the caret position/shape/
+// visibility sequences the terminal dropped while we were away -- the user
+// sees the caret gone until a click generates a redraw. See OnEvent.
+static void EnableFocusReporting()
+{
+    std::fputs("\x1b[?1004h", stdout);
+    std::fflush(stdout);
+}
+static void DisableFocusReporting()
+{
+    std::fputs("\x1b[?1004l", stdout);
+    std::fflush(stdout);
+}
+
+// CSI I is focus-in; matched with Event::Special below (event equality
+// compares only the raw input bytes).
+static const ::ftxui::Event kFocusIn = ::ftxui::Event::Special("\x1b[I");
+
 // Ctrl+C pressed twice within this window quits; a lone press only clears the input box.
 constexpr auto kQuitWindow = std::chrono::milliseconds(1500);
 
@@ -275,6 +297,8 @@ TUIWindow::TUIWindow(int sandbox_override, std::shared_ptr<const port::ITerminal
 
     EnableBracketedPaste();
     bracketed_paste_on_ = true;
+    EnableFocusReporting();
+    focus_reporting_on_ = true;
 
     // Read the model once for the footer (the app has just loaded its config);
     // the footer itself is rebuilt per frame so it can fit the pane.
@@ -1091,6 +1115,30 @@ void TUIWindow::OpenUpdate()
 
 bool TUIWindow::OnEvent(::ftxui::Event event)
 {
+    // Focus-in (CSI I, DECSET 1004). Switching to another application and back
+    // leaves the terminal's hardware caret hidden/out of place: ftxui writes
+    // its position, shape and visibility ONLY while drawing a frame, and an
+    // idle app draws nothing on its own. With focus reporting enabled the
+    // terminal sends CSI I on return, which wakes the loop (ftxui requests a
+    // frame for every parsed event); the repaint re-emits the caret sequences
+    // and it is back on the input. We consume the report so it cannot be
+    // mistaken for a key, re-take focus on the editor as a click there would,
+    // and ask for the frame ourselves so the restore does not depend on that
+    // ftxui detail. Checked before the modals, so the caret returns whichever
+    // page is up (a dialog's own field focus is internal to the dialog).
+    if (event == kFocusIn)
+    {
+        // Return focus to the editor exactly as a click there would
+        // (EdcInput::HandleMouse calls TakeFocus). Harmless when the input is
+        // already active -- and it also recovers from any focus drift while we
+        // were away. This does not touch a modal's own internal field focus:
+        // the dialogs render as overlays and are not children of this container.
+        input_->TakeFocus();
+        if (screen_)
+            screen_->RequestAnimationFrame();
+        return true;
+    }
+
     // A drag is copied when it is let go, not while it is being made: mid-drag
     // the selection is still moving, and a click has to stay a click. This is an
     // observation only -- returning true here would make FTXUI cancel the
@@ -1458,6 +1506,8 @@ TUIWindow::~TUIWindow()
     // AppFacade's destructor, which runs right after this body.
     if (bracketed_paste_on_)
         DisableBracketedPaste();
+    if (focus_reporting_on_)
+        DisableFocusReporting();
 }
 
 void TUIWindow::SetScreen(::ftxui::ScreenInteractive *screen)

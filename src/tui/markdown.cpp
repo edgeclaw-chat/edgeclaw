@@ -598,6 +598,62 @@ int on_text(MD_TEXTTYPE type, const MD_CHAR *txt, MD_SIZE sz, void *ud)
 
 } // namespace
 
+/* md4c consumes a line-start `[label]:` as a LINK REFERENCE DEFINITION and emits no text
+ * for it. Our own generated material collides with that syntax: JOIN dep output is spliced
+ * into the task input as `[subtask X result]:` blocks, and in `/task status` only the FIRST
+ * header survives -- the first trails `- **input**: ` on the same line (inline text), while
+ * the 2nd/3rd start their own line and vanish along with their output.
+ *
+ * Escape the opening `[` of any line that looks like a reference definition (up to 3 leading
+ * spaces, `[label]:`), so md4c draws the label literally. This text is display DATA, not a
+ * real link definition; a chat bubble has nothing to gain from silently dropping it. Done on
+ * a copy so the caller's buffer is untouched. */
+static std::string EscapeLeadingRefDefinitions(std::string_view md)
+{
+    std::string out;
+    out.reserve(md.size() + 16);
+    size_t pos = 0;
+    while (pos < md.size())
+    {
+        const size_t nl = md.find('\n', pos);
+        const size_t end = (nl == std::string_view::npos) ? md.size() : nl;
+        const std::string_view line = md.substr(pos, end - pos);
+
+        size_t indent = 0;
+        while (indent < line.size() && indent < 3 && line[indent] == ' ')
+            ++indent;
+        bool escape = false;
+        if (indent < line.size() && line[indent] == '[')
+        {
+            const size_t close = line.find("]:", indent + 1);
+            if (close != std::string_view::npos && close > indent + 1)
+            {
+                const std::string_view label = line.substr(indent + 1, close - indent - 1);
+                /* A reference label cannot contain brackets. Anything else after `]:` is
+                 * left alone -- escaping the `[` already stops md4c treating the line as a
+                 * definition, and the rest renders as ordinary text. */
+                if (label.find('[') == std::string_view::npos && label.find(']') == std::string_view::npos)
+                    escape = true;
+            }
+        }
+
+        if (escape)
+        {
+            out.append(line.substr(0, indent));
+            out += "\\[";
+            out.append(line.substr(indent + 1));
+        }
+        else
+        {
+            out.append(line);
+        }
+        if (end < md.size())
+            out += '\n';
+        pos = end + 1;
+    }
+    return out;
+}
+
 Element RenderMarkdown(std::string_view md, int wrap_cols)
 {
     State st;
@@ -614,9 +670,10 @@ Element RenderMarkdown(std::string_view md, int wrap_cols)
     parser.leave_span = on_leave_span;
     parser.text = on_text;
 
-    int rc = md_parse(md.data(), static_cast<MD_SIZE>(md.size()), &parser, &st);
+    const std::string safe = EscapeLeadingRefDefinitions(md);
+    int rc = md_parse(safe.data(), static_cast<MD_SIZE>(safe.size()), &parser, &st);
     if (rc != 0)
-        return text(std::string(md));
+        return text(safe);
     return st.stack.front()->Finish();
 }
 

@@ -1965,6 +1965,51 @@ void edc_task_repair_dangling_tool_calls(struct edc_task *task)
     }
 }
 
+bool edc_task_recover_unanswered_tool_turn(struct edc_task *task)
+{
+    /* A task interrupted right after its LLM returned tool_calls can land with that turn
+     * committed (commit clears the ledger) and no active_turn. Recover it so the repair
+     * pass hands the model an [interrupted: ...] result -- NOT replay the tool, which may
+     * have side effects. Only the scheduler calls this, with a non-NULL, un-driven task. */
+    if (task->active_turn || edc_queue_length(&task->turns) == 0)
+        return false;
+
+    /* The last committed turn is at the tail; its LAST message is where unanswered
+     * tool_calls live -- an earlier assistant(tool_calls) always has its tool results
+     * before another assistant can follow, so scanning the whole turn is redundant. */
+    /* The queue only ever holds non-NULL turns with at least one message, so no null
+     * guard is needed here: a missing tail simply fails the tool_calls shape below. */
+    struct edc_turn *last = (struct edc_turn *)task->turns.data[task->turns.tail - 1];
+    cJSON *tail = edc_turn_msg_at(last, last->msg_count - 1);
+    const cJSON *role = cJSON_GetObjectItem(tail, "role"); /* NULL-safe on a NULL tail */
+    const cJSON *tcs = cJSON_GetObjectItem(tail, "tool_calls");
+    const bool unanswered =
+        role && cJSON_IsString(role) && strcmp(role->valuestring, "assistant") == 0 && cJSON_IsArray(tcs);
+    if (!unanswered)
+    {
+        cJSON_Delete(tail); /* NULL-safe */
+        return false;
+    }
+
+    /* Promote the turn back to active: its rows are already on disk under this key. */
+    task->turns.tail--;
+    task->active_turn = last;
+
+    /* Register each unanswered call as EXECUTING so repair synthesises an interrupted
+     * result instead of redispatching the (possibly side-effecting) tool. */
+    const cJSON *tc = NULL;
+    cJSON_ArrayForEach(tc, tcs)
+    {
+        const cJSON *id = cJSON_GetObjectItem(tc, "id");
+        const char *cid = (id && cJSON_IsString(id)) ? id->valuestring : NULL;
+        if (cid && *cid && !edc_task_tool_call_find(task, cid) &&
+            !task_turn_has_tool_response(last, last->msg_count, cid))
+            edc_task_tool_call_add(task, cid, NULL, NULL)->status = TOOL_CALL_EXECUTING;
+    }
+    cJSON_Delete(tail);
+    return true;
+}
+
 /* ── Output ────────────────────────────────────────────────── */
 
 void edc_task_set_output(struct edc_task *task, sds output)
