@@ -1977,20 +1977,17 @@ bool edc_task_recover_unanswered_tool_turn(struct edc_task *task)
     /* The last committed turn is at the tail; its LAST message is where unanswered
      * tool_calls live -- an earlier assistant(tool_calls) always has its tool results
      * before another assistant can follow, so scanning the whole turn is redundant. */
+    /* The queue only ever holds non-NULL turns with at least one message, so no null
+     * guard is needed here: a missing tail simply fails the tool_calls shape below. */
     struct edc_turn *last = (struct edc_turn *)task->turns.data[task->turns.tail - 1];
-    if (!last || last->msg_count <= 0)
-        return false;
     cJSON *tail = edc_turn_msg_at(last, last->msg_count - 1);
-    if (!tail)
-        return false;
-
-    const cJSON *role = cJSON_GetObjectItem(tail, "role");
+    const cJSON *role = cJSON_GetObjectItem(tail, "role"); /* NULL-safe on a NULL tail */
     const cJSON *tcs = cJSON_GetObjectItem(tail, "tool_calls");
     const bool unanswered =
         role && cJSON_IsString(role) && strcmp(role->valuestring, "assistant") == 0 && cJSON_IsArray(tcs);
     if (!unanswered)
     {
-        cJSON_Delete(tail);
+        cJSON_Delete(tail); /* NULL-safe */
         return false;
     }
 
