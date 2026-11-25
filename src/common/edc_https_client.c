@@ -1512,10 +1512,9 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
      * fails and hands over to IPv4 -- the exact /update failure, reproducible on a machine that
      * has no such DNS answer. Production never sets this.
      *
-     * Build the injected node with getaddrinfo() rather than malloc: the whole list is freed
-     * once with uv_freeaddrinfo() -> freeaddrinfo(), and every node must carry the allocator's
-     * own layout (ai_addr included). A hand-built node leaks its ai_addr on glibc and double-
-     * frees it on musl; a getaddrinfo() result is correct on both. */
+     * Build the node with getaddrinfo() rather than malloc: the whole list is freed once with
+     * uv_freeaddrinfo() -> freeaddrinfo(), and each node must carry the allocator's own layout
+     * (ai_addr included). A literal resolves to exactly one node, so no chain walk is needed. */
     {
         const char *forced6 = getenv(EDC_HTTPS_TEST_IPV6_FIRST_ENV);
         if (forced6 && *forced6)
@@ -1528,13 +1527,9 @@ static void edc_https_on_resolved(uv_getaddrinfo_t *req, int status, struct addr
             hints6.ai_protocol = IPPROTO_TCP;
             char port_s[16];
             snprintf(port_s, sizeof(port_s), "%d", http_req->url_parser.port ? http_req->url_parser.port : 443);
-            if (getaddrinfo(forced6, port_s, &hints6, &extra) == 0 && extra)
+            if (getaddrinfo(forced6, port_s, &hints6, &extra) == 0)
             {
-                /* getaddrinfo may return several nodes for one literal; chain them all in front. */
-                struct addrinfo *tail = extra;
-                while (tail->ai_next)
-                    tail = tail->ai_next;
-                tail->ai_next = res;
+                extra->ai_next = res;
                 res = extra;
             }
         }
