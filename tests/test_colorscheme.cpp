@@ -4,12 +4,44 @@
 #include "edc_colorscheme.h"
 #include "edc_colorscheme_palette.hpp"
 #include "edc_style.hpp"
-#include "test_fs_util.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#else
+#include <direct.h>
+#endif
+
+/* A scratch path under Bazel's per-test TEST_TMPDIR, which exists on every
+ * platform. Deliberately a local helper rather than test_fs_util.h: that header
+ * pulls in <windows.h> transitively on MSVC, whose RGB(r,g,b) macro collides with
+ * ftxui::Color::RGB below (error C2589 on `::RGB(`). */
+static std::string cs_tmp_path(const char *name)
+{
+    const char *base = std::getenv("TEST_TMPDIR");
+    if (!base || !*base)
+        base = std::getenv("TMPDIR");
+#ifdef _WIN32
+    if (!base || !*base)
+        base = std::getenv("TEMP");
+#endif
+    if (!base || !*base)
+        base = ".";
+    return std::string(base) + "/" + name;
+}
+
+static void cs_mkdir(const std::string &p)
+{
+#if !defined(_WIN32)
+    ::mkdir(p.c_str(), 0700);
+#else
+    ::_mkdir(p.c_str());
+#endif
+}
 
 static int g_fail = 0;
 #define CHECK(cond, msg)                                                                                               \
@@ -180,10 +212,11 @@ static void test_install_list_load()
     /* Bazel gives every test its own TEST_TMPDIR on every platform. Hardcoding
      * "/tmp/..." fails on Windows, where that is "\\tmp" on the current drive
      * and _mkdir() cannot create the parent. */
-    const std::string home = test_tmp_file_path("edc_cs_home");
-    const std::string colors = test_tmp_file_path("edc_cs_home/colors");
-    test_mkdir_p(colors.c_str());
-    const std::string src = test_tmp_file_path("edc_cs_source.vim");
+    const std::string home = cs_tmp_path("edc_cs_home");
+    const std::string colors = cs_tmp_path("edc_cs_home/colors");
+    cs_mkdir(home);      /* TEST_TMPDIR exists; create home then its colors child */
+    cs_mkdir(colors);
+    const std::string src = cs_tmp_path("edc_cs_source.vim");
     writefile(src, "hi Normal guifg=#abcdef guibg=#101010\nhi Keyword guifg=#123456\n");
 
     char installed[128] = {0};

@@ -45,7 +45,8 @@ static void drive_command(struct edc_config *cfg, struct edc_session_manager *sm
                           struct edc_scheduler *sched, const char *content)
 {
     struct edc_channel_message *cm =
-        edc_channel_message_new(edc_channel_adapter, EDC_CHANNEL_MESSAGE_USER_TYPE, sdsnew(content));
+        edc_channel_message_new(edc_channel_adapter, (edc_channel_message_type)EDC_CHANNEL_MESSAGE_USER_TYPE,
+                                sdsnew(content));
     edc_commands_handler(cfg, sm, sched, (struct edc_reply_to){.type = cm->type}, cm);
     edc_scheduler_schedule(sched);
 }

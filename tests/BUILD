@@ -1668,7 +1668,7 @@ cc_test(
 )
 cc_test(
     name = "test_colorscheme",
-    srcs = ["test_colorscheme.cpp", "test_fs_util.h"],
+    srcs = ["test_colorscheme.cpp"],
     deps = [
         "//src/common:common",
         "//src/tui:tui",
