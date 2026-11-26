@@ -7,6 +7,8 @@ load('//thirdparty/uthash:repo.bzl', uthash_repo = "repo")
 load('//thirdparty/libuv:repo.bzl', libuv_repo = "repo")
 load('//thirdparty/llhttp:repo.bzl', llhttp_repo = "repo")
 load('//thirdparty/libyuarel:repo.bzl', libyuarel_repo = "repo")
+load('//thirdparty/tree-sitter-c:repo.bzl', tree_sitter_c_repo = "repo")
+load('//thirdparty/tree-sitter-grammar:repo.bzl', grammar_repo = "grammar_repo")
 load('//toolchain:arm_toolchain_repo.bzl', 'arm_toolchain_repo')
 load('//toolchain:aarch64_toolchain_repo.bzl', 'aarch64_toolchain_repo')
 load('//toolchain:android_toolchain_repo.bzl', 'aarch64_android_toolchain_repo', 'arm_android_toolchain_repo')
@@ -22,6 +24,19 @@ def _bc_thirdparty_deps_impl(module_ctx):
     libuv_repo()
     llhttp_repo()
     libyuarel_repo()
+    tree_sitter_c_repo()
+    # Syntax-highlighting grammars (see //src/common:syntax). Each is pinned to
+    # an official release by sha256; queries are embedded separately.
+    grammar_repo(name = "tree-sitter-cpp", version = "0.23.4",
+                 sha256 = "7a2c55afe3028f4105f25762ea58cc16537d1f5a1dcd9cca90410b3cd5d46051", has_scanner = True)
+    grammar_repo(name = "tree-sitter-python", version = "0.25.0",
+                 sha256 = "4609a3665a620e117acf795ff01b9e965880f81745f287a16336f4ca86cf270c", has_scanner = True)
+    grammar_repo(name = "tree-sitter-bash", version = "0.25.1",
+                 sha256 = "2e785a761225b6c433410ef9c7b63cfb0a4e83a35a19e0f2aec140b42c06b52d", has_scanner = True)
+    grammar_repo(name = "tree-sitter-json", version = "0.24.8",
+                 sha256 = "acf6e8362457e819ed8b613f2ad9a0e1b621a77556c296f3abea58f7880a9213")
+    grammar_repo(name = "tree-sitter-go", version = "0.25.0",
+                 sha256 = "2dc241b97872c53195e01b86542b411a3c1a6201d9c946c78d5c60c063bba1ef")
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

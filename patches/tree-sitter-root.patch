@@ -1,0 +1,29 @@
+Make tree-sitter-bazel linkable without --experimental_cc_implementation_deps.
+
+The upstream top-level :tree-sitter target puts the implementation in
+implementation_deps and gates itself behind a config_setting that requires
+--experimental_cc_implementation_deps. That flag makes Bazel split the library
+into many static archives whose link order (tree/node/tree_cursor...) forms a
+symbol cycle GNU ld cannot resolve in one pass. Move the implementation to a
+normal dep and drop the gate so a plain static link works. See the companion
+tree-sitter-libsrc.patch, which merges the internal libs into one archive.
+--- a/BUILD
++++ b/BUILD
+@@ -18,16 +18,10 @@
+ 
+ cc_library(
+     name = "tree-sitter",
+-    implementation_deps = [
+-        "@tree-sitter-bazel//lib/src:lib",
+-    ],
+-    target_compatible_with = select({
+-        "@tree-sitter-bazel//build_config:implementation_deps_enabled": [],
+-        "//conditions:default": ["@platforms//:incompatible"],
+-    }),
+     visibility = ["//visibility:public"],
+     deps = [
+         "@tree-sitter-bazel//lib/include/tree_sitter:api",
++        "@tree-sitter-bazel//lib/src:lib",
+     ],
+ )
+ 

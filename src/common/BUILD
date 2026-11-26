@@ -1,5 +1,46 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+# Syntax-highlighting engine: tree-sitter based source -> semantic-span parser.
+# Kept out of :common so a binary that does not render code pays no dependency
+# on the tree-sitter runtime or any grammar. Language grammars link here.
+#
+# Highlight queries (highlights.scm) are compiled into the binary by the
+# embedded_queries genrule below: no runtime file/network access, so musl static
+# releases and offline hosts highlight identically. Each .scm is the grammar's
+# own official query, kept under queries/ so it can be patched without refetching
+# the grammar archive.
+genrule(
+    name = "embedded_queries",
+    srcs = glob(["queries/*.scm"]),
+    outs = ["edc_embedded_queries.c", "edc_embedded_queries.h"],
+    cmd = "$(execpath //tools:embed_queries) --out-c $(location edc_embedded_queries.c) " +
+          "--out-h $(location edc_embedded_queries.h) --queries $(SRCS)",
+    cmd_bat = "$(execpath //tools:embed_queries) --out-c $(location edc_embedded_queries.c) " +
+          "--out-h $(location edc_embedded_queries.h) --queries $(SRCS)",
+    tools = ["//tools:embed_queries"],
+    visibility = ["//visibility:private"],
+)
+
+cc_library(
+    name = "syntax",
+    srcs = [
+        "edc_syntax.c",
+        ":embedded_queries",
+    ],
+    hdrs = ["edc_syntax.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@tree-sitter-bazel//:tree-sitter",
+        "@tree-sitter-c//:tree-sitter-c",
+        "@tree-sitter-cpp//:tree-sitter-cpp",
+        "@tree-sitter-python//:tree-sitter-python",
+        "@tree-sitter-bash//:tree-sitter-bash",
+        "@tree-sitter-json//:tree-sitter-json",
+        "@tree-sitter-go//:tree-sitter-go",
+    ],
+)
+
 # Top-level utility: utlist 的兼容修正（原 //src:utlist_fix，随 core 一起下沉）
 cc_library(
     name = "utlist_fix",
