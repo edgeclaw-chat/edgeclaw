@@ -74,11 +74,26 @@ static bool chat_bubble_kind(edc_channel_message_type type, const char **kind)
     }
 }
 
-/* Persist exactly what is about to be shown, on the ONE runner thread that is
- * allowed to touch the state store (edc_state_store.h). This is the single
- * funnel: every channel message -- task output, command reply, user echo --
- * arrives here as BC_ACTOR_MSG_CHANNEL_SEND, so a bubble can be written exactly
- * once with the same bytes the TUI will render. No UI thread writes storage.
+/* Persist exactly what the display gate will show, on the ONE runner thread
+ * that is allowed to touch the state store (edc_state_store.h). This is the
+ * single funnel: every channel message -- task output, command reply, user echo
+ * -- arrives here as BC_ACTOR_MSG_CHANNEL_SEND, so a bubble can be written
+ * exactly once with the same bytes the TUI will render. No UI thread writes
+ * storage.
+ *
+ * The frontend's display gate (ForegroundOnlyRouting in edc_domain.cpp, applied
+ * by ChannelDispatcher::OnChatMessage) shows a session's output only from that
+ * session's ACTIVE task; a backgrounded or system task's output is Silent. This
+ * funnel must persist the same set, or a restart replays bubbles the user never
+ * saw: curate/extract (SESSION_MEMORY) tasks stream their thoughts and tool
+ * calls here, and without this check they fill chat_bubbles with ~50 lines per
+ * run that then push the user's real reply out of the loaded page. The sender
+ * already declares the fact on every task message (from_active_task), so the
+ * decision needs no knowledge of "who is watching" -- the actor does not have
+ * it. Messages with no task_id (user echo, interface_feedback command replies)
+ * are not task output and must still be written. A message from a task that is
+ * no longer active is dropped here and still sent to the adapter below, whose
+ * dispatcher applies the same Silent rule before deciding to show it.
  *
  * A bubble without session_id has no owner. That is a bug in the producer, not
  * something to guess from UI state: refuse it loudly instead of writing it to a
@@ -87,6 +102,12 @@ static void chat_bubble_persist(struct edc_channel_message *msg)
 {
     const char *kind = NULL;
     if (!msg || !chat_bubble_kind(msg->message_type, &kind))
+        return;
+    /* Same predicate as the frontend's Silent route: a task's output that is not
+     * its session's active task, and not an explicit interface reply. Keep it in
+     * lockstep with ForegroundOnlyRouting::Route -- if that rule changes, this
+     * one must too, or persistence and display drift apart again. */
+    if (msg->task_id && !msg->from_active_task && !msg->interface_feedback)
         return;
     if (!msg->session_id || !*msg->session_id)
     {

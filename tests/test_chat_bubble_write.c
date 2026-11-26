@@ -18,6 +18,7 @@
 #include "test_ws.h"
 
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -81,6 +82,31 @@ static void send_bubble(edc_actor_t *channel, edc_channel_message_type type, con
                                      (edc_actor_data_free_fn)edc_channel_message_free));
 }
 
+/* A task's output that is NOT its session's active task (a curate/extract system
+ * task, or a superseded task). The frontend's Silent gate will not show it, so
+ * it must not be persisted either -- otherwise the restart replay shows ~50
+ * lines of system chatter the user never saw, pushing their real reply out of
+ * the loaded page. It must still reach the adapter: display filtering is the
+ * dispatcher's job, and this funnel only decides what is durable. */
+static void send_task_message_ex(edc_actor_t *channel, edc_channel_message_type type, const char *sid,
+                                 const char *task_id, bool from_active, bool feedback)
+{
+    struct edc_channel_message *msg = edc_channel_message_new(edc_channel_adapter, type, sdsnew("system chatter"));
+    msg->session_id = sdsnew(sid);
+    msg->task_id = sdsnew(task_id);
+    msg->from_active_task = from_active;
+    msg->interface_feedback = feedback;
+    edc_actor_send(channel,
+                   edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_SEND, channel, NULL, msg,
+                                     (edc_actor_data_free_fn)edc_channel_message_free));
+}
+
+static void send_task_message(edc_actor_t *channel, edc_channel_message_type type, const char *sid,
+                              const char *task_id, bool from_active)
+{
+    send_task_message_ex(channel, type, sid, task_id, from_active, false);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* opens the store on a real temp workspace */
@@ -118,18 +144,51 @@ int main(void)
               edc_chat_bubble_count(sid));
     }
 
+    printf("-- non-active task output: not persisted, still delivered --\n");
+    {
+        g_seen = 0;
+        const int64_t before = edc_chat_bubble_count(sid);
+        /* A curate task (not the session's active task) streams thoughts/tools. */
+        send_task_message(channel, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, sid, "1073", false);
+        send_task_message(channel, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sid, "1073", false);
+        CHECK(wait_seen(2, 3000), "both non-active task messages reached the observer");
+        CHECK(edc_chat_bubble_count(sid) == before, "no rows written for a non-active task, got %" PRId64,
+              edc_chat_bubble_count(sid) - before);
+
+        /* A command reply carries a task id but is interface feedback: even from a
+         * non-active task it must be written (the frontend shows interface feedback
+         * regardless of the active-task gate). */
+        send_task_message_ex(channel, EDC_CHANNEL_MESSAGE_SYS_TYPE, sid, "1073", false, true);
+        CHECK(wait_seen(3, 3000), "the feedback message reached the observer");
+        CHECK(edc_chat_bubble_count(sid) == before + 1, "interface feedback was written despite non-active, got %" PRId64,
+              edc_chat_bubble_count(sid) - before);
+
+        /* The active task's output is still persisted. */
+        send_task_message(channel, EDC_CHANNEL_MESSAGE_RESP_TYPE, sid, "1071", true);
+        CHECK(wait_seen(4, 3000), "the active task message reached the observer");
+        CHECK(edc_chat_bubble_count(sid) == before + 2, "the active task wrote one row, got %" PRId64,
+              edc_chat_bubble_count(sid) - before);
+    }
+
     printf("-- the stored line is byte-identical to what the UI renders --\n");
     {
         char *expected = edc_chat_bubble_encode("sys", 0, "", "", "a\\n escaped newline");
         CHECK(expected != NULL, "shared encoder produced a line");
         struct edc_chat_bubble_row *rows = NULL;
         int n = 0;
-        CHECK(edc_chat_bubble_page(sid, INT64_MAX, 10, &rows, &n) && n == 5, "page reads 5 rows");
-        if (n == 5 && expected)
+        CHECK(edc_chat_bubble_page(sid, INT64_MAX, 10, &rows, &n) && n == 7, "page reads 7 rows");
+        if (n == 7 && expected)
         {
             CHECK(rows[4].line && strcmp(rows[4].line, "sys\t0\t\t\tsystem note") == 0,
-                  "the last row's encoded shape is exactly kind/pref/task/header/content");
+                  "the sys row's encoded shape is exactly kind/pref/task/header/content");
             CHECK(strstr(rows[4].line, "system note") != NULL, "content survives verbatim");
+            /* Feedback (task 1073) and the active-task reply (1071) were written; the
+             * non-active chatter from task 1073 was not. Verify by task id in the
+             * encoded kind/pref/task/header/content line. */
+            CHECK(rows[5].line && strstr(rows[5].line, "\t1073\t") != NULL,
+                  "the non-active task's interface feedback row is present");
+            CHECK(rows[6].line && strstr(rows[6].line, "\t1071\t") != NULL,
+                  "the active task's row is present and newest");
         }
         edc_chat_bubble_rows_free(rows, n);
         free(expected);
@@ -142,8 +201,8 @@ int main(void)
         edc_actor_send(channel,
                        edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_SEND, channel, NULL, msg,
                                          (edc_actor_data_free_fn)edc_channel_message_free));
-        CHECK(wait_seen(8, 3000), "the orphan reached the observer");
-        CHECK(edc_chat_bubble_count(sid) == 5, "the orphan was not written anywhere");
+        CHECK(wait_seen(5, 3000), "the orphan reached the observer");
+        CHECK(edc_chat_bubble_count(sid) == 7, "the orphan was not written anywhere");
     }
 
     edc_actor_runner_stop(runner);
