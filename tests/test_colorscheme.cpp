@@ -206,6 +206,75 @@ static void test_parse_branches()
     CHECK(!edc_colorscheme_parse(bad, std::strlen(bad), &cs), "no usable colours -> rejected");
 }
 
+/* Collect names via the callback, like /theme list does. */
+struct NameSink
+{
+    std::string joined;
+};
+static void collect_name(const char *name, void *ud)
+{
+    NameSink *s = static_cast<NameSink *>(ud);
+    if (!s->joined.empty())
+        s->joined += ",";
+    s->joined += name;
+}
+
+static void test_error_paths()
+{
+    std::printf("  errors: bad args, missing/unparseable files, list filtering and sort\n");
+    edc_colorscheme cs;
+    char err[256];
+    char buf[1200];
+
+    // parse_file / parse / dir / path / load bad arguments.
+    CHECK(!edc_colorscheme_parse_file(nullptr, &cs, err, sizeof(err)), "parse_file: NULL path rejected");
+    CHECK(err[0] != '\0', "parse_file: error message written");
+    CHECK(!edc_colorscheme_parse_file("x", nullptr, err, sizeof(err)), "parse_file: NULL out rejected");
+    CHECK(!edc_colorscheme_parse(nullptr, 0, &cs), "parse: NULL text rejected");
+    CHECK(!edc_colorscheme_dir(nullptr, buf, sizeof(buf)), "dir: NULL home rejected");
+    CHECK(!edc_colorscheme_dir("h", buf, 0), "dir: zero cap rejected");
+    CHECK(!edc_colorscheme_path("h", "../escape", buf, sizeof(buf)), "path: traversal rejected");
+    CHECK(!edc_colorscheme_path("h", "", buf, sizeof(buf)), "path: empty name rejected");
+    CHECK(!edc_colorscheme_load("h", "", &cs), "load: empty name rejected");
+    CHECK(!edc_colorscheme_load("h", nullptr, &cs), "load: NULL name rejected");
+
+    // A dedicated home with .vim and non-.vim files: list filters and sorts.
+    const std::string home = cs_tmp_path("edc_cs_errors");
+    const std::string colors = cs_tmp_path("edc_cs_errors/colors");
+    cs_mkdir(home);
+    cs_mkdir(colors);
+    writefile(cs_tmp_path("edc_cs_errors/colors/zeta.vim"), "hi Normal guifg=#fff guibg=#000\n");
+    writefile(cs_tmp_path("edc_cs_errors/colors/alpha.vim"), "hi Normal guifg=#fff guibg=#000\n");
+    writefile(cs_tmp_path("edc_cs_errors/colors/notes.txt"), "not a theme\n");
+    writefile(cs_tmp_path("edc_cs_errors/colors/.hidden.vim"), "hi Normal guifg=#fff guibg=#000\n");
+    NameSink sink;
+    const size_t n = edc_colorscheme_list(home.c_str(), collect_name, &sink);
+    CHECK(n == 2, "list: only valid .vim themes counted");
+    CHECK(sink.joined == "alpha,zeta", "list: names sorted and dotfile excluded");
+
+    // parse_file on a missing file and on an unparseable one sets an error.
+    CHECK(!edc_colorscheme_parse_file(cs_tmp_path("edc_cs_errors/nope.vim").c_str(), &cs, err, sizeof(err)),
+          "parse_file: missing file rejected");
+    CHECK(err[0] != '\0', "parse_file: missing-file error written");
+    writefile(cs_tmp_path("edc_cs_errors/lua.vim"), "vim.api.nvim_set_hl(0, 'Normal', {})\n");
+    CHECK(!edc_colorscheme_parse_file(cs_tmp_path("edc_cs_errors/lua.vim").c_str(), &cs, err, sizeof(err)),
+          "parse_file: unparseable file rejected");
+    CHECK(std::strstr(err, "no usable highlight groups") != nullptr, "parse_file: explains unsupported theme");
+
+    // install bad args and non-regular source.
+    char installed[128] = {0};
+    CHECK(!edc_colorscheme_install(nullptr, "x", installed, sizeof(installed), err, sizeof(err)),
+          "install: NULL home rejected");
+    CHECK(!edc_colorscheme_install(home.c_str(), nullptr, installed, sizeof(installed), err, sizeof(err)),
+          "install: NULL source rejected");
+    CHECK(!edc_colorscheme_install(home.c_str(), home.c_str(), installed, sizeof(installed), err, sizeof(err)),
+          "install: directory source rejected");
+    CHECK(err[0] != '\0', "install: error message written");
+    CHECK(!edc_colorscheme_install(home.c_str(), cs_tmp_path("edc_cs_errors/lua.vim").c_str(), installed,
+                                   sizeof(installed), err, sizeof(err)),
+          "install: unparseable source rejected");
+}
+
 static void test_install_list_load()
 {
     std::printf("  dir: install -> list -> load -> path guard\n");
@@ -245,6 +314,7 @@ int main()
     test_parse_and_map();
     test_thought_closed_is_dimmed_open();
     test_parse_branches();
+    test_error_paths();
     test_reject_and_named();
     test_install_list_load();
     if (g_fail)
