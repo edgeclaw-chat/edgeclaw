@@ -681,9 +681,21 @@ Element RenderMarkdown(std::string_view md, int wrap_cols)
 
     const std::string safe = EscapeLeadingRefDefinitions(md);
     int rc = md_parse(safe.data(), static_cast<MD_SIZE>(safe.size()), &parser, &st);
-    if (rc != 0)
-        return text(safe);
-    return st.stack.front()->Finish();
+    Element body = (rc != 0) ? text(safe) : st.stack.front()->Finish();
+
+    /* Give every plain-text cell an explicit foreground from the active palette.
+     *
+     * Raw markdown words are emitted as bare text() with no colour, so they used to
+     * inherit the terminal's default foreground. The message bubble behind them,
+     * however, IS painted -- with style::palette().pane_bg. On a light terminal the
+     * terminal's dark default foreground landed on a dark pane (or vice versa), and
+     * body text became nearly invisible while only the explicitly-coloured tokens
+     * (headings, code, links) stayed readable. Painting the default here, as the
+     * OUTERMOST colour, is safe: ftxui's color() decorator sets the cell colour before
+     * rendering its child, so the first/inner colour wins -- every inner highlight
+     * (code, link, heading, table head) still overrides this default. Cells with no
+     * inner colour get pal.text, which the palette guarantees contrasts with pane_bg. */
+    return body | color(style::palette().text);
 }
 
 } // namespace edc

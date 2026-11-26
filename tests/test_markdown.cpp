@@ -297,6 +297,44 @@ static void test_distinct_heading_and_table_head_colors()
     edc::style::SetPaletteProvider(nullptr);
 }
 
+static void test_plain_body_uses_palette_text()
+{
+    TEST("md colours: plain prose wears pal.text, inner highlights still override");
+    edc::style::Palette p = edc::style::palette();
+    // Distinct colours so a wrong source is obvious.
+    p.text = ftxui::Color::RGB(12, 34, 56);
+    p.md_code_inline = ftxui::Color::RGB(201, 122, 33);
+    p.md_link = ftxui::Color::RGB(33, 201, 122);
+    p.md_h2 = ftxui::Color::RGB(150, 40, 200);
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    {
+        // Plain prose with no markup: every glyph must carry pal.text.
+        auto s = DrawColored("plain words here");
+        ftxui::Color cp, cl, cw;
+        CHECK(CellColorOf(s, "p", &cp), "plain glyph found");
+        CHECK(cp == p.text, "plain prose is painted with pal.text (not terminal default)");
+        CHECK(CellColorOf(s, "l", &cl) && cl == p.text, "another plain glyph also pal.text");
+        CHECK(CellColorOf(s, "w", &cw) && cw == p.text, "third plain glyph also pal.text");
+    }
+    {
+        // An inline code span keeps its own colour despite the outer default.
+        auto s = DrawColored("before `code` after");
+        ftxui::Color cc;
+        CHECK(CellColorOf(s, "c", &cc), "code glyph found");
+        CHECK(cc == p.md_code_inline, "inline code still overrides the default text colour");
+    }
+    {
+        // A heading keeps its own colour too.
+        auto s = DrawColored("## Heading");
+        ftxui::Color ch;
+        CHECK(CellColorOf(s, "H", &ch), "heading glyph found");
+        CHECK(ch == p.md_h2, "heading still overrides the default text colour");
+    }
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_hard_break_starts_a_new_row()
 {
     TEST("inline: a hard break moves to the next row, a soft break does not");
@@ -410,6 +448,7 @@ int main()
     test_horizontal_rule();
     test_table_header_is_above_the_body();
     test_distinct_heading_and_table_head_colors();
+    test_plain_body_uses_palette_text();
     test_inline_marks_keep_their_text();
     test_hard_break_starts_a_new_row();
     test_state_name_span_is_not_a_code_chip();

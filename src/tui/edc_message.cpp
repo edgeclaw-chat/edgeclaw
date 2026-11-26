@@ -118,7 +118,8 @@ bool Message::OnEvent(ftxui::Event)
     {
         const auto &pal = style::palette();
         body_ = RenderMarkdown(content_, BodyWidth());
-        body_ = body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
+        body_ = body_ | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg) |
+                ::ftxui::color(pal.text);
     }
 
     return body_;
@@ -203,7 +204,7 @@ UserMessage::UserMessage(const std::string_view content, time_t ts, const std::s
     auto header = ::ftxui::separatorHeavy() | ::ftxui::color(pal.user_rule);
 
     body_ = ::ftxui::hbox({header, body | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY)}) |
-            ::ftxui::bgcolor(pal.pane_bg);
+            ::ftxui::bgcolor(pal.pane_bg) | ::ftxui::color(pal.text);
     return body_;
 }
 
@@ -349,8 +350,8 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
         children.push_back(footer);
     }
 
-    body_ =
-        ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) | ::ftxui::bgcolor(pal.pane_bg);
+    body_ = ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
+            ::ftxui::bgcolor(pal.pane_bg) | ::ftxui::color(pal.text);
     return body_;
 }
 
