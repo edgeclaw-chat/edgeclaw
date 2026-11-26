@@ -107,7 +107,7 @@ static void chat_bubble_persist(struct edc_channel_message *msg)
      * its session's active task, and not an explicit interface reply. Keep it in
      * lockstep with ForegroundOnlyRouting::Route -- if that rule changes, this
      * one must too, or persistence and display drift apart again. */
-    if (msg->task_id && *msg->task_id && !msg->from_active_task && !msg->interface_feedback)
+    if (msg->task_id && !msg->from_active_task && !msg->interface_feedback)
         return;
     if (!msg->session_id || !*msg->session_id)
     {
