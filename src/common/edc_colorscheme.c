@@ -559,6 +559,28 @@ static const struct cs_binding k_bindings[] = {
     {EDC_CS_MENTION_TEXT, "markdownListMarker", false},
     {EDC_CS_MENTION_TEXT, "Error", false},
     {EDC_CS_MENTION_TEXT, "Keyword", false},
+    /* Fenced-code syntax groups. Map to Vim's standard highlight groups so an
+     * imported theme colours code with the same palette it uses for the editor.
+     * Per-group fallbacks: nvim-treesitter-derived themes often define the
+     * @-style names too, listed first where they exist. */
+    {EDC_CS_SYNTAX_COMMENT, "Comment", false},
+    {EDC_CS_SYNTAX_KEYWORD, "Keyword", false},
+    {EDC_CS_SYNTAX_KEYWORD, "Statement", false},
+    {EDC_CS_SYNTAX_STRING, "String", false},
+    {EDC_CS_SYNTAX_NUMBER, "Number", false},
+    {EDC_CS_SYNTAX_NUMBER, "Constant", false},
+    {EDC_CS_SYNTAX_FUNCTION, "Function", false},
+    {EDC_CS_SYNTAX_FUNCTION, "Identifier", false},
+    {EDC_CS_SYNTAX_VARIABLE, "Identifier", false},
+    {EDC_CS_SYNTAX_VARIABLE, "Normal", false},
+    {EDC_CS_SYNTAX_TYPE, "Type", false},
+    {EDC_CS_SYNTAX_TYPE, "StorageClass", false},
+    {EDC_CS_SYNTAX_OPERATOR, "Operator", false},
+    {EDC_CS_SYNTAX_OPERATOR, "Delimiter", false},
+    {EDC_CS_SYNTAX_CONSTANT, "Constant", false},
+    {EDC_CS_SYNTAX_CONSTANT, "Number", false},
+    {EDC_CS_SYNTAX_PUNCTUATION, "Delimiter", false},
+    {EDC_CS_SYNTAX_PUNCTUATION, "Operator", false},
 };
 
 static void cs_fill_roles(struct cs_parser *p, struct edc_colorscheme *out)

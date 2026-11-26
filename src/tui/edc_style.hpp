@@ -3,6 +3,7 @@
 #include "edc_theme.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 #include <memory>
@@ -80,6 +81,21 @@ struct Palette
     ::ftxui::Color paste_text;    // folded `[Pasted #n]` chip glyphs
     ::ftxui::Color paste_surface; // the chip's own surface
     ::ftxui::Color mention_text;  // an `@file` reference
+
+    // Syntax highlighting colours for fenced code blocks. One slot per
+    // edc_syntax_group (see src/common/edc_syntax.h); SyntaxColor() maps a
+    // group name to its slot. Kept last so the existing aggregate initialisers
+    // below only need the new values appended, in the same order.
+    ::ftxui::Color syntax_comment;
+    ::ftxui::Color syntax_keyword;
+    ::ftxui::Color syntax_string;
+    ::ftxui::Color syntax_number;
+    ::ftxui::Color syntax_function;
+    ::ftxui::Color syntax_variable;
+    ::ftxui::Color syntax_type;
+    ::ftxui::Color syntax_operator;
+    ::ftxui::Color syntax_constant;
+    ::ftxui::Color syntax_punctuation;
 };
 
 // Function-local statics on purpose: ftxui::Color::RGB() resolves against the
@@ -132,6 +148,16 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(255, 198, 109), // paste_text (was input_paste_text())
         ::ftxui::Color::RGB(59, 50, 38),    // paste_surface
         ::ftxui::Color::RGB(249, 38, 114),  // mention_text (keyword pink)
+        ::ftxui::Color::RGB(117, 113, 94),  // syntax_comment
+        ::ftxui::Color::RGB(249, 38, 114),  // syntax_keyword (Monokai pink)
+        ::ftxui::Color::RGB(230, 219, 116), // syntax_string (yellow-green)
+        ::ftxui::Color::RGB(174, 129, 255), // syntax_number (purple)
+        ::ftxui::Color::RGB(166, 226, 46),  // syntax_function (green)
+        ::ftxui::Color::RGB(248, 248, 242), // syntax_variable (foreground)
+        ::ftxui::Color::RGB(102, 217, 239), // syntax_type (cyan)
+        ::ftxui::Color::RGB(249, 38, 114),  // syntax_operator
+        ::ftxui::Color::RGB(174, 129, 255), // syntax_constant
+        ::ftxui::Color::RGB(117, 113, 94),  // syntax_punctuation
     };
     return k;
 }
@@ -182,6 +208,16 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(138, 90, 0),    // paste_text (was input_paste_text())
         ::ftxui::Color::RGB(255, 240, 209), // paste_surface
         ::ftxui::Color::RGB(249, 38, 114),  // mention_text (keyword pink)
+        ::ftxui::Color::RGB(159, 159, 143), // syntax_comment
+        ::ftxui::Color::RGB(249, 38, 114),  // syntax_keyword
+        ::ftxui::Color::RGB(138, 90, 0),    // syntax_string (dark ochre, legible on white)
+        ::ftxui::Color::RGB(174, 60, 180),  // syntax_number (purple)
+        ::ftxui::Color::RGB(106, 175, 25),  // syntax_function (green)
+        ::ftxui::Color::RGB(0, 0, 0),       // syntax_variable (foreground)
+        ::ftxui::Color::RGB(40, 138, 170),  // syntax_type (darker cyan)
+        ::ftxui::Color::RGB(249, 38, 114),  // syntax_operator
+        ::ftxui::Color::RGB(174, 60, 180),  // syntax_constant
+        ::ftxui::Color::RGB(159, 159, 143), // syntax_punctuation
     };
     return k;
 }
@@ -214,6 +250,27 @@ inline const Palette &palette()
     if (const std::shared_ptr<const IPalette> &provider = palette_provider_slot())
         return provider->colors();
     return theme::IsLight() ? light_palette() : dark_palette();
+}
+
+// Colour for one syntax group. |name| is the capture group name produced by
+// edc_syntax_group_name() in the C highlighter ("keyword", "function", ...).
+// Unknown names fall back to the plain code colour, so a new grammar capture
+// group can never crash rendering.
+inline ::ftxui::Color SyntaxColor(const Palette &pal, const char *name)
+{
+    if (!name)
+        return pal.md_code;
+    if (strcmp(name, "comment") == 0) return pal.syntax_comment;
+    if (strcmp(name, "keyword") == 0) return pal.syntax_keyword;
+    if (strcmp(name, "string") == 0)  return pal.syntax_string;
+    if (strcmp(name, "number") == 0)  return pal.syntax_number;
+    if (strcmp(name, "function") == 0) return pal.syntax_function;
+    if (strcmp(name, "variable") == 0) return pal.syntax_variable;
+    if (strcmp(name, "type") == 0)    return pal.syntax_type;
+    if (strcmp(name, "operator") == 0) return pal.syntax_operator;
+    if (strcmp(name, "constant") == 0) return pal.syntax_constant;
+    if (strcmp(name, "punctuation") == 0) return pal.syntax_punctuation;
+    return pal.md_code;
 }
 
 // ── The borderless split's seam ──────────────────────────────
