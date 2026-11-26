@@ -28,11 +28,13 @@
 
 #include "edc_style.hpp"
 #include "markdown.hpp"
+#include "edc_style.hpp"
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 static int g_passed = 0;
@@ -114,6 +116,37 @@ int RowOf(const std::string &frame, const std::string &needle)
     }
     return -1;
 }
+
+/* Render into a real screen so cell colours survive (Draw() strips them), and find a
+ * glyph's foreground colour. Used to prove the distinct md_* roles reach the screen. */
+::ftxui::Screen DrawColored(const std::string &md, int w = 60, int h = 20)
+{
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(w), ::ftxui::Dimension::Fixed(h));
+    ::ftxui::Render(screen, edc::RenderMarkdown(md, 0) | ::ftxui::flex);
+    return screen;
+}
+/* First cell whose character is a printable ASCII byte of |needle|, by content. */
+bool CellColorOf(const ::ftxui::Screen &s, const std::string &needle, ftxui::Color *out)
+{
+    for (int y = 0; y < s.dimy(); ++y)
+        for (int x = 0; x < s.dimx(); ++x)
+        {
+            const std::string c = s.CellAt(x, y).character;
+            if (!c.empty() && needle.find(c[0]) != std::string::npos && c[0] >= 'A' && c[0] <= 'z')
+            {
+                *out = s.CellAt(x, y).foreground_color;
+                return true;
+            }
+        }
+    return false;
+}
+
+struct FixedPalette : edc::style::IPalette
+{
+    edc::style::Palette pal;
+    explicit FixedPalette(edc::style::Palette p) : pal(std::move(p)) {}
+    const edc::style::Palette &colors() const override { return pal; }
+};
 
 } // namespace
 
@@ -234,6 +267,74 @@ static void test_inline_marks_keep_their_text()
     CHECK(!Has(f, "https://example.com"), "the href is not printed next to the text");
 }
 
+static void test_distinct_heading_and_table_head_colors()
+{
+    TEST("md colours: H5, H6 and the table head wear their own palette roles");
+    edc::style::Palette p = edc::style::palette();
+    p.md_h5 = ftxui::Color::RGB(11, 21, 31);
+    p.md_h6 = ftxui::Color::RGB(41, 51, 61);
+    p.md_table_head = ftxui::Color::RGB(71, 81, 91);
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    {
+        auto s = DrawColored("##### fifth\n###### sixth");
+        ftxui::Color c5, c6;
+        CHECK(CellColorOf(s, "f", &c5), "h5 glyph found");
+        CHECK(c5 == p.md_h5, "h5 wears md_h5");
+        CHECK(CellColorOf(s, "s", &c6), "h6 glyph found");
+        CHECK(c6 == p.md_h6, "h6 wears md_h6 (not md_h5)");
+    }
+    {
+        auto s = DrawColored("| head |\n|---|\n| body |");
+        ftxui::Color ch, cb;
+        // 'h' only in "head", 'b' only in "body".
+        CHECK(CellColorOf(s, "h", &ch), "header glyph found");
+        CHECK(ch == p.md_table_head, "table header wears md_table_head");
+        CHECK(CellColorOf(s, "b", &cb), "body glyph found");
+        CHECK(cb != p.md_table_head, "body does not wear the header colour");
+    }
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+static void test_plain_body_uses_palette_text()
+{
+    TEST("md colours: plain prose wears pal.text, inner highlights still override");
+    edc::style::Palette p = edc::style::palette();
+    // Distinct colours so a wrong source is obvious.
+    p.text = ftxui::Color::RGB(12, 34, 56);
+    p.md_code_inline = ftxui::Color::RGB(201, 122, 33);
+    p.md_link = ftxui::Color::RGB(33, 201, 122);
+    p.md_h2 = ftxui::Color::RGB(150, 40, 200);
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    {
+        // Plain prose with no markup: every glyph must carry pal.text.
+        auto s = DrawColored("plain words here");
+        ftxui::Color cp, cl, cw;
+        CHECK(CellColorOf(s, "p", &cp), "plain glyph found");
+        CHECK(cp == p.text, "plain prose is painted with pal.text (not terminal default)");
+        CHECK(CellColorOf(s, "l", &cl) && cl == p.text, "another plain glyph also pal.text");
+        CHECK(CellColorOf(s, "w", &cw) && cw == p.text, "third plain glyph also pal.text");
+    }
+    {
+        // An inline code span keeps its own colour despite the outer default.
+        auto s = DrawColored("before `code` after");
+        ftxui::Color cc;
+        CHECK(CellColorOf(s, "c", &cc), "code glyph found");
+        CHECK(cc == p.md_code_inline, "inline code still overrides the default text colour");
+    }
+    {
+        // A heading keeps its own colour too.
+        auto s = DrawColored("## Heading");
+        ftxui::Color ch;
+        CHECK(CellColorOf(s, "H", &ch), "heading glyph found");
+        CHECK(ch == p.md_h2, "heading still overrides the default text colour");
+    }
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_hard_break_starts_a_new_row()
 {
     TEST("inline: a hard break moves to the next row, a soft break does not");
@@ -346,6 +447,8 @@ int main()
     test_code_block_keeps_its_body();
     test_horizontal_rule();
     test_table_header_is_above_the_body();
+    test_distinct_heading_and_table_head_colors();
+    test_plain_body_uses_palette_text();
     test_inline_marks_keep_their_text();
     test_hard_break_starts_a_new_row();
     test_state_name_span_is_not_a_code_chip();

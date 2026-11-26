@@ -536,6 +536,14 @@ static void test_config_readers_copy_the_configured_values()
     CHECK(edc_app_config_context_window(g_app) == 128000, "the context window: got %d",
           edc_app_config_context_window(g_app));
     CHECK(edc_app_onboarded(g_app) == 0, "the wizard has not run yet");
+
+    /* The theme readers: no theme configured, but the home path and revision
+     * must still answer (the TUI polls them every frame for hot-apply). */
+    CHECK(!edc_app_config_theme(g_app, buf, sizeof(buf)), "no theme configured -> false");
+    CHECK(buf[0] == '\0', "and the buffer is cleared");
+    CHECK(edc_app_config_theme_rev(g_app) == 0, "theme revision starts at zero");
+    CHECK(edc_app_config_home(g_app, buf, sizeof(buf)), "edc_home is readable");
+    CHECK(buf[0] != '\0', "edc_home is non-empty");
 }
 
 static void test_a_short_buffer_fails_and_clears()
@@ -568,6 +576,9 @@ static void test_readers_on_a_null_app_answer_false()
     CHECK(buf[0] == '\0', "and cleared");
     CHECK(!edc_app_config_api_url(NULL, buf, sizeof(buf)), "api_url(NULL app) is false");
     CHECK(!edc_app_config_api_key(NULL, buf, sizeof(buf)), "api_key(NULL app) is false");
+    CHECK(!edc_app_config_theme(NULL, buf, sizeof(buf)), "theme(NULL app) is false");
+    CHECK(!edc_app_config_home(NULL, buf, sizeof(buf)), "home(NULL app) is false");
+    CHECK(edc_app_config_theme_rev(NULL) == 0, "theme_rev(NULL app) is 0");
     CHECK(edc_app_sandbox_enabled(NULL) == false, "sandbox_enabled(NULL) is false");
     CHECK(edc_app_shell_syntax(NULL) == false, "shell_syntax(NULL) is false");
     CHECK(edc_app_onboarded(NULL) == 0, "onboarded(NULL) is 0");

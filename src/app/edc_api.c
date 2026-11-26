@@ -191,6 +191,24 @@ bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap)
     return cfg ? copy_sds_into(cfg->llm_api_conf.api_key, buf, cap) : copy_sds_into(NULL, buf, cap);
 }
 
+bool edc_app_config_theme(const struct edc_app *app, char *buf, size_t cap)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg ? copy_sds_into(cfg->theme, buf, cap) : copy_sds_into(NULL, buf, cap);
+}
+
+bool edc_app_config_home(const struct edc_app *app, char *buf, size_t cap)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg ? copy_sds_into(cfg->edc_home, buf, cap) : copy_sds_into(NULL, buf, cap);
+}
+
+int edc_app_config_theme_rev(const struct edc_app *app)
+{
+    struct edc_config *cfg = edc_app_config(app);
+    return cfg ? cfg->theme_rev : 0;
+}
+
 bool edc_app_sandbox_enabled(const struct edc_app *app)
 {
     struct edc_config *cfg = edc_app_config(app);

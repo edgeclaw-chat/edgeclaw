@@ -602,6 +602,14 @@ struct edc_config *edc_config_load(const char *edc_home)
     if (proj_res && cJSON_IsBool(proj_res))
         config->load_project_resources = cJSON_IsTrue(proj_res);
 
+    /* Active vim colorscheme (top-level "theme"). NULL/empty means the built-in
+     * dark/light palette. No validation here: a bad name simply fails to load and
+     * the TUI keeps the built-in palette (see edc_colorscheme_load). */
+    cJSON *theme = cJSON_GetObjectItem(conf, "theme");
+    if (theme && cJSON_IsString(theme) && cJSON_GetStringValue(theme)[0] != '\0' &&
+        strlen(cJSON_GetStringValue(theme)) < 128)
+        config->theme = sdsnew(cJSON_GetStringValue(theme));
+
     config->enable_sandbox = true;
 
     /* Background services master switch, top-level "services_enabled". Defaults on. */
@@ -995,6 +1003,7 @@ void edc_config_free(struct edc_config *config)
     sdsfree(config->device_ip);
     sdsfree(config->device_transport);
     sdsfree(config->workspace);
+    sdsfree(config->theme);
     sdsfree(config->sandbox_root_real);
     for (int _i = 0; config->sandbox_ro_paths && config->sandbox_ro_paths[_i]; _i++)
         sdsfree(config->sandbox_ro_paths[_i]);
@@ -1284,6 +1293,35 @@ bool edc_config_set_shell_syntax(struct edc_config *cfg, bool enable)
     if (!cfg || !cfg->edc_home || !edc_config_update_shell_syntax(cfg->edc_home, enable))
         return false;
     cfg->shell_syntax = enable;
+    return true;
+}
+
+struct config_string_edit
+{
+    const char *key;
+    const char *value; /* NULL/empty removes the key */
+};
+static void config_edit_string(cJSON *conf, void *ctx)
+{
+    struct config_string_edit *s = ctx;
+    cJSON_DeleteItemFromObject(conf, s->key);
+    if (s->value && s->value[0])
+        cJSON_AddStringToObject(conf, s->key, s->value);
+}
+
+bool edc_config_update_theme(const char *edc_home, const char *name)
+{
+    struct config_string_edit s = {"theme", name};
+    return config_edit(edc_home, config_edit_string, &s);
+}
+
+bool edc_config_set_theme(struct edc_config *cfg, const char *name)
+{
+    if (!cfg || !cfg->edc_home || !edc_config_update_theme(cfg->edc_home, name))
+        return false;
+    sdsfree(cfg->theme);
+    cfg->theme = (name && name[0]) ? sdsnew(name) : NULL;
+    cfg->theme_rev++;
     return true;
 }
 

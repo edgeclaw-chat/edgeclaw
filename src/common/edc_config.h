@@ -226,6 +226,13 @@ struct edc_config
      * `load_project_resources` (false) turns it off. The user-level roots under $HOME are
      * never gated by this. */
     bool load_project_resources;
+    /* Active vim colorscheme name from config.json's top-level "theme", or NULL
+     * for the built-in dark/light palette. The TUI re-reads this per frame so
+     * `/theme use` hot-applies without a restart. */
+    sds theme;
+    /* Bumped on every /theme change (including `reload`) so the TUI's per-frame
+     * watcher can detect a same-name re-apply. Not persisted; starts at 0. */
+    int theme_rev;
     sds sandbox_root_real;
     sds *sandbox_ro_paths;
     sds *sandbox_rw_paths;
@@ -290,6 +297,12 @@ extern bool edc_config_update_sandbox_enabled(const char *edc_home, bool enable)
 extern bool edc_config_update_shell_syntax(const char *edc_home, bool enable);
 /* Persist first, then update the running config (see /sandbox's pattern). */
 extern bool edc_config_set_shell_syntax(struct edc_config *cfg, bool enable);
+
+/* Persist the active colorscheme name (config.json top-level "theme"; NULL or
+ * "" for the built-in palette), then update the running config. `/theme use`
+ * and `/theme off` are the only writers. */
+extern bool edc_config_update_theme(const char *edc_home, const char *name);
+extern bool edc_config_set_theme(struct edc_config *cfg, const char *name);
 
 /* Add (add=true) or remove (add=false) a directory from a sandbox path list
  * and persist it to <edc_home>/config.json, preserving all other settings.

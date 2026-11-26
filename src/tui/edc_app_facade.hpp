@@ -137,6 +137,26 @@ class IAppFacade
     /* The stored API key. NOT for showing anywhere: the setup wizard only asks whether a key
      * exists (HasApiKey) so that it can leave the field empty and say so. */
     virtual bool ConfigApiKey(std::string *out) const = 0;
+    // The active colorscheme name ("" for the built-in palette). Read per frame so
+    // `/theme use` hot-applies. Default empty so test fakes stay concrete.
+    virtual bool ConfigTheme(std::string *out) const
+    {
+        if (out)
+            out->clear();
+        return false;
+    }
+    // The app home directory (colors/ lives here). Default empty for test fakes.
+    virtual bool ConfigHome(std::string *out) const
+    {
+        if (out)
+            out->clear();
+        return false;
+    }
+    // Monotonic theme revision; default -1 so fakes never trigger a theme load.
+    virtual int ConfigThemeRev() const
+    {
+        return -1;
+    }
     // Whether a usable API key is stored (false when there is none / the app is not ready).
     virtual bool HasApiKey() const = 0;
     virtual bool SandboxEnabled() const = 0;
@@ -284,6 +304,9 @@ class AppFacade : public IAppFacade
     bool ConfigModel(std::string *out) const override;
     bool ConfigApiUrl(std::string *out) const override;
     bool ConfigApiKey(std::string *out) const override;
+    bool ConfigTheme(std::string *out) const override;
+    bool ConfigHome(std::string *out) const override;
+    int ConfigThemeRev() const override;
     bool HasApiKey() const override;
     bool SandboxEnabled() const override;
     bool ShellSyntax() const override;

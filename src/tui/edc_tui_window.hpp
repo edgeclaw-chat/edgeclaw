@@ -3,6 +3,7 @@
 #include "edc_app_facade.hpp"
 #include "edc_channel_dispatcher.hpp"
 #include "edc_clipboard.hpp"
+#include "edc_colorscheme_palette.hpp"
 #include "edc_ports.hpp"
 #include "edc_setup_dialog.hpp"
 #include "edc_update_dialog.hpp"
@@ -165,6 +166,10 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     /* The banner element: one line, shown while a release is on offer and the modal is
      * closed. Empty element otherwise. */
     ::ftxui::Element UpdateBannerElement();
+    /* Re-read config->theme once per frame; (re)install the palette provider when it
+     * changed. `/theme use|off|reload` writes config on the actor thread, so a
+     * per-frame compare (the /shell pattern) is the race-free way to hot-apply it. */
+    void SyncTheme();
     // Seed the input history from $EDC_HOME/.tui_history (a missing file is fine).
     void LoadInputHistory();
     void SaveInputHistory();
@@ -306,6 +311,11 @@ class TUIWindow : public ::ftxui::ComponentBase, public control::IChannelHost, p
     int press_x_ = 0;
     int press_y_ = 0;
     bool copy_pending_ = false;
+
+    /* The theme name currently installed into style::palette_provider_slot(). "" means
+     * the built-in palette; SyncTheme() compares it with config->theme each frame. */
+    int applied_theme_rev_ = -1;
+    std::shared_ptr<theme::FixedSchemePalette> scheme_provider_;
 
     /* The /connect setup wizard: a modal shown on first run (and by /connect). */
     std::shared_ptr<ui::SetupDialog> setup_dialog_;

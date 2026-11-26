@@ -5,6 +5,7 @@
 #include "edc_lex.h"
 #include "edc_actor.h"
 #include "edc_channel_actor.h"
+#include "edc_colorscheme.h"
 #include "edc_cmd_parse.h"
 #include "edc_compat.h"
 #include "edc_context.h"
@@ -405,6 +406,14 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
      "retire a group out of the sidebar (keeps its knowledge; --idle <30d> for batch)", NULL},
     {"Group", "/group restore <id>", "bring an archived group back", NULL},
     {"Group", "/group rm <id> --yes", "hard-delete an archived group (confirmed; memory entry kept)", NULL},
+
+    {"Theme", "/theme list", "list installed vim colorschemes and the active one", NULL},
+    {"Theme", "/theme use <name>", "apply an installed colorscheme immediately (no restart)", NULL},
+    {"Theme", "/theme install <path.vim>", "copy a vim colorscheme into ~/.edgeclaw/colors",
+     "Reads the classic Vim `highlight` / `hi` commands only. Themes that compute colours with "
+     "Vimscript (`execute()`, Lua `nvim_set_hl`) are rejected as unparseable."},
+    {"Theme", "/theme reload", "re-read the active colorscheme file after you edit it", NULL},
+    {"Theme", "/theme off", "restore the built-in dark/light palette", NULL},
 };
 
 #define EDC_CMD_DOC_COUNT (sizeof(k_cmd_docs) / sizeof(k_cmd_docs[0]))
@@ -418,6 +427,7 @@ static const struct edc_cmd_doc k_cmd_families[] = {
     {"Task", "/task", "create, inspect and control tasks", NULL},
     {"Session", "/session", "new / switch / list / save / remove sessions, and the session memory", NULL},
     {"Group", "/group", "list groups and their context / fold state", NULL},
+    {"Theme", "/theme", "load and switch vim colorschemes (list/use/install/off)", NULL},
     {"General", "/help", "show this list, or one command's detail", NULL},
     {"General", "/whoami", "show the current session, model and foreground task", NULL},
     {"General", "/model", "list / switch / search models", NULL},
@@ -4281,6 +4291,170 @@ static bool edc_commands_handle_jobs(struct edc_config *cfg, struct edc_session_
     return true;
 }
 
+/* ── /theme: vim colorschemes ──────────────────────────────────────────────
+ * Themes live in <edc_home>/colors/<name>.vim. The TUI reads config->theme per
+ * frame and hot-applies the palette, so a `use` here needs no restart. */
+struct cs_list_sds
+{
+    sds text;
+    bool first;
+};
+static void cs_list_append(const char *name, void *ud)
+{
+    struct cs_list_sds *ctx = ud;
+    if (!ctx->first)
+        ctx->text = sdscat(ctx->text, ", ");
+    ctx->text = sdscat(ctx->text, name);
+    ctx->first = false;
+}
+
+static bool edc_commands_handle_theme(struct edc_config *cfg, struct edc_session_manager *sm,
+                                      struct edc_scheduler *sched, struct edc_reply_to to,
+                                      struct edc_channel_message *message, const struct edc_ast_cmd *cmd)
+{
+    (void)sm;
+    (void)sched;
+    (void)message;
+    const char *sub = cmd->argc > 0 ? cmd->argv[0] : "";
+    const char *arg = cmd->argc > 1 ? cmd->argv[1] : "";
+    sds reply = NULL;
+
+    if (*sub == '\0' || strcmp(sub, "list") == 0)
+    {
+        struct cs_list_sds ctx = {sdsnew("## Themes\n\nInstalled: "), true};
+        size_t n = edc_colorscheme_list(cfg->edc_home, cs_list_append, &ctx);
+        if (n == 0)
+            ctx.text = sdscat(ctx.text, "(none)");
+        const char *active = cfg->theme ? cfg->theme : "";
+        reply = sdscatprintf(ctx.text, "\n\nActive: `%s`\n\n"
+                                       "`/theme use <name>` · `/theme install <path.vim>` · `/theme off`",
+                             active[0] ? active : "built-in");
+        /* reply owns ctx.text now */
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return true;
+    }
+
+    if (strcmp(sub, "use") == 0)
+    {
+        if (!*arg)
+        {
+            edc_commands_reply(to, "Usage: `/theme use <name>` — see `/theme list`.");
+            return true;
+        }
+        if (strcmp(arg, "off") == 0 || strcmp(arg, "builtin") == 0)
+        {
+            bool ok = edc_config_set_theme(cfg, NULL);
+            reply = sdscatprintf(sdsempty(), "**Theme** — built-in palette restored%s.",
+                                 ok ? "" : " (not persisted: config.json write failed)");
+            edc_commands_reply(to, reply);
+            sdsfree(reply);
+            return true;
+        }
+        char path[1200];
+        if (!edc_colorscheme_path(cfg->edc_home, arg, path, sizeof(path)))
+        {
+            reply = sdscatprintf(sdsempty(), "**Bad theme name** — `%s` (use letters, digits, `_` and `-`).", arg);
+        }
+        else if (!edc_file_exists(path))
+        {
+            reply = sdscatprintf(sdsempty(), "**No such theme** — `%s`. See `/theme list`.", arg);
+        }
+        else
+        {
+            /* Parse before claiming success: a Vimscript-computed theme installs
+             * as a file but yields no usable groups. */
+            struct edc_colorscheme probe;
+            char err[256] = {0};
+            if (!edc_colorscheme_load(cfg->edc_home, arg, &probe))
+            {
+                reply = sdscatprintf(sdsempty(), "**Cannot use `%s`** — %s", arg,
+                                     err[0] ? err : "no usable highlight groups");
+            }
+            else if (!edc_config_set_theme(cfg, arg))
+            {
+                reply = sdsnew("**Could not save** the theme choice to config.json.");
+            }
+            else
+            {
+                reply = sdscatprintf(sdsempty(), "**Theme** — `%s` applied.", arg);
+            }
+        }
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return true;
+    }
+
+    if (strcmp(sub, "off") == 0)
+    {
+        bool ok = edc_config_set_theme(cfg, NULL);
+        reply = sdscatprintf(sdsempty(), "**Theme** — built-in palette restored%s.",
+                             ok ? "" : " (not persisted: config.json write failed)");
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return true;
+    }
+
+    if (strcmp(sub, "reload") == 0)
+    {
+        /* The TUI re-reads the name per frame; rewrite the same value to jolt
+         * a theme whose file changed on disk back into the palette. */
+        if (!cfg->theme || !*cfg->theme)
+        {
+            edc_commands_reply(to, "No theme active — nothing to reload.");
+            return true;
+        }
+        char path[1200];
+        if (!edc_colorscheme_path(cfg->edc_home, cfg->theme, path, sizeof(path)) ||
+            !edc_file_exists(path))
+        {
+            reply = sdscatprintf(sdsempty(), "**Theme file missing** — `%s`.", cfg->theme);
+        }
+        else
+        {
+            /* Bump by round-tripping the value so the per-frame watcher sees a
+             * fresh load (edc_config_set_theme increments theme_rev). */
+            sds name = sdsnew(cfg->theme);
+            bool ok = edc_config_set_theme(cfg, name);
+            sdsfree(name);
+            reply = sdscatprintf(sdsempty(), "**Theme** — `%s` reloaded%s.", cfg->theme,
+                                 ok ? "" : " (not persisted)");
+        }
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return true;
+    }
+
+    if (strcmp(sub, "install") == 0)
+    {
+        if (!*arg)
+        {
+            edc_commands_reply(to, "Usage: `/theme install <path-to.vim>` — copies it into `~/.edgeclaw/colors`.");
+            return true;
+        }
+        char name[128] = {0};
+        char err[256] = {0};
+        if (!edc_colorscheme_install(cfg->edc_home, arg, name, sizeof(name), err, sizeof(err)))
+        {
+            reply = sdscatprintf(sdsempty(), "**Install failed** — %s", err[0] ? err : "unknown error");
+        }
+        else
+        {
+            reply = sdscatprintf(sdsempty(), "**Installed** `%s` from `%s`.\n\n`/theme use %s` to apply it.", name,
+                                 arg, name);
+        }
+        edc_commands_reply(to, reply);
+        sdsfree(reply);
+        return true;
+    }
+
+    reply = sdscatprintf(sdsempty(), "**Unknown theme subcommand** — `%s`. Use `list`, `use`, `off`, `reload` or "
+                                     "`install`.", sub);
+    edc_commands_reply(to, reply);
+    sdsfree(reply);
+    return true;
+}
+
 struct edc_cmd_entry
 {
     const char *name; /* 不含斜杠 */
@@ -4295,6 +4469,7 @@ static const struct edc_cmd_entry k_commands[] = {
     {"task", false, edc_commands_handle_task},
     {"group", false, edc_commands_handle_group},
     {"jobs", false, edc_commands_handle_jobs},
+    {"theme", false, edc_commands_handle_theme},
     {"session", false, edc_commands_handle_session},
     {"help", false, edc_commands_handle_help_cmd},
 };

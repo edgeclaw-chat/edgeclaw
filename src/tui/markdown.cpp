@@ -118,11 +118,11 @@ struct HeadingB : ParaB
             words = std::move(all);
             lines.clear();
         }
-        // Heading colors come from the central Monokai palette
-        // (edc_style.hpp): every ATX level keeps its markdown prefix
-        // ("## ", "### ", ...) and h1 is a reversed banner whose
-        // background only hugs the text, walking the Monokai token
-        // ladder pink -> yellow -> green -> cyan.
+        // Heading colors come from the central palette (edc_style.hpp), which an
+        // imported vim colorscheme can replace wholesale: every ATX level keeps its
+        // markdown prefix ("## ", "### ", ...) and h1 is a banner whose background
+        // only hugs the text. Each level 1..6 has its own role, so a theme that defines
+        // markdownH1..markdownH6 shows six distinct heading colours.
         const auto &pal = style::palette();
         Color c;
         switch (level)
@@ -136,8 +136,14 @@ struct HeadingB : ParaB
         case 3:
             c = pal.md_h3;
             break;
-        default:
+        case 4:
             c = pal.md_h4;
+            break;
+        case 5:
+            c = pal.md_h5;
+            break;
+        default: // 6 and deeper
+            c = pal.md_h6;
             break;
         }
         Elements els;
@@ -298,8 +304,11 @@ struct TableB : Builder
         t.SelectAll().DecorateCells(PadTableCell);
         if (head_end > 0)
         {
+            // The header row wears its own role, so it reads as a label rather than
+            // just another bold row. Imported themes pick a bright attention tint here.
+            t.SelectRow(0).DecorateCells(color(pal.md_table_head));
             t.SelectRow(0).Decorate(bold);
-            t.SelectRow(0).SeparatorHorizontal(LIGHT, color(pal.md_rule));
+            t.SelectRow(0).SeparatorHorizontal(LIGHT, color(pal.md_table_head));
         }
         return t.Render();
     }
@@ -672,9 +681,21 @@ Element RenderMarkdown(std::string_view md, int wrap_cols)
 
     const std::string safe = EscapeLeadingRefDefinitions(md);
     int rc = md_parse(safe.data(), static_cast<MD_SIZE>(safe.size()), &parser, &st);
-    if (rc != 0)
-        return text(safe);
-    return st.stack.front()->Finish();
+    Element body = (rc != 0) ? text(safe) : st.stack.front()->Finish();
+
+    /* Give every plain-text cell an explicit foreground from the active palette.
+     *
+     * Raw markdown words are emitted as bare text() with no colour, so they used to
+     * inherit the terminal's default foreground. The message bubble behind them,
+     * however, IS painted -- with style::palette().pane_bg. On a light terminal the
+     * terminal's dark default foreground landed on a dark pane (or vice versa), and
+     * body text became nearly invisible while only the explicitly-coloured tokens
+     * (headings, code, links) stayed readable. Painting the default here, as the
+     * OUTERMOST colour, is safe: ftxui's color() decorator sets the cell colour before
+     * rendering its child, so the first/inner colour wins -- every inner highlight
+     * (code, link, heading, table head) still overrides this default. Cells with no
+     * inner colour get pal.text, which the palette guarantees contrasts with pane_bg. */
+    return body | color(style::palette().text);
 }
 
 } // namespace edc

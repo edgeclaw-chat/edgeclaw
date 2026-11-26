@@ -1076,8 +1076,50 @@ void TUIWindow::OpenUpdate()
         screen_->RequestAnimationFrame();
 }
 
+void TUIWindow::SyncTheme()
+{
+    if (!app_ || !app_->Ready())
+        return;
+    const int rev = app_->ConfigThemeRev();
+    if (rev == applied_theme_rev_)
+        return; // nothing changed since the last frame
+    std::string name;
+    app_->ConfigTheme(&name);
+
+    // A failed load leaves the built-in palette in place; remember the revision
+    // anyway so we do not retry a broken file on every single frame.
+    if (name.empty() || name == "off" || name == "builtin")
+    {
+        theme::ClearScheme();
+        scheme_provider_.reset();
+    }
+    else
+    {
+        std::string home;
+        if (app_->ConfigHome(&home))
+        {
+            auto provider = theme::InstallScheme(home, name);
+            if (provider)
+                scheme_provider_ = std::move(provider);
+            else
+                theme::ClearScheme();
+        }
+    }
+    applied_theme_rev_ = rev;
+
+    // prompt_ is a coloured Element built once in the constructor from the accent.
+    // ftxui bakes the colour into the Element, so rebuild it here or the glyph keeps
+    // the built-in hue after a theme switch.
+    prompt_ = ::ftxui::text("❯ ") | ::ftxui::color(style::input_prompt_color(style::palette())) | ::ftxui::bold;
+
+    if (screen_)
+        screen_->RequestAnimationFrame();
+}
+
 ::ftxui::Element TUIWindow::OnRender()
 {
+    SyncTheme();
+
     // The drag that just ended copies on this frame, not on the release itself:
     // FTXUI rebuilds its selection *while* a frame is drawn, so the text under
     // the cursor only settles once the frame the release belongs to has been

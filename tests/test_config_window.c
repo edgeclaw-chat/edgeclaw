@@ -137,6 +137,22 @@ static int file_int_value(const char *home, const char *key)
     return value;
 }
 
+/* Read a string key's value ("" when absent/non-string), for the theme round-trip. */
+static char *file_str_value(const char *home, const char *key)
+{
+    char *text = read_all(conf_path(home));
+    if (!text)
+        return NULL;
+    cJSON *conf = cJSON_Parse(text);
+    free(text);
+    if (!conf)
+        return NULL;
+    const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(conf, key));
+    char *out = strdup(v ? v : "");
+    cJSON_Delete(conf);
+    return out;
+}
+
 int main(void)
 {
     /* The secret module (api_key encryption) refuses to run without a key when
@@ -212,6 +228,35 @@ int main(void)
     T_CHECK(file_has_key(home, "group_fold_msg_threshold"), "前置: 文件里真的有那个键");
     T_CHECK(edc_init_env(home, false), "top-up drops it");
     T_CHECK(!file_has_key(home, "group_fold_msg_threshold"), "group_fold_msg_threshold is gone from config.json");
+
+    /* (6c) the theme key round-trips through config.json and survives a top-up.
+     * /theme use|off are the only writers; both must leave a file the next load
+     * agrees with. */
+    cfg = edc_config_load(home);
+    T_CHECK(cfg && cfg->theme == NULL, "fresh config has no theme");
+    T_CHECK(cfg && cfg->theme_rev == 0, "theme_rev starts at zero");
+    if (cfg)
+    {
+        T_CHECK(edc_config_set_theme(cfg, "gruvbox"), "set theme persists");
+        T_CHECK(cfg->theme_rev == 1, "set bumps theme_rev");
+        edc_config_free(cfg);
+    }
+    char *tv = file_str_value(home, "theme");
+    T_CHECK(tv && strcmp(tv, "gruvbox") == 0, "theme value is on disk");
+    free(tv);
+    T_CHECK(edc_init_env(home, false), "top-up after setting a theme");
+    tv = file_str_value(home, "theme");
+    T_CHECK(tv && strcmp(tv, "gruvbox") == 0, "top-up keeps the theme");
+    free(tv);
+    cfg = edc_config_load(home);
+    T_CHECK(cfg && cfg->theme && strcmp(cfg->theme, "gruvbox") == 0, "theme reads back");
+    if (cfg)
+    {
+        T_CHECK(edc_config_set_theme(cfg, NULL), "theme off persists (key removed)");
+        T_CHECK(!file_has_key(home, "theme"), "off removes the key from disk");
+        T_CHECK(cfg->theme == NULL && cfg->theme_rev == 1, "off clears memory, bumps rev");
+        edc_config_free(cfg);
+    }
 
     /* (7) fold policy constants (decisions 13; a/b/c 见 edc_group_fold.h). */
     T_CHECK(EDC_FOLD_RESERVE_TOKENS == 16384, "reserve = 16k");

@@ -65,6 +65,35 @@ bool AppFacade::ConfigApiKey(std::string *out) const
     return true;
 }
 
+bool AppFacade::ConfigTheme(std::string *out) const
+{
+    if (!app_)
+        return false;
+    char buf[256];
+    if (!edc_app_config_theme(app_, buf, sizeof(buf)))
+        return false;
+    if (out)
+        *out = buf;
+    return true;
+}
+
+bool AppFacade::ConfigHome(std::string *out) const
+{
+    if (!app_)
+        return false;
+    char buf[4096];
+    if (!edc_app_config_home(app_, buf, sizeof(buf)))
+        return false;
+    if (out)
+        *out = buf;
+    return true;
+}
+
+int AppFacade::ConfigThemeRev() const
+{
+    return app_ ? edc_app_config_theme_rev(app_) : -1;
+}
+
 bool AppFacade::HasApiKey() const
 {
     /* Asks the app whether a key exists without handing one to the caller, and the buffer is

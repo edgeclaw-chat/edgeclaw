@@ -15,6 +15,7 @@
 #include "edc_chat_bubble_page.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
+#include "edc_style.hpp"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -29,6 +30,13 @@
 #include <ctime>
 #include <string>
 #include <vector>
+
+/* On MSVC, <windows.h> (pulled in via test_fs_util.h) defines an RGB(r,g,b)
+ * macro that collides with ftxui::Color::RGB(...) below (C2589). We never use
+ * the Win32 macro here, so drop it before any ftxui colour construction. */
+#ifdef RGB
+#undef RGB
+#endif
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -861,7 +869,49 @@ static void test_selection_survives_nested_containers(void)
     PASS();
 }
 
+struct FixedPalette : edc::style::IPalette
+{
+    edc::style::Palette pal;
+    explicit FixedPalette(edc::style::Palette p) : pal(std::move(p)) {}
+    const edc::style::Palette &colors() const override { return pal; }
+};
+
 } // namespace
+
+// A message bubble paints pane_bg as its surface. Plain body text must carry an
+// explicit pal.text foreground (not the terminal default), otherwise a light
+// terminal's default ink lands on a dark pane and the two blend together.
+static void test_bubble_body_uses_palette_text()
+{
+    TEST("bubble body text uses pal.text over the pane_bg surface");
+    edc::style::Palette p = edc::style::palette();
+    p.text = ftxui::Color::RGB(12, 34, 56);
+    p.pane_bg = ftxui::Color::RGB(20, 20, 20);
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    auto bubble = edc::MakeChatBubble("reply", "", "plain prose words", "", 0, 0);
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(kW), ftxui::Dimension::Fixed(kH));
+    ftxui::Render(screen, bubble->Render() | ftxui::flex);
+
+    bool found = false;
+    bool correct = false;
+    for (int y = 0; y < screen.dimy() && !found; ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const std::string c = screen.CellAt(x, y).character;
+            if (!c.empty() && (c[0] == 'p' || c[0] == 'r' || c[0] == 'w'))
+            {
+                found = true;
+                correct = screen.CellAt(x, y).foreground_color == p.text;
+                break;
+            }
+        }
+    ASSERT(found, "bubble body glyph was drawn");
+    ASSERT(correct, "plain bubble text carries pal.text, not the terminal default");
+    edc::style::SetPaletteProvider(nullptr);
+    PASS();
+}
 
 int main(void)
 {
@@ -889,6 +939,7 @@ int main(void)
     test_selection_collects_message_text();
     test_selection_highlight_clears();
     test_selection_survives_nested_containers();
+    test_bubble_body_uses_palette_text();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
