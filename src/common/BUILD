@@ -1,5 +1,24 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+# The syntax engine's implementation is exported so //src/tui:tui can compile
+# it directly into libtui.a. With supports_start_end_lib disabled, a separate
+# libsyntax.a would be placed BEFORE libtui.a on the link line, and ld's one-pass
+# scan would drop it before markdown.o's references appear. Compiling it inside
+# the same archive side-steps the ordering entirely. test_syntax still links the
+# standalone //src/common:syntax library directly.
+exports_files(["edc_syntax.c"])
+
+# Header-only seam: gives //src/tui:tui the include path to edc_syntax.h while
+# it compiles edc_syntax.c into its own archive (no libsyntax.a on the link line).
+cc_library(
+    name = "syntax_headers",
+    # edc_syntax.c is in hdrs only so it is exported on the include path for
+    # markdown.cpp's #include (compiled into markdown.o); it is not compiled here.
+    hdrs = ["edc_syntax.h", "edc_syntax.c"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
 # Syntax-highlighting engine: tree-sitter based source -> semantic-span parser.
 # Kept out of :common so a binary that does not render code pays no dependency
 # on the tree-sitter runtime or any grammar. Language grammars link here.
@@ -18,7 +37,7 @@ genrule(
     cmd_bat = "$(execpath //tools:embed_queries) --out-c $(location edc_embedded_queries.c) " +
           "--out-h $(location edc_embedded_queries.h) --queries $(SRCS)",
     tools = ["//tools:embed_queries"],
-    visibility = ["//visibility:private"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(

@@ -1,10 +1,16 @@
 #include "markdown.hpp"
 #include "edc_style.hpp"
+// Include the syntax engine's implementation directly (not just its header) so
+// its symbols land in this same translation unit. A separate libsyntax.a would
+// be placed before libtui.a on the link line; with supports_start_end_lib
+// disabled, ld's one-pass archive scan skips it before markdown.o's references.
+#include "edc_syntax.c"
 #include "edc_text_util.hpp"
 
 #include <ftxui/dom/table.hpp>
 #include <md4c.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -172,26 +178,115 @@ struct HeadingB : ParaB
 struct CodeB : Builder
 {
     std::string buf;
+    std::string lang; // fenced-code info string; empty for indented/unlabelled blocks
+
     void AddText(std::string_view s)
     {
         buf.append(s);
     }
+
+    // Paint one line by cutting it at the byte boundaries of the spans that
+    // cover it. tree-sitter's byte offsets always land on UTF-8 code-point
+    // boundaries, so substr() is safe; ftxui computes each fragment's display
+    // width itself, so no manual byte->cell conversion is needed. Spans from
+    // the engine are sorted and non-overlapping at identical ranges, but a
+    // nested span (e.g. an identifier inside a call) may still cover a byte;
+    // the innermost such span wins.
+    static Element PaintLine(std::string_view line, size_t line_byte_base,
+                             const edc_syntax_result &hl, const style::Palette &pal)
+    {
+        if (hl.count == 0)
+            return text("  " + std::string(line)) | color(pal.md_code);
+
+        // Collect cut points: line start/end plus each span boundary clipped
+        // to this line.
+        std::vector<size_t> cuts;
+        cuts.push_back(0);
+        cuts.push_back(line.size());
+        struct Hit
+        {
+            size_t lo, hi;
+            const char *group;
+        };
+        std::vector<Hit> hits;
+        for (size_t i = 0; i < hl.count; ++i)
+        {
+            const edc_syntax_span &sp = hl.spans[i];
+            if (sp.end_byte <= line_byte_base || sp.start_byte >= line_byte_base + line.size())
+                continue;
+            size_t lo = sp.start_byte > line_byte_base ? sp.start_byte - line_byte_base : 0;
+            size_t hi = sp.end_byte < line_byte_base + line.size()
+                            ? sp.end_byte - line_byte_base
+                            : line.size();
+            if (lo >= hi)
+                continue;
+            hits.push_back({lo, hi, edc_syntax_group_name(sp.group)});
+            cuts.push_back(lo);
+            cuts.push_back(hi);
+        }
+        if (hits.empty())
+            return text("  " + std::string(line)) | color(pal.md_code);
+
+        std::sort(cuts.begin(), cuts.end());
+        cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+
+        Elements parts;
+        for (size_t k = 0; k + 1 < cuts.size(); ++k)
+        {
+            size_t lo = cuts[k], hi = cuts[k + 1];
+            if (lo >= hi)
+                continue;
+            // The innermost span containing [lo,hi) wins: the one with the
+            // largest lo (or, on a tie, the smallest hi).
+            const char *group = nullptr;
+            size_t best_lo = 0, best_hi = line.size() + 1;
+            for (const Hit &h : hits)
+            {
+                if (h.lo <= lo && h.hi >= hi &&
+                    (h.lo > best_lo || (h.lo == best_lo && h.hi < best_hi)))
+                {
+                    group = h.group;
+                    best_lo = h.lo;
+                    best_hi = h.hi;
+                }
+            }
+            std::string seg = std::string(line.substr(lo, hi - lo));
+            if (parts.empty())
+                seg.insert(0, "  "); // the borderless block's two-space indent
+            parts.push_back(text(std::move(seg)) | color(style::SyntaxColor(pal, group)));
+        }
+        if (parts.empty())
+            return text("  " + std::string(line)) | color(pal.md_code);
+        return hbox(std::move(parts));
+    }
+
     Element Finish() override
     {
+        const auto &pal = style::palette();
+
+        // Try the syntax highlighter only when the fence declared a language
+        // that is registered. Any failure falls back to the old single-colour
+        // rendering, so highlighting can never break a code block.
+        edc_syntax_result hl;
+        bool highlighted = !lang.empty() && edc_syntax_available(lang.c_str()) &&
+                           edc_syntax_highlight(buf.data(), buf.size(), lang.c_str(), &hl) == 0;
+
         Elements lines;
         size_t start = 0;
         for (size_t i = 0; i <= buf.size(); ++i)
         {
             if (i == buf.size() || buf[i] == '\n')
             {
-                // Fenced code is an indented, borderless, unlabeled block
-                // in the Monokai foreground color, not a framed window.
-                lines.push_back(text("  " + buf.substr(start, i - start)));
+                std::string_view line(buf.data() + start, i - start);
+                lines.push_back(highlighted ? PaintLine(line, start, hl, pal)
+                                            : text("  " + std::string(line)) | color(pal.md_code));
                 start = i + 1;
             }
         }
-        const auto &pal = style::palette();
-        Element body = vbox(std::move(lines)) | color(pal.md_code);
+        if (highlighted)
+            edc_syntax_result_free(&hl);
+
+        Element body = vbox(std::move(lines));
         // Blank lines above and below keep the borderless block readable.
         return vbox({text(""), std::move(body), text("")});
     }
@@ -406,7 +501,13 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
         s->stack.push_back(std::make_unique<ParaB>());
         break;
     case MD_BLOCK_CODE: {
-        s->stack.push_back(std::make_unique<CodeB>());
+        auto code = std::make_unique<CodeB>();
+        // The fence's info string is the language tag the highlighter keys on.
+        // md4c does not NUL-terminate it, so copy by explicit length.
+        const auto *cd = static_cast<const MD_BLOCK_CODE_DETAIL *>(det);
+        if (cd && cd->lang.text && cd->lang.size)
+            code->lang.assign(cd->lang.text, cd->lang.size);
+        s->stack.push_back(std::move(code));
         break;
     }
     case MD_BLOCK_QUOTE:

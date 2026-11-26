@@ -17,12 +17,20 @@
  * theme layer does not depend on grammar-specific capture names.
  */
 
-extern const TSLanguage *tree_sitter_c(void);
-extern const TSLanguage *tree_sitter_cpp(void);
-extern const TSLanguage *tree_sitter_python(void);
-extern const TSLanguage *tree_sitter_bash(void);
-extern const TSLanguage *tree_sitter_json(void);
-extern const TSLanguage *tree_sitter_go(void);
+/* Grammar entry points are C symbols from the parser.c archives. When this
+ * file is #included by markdown.cpp (C++), prevent name mangling. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+const TSLanguage *tree_sitter_c(void);
+const TSLanguage *tree_sitter_cpp(void);
+const TSLanguage *tree_sitter_python(void);
+const TSLanguage *tree_sitter_bash(void);
+const TSLanguage *tree_sitter_json(void);
+const TSLanguage *tree_sitter_go(void);
+#ifdef __cplusplus
+}
+#endif
 
 #define NALIASES 4
 
@@ -95,7 +103,7 @@ static edc_syntax_group map_capture(const char *name, uint32_t len)
 
 static int span_cmp(const void *a, const void *b)
 {
-    const edc_syntax_span *sa = a, *sb = b;
+    const edc_syntax_span *sa = (const edc_syntax_span *)a, *sb = (const edc_syntax_span *)b;
     if (sa->start_byte < sb->start_byte)
         return -1;
     if (sa->start_byte > sb->start_byte)
@@ -153,7 +161,7 @@ static bool push_span(edc_syntax_result *out, uint32_t start, uint32_t end,
 {
     if (out->count == out->cap) {
         size_t ncap = out->cap ? out->cap * 2 : 16;
-        edc_syntax_span *p = realloc(out->spans, ncap * sizeof(*p));
+        edc_syntax_span *p = (edc_syntax_span *)realloc(out->spans, ncap * sizeof(*p));
         if (!p)
             return false;
         out->spans = p;
@@ -180,7 +188,7 @@ int edc_syntax_highlight(const char *code, size_t len, const char *lang,
 
     memset(out, 0, sizeof(*out));
 
-    TSQueryError qerr = 0;
+    TSQueryError qerr = (TSQueryError)0;
     uint32_t qerr_off = 0;
     TSQuery *query = ts_query_new(sl->language(), sl->query,
                                   (uint32_t)sl->query_size, &qerr_off, &qerr);
