@@ -64,6 +64,13 @@ enum
 extern bool edc_app_config_model(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_url(const struct edc_app *app, char *buf, size_t cap);
 extern bool edc_app_config_api_key(const struct edc_app *app, char *buf, size_t cap);
+/* The active colorscheme name ("" for the built-in palette). Read per frame so
+ * `/theme use` can hot-apply without a restart. */
+extern bool edc_app_config_theme(const struct edc_app *app, char *buf, size_t cap);
+/* The app's home directory (where colors/ lives), for the theme loader. */
+extern bool edc_app_config_home(const struct edc_app *app, char *buf, size_t cap);
+/* Monotonic theme-change counter; the TUI watches it to hot-apply /theme. */
+extern int edc_app_config_theme_rev(const struct edc_app *app);
 extern bool edc_app_sandbox_enabled(const struct edc_app *app);
 /* Whether the shell-like input syntax is on (sigil + operators). ON by default;
  * /shell off turns it off, and /shell alone reports it. It is read per frame so the input

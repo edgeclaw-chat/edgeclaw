@@ -1667,6 +1667,22 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_colorscheme",
+    srcs = ["test_colorscheme.cpp"],
+    deps = [
+        "//src/common:common",
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+    local_defines = select({
+        "//:debug": ["EDGECLAW_DEBUG"],
+        "//conditions:default": [],
+    }),
+)
+cc_test(
     name = "test_theme",
     srcs = ["test_theme.cpp"],
     deps = [

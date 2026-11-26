@@ -618,6 +618,11 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/sandbox add-deny <dir\|file>` | Mask a directory or a single file (wins over ro/rw; e.g. `~/.ssh`, `~/.secrets.env`) |
 | `/sandbox rm-deny <dir\|file>` | Unmask a directory or file |
 | `/shell [on\|off]` | Turn the shell-like input syntax on or off (on by default; persisted; `/shell` alone reports the state) |
+| `/theme [list]` | List installed vim colorschemes in `~/.edgeclaw/colors/` and show the active one |
+| `/theme install <path.vim>` | Copy a vim colorscheme into `~/.edgeclaw/colors/` and make it available |
+| `/theme use <name>` | Apply an installed colorscheme immediately (no restart; persisted to `config.json`) |
+| `/theme reload` | Re-read the active colorscheme after you edit its file |
+| `/theme off` | Restore the built-in dark/light palette |
 
 ### Session
 
@@ -757,6 +762,34 @@ front — with `--new-group` it opens a group and leaves the group in front alon
 anywhere on the line is read as an option, so **a template argument may not start with `--`**
 — quote it (`/prompt review "--strict"`) when a template really needs that word. Single
 dashes are ordinary arguments (`/prompt review -strict`).
+
+## Themes
+
+EdgeClaw ships a dark and a light palette and picks between them from the terminal
+background. You can instead load a **Vim colorscheme**: the TUI reads its `highlight`
+groups and repaints every widget immediately — no restart, no recompile.
+
+```
+/theme install ~/downloads/gruvbox.vim   # copy a theme into ~/.edgeclaw/colors/
+/theme list                              # see what is installed and what is active
+/theme use gruvbox                       # apply it now (saved to config.json)
+/theme reload                            # after editing the .vim file
+/theme off                               # back to the built-in palette
+```
+
+Themes live in `~/.edgeclaw/colors/<name>.vim`; `/theme install` copies a file there
+(deriving `<name>` from the file's basename). Nothing is scanned from Vim's own
+config directories — installation is explicit. The chosen name is persisted under
+the `theme` key in `config.json` and re-applied on the next launch.
+
+Only the classic `highlight` / `hi` commands are understood (`guifg`, `guibg`,
+`ctermfg`, `ctermbg`, `#rrggbb`, `#rgb`, color names, `NONE`, `hi link`, and `fg`/`bg`
+references to `Normal`). Nothing in the file is executed: themes that compute their
+colors with Vimscript (`execute()`) or Lua (`nvim_set_hl`) cannot be imported and are
+rejected with an explanation. Vim has no group for a few EdgeClaw-specific roles
+(the folded-paste chip, mentions), so those are derived from the imported colors;
+surface pairs that would otherwise be indistinguishable are widened to keep pane
+boundaries visible.
 
 ## Output
 

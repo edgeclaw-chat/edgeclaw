@@ -62,6 +62,8 @@ struct Palette
     ::ftxui::Color md_h2;
     ::ftxui::Color md_h3;
     ::ftxui::Color md_h4;
+    ::ftxui::Color md_h5;
+    ::ftxui::Color md_h6;
     ::ftxui::Color md_code;
     ::ftxui::Color md_code_inline;
     ::ftxui::Color md_code_bg;
@@ -69,6 +71,15 @@ struct Palette
     ::ftxui::Color md_quote;
     ::ftxui::Color md_list;
     ::ftxui::Color md_link;
+    ::ftxui::Color md_table_head; // table header row text / separator
+
+    // Input-box CONTENT colours. They were function-local hard-coded RGB until the
+    // theming provider arrived: leaving them there meant an imported theme repainted
+    // every widget but the two tokens in the input line. They are slots now so a
+    // custom palette owns them too (see edc_colorscheme's role table).
+    ::ftxui::Color paste_text;    // folded `[Pasted #n]` chip glyphs
+    ::ftxui::Color paste_surface; // the chip's own surface
+    ::ftxui::Color mention_text;  // an `@file` reference
 };
 
 // Function-local statics on purpose: ftxui::Color::RGB() resolves against the
@@ -108,6 +119,8 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(230, 219, 116), // md_h2
         ::ftxui::Color::RGB(253, 151, 31),  // md_h3
         ::ftxui::Color::RGB(102, 217, 239), // md_h4
+        ::ftxui::Color::RGB(174, 129, 255), // md_h5
+        ::ftxui::Color::RGB(166, 226, 46),  // md_h6
         ::ftxui::Color::RGB(248, 248, 242), // md_code
         ::ftxui::Color::RGB(174, 129, 255), // md_code_inline
         ::ftxui::Color::RGB(62, 61, 50),    // md_code_bg
@@ -115,6 +128,10 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(117, 113, 94),  // md_quote
         ::ftxui::Color::RGB(249, 38, 114),  // md_list
         ::ftxui::Color::RGB(102, 217, 239), // md_link
+        ::ftxui::Color::RGB(230, 219, 116), // md_table_head
+        ::ftxui::Color::RGB(255, 198, 109), // paste_text (was input_paste_text())
+        ::ftxui::Color::RGB(59, 50, 38),    // paste_surface
+        ::ftxui::Color::RGB(249, 38, 114),  // mention_text (keyword pink)
     };
     return k;
 }
@@ -152,6 +169,8 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(242, 90, 0),    // md_h2
         ::ftxui::Color::RGB(253, 151, 31),  // md_h3
         ::ftxui::Color::RGB(40, 198, 228),  // md_h4
+        ::ftxui::Color::RGB(174, 129, 255), // md_h5
+        ::ftxui::Color::RGB(106, 175, 25),  // md_h6
         ::ftxui::Color::RGB(0, 0, 0),       // md_code
         ::ftxui::Color::RGB(174, 129, 255), // md_code_inline
         ::ftxui::Color::RGB(237, 237, 237), // md_code_bg
@@ -159,6 +178,10 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(159, 159, 143), // md_quote
         ::ftxui::Color::RGB(249, 38, 114),  // md_list
         ::ftxui::Color::RGB(40, 198, 228),  // md_link
+        ::ftxui::Color::RGB(242, 90, 0),    // md_table_head
+        ::ftxui::Color::RGB(138, 90, 0),    // paste_text (was input_paste_text())
+        ::ftxui::Color::RGB(255, 240, 209), // paste_surface
+        ::ftxui::Color::RGB(249, 38, 114),  // mention_text (keyword pink)
     };
     return k;
 }
@@ -266,9 +289,7 @@ inline ::ftxui::Color input_frame_ink()
 // colours), not a semantic role of the chrome, and it follows the theme on its own below.
 inline ::ftxui::Color input_paste_text()
 {
-    // Monokai's own "line/prompt" family is too close to warn/interrupted; this amber sits
-    // between them without borrowing either (#FFC66D dark, #8A5A00 light).
-    return theme::IsLight() ? ::ftxui::Color::RGB(138, 90, 0) : ::ftxui::Color::RGB(255, 198, 109);
+    return palette().paste_text;
 }
 
 // An `@file` mention wears the KEYWORD colour (Monokai's pink). Same reasoning as the paste
@@ -278,16 +299,12 @@ inline ::ftxui::Color input_paste_text()
 // underlined token next to a solid chip reads as two decorations instead of two kinds.
 inline ::ftxui::Color input_mention_text()
 {
-    // One value for both themes: this is the palette's own keyword pink (error and md_list
-    // carry the same hue in both), so a light terminal gets the same mark as a dark one.
-    return ::ftxui::Color::RGB(249, 38, 114);
+    return palette().mention_text;
 }
 
 inline ::ftxui::Color input_paste_surface()
 {
-    // The chip's own surface, one step off the window beneath it: warm-tinted in both themes
-    // so the block looks like a pasted excerpt rather than a selected run of text.
-    return theme::IsLight() ? ::ftxui::Color::RGB(255, 240, 209) : ::ftxui::Color::RGB(59, 50, 38);
+    return palette().paste_surface;
 }
 
 // One vocabulary for the scheduler's task-state names. The task tree paints its markers with
