@@ -109,6 +109,40 @@ static void test_parse_and_map()
     CHECK(p.md_code == edc::style::dark_palette().md_code, "unset role keeps fallback");
 }
 
+static void test_install_scheme_provider()
+{
+    std::printf("  provider: InstallScheme / ClearScheme and their no-op cases\n");
+    // No-op names and a missing theme leave the provider untouched (nullptr result).
+    CHECK(edc::theme::InstallScheme("/x", "") == nullptr, "empty name installs nothing");
+    CHECK(edc::theme::InstallScheme("/x", "off") == nullptr, "off installs nothing");
+    CHECK(edc::theme::InstallScheme("/x", "missing") == nullptr, "missing theme installs nothing");
+
+    // Seed a theme in a private home and install it for real.
+    const std::string home = cs_tmp_path("edc_cs_provider");
+    const std::string colors = cs_tmp_path("edc_cs_provider/colors");
+    cs_mkdir(home);
+    cs_mkdir(colors);
+    writefile(cs_tmp_path("edc_cs_provider/colors/demo.vim"),
+              "hi Normal guifg=#ffffff guibg=#101018\nhi Todo guifg=#bd5eff\n");
+    auto provider = edc::theme::InstallScheme(home, "demo");
+    CHECK(provider != nullptr, "a valid theme installs a provider");
+    CHECK(&edc::style::palette() == &provider->colors(), "the installed provider supplies the palette");
+    CHECK(rgb_is(provider->colors().thought_open, 0xbd, 0x5e, 0xff), "provider carries the theme colour");
+
+    // paste_surface == pane case exercises the repair branch (Pmenu bg equal to Normal bg).
+    writefile(cs_tmp_path("edc_cs_provider/colors/flat.vim"),
+              "hi Normal guifg=#ffffff guibg=#202020\nhi Pmenu guibg=#202020 guifg=#ffffff\n");
+    auto flat = edc::theme::InstallScheme(home, "flat");
+    CHECK(flat != nullptr, "flat-surface theme installs");
+
+    edc::theme::ClearScheme();
+    // A built-in palette has a distinct accent slot; after ClearScheme the palette
+    // cannot be the one we just installed (whose accent came from the theme).
+    CHECK(edc::style::palette().accent == edc::style::dark_palette().accent ||
+              edc::style::palette().accent == edc::style::light_palette().accent,
+          "ClearScheme restores a built-in palette");
+}
+
 static void test_thought_closed_is_dimmed_open()
 {
     std::printf("  thought: collapsed is a dimmed version of the expanded theme colour\n");
@@ -312,6 +346,7 @@ int main()
 {
     std::printf("colorscheme tests\n");
     test_parse_and_map();
+    test_install_scheme_provider();
     test_thought_closed_is_dimmed_open();
     test_parse_branches();
     test_error_paths();
