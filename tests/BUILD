@@ -1668,7 +1668,7 @@ cc_test(
 )
 cc_test(
     name = "test_colorscheme",
-    srcs = ["test_colorscheme.cpp"],
+    srcs = ["test_colorscheme.cpp", "test_fs_util.h"],
     deps = [
         "//src/common:common",
         "//src/tui:tui",
@@ -2103,6 +2103,15 @@ cc_test(
 cc_test(
     name = "test_commands_jobs",
     srcs = ["test_commands_jobs.c", "test_ws.h"],
+    deps = [
+        "//src/shell:shell",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_commands_theme",
+    srcs = ["test_commands_theme.c", "test_ws.h"],
     deps = [
         "//src/shell:shell",
     ],

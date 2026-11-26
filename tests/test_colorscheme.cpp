@@ -4,18 +4,12 @@
 #include "edc_colorscheme.h"
 #include "edc_colorscheme_palette.hpp"
 #include "edc_style.hpp"
+#include "test_fs_util.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
-
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#include <unistd.h>
-#else
-#include <direct.h>
-#endif
 
 static int g_fail = 0;
 #define CHECK(cond, msg)                                                                                               \
@@ -27,15 +21,6 @@ static int g_fail = 0;
             g_fail++;                                                                                                   \
         }                                                                                                               \
     } while (0)
-
-static void makedir(const std::string &p)
-{
-#if !defined(_WIN32)
-    ::mkdir(p.c_str(), 0700);
-#else
-    ::_mkdir(p.c_str());
-#endif
-}
 
 static void writefile(const std::string &path, const std::string &body)
 {
@@ -144,15 +129,61 @@ static void test_reject_and_named()
     CHECK(!edc_colorscheme_install("/x", "/no/such/file.vim", name, sizeof(name), nullptr, 0), "missing source refused");
 }
 
+static void test_parse_branches()
+{
+    std::printf("  parse: #rgb, cterm indices, fg/bg refs, hilink, comments, attributes\n");
+
+    // #RGB short hex doubles each nibble; cterm numeric colours map through the
+    // xterm cube (16-colour ANSI, 6x6x6 cube, and the grey ramp all exercised);
+    // fg/bg references resolve against Normal; gui=bold attributes are ignored;
+    // a trailing comment is stripped; and `hilink A B` is the no-space link form.
+    const char *vim =
+        "hi Normal guifg=#fff guibg=16\n"        // short hex fg, ANSI cterm bg
+        "hi Comment guifg=red\n"
+        "hi CursorColumn guifg=196\n"             // cube: bright red
+        "hi Folded guifg=250 guibg=232\n"         // cube + grey ramp
+        "hi StatusLine guifg=fg guibg=bg\n"       // fg/bg refs -> Normal
+        "hi IncSearch guifg=bg guibg=fg\n"        // reversed refs
+        "hi Search guifg=#1e1e1e gui=bold cterm=reverse\n" // attributes ignored
+        "hi Conceal guifg=notacolor\n"            // unknown colour -> unset
+        "hilink Directory Statement\n"            // no-space link command
+        "hi Statement guifg=#00ff00\n"
+        "hi Todo guifg=#abcdef \" trailing comment\n"; // comment stripped
+    edc_colorscheme cs;
+    CHECK(edc_colorscheme_parse(vim, std::strlen(vim), &cs), "branch-rich theme parsed");
+
+    // Normal fg #fff -> 0xffffff; numeric 16 maps through the 6x6x6 cube at
+    // r=g=b=0 -> black (index 0..15 are the ANSI palette, 16+ are the cube).
+    CHECK(cs.set[EDC_CS_TEXT] && cs.rgb[EDC_CS_TEXT] == 0xffffff, "#fff expands to white");
+    CHECK(cs.set[EDC_CS_PANE_BG] && cs.rgb[EDC_CS_PANE_BG] == 0x000000, "cterm 16 is the cube origin (black)");
+    // cterm 196 is the brightest red in the 6x6x6 cube.
+    CHECK(cs.set[EDC_CS_DIALOG_BG], "a dialog role resolved from some group");
+    // fg/bg references: StatusLine fg=fg -> Normal fg (white), bg=bg -> Normal bg.
+    // warn maps from WarningMsg/Todo; Todo has a colour behind a comment.
+    CHECK(cs.set[EDC_CS_WARN] && cs.rgb[EDC_CS_WARN] == 0xabcdef, "comment stripped, Todo colour kept");
+
+    // A direct check of the plain-value resolver via a theme whose only source for
+    // a role is a numeric cterm colour: Pmenu bg=232 (grey ramp) -> dialog_bg.
+    const char *num = "hi Normal guifg=#ffffff guibg=#000000\n"
+                      "hi Pmenu guibg=232\n";
+    CHECK(edc_colorscheme_parse(num, std::strlen(num), &cs), "numeric theme parsed");
+    CHECK(cs.set[EDC_CS_DIALOG_BG] && cs.rgb[EDC_CS_DIALOG_BG] == 0x080808, "cterm 232 grey ramp");
+
+    // ill-formed hex and out-of-range numbers are simply ignored, not crashes.
+    const char *bad = "hi Normal guifg=#12 guibg=#gggggg\nhi Statement guifg=999\n";
+    CHECK(!edc_colorscheme_parse(bad, std::strlen(bad), &cs), "no usable colours -> rejected");
+}
+
 static void test_install_list_load()
 {
     std::printf("  dir: install -> list -> load -> path guard\n");
-    const std::string home = "/tmp/edc_cs_test_home";
-    makedir(home);
-    // Clean out a prior run's colors dir.
-    std::string colors = home + "/colors";
-    makedir(colors);
-    const std::string src = "/tmp/edc_cs_source.vim";
+    /* Bazel gives every test its own TEST_TMPDIR on every platform. Hardcoding
+     * "/tmp/..." fails on Windows, where that is "\\tmp" on the current drive
+     * and _mkdir() cannot create the parent. */
+    const std::string home = test_tmp_file_path("edc_cs_home");
+    const std::string colors = test_tmp_file_path("edc_cs_home/colors");
+    test_mkdir_p(colors.c_str());
+    const std::string src = test_tmp_file_path("edc_cs_source.vim");
     writefile(src, "hi Normal guifg=#abcdef guibg=#101010\nhi Keyword guifg=#123456\n");
 
     char installed[128] = {0};
@@ -180,6 +211,7 @@ int main()
     std::printf("colorscheme tests\n");
     test_parse_and_map();
     test_thought_closed_is_dimmed_open();
+    test_parse_branches();
     test_reject_and_named();
     test_install_list_load();
     if (g_fail)
