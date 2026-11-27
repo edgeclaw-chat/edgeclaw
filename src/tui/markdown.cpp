@@ -1,10 +1,6 @@
 #include "markdown.hpp"
 #include "edc_style.hpp"
-// Include the syntax engine's implementation directly (not just its header) so
-// its symbols land in this same translation unit. A separate libsyntax.a would
-// be placed before libtui.a on the link line; with supports_start_end_lib
-// disabled, ld's one-pass archive scan skips it before markdown.o's references.
-#include "edc_syntax.c"
+#include "edc_syntax.h"
 #include "edc_text_util.hpp"
 
 #include <ftxui/dom/table.hpp>

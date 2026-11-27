@@ -58,9 +58,12 @@ cc_library(
         "edc_widget.cpp",
         "edc_working_indicator_view.cpp",
         "markdown.cpp",
-        # Generated query byte arrays. edc_syntax.c is #included directly by
-        # markdown.cpp (see there) so its symbols share markdown.o; compiling it
-        # as a separate object would be skipped by ld's one-pass archive scan.
+        # Syntax engine compiled directly into this archive (not a separate
+        # libsyntax.a) so its symbols and markdown.o/edc_message.o references
+        # live in ONE archive: ld rescans archive members until symbols close,
+        # which avoids the one-pass ordering problem with supports_start_end_lib
+        # disabled.
+        "//src/common:edc_syntax.c",
         "//src/common:embedded_queries",
     ],
 

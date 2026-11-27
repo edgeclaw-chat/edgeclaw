@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Syntax highlighting engine (tree-sitter based).
  *
@@ -58,5 +62,9 @@ void edc_syntax_result_free(edc_syntax_result *out);
 
 /* Stable, human-readable name for a group (for tests / debugging). */
 const char *edc_syntax_group_name(edc_syntax_group group);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* EDC_SYNTAX_H */

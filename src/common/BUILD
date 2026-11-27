@@ -1,20 +1,17 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
 # The syntax engine's implementation is exported so //src/tui:tui can compile
-# it directly into libtui.a. With supports_start_end_lib disabled, a separate
-# libsyntax.a would be placed BEFORE libtui.a on the link line, and ld's one-pass
-# scan would drop it before markdown.o's references appear. Compiling it inside
-# the same archive side-steps the ordering entirely. test_syntax still links the
-# standalone //src/common:syntax library directly.
+# it directly into libtui.a: markdown.o / edc_message.o reference it, and keeping
+# definition + references in one archive lets ld resolve them without depending
+# on supports_start_end_lib. test_syntax still links the standalone
+# //src/common:syntax library directly. edc_syntax.h carries extern "C" so the
+# C++ callers and the C compilation agree on symbol names.
 exports_files(["edc_syntax.c"])
 
-# Header-only seam: gives //src/tui:tui the include path to edc_syntax.h while
-# it compiles edc_syntax.c into its own archive (no libsyntax.a on the link line).
+# Header-only seam: gives //src/tui:tui the include path to edc_syntax.h.
 cc_library(
     name = "syntax_headers",
-    # edc_syntax.c is in hdrs only so it is exported on the include path for
-    # markdown.cpp's #include (compiled into markdown.o); it is not compiled here.
-    hdrs = ["edc_syntax.h", "edc_syntax.c"],
+    hdrs = ["edc_syntax.h"],
     includes = ["."],
     visibility = ["//visibility:public"],
 )
