@@ -116,6 +116,10 @@ cc_library(
         "@tree-sitter-bash//:tree-sitter-bash",
         "@tree-sitter-json//:tree-sitter-json",
         "@tree-sitter-go//:tree-sitter-go",
+        "@tree-sitter-javascript//:tree-sitter-javascript",
+        "@tree-sitter-rust//:tree-sitter-rust",
+        "@tree-sitter-typescript//:tree-sitter-typescript",
+        "@tree-sitter-typescript//:tree-sitter-tsx",
         # edc_mention.h: the `@reference` grammar the input line paints is the one the
         # mention pass expands (see that header on why it is not duplicated here).
         "//src/shell:shell_parse",

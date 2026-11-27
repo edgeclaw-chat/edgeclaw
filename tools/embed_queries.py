@@ -27,6 +27,8 @@ def c_chunks(data, max_width=110):
             atoms.append("\\r")
         elif byte == 0x09:
             atoms.append("\\t")
+        elif byte == 0x3F:  # '?': emit as octal so "??" cannot form a trigraph
+            atoms.append("\\077")
         elif 0x20 <= byte <= 0x7E:
             atoms.append(chr(byte))
         else:

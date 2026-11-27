@@ -183,4 +183,7 @@ use_repo(
     "tree-sitter-bash",
     "tree-sitter-json",
     "tree-sitter-go",
+    "tree-sitter-javascript",
+    "tree-sitter-rust",
+    "tree-sitter-typescript",
 )

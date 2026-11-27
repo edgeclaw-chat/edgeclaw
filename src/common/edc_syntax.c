@@ -28,6 +28,10 @@ const TSLanguage *tree_sitter_python(void);
 const TSLanguage *tree_sitter_bash(void);
 const TSLanguage *tree_sitter_json(void);
 const TSLanguage *tree_sitter_go(void);
+const TSLanguage *tree_sitter_javascript(void);
+const TSLanguage *tree_sitter_typescript(void);
+const TSLanguage *tree_sitter_tsx(void);
+const TSLanguage *tree_sitter_rust(void);
 #ifdef __cplusplus
 }
 #endif
@@ -55,6 +59,14 @@ static const syntax_lang LANGS[] = {
      edc_query_json, EDC_QUERY_JSON_SIZE},
     {"go", {"golang", NULL}, tree_sitter_go,
      edc_query_go, EDC_QUERY_GO_SIZE},
+    {"javascript", {"js", "node", NULL}, tree_sitter_javascript,
+     edc_query_javascript, EDC_QUERY_JAVASCRIPT_SIZE},
+    {"typescript", {"ts", NULL}, tree_sitter_typescript,
+     edc_query_typescript, EDC_QUERY_TYPESCRIPT_SIZE},
+    {"tsx", {"jsx", NULL}, tree_sitter_tsx,
+     edc_query_tsx, EDC_QUERY_TSX_SIZE},
+    {"rust", {"rs", NULL}, tree_sitter_rust,
+     edc_query_rust, EDC_QUERY_RUST_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);

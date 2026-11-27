@@ -57,6 +57,10 @@ cc_library(
         "@tree-sitter-bash//:tree-sitter-bash",
         "@tree-sitter-json//:tree-sitter-json",
         "@tree-sitter-go//:tree-sitter-go",
+        "@tree-sitter-javascript//:tree-sitter-javascript",
+        "@tree-sitter-rust//:tree-sitter-rust",
+        "@tree-sitter-typescript//:tree-sitter-typescript",
+        "@tree-sitter-typescript//:tree-sitter-tsx",
     ],
 )
 

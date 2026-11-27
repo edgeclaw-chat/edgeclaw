@@ -77,6 +77,10 @@ int main(void)
             {"bash", "# a comment\necho hello\n", EDC_SYNTAX_COMMENT},
             {"json", "{\"key\": 42}", EDC_SYNTAX_NUMBER},
             {"go", "package main\nfunc main() {}", EDC_SYNTAX_KEYWORD},
+            {"javascript", "const x = 42; // hi", EDC_SYNTAX_NUMBER},
+            {"typescript", "let x: number = 1;", EDC_SYNTAX_TYPE},
+            {"tsx", "const n = 42;", EDC_SYNTAX_NUMBER},
+            {"rust", "fn main() { let x = 1; }", EDC_SYNTAX_KEYWORD},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));
@@ -105,6 +109,11 @@ int main(void)
     assert(edc_syntax_available("sh"));
     assert(edc_syntax_available("cc"));
     assert(edc_syntax_available("golang"));
+    assert(edc_syntax_available("js"));
+    assert(edc_syntax_available("ts"));
+    assert(edc_syntax_available("tsx"));
+    assert(edc_syntax_available("jsx"));
+    assert(edc_syntax_available("rs"));
     assert(!edc_syntax_available("ruby"));
 
     puts("test_syntax: PASS");

@@ -308,6 +308,7 @@ static void test_fenced_code_syntax_highlighting()
     p.syntax_number = ftxui::Color::RGB(0, 0, 255);    // blue
     p.syntax_function = ftxui::Color::RGB(0, 255, 0);  // green
     p.syntax_type = ftxui::Color::RGB(255, 255, 0);
+    p.syntax_constant = ftxui::Color::RGB(0, 255, 255); // cyan; rust numbers are @constant.builtin
     auto provider = std::make_shared<FixedPalette>(p);
     edc::style::SetPaletteProvider(provider);
 
@@ -351,6 +352,19 @@ static void test_fenced_code_syntax_highlighting()
         CHECK(has_color(s, p.syntax_number), "number after wide-char token still highlighted");
         std::string text = Draw("```c\nconst char *s = \"你好\"; int n = 1;\n```");
         CHECK(Has(text, "你"), "the wide character survives rendering intact");
+    }
+    {
+        // P5 languages reach the renderer too: Rust keyword + number.
+        auto s = DrawColored("```rust\nfn main() { let x = 1; }\n```", 60, 12);
+        CHECK(has_color(s, p.syntax_keyword), "Rust keyword wears syntax_keyword");
+        // nvim-treesitter tags Rust literals @constant.builtin, which maps to the
+        // constant group (not number) -- verify that group is reached.
+        CHECK(has_color(s, p.syntax_constant), "Rust literal wears syntax_constant");
+    }
+    {
+        // TypeScript: a built-in type annotation wears the type colour.
+        auto s = DrawColored("```typescript\nlet x: number = 1;\n```", 60, 12);
+        CHECK(has_color(s, p.syntax_type), "TypeScript type wears syntax_type");
     }
 
     edc::style::SetPaletteProvider(nullptr);
