@@ -35,6 +35,10 @@ struct edc_channel_message
     edc_channel_type type;
     edc_channel_message_type message_type;
     edc_render_pref_t render_pref; /* render preference declared by the sender; 0 = PLAIN (plain text) */
+    sds highlight_lang;  /* optional language tag for tool/code output (e.g. from read_file's
+                          * path extension). Persisted on the chat bubble so highlighting
+                          * survives a restart. NULL/empty = no highlighting. Owned by this
+                          * message. */
     /* A fact the sender declares: the LABEL to give a task created from this message when
      * that must differ from the content. The template paths set it to the line the user
      * typed (`/prompt review ars`) while the content is the expanded body -- so the task
@@ -137,7 +141,8 @@ struct edc_task; /* fwd: appears only as a pointer */
 extern void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, const char *content,
                                         void *request_id);
 extern void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task *task, const char *header,
-                                               const char *content, edc_render_pref_t render_pref, void *request_id);
+                                               const char *content, edc_render_pref_t render_pref,
+                                               const char *highlight_lang, void *request_id);
 
 /* ── Ports: the channel provides the four outbound ports ─────
  *

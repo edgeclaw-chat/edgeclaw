@@ -126,6 +126,24 @@ single_version_override(
     patch_strip = 1,
 )
 
+# Syntax highlighting engine (tree-sitter core C library). The BCR module builds
+# its internals as many small static archives with a link-order cycle (tree.o
+# needs ts_node_new from node.o and vice versa); GNU ld's one-pass scan cannot
+# resolve it, and this project deliberately disables supports_start_end_lib
+# (.bazelrc: build --features=-supports_start_end_lib). Two small patches fold the
+# internals into one archive and drop the --experimental_cc_implementation_deps
+# gate, so a plain static/musl link works. Language grammars and highlight queries
+# are added separately; this dep is only the parser/query engine.
+bazel_dep(name = "tree-sitter-bazel", version = "0.26.5")
+single_version_override(
+    module_name = "tree-sitter-bazel",
+    patches = [
+        "//patches:tree-sitter-root.patch",
+        "//patches:tree-sitter-libsrc.patch",
+    ],
+    patch_strip = 1,
+)
+
 # Session state persistence.
 # The BCR module ships SQLite's stock compile options, which this project cannot use as-is
 # (DQS=3, load_extension() compiled in, memstat=1, a global mutex per allocation). Those are
@@ -159,4 +177,13 @@ use_repo(
     "libuv",
     "llhttp",
     "libyuarel",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-python",
+    "tree-sitter-bash",
+    "tree-sitter-json",
+    "tree-sitter-go",
+    "tree-sitter-javascript",
+    "tree-sitter-rust",
+    "tree-sitter-typescript",
 )

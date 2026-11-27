@@ -71,6 +71,17 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+# Syntax-highlighting engine: verifies tree-sitter links statically and that
+# query captures map to the right semantic groups with exact byte ranges.
+cc_test(
+    name = "test_syntax",
+    srcs = ["test_syntax.c"],
+    deps = [
+        "//src/common:syntax",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # The wall-clock helpers: the millisecond clock that feeds message ids, and the
 # format/parse pair every timestamp in a log line goes through. Asserted as
 # round trips, so the test does not encode the build machine's timezone.
@@ -2335,3 +2346,5 @@ cc_binary(
     deps = ["@sqlite3//:sqlite3"],
     tags = ["manual"],
 )
+
+

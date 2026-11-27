@@ -254,8 +254,9 @@ std::string FirstLines(const std::string &text, size_t max_lines)
 } // namespace
 
 ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown,
-                         const std::string_view task_id)
-    : Message(content, ts, task_id), header_(header), markdown_(markdown), line_count_(CountLines(content_))
+                         const std::string_view task_id, const std::string_view highlight_lang)
+    : Message(content, ts, task_id), header_(header), highlight_lang_(highlight_lang), markdown_(markdown),
+      line_count_(CountLines(content_))
 {
 }
 
@@ -326,28 +327,46 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     }
     else if (!truncated)
     {
-        body = WrappedText(content_, BodyWidth());
+        // Plain tool output with a registered language (e.g. read_file) is
+        // painted with syntax colours; the content itself is untouched, so the
+        // model's copy and the folded preview still show the same raw text.
+        body = !highlight_lang_.empty()
+                   ? HighlightedCode(content_, highlight_lang_.c_str()) | ::ftxui::flex
+                   : WrappedText(content_, BodyWidth());
     }
     else
     {
         // First kPreviewLines lines, with the line after them replaced by "...".
+        // The preview is still real code, so colour it when a language tag is
+        // present -- otherwise a long read_file output looked unhighlighted until
+        // the user expanded it.
         if (!preview_ready_)
         {
             preview_ = FirstLines(content_, kPreviewLines);
             if (!preview_.empty())
                 preview_ += "\n";
-            preview_ += "...";
             preview_ready_ = true;
         }
-        body = WrappedText(preview_, BodyWidth());
+        body = !highlight_lang_.empty()
+                   ? ::ftxui::hbox({HighlightedCode(preview_, highlight_lang_.c_str()) | ::ftxui::flex,
+                                    ::ftxui::text("...") | ::ftxui::color(pal.text_dim)})
+                   : WrappedText(preview_ + "...", BodyWidth());
     }
 
     children.push_back(body);
     if (toggleable)
     {
-        auto toggle = expanded_ ? ::ftxui::text("- Collapse") : ::ftxui::text("+ Click to expand");
-        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(pal.accent) | ::ftxui::reflect(HitBox())}) | ::ftxui::flex;
-        children.push_back(footer);
+        /* A subdued chip: dark raised surface with a small bold accent label,
+         * the same device as the toast/COPY chips (ChipShell in edc_clipboard.cpp).
+         * An accent-FILLED slab was too loud next to the code; dark fill keeps it
+         * unobtrusive while the accent text still marks it as interactive. No
+         * border: the house style is borderless. */
+        const char *label = expanded_ ? " - Collapse " : " + Click to expand ";
+        auto toggle = ::ftxui::text(label) | ::ftxui::bold |
+                      ::ftxui::bgcolor(pal.dialog_bg) | ::ftxui::color(pal.accent) |
+                      ::ftxui::reflect(HitBox());
+        auto footer = ::ftxui::hbox({std::move(toggle)});
+        children.push_back(std::move(footer));
     }
 
     body_ = ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |
@@ -357,7 +376,7 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
 
 std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
                                         const std::string &content, const std::string &task_id, int render_pref,
-                                        time_t ts)
+                                        time_t ts, const std::string &highlight_lang)
 {
     if (kind == "user")
         return std::make_shared<UserMessage>(content, ts, task_id);
@@ -374,7 +393,7 @@ std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::stri
                 return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
             return std::make_shared<Message>(content, ts, task_id);
         }
-        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
+        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id, highlight_lang);
     }
 
     if (kind == "thought")

@@ -1,5 +1,66 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+# The syntax engine's implementation is exported so //src/tui:tui can compile
+# it directly into libtui.a: markdown.o / edc_message.o reference it, and keeping
+# definition + references in one archive lets ld resolve them without depending
+# on supports_start_end_lib. test_syntax still links the standalone
+# //src/common:syntax library directly. edc_syntax.h carries extern "C" so the
+# C++ callers and the C compilation agree on symbol names.
+exports_files(["edc_syntax.c"])
+
+# Header-only seam: gives //src/tui:tui the include path to edc_syntax.h.
+cc_library(
+    name = "syntax_headers",
+    hdrs = ["edc_syntax.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+# Syntax-highlighting engine: tree-sitter based source -> semantic-span parser.
+# Kept out of :common so a binary that does not render code pays no dependency
+# on the tree-sitter runtime or any grammar. Language grammars link here.
+#
+# Highlight queries (highlights.scm) are compiled into the binary by the
+# embedded_queries genrule below: no runtime file/network access, so musl static
+# releases and offline hosts highlight identically. Each .scm is the grammar's
+# own official query, kept under queries/ so it can be patched without refetching
+# the grammar archive.
+genrule(
+    name = "embedded_queries",
+    srcs = glob(["queries/*.scm"]),
+    outs = ["edc_embedded_queries.c", "edc_embedded_queries.h"],
+    cmd = "$(execpath //tools:embed_queries) --out-c $(location edc_embedded_queries.c) " +
+          "--out-h $(location edc_embedded_queries.h) --queries $(SRCS)",
+    cmd_bat = "$(execpath //tools:embed_queries) --out-c $(location edc_embedded_queries.c) " +
+          "--out-h $(location edc_embedded_queries.h) --queries $(SRCS)",
+    tools = ["//tools:embed_queries"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "syntax",
+    srcs = [
+        "edc_syntax.c",
+        ":embedded_queries",
+    ],
+    hdrs = ["edc_syntax.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@tree-sitter-bazel//:tree-sitter",
+        "@tree-sitter-c//:tree-sitter-c",
+        "@tree-sitter-cpp//:tree-sitter-cpp",
+        "@tree-sitter-python//:tree-sitter-python",
+        "@tree-sitter-bash//:tree-sitter-bash",
+        "@tree-sitter-json//:tree-sitter-json",
+        "@tree-sitter-go//:tree-sitter-go",
+        "@tree-sitter-javascript//:tree-sitter-javascript",
+        "@tree-sitter-rust//:tree-sitter-rust",
+        "@tree-sitter-typescript//:tree-sitter-typescript",
+        "@tree-sitter-typescript//:tree-sitter-tsx",
+    ],
+)
+
 # Top-level utility: utlist 的兼容修正（原 //src:utlist_fix，随 core 一起下沉）
 cc_library(
     name = "utlist_fix",

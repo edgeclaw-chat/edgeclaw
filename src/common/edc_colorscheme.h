@@ -65,6 +65,18 @@ enum edc_cs_role
     EDC_CS_PASTE_SURFACE,
     EDC_CS_MENTION_TEXT,
 
+    /* Fenced-code syntax highlighting (one per edc_syntax_group). */
+    EDC_CS_SYNTAX_COMMENT,
+    EDC_CS_SYNTAX_KEYWORD,
+    EDC_CS_SYNTAX_STRING,
+    EDC_CS_SYNTAX_NUMBER,
+    EDC_CS_SYNTAX_FUNCTION,
+    EDC_CS_SYNTAX_VARIABLE,
+    EDC_CS_SYNTAX_TYPE,
+    EDC_CS_SYNTAX_OPERATOR,
+    EDC_CS_SYNTAX_CONSTANT,
+    EDC_CS_SYNTAX_PUNCTUATION,
+
     EDC_CS_ROLE_COUNT
 };
 

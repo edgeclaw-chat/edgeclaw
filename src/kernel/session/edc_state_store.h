@@ -132,7 +132,10 @@ struct edc_scheduler;
  * archived_at; idle_since was missing, so load/flush SQL failed to prepare and the whole
  * session was quarantined (no groups in the sidebar). This idempotent step re-adds any
  * missing retirement/idle column; a complete v17 file is unchanged. */
-#define EDC_DB_VERSION 18
+/* v19: chat_bubbles' single encoded `line` column is split into typed columns
+ * (kind/render_pref/task_id/header/content) plus a new highlight_lang column,
+ * so fenced/tool code can be highlighted consistently after a restart. */
+#define EDC_DB_VERSION 19
 
 /* Open <workspace>/edgeclaw.db for the lifetime of the process.
  *
@@ -446,16 +449,41 @@ int edc_state_store_pragma_int(const char *pragma_name);
  * `line` is an ENCODED transcript line (EncodeTranscriptLine), stored verbatim.
  * `session_id` is the frontend's string identity (e.g. "1"), not an INTEGER. */
 
+/* Typed fields of one chat bubble (v19: chat_bubbles is split into real columns).
+ * Every string is a borrowed NUL-terminated value for append, and an owned
+ * malloc'd copy in edc_chat_bubble_row (freed by edc_chat_bubble_rows_free). */
+struct edc_chat_bubble_fields
+{
+    const char *kind;
+    int render_pref;
+    const char *task_id;
+    const char *header;
+    const char *content;
+    const char *highlight_lang; /* '' when the bubble has no language tag */
+};
+
 struct edc_chat_bubble_row
 {
     int64_t seq;
-    char *line; /* malloc'd; freed by edc_chat_bubble_rows_free */
+    char *kind;
+    int render_pref;
+    char *task_id;
+    char *header;
+    char *content;
+    char *highlight_lang;
 };
 
 /* Append one bubble. `out_seq` (optional) receives the assigned seq.
  * seq is per-session, monotonically increasing, computed under the store's
  * single-writer guarantee. */
-bool edc_chat_bubble_append(const char *session_id, const char *line, int64_t *out_seq);
+bool edc_chat_bubble_append(const char *session_id, const struct edc_chat_bubble_fields *f,
+                            int64_t *out_seq);
+
+/* Convenience: append from an encoded transcript line (legacy five/six-field
+ * form). Used by tests and the legacy-log importer; decodes into typed fields
+ * then calls edc_chat_bubble_append. highlight_lang comes from the line's sixth
+ * field when present. */
+bool edc_chat_bubble_append_line(const char *session_id, const char *line, int64_t *out_seq);
 
 /* Read up to `limit` rows with seq < `before_seq`, in ASCENDING seq order.
  * INT64_MAX means "the newest page". Returns false only on a real DB error;

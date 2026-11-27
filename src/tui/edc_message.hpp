@@ -48,6 +48,14 @@ class Message : public ::ftxui::ComponentBase
     {
         return 0;
     }
+    /* Language tag for code/tool output (empty when none). A kMemory bubble is
+     * rebuilt from a ChatTranscriptEntry on eviction, so the tag must be readable
+     * here or syntax highlighting is lost the moment the bubble is re-materialized. */
+    virtual const std::string &HighlightLang() const
+    {
+        static const std::string kEmpty;
+        return kEmpty;
+    }
 
     /* Read-only probe for the windowing regression test: does this object
      * still pin a cached ftxui element tree? LiveCount() cannot see this. */
@@ -184,7 +192,7 @@ class ToolMessage : public Message
 {
   public:
     ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown = false,
-                const std::string_view task_id = "");
+                const std::string_view task_id = "", const std::string_view highlight_lang = "");
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
@@ -203,6 +211,10 @@ class ToolMessage : public Message
     {
         return markdown_ ? 1 : 0; /* EDC_APP_RENDER_MARKDOWN == 1 */
     }
+    const std::string &HighlightLang() const override
+    {
+        return highlight_lang_;
+    }
     bool Expanded() const override
     {
         return expanded_;
@@ -220,6 +232,7 @@ class ToolMessage : public Message
     static constexpr size_t kPreviewLines = 14;
 
     std::string header_;
+    std::string highlight_lang_; /* language tag for plain tool output; '' when none */
     bool expanded_ = false;
     bool markdown_ = false;
     // Line count of content_, computed once (the collapsed view needs it every
@@ -237,6 +250,6 @@ class ToolMessage : public Message
  * reply | sys; |render_pref| is EDC_APP_RENDER_PLAIN / _MARKDOWN. */
 std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
                                         const std::string &content, const std::string &task_id, int render_pref,
-                                        time_t ts);
+                                        time_t ts, const std::string &highlight_lang = "");
 
 } // namespace edc

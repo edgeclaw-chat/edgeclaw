@@ -829,7 +829,8 @@ static const char kCompactSystemPrompt[] =
     "One response must stay short: one line of text, with the tool calls carrying the changes.\n"
     "A long reply gets cut at max_tokens, and a cut reply loses the tool calls in it. Work\n"
     "through the index with as many short turns as you need, and answer DONE on a single line\n"
-    "when the memory is under the cap.\n";
+    "when you have reached the target stated at the top of the material (leave headroom, do\n"
+    "not stop at the first size under the cap).\n";
 
 const char *edc_session_memory_compact_prompt(void)
 {
@@ -902,17 +903,22 @@ static sds build_compact_prompt(struct edc_session *session)
     struct edc_session_memory *m = session ? session->memo : NULL;
     sds out = sdscatprintf(sdsempty(),
                            "## Compact the session memory\n"
-                           "It holds %zu entries; the cap is %d. Bring it back under the cap and make it\n"
-                           "smaller. The material is the INDEX only: id / rev / updated / title / summary,\n"
-                           "no content. Call memory_get for any entry you rewrite or delete, and pass the\n"
-                           "`rev` below as expected_rev to memory_update.\n"
+                           "It holds %zu entries; the hard cap is %d. Get it DOWN TO ABOUT %d entries --\n"
+                           "not merely under the cap. Leaving headroom is the point: stopping at 196 just\n"
+                           "starts another compaction a handful of new entries later, so merge and condense\n"
+                           "until the table is near %d. Never lose durable knowledge to hit the number.\n"
+                           "The material is the INDEX only: id / rev / updated / title / summary, no content.\n"
+                           "Call memory_get for any entry you rewrite or delete, and pass the `rev` below as\n"
+                           "expected_rev to memory_update.\n"
                            "\n"
                            "The whole index is below, so judge globally: entries whose subjects overlap\n"
                            "belong together even when they are far apart in the list. Work in short turns --\n"
-                           "read a few, write a few, repeat -- and stop when it is under the cap.\n"
+                           "read a few, write a few, repeat -- and stop when it is near %d.\n"
                            "\n"
                            "## Index (stalest first)\n",
-                           m ? m->entry_count : (size_t)0, EDC_SESSION_MEMORY_COMPACT_ENTRIES);
+                           m ? m->entry_count : (size_t)0, EDC_SESSION_MEMORY_COMPACT_ENTRIES,
+                           EDC_SESSION_MEMORY_COMPACT_TARGET, EDC_SESSION_MEMORY_COMPACT_TARGET,
+                           EDC_SESSION_MEMORY_COMPACT_TARGET);
     if (!m || m->entry_count == 0)
         return out;
 

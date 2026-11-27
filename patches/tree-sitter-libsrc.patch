@@ -1,0 +1,64 @@
+Merge tree-sitter's internal translation units into a single cc_library.
+
+Upstream builds each of tree.c/node.c/tree_cursor.c/... as its own static
+archive. They reference each other's symbols (tree.o needs ts_node_new from
+node.o, tree_cursor.o needs ts_node_start_byte, ...), forming a cycle. Bazel's
+topological link order puts libnode.a before libtree.a, so GNU ld's one-pass
+scan discards libnode.a before it sees the unresolved reference and the link
+fails with "undefined reference to ts_node_new". A single archive makes ld
+rescan its members until symbols close, which removes the cycle. Verified with
+a static aarch64 link (no lld/gold, no --experimental_cc_implementation_deps).
+--- a/lib/src/BUILD
++++ b/lib/src/BUILD
+@@ -276,21 +276,39 @@
+     deps = [_API],
+ )
+ 
++# PATCHED: merge all translation units into a single cc_library so the linker
++# sees one archive. The upstream split libs (tree/node/tree_cursor/...) form a
++# symbol cycle that GNU ld (single-pass) cannot link; one archive avoids it.
+ cc_library(
+     name = "lib",
++    srcs = map([
++        "alloc.c",
++        "get_changed_ranges.c",
++        "language.c",
++        "lexer.c",
++        "node.c",
++        "parser.c",
++        "point.c",
++        "query.c",
++        "stack.c",
++        "subtree.c",
++        "tree.c",
++        "tree_cursor.c",
++        "wasm_store.c",
++    ]),
++    hdrs = map([
++        "alloc.h", "array.h", "atomic.h", "error_costs.h", "get_changed_ranges.h",
++        "host.h", "language.h", "length.h", "lexer.h", "parser.h", "point.h",
++        "reduce_action.h", "reusable_node.h", "stack.h", "subtree.h", "tree.h",
++        "tree_cursor.h", "ts_assert.h", "wasm_store.h",
++    ]),
++    local_defines = use_defines_features(),
+     visibility = ["@tree-sitter-bazel//:__pkg__"],
+     deps = [
+-        ":alloc",
+-        ":get_changed_ranges",
+-        ":language",
+-        ":lexer",
+-        ":node",
+-        ":parser",
+-        ":query",
+-        ":stack",
+-        ":subtree",
+-        ":tree",
+-        ":tree_cursor",
+-        ":wasm_store",
++        _API,
++        ":unicode",
++        "@tree-sitter-bazel//lib/src/portable:endian",
++        "@tree-sitter-bazel//lib/src/unicode:utf16",
++        "@tree-sitter-bazel//lib/src/unicode:utf8",
+     ],
+ )

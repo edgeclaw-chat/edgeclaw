@@ -4,4 +4,6 @@ exports_files([
     "log-format-attribute.patch",
     "sds-msvc.patch",
     "sed-static-link.patch",
+    "tree-sitter-root.patch",
+    "tree-sitter-libsrc.patch",
 ])

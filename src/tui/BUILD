@@ -58,6 +58,13 @@ cc_library(
         "edc_widget.cpp",
         "edc_working_indicator_view.cpp",
         "markdown.cpp",
+        # Syntax engine compiled directly into this archive (not a separate
+        # libsyntax.a) so its symbols and markdown.o/edc_message.o references
+        # live in ONE archive: ld rescans archive members until symbols close,
+        # which avoids the one-pass ordering problem with supports_start_end_lib
+        # disabled.
+        "//src/common:edc_syntax.c",
+        "//src/common:embedded_queries",
     ],
 
     hdrs = [
@@ -102,6 +109,20 @@ cc_library(
         "//src/app:api",
         "//src/app:app",
         "//src/common:common",
+        "//src/common:syntax_headers",
+        # syntax highlighter (compiled into this archive above): tree-sitter core
+        # plus the grammars; markdown.cpp tokenises fenced code into semantic spans.
+        "@tree-sitter-bazel//:tree-sitter",
+        "@tree-sitter-c//:tree-sitter-c",
+        "@tree-sitter-cpp//:tree-sitter-cpp",
+        "@tree-sitter-python//:tree-sitter-python",
+        "@tree-sitter-bash//:tree-sitter-bash",
+        "@tree-sitter-json//:tree-sitter-json",
+        "@tree-sitter-go//:tree-sitter-go",
+        "@tree-sitter-javascript//:tree-sitter-javascript",
+        "@tree-sitter-rust//:tree-sitter-rust",
+        "@tree-sitter-typescript//:tree-sitter-typescript",
+        "@tree-sitter-typescript//:tree-sitter-tsx",
         # edc_mention.h: the `@reference` grammar the input line paints is the one the
         # mention pass expands (see that header on why it is not duplicated here).
         "//src/shell:shell_parse",

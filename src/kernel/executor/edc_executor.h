@@ -193,6 +193,7 @@ struct edc_tool_emit_view
     const char *header;
     const char *content;
     edc_render_pref_t render_pref;
+    const char *highlight_lang;
 };
 bool edc_executor_view_tool_emit(void *emit_msg, struct edc_tool_emit_view *out);
 

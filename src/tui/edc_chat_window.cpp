@@ -222,7 +222,7 @@ size_t MessageWindow::SetWindow(size_t first, size_t last, size_t prefetch)
 }
 
 bool MessageWindow::Fields(size_t index, std::string *kind, int *render_pref, std::string *task_id,
-                           std::string *header, std::string *content)
+                           std::string *header, std::string *content, std::string *highlight_lang)
 {
     if (!refs_ || index >= refs_->size())
         return false;
@@ -237,6 +237,7 @@ bool MessageWindow::Fields(size_t index, std::string *kind, int *render_pref, st
         *header = std::move(entry.header);
         *content = std::move(entry.content);
         *render_pref = entry.render_pref;
+        *highlight_lang = std::move(entry.highlight_lang);
         return true;
     }
     if (ref.source == ChatBubbleSource::kMemory)
@@ -249,6 +250,7 @@ bool MessageWindow::Fields(size_t index, std::string *kind, int *render_pref, st
         *header = e.header;
         *content = e.content;
         *render_pref = e.render_pref;
+        *highlight_lang = e.highlight_lang;
         return true;
     }
     return false;
@@ -262,13 +264,14 @@ std::shared_ptr<Message> MessageWindow::Get(size_t index)
     if (it != live_.end())
         return it->second;
 
-    std::string kind, task_id, header, content;
+    std::string kind, task_id, header, content, highlight_lang;
     int render_pref = 0;
-    if (!Fields(index, &kind, &render_pref, &task_id, &header, &content))
+    if (!Fields(index, &kind, &render_pref, &task_id, &header, &content, &highlight_lang))
         return nullptr;
     const ChatBubbleRef &ref = (*refs_)[index];
 
-    std::shared_ptr<Message> bubble = MakeChatBubble(kind, header, content, task_id, render_pref, ::time(nullptr));
+    std::shared_ptr<Message> bubble =
+        MakeChatBubble(kind, header, content, task_id, render_pref, ::time(nullptr), highlight_lang);
     if (!bubble)
         return nullptr;
     if (ref.expanded)

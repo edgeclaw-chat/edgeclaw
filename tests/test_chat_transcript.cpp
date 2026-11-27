@@ -66,10 +66,14 @@ void TestRoundTrip()
         Check(decoded && Same(in, out), "fields identical: " + in.kind + " / " + in.header);
     }
 
-    /* A raw tab inside the last field must not split the line into two bubbles. */
-    const std::string awkward = "reply\t1\t7\t\ttab\there\n";
+    /* A tab inside content must survive the encode/decode round trip. The
+     * shared C encoder escapes it as "\t"; decoding restores the raw tab. */
+    edc::ChatTranscriptEntry original;
+    original.kind = "reply"; original.render_pref = 1; original.task_id = "7";
+    original.header = ""; original.content = "tab\there";
+    const std::string awkward = edc::EncodeTranscriptLine(original);
     edc::ChatTranscriptEntry out;
-    Check(edc::DecodeTranscriptLine(awkward, &out) && out.content == "tab\there", "a raw tab in content is kept");
+    Check(edc::DecodeTranscriptLine(awkward, &out) && out.content == "tab\there", "a tab in content survives the round trip");
     Check(out.kind == "reply" && out.render_pref == 1 && out.task_id == "7", "columns before it still parse");
 }
 

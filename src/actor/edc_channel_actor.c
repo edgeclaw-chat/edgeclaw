@@ -109,18 +109,30 @@ static void chat_bubble_persist(struct edc_channel_message *msg)
      * one must too, or persistence and display drift apart again. */
     if (msg->task_id && !msg->from_active_task && !msg->interface_feedback)
         return;
+    /* The todowrite display echo is a pure UI hint (TODO state lives in the
+     * sidebar); the frontend filters it from chat in ChannelDispatcher. Skip it
+     * here too, or a restart replays it into the transcript as a system-reminder
+     * bubble the user never saw live. The tool result still reaches the model
+     * through its own callback. */
+    if (msg->message_type == EDC_CHANNEL_MESSAGE_TOOL_TYPE && msg->header &&
+        strcmp(msg->header, "todowrite") == 0)
+        return;
     if (!msg->session_id || !*msg->session_id)
     {
         log_warn("chat bubble of type %d has no session_id -- refusing to persist it", (int)msg->message_type);
         return;
     }
-    char *line = edc_chat_bubble_encode(kind, (int)msg->render_pref, msg->task_id, msg->header, msg->content);
-    if (!line)
-        return;
+    struct edc_chat_bubble_fields fields = {
+        .kind = kind,
+        .render_pref = (int)msg->render_pref,
+        .task_id = msg->task_id ? msg->task_id : "",
+        .header = msg->header ? msg->header : "",
+        .content = msg->content ? msg->content : "",
+        .highlight_lang = msg->highlight_lang ? msg->highlight_lang : "",
+    };
     int64_t seq = 0;
-    if (!edc_chat_bubble_append(msg->session_id, line, &seq))
+    if (!edc_chat_bubble_append(msg->session_id, &fields, &seq))
         log_warn("chat bubble append failed for session %s", msg->session_id);
-    free(line);
 }
 
 static void edc_channel_actor_handle(edc_actor_t *actor, edc_actor_msg_t *msg)
@@ -160,6 +172,8 @@ void edc_channel_message_free(struct edc_channel_message *msg)
         return;
     if (msg->header)
         sdsfree(msg->header);
+    if (msg->highlight_lang)
+        sdsfree(msg->highlight_lang);
     if (msg->task_id)
         sdsfree(msg->task_id);
     if (msg->session_id)
@@ -281,7 +295,8 @@ void edc_channel_send_task_reply(struct edc_reply_to to, struct edc_task *task, 
 /* A TOOL message with a header. The display gate (show only the displayed session's
  * active task) is in the frontend -- this only declares the fact (from_active_task). */
 void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task *task, const char *header,
-                                        const char *content, edc_render_pref_t render_pref, void *request_id)
+                                        const char *content, edc_render_pref_t render_pref,
+                                        const char *highlight_lang, void *request_id)
 {
     if (!to.channel_actor || !task || !content)
         return;
@@ -301,6 +316,8 @@ void edc_channel_send_task_tool_message(struct edc_reply_to to, struct edc_task 
     }
     if (header && *header)
         reply->header = sdsnew(header);
+    if (highlight_lang && *highlight_lang)
+        reply->highlight_lang = sdsnew(highlight_lang);
 
     edc_channel_send_msg(to, reply, request_id);
 }
@@ -383,10 +400,11 @@ static void edc_channel_cb_send_reply(struct edc_scheduler *sched, struct edc_ta
 }
 
 static void edc_channel_cb_send_tool_message(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                             const char *content, edc_render_pref_t render_pref, void *request_id)
+                                             const char *content, edc_render_pref_t render_pref,
+                                             const char *highlight_lang, void *request_id)
 {
     edc_channel_send_task_tool_message(edc_channel_to(sched, EDC_CHANNEL_MESSAGE_TOOL_TYPE), task, header, content,
-                                       render_pref, request_id);
+                                       render_pref, highlight_lang, request_id);
 }
 
 static void edc_channel_cb_snapshot_reply(struct edc_scheduler *sched, sds serialized)

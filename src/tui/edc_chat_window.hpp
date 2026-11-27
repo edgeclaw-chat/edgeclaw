@@ -131,7 +131,7 @@ class MessageWindow
     /* The decoded fields for |index|. Used by LazyBubble to render itself;
      * returns false on a bad/missing line. */
     bool Fields(size_t index, std::string *kind, int *render_pref, std::string *task_id,
-                std::string *header, std::string *content);
+                std::string *header, std::string *content, std::string *highlight_lang);
 
     /* The real instance for |index|, or nullptr outside the window / on a bad
      * line. Shared ownership: the window keeps its own reference. */

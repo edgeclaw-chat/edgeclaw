@@ -65,6 +65,7 @@ struct ChatMessageEvent
     std::string task_id;
     std::string session_id;
     int render_pref = 0; /* EDC_APP_RENDER_PLAIN / _MARKDOWN */
+    std::string highlight_lang; /* language tag for tool/code output; '' when none */
     bool from_active_task = false;
     bool interface_feedback = false;
     time_t ts = 0;

@@ -20,7 +20,8 @@
 #include <string.h>
 
 static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *ctx, const char *header,
-                                                   const char *content, edc_render_pref_t render_pref)
+                                                   const char *content, edc_render_pref_t render_pref,
+                                                   const char *highlight_lang)
 {
     if (!ctx || !ctx->tb || !content || !*content)
         return;
@@ -40,6 +41,7 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
     emit->header = (header && *header) ? sdsnew(header) : NULL;
     emit->content = sdsnew(content);
     emit->render_pref = render_pref;
+    emit->highlight_lang = (highlight_lang && *highlight_lang) ? sdsnew(highlight_lang) : NULL;
 
     edc_actor_send(tb->scheduler,
                    edc_actor_msg_new_sub_type(BC_ACTOR_MSG_TOOL_EMIT, ctx->call_from_type, tb->channel_actor,
@@ -49,13 +51,21 @@ static void edc_toolbox_emit_tool_message_internal(struct edc_toolbox_call_ctx *
 void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
 {
     /* The tool explicitly declares plain-text output (code/command output/confirmations); shown as-is */
-    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN);
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN, NULL);
 }
 
 void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content)
 {
     /* The tool explicitly declares Markdown-rendered output */
-    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN);
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_MARKDOWN, NULL);
+}
+
+void edc_toolbox_emit_tool_message_code(struct edc_toolbox_call_ctx *ctx, const char *header,
+                                        const char *content, const char *highlight_lang)
+{
+    /* Plain tool output with a language tag (e.g. read_file): highlighted by the
+     * TUI without changing the content or render_pref the model sees. */
+    edc_toolbox_emit_tool_message_internal(ctx, header, content, EDC_RENDER_PLAIN, highlight_lang);
 }
 
 void edc_toolbox_emit_msg_free(void *p)
@@ -67,6 +77,8 @@ void edc_toolbox_emit_msg_free(void *p)
         sdsfree(emit->header);
     if (emit->content)
         sdsfree(emit->content);
+    if (emit->highlight_lang)
+        sdsfree(emit->highlight_lang);
     free(emit);
 }
 

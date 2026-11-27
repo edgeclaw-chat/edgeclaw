@@ -33,6 +33,15 @@ py_binary(
     visibility = ["//visibility:public"],
 )
 
+# Build-time tool: embeds tree-sitter highlight queries (.scm) as C byte arrays
+# (see //src/common:embedded_queries). Split from embed_blob.py because a set of
+# queries shares one header and needs stable, language-derived symbol names.
+py_binary(
+    name = "embed_queries",
+    srcs = ["embed_queries.py"],
+    visibility = ["//visibility:public"],
+)
+
 # Build-time tool: fetches models.dev and writes models_catalog.json (see
 # //:models_catalog_json). `--no-test` is used by the build so a slow/unreachable
 # provider endpoint cannot stall it; run the script directly for the full probe.

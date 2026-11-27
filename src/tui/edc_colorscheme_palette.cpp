@@ -114,6 +114,16 @@ style::Palette PaletteFromScheme(const edc_colorscheme &cs, const style::Palette
     apply(EDC_CS_PASTE_TEXT, &style::Palette::paste_text);
     apply(EDC_CS_PASTE_SURFACE, &style::Palette::paste_surface);
     apply(EDC_CS_MENTION_TEXT, &style::Palette::mention_text);
+    apply(EDC_CS_SYNTAX_COMMENT, &style::Palette::syntax_comment);
+    apply(EDC_CS_SYNTAX_KEYWORD, &style::Palette::syntax_keyword);
+    apply(EDC_CS_SYNTAX_STRING, &style::Palette::syntax_string);
+    apply(EDC_CS_SYNTAX_NUMBER, &style::Palette::syntax_number);
+    apply(EDC_CS_SYNTAX_FUNCTION, &style::Palette::syntax_function);
+    apply(EDC_CS_SYNTAX_VARIABLE, &style::Palette::syntax_variable);
+    apply(EDC_CS_SYNTAX_TYPE, &style::Palette::syntax_type);
+    apply(EDC_CS_SYNTAX_OPERATOR, &style::Palette::syntax_operator);
+    apply(EDC_CS_SYNTAX_CONSTANT, &style::Palette::syntax_constant);
+    apply(EDC_CS_SYNTAX_PUNCTUATION, &style::Palette::syntax_punctuation);
 
     /* The Thought toggle's two states must be the SAME hue at two brightnesses:
      * collapsed = a dimmed version of the expanded theme colour. The built-in

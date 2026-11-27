@@ -11,6 +11,7 @@
 
 #include "edc_state_migrate.h"
 
+#include "edc_chat_bubble_line.h"
 #include "edc_compat.h"
 #include "edc_state_store.h"
 #include "edc_version.h"
@@ -759,6 +760,123 @@ static bool verify_v18(sqlite3 *db, char *err, size_t cap)
     return true;
 }
 
+/* v18 -> v19: chat_bubbles goes from one escaped `line` column to typed columns
+ * plus highlight_lang. The old line format is decoded with the shared C decoder
+ * (edc_chat_bubble_decode_line) so migration bytes match the TUI's old reader.
+ * Idempotent: if the table already has the new shape there is nothing to do. */
+static bool step_v18_to_v19(sqlite3 *db, char *err, size_t cap)
+{
+    if (has_column(db, "chat_bubbles", "kind"))
+        return true; /* already split (idempotent) */
+
+    /* A fixture/database with no chat_bubbles table at all just needs the new
+     * table created; there are no legacy rows to convert. */
+    if (!has_column(db, "chat_bubbles", "line"))
+        return run_sql(db,
+                       "CREATE TABLE IF NOT EXISTS chat_bubbles ("
+                       "  session_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,"
+                       "  render_pref INTEGER NOT NULL, task_id TEXT NOT NULL, header TEXT NOT NULL,"
+                       "  content TEXT NOT NULL, highlight_lang TEXT NOT NULL DEFAULT '',"
+                       "  PRIMARY KEY (session_id, seq))", "create chat_bubbles (v19)", err, cap) &&
+               run_sql(db,
+                       "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session "
+                       "ON chat_bubbles(session_id, seq DESC)", "create chat_bubbles index (v19)", err, cap);
+
+    if (!run_sql(db, "ALTER TABLE chat_bubbles RENAME TO chat_bubbles_v18",
+                 "rename chat_bubbles to v18", err, cap) ||
+        !run_sql(db,
+                 "CREATE TABLE chat_bubbles ("
+                 "  session_id TEXT NOT NULL,"
+                 "  seq INTEGER NOT NULL,"
+                 "  kind TEXT NOT NULL,"
+                 "  render_pref INTEGER NOT NULL,"
+                 "  task_id TEXT NOT NULL,"
+                 "  header TEXT NOT NULL,"
+                 "  content TEXT NOT NULL,"
+                 "  highlight_lang TEXT NOT NULL DEFAULT '',"
+                 "  PRIMARY KEY (session_id, seq))",
+                 "create typed chat_bubbles", err, cap))
+        return false;
+
+    /* Read old rows, decode each line, insert into the new table. */
+    sqlite3_stmt *rd = NULL;
+    sqlite3_stmt *wr = NULL;
+    bool ok = false;
+    if (sqlite3_prepare_v2(db, "SELECT session_id,seq,line FROM chat_bubbles_v18", -1, &rd, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db,
+                           "INSERT INTO chat_bubbles(session_id,seq,kind,render_pref,task_id,header,content,highlight_lang)"
+                           " VALUES(?,?,?,?,?,?,?,?)", -1, &wr, NULL) != SQLITE_OK)
+    {
+        set_err(err, cap, "prepare chat_bubbles v19 rewrite failed: %s", sqlite3_errmsg(db));
+        goto done;
+    }
+    int rc;
+    while ((rc = sqlite3_step(rd)) == SQLITE_ROW)
+    {
+        const char *sid = (const char *)sqlite3_column_text(rd, 0);
+        sqlite3_int64 seq = sqlite3_column_int64(rd, 1);
+        const char *line = (const char *)sqlite3_column_text(rd, 2);
+        char *kind = NULL, *task_id = NULL, *header = NULL, *content = NULL, *lang = NULL;
+        int pref = 0;
+        if (!line || !edc_chat_bubble_decode_line(line, &kind, &pref, &task_id, &header, &content, &lang))
+        {
+            /* Un-decodable legacy line: keep the row with empty fields rather
+             * than dropping history. Kind must be non-empty for the reader. */
+            kind = strdup("sys");
+            pref = 0; task_id = strdup(""); header = strdup(""); content = strdup("");
+        }
+        sqlite3_bind_text(wr, 1, sid ? sid : "", -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(wr, 2, seq);
+        sqlite3_bind_text(wr, 3, kind, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(wr, 4, pref);
+        sqlite3_bind_text(wr, 5, task_id, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(wr, 6, header, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(wr, 7, content, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(wr, 8, "", -1, SQLITE_TRANSIENT);
+        bool ins = sqlite3_step(wr) == SQLITE_DONE;
+        sqlite3_reset(wr);
+        free(kind); free(task_id); free(header); free(content); free(lang);
+        if (!ins)
+        {
+            set_err(err, cap, "insert typed chat_bubbles row failed: %s", sqlite3_errmsg(db));
+            goto done;
+        }
+    }
+    if (rc != SQLITE_DONE)
+    {
+        set_err(err, cap, "scan chat_bubbles_v18 failed: %s", sqlite3_errmsg(db));
+        goto done;
+    }
+    ok = run_sql(db,
+                 "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session "
+                 "ON chat_bubbles(session_id, seq DESC)",
+                 "recreate chat_bubbles index", err, cap) &&
+         run_sql(db, "DROP TABLE chat_bubbles_v18", "drop chat_bubbles_v18", err, cap);
+
+done:
+    if (rd) sqlite3_finalize(rd);
+    if (wr) sqlite3_finalize(wr);
+    return ok;
+}
+
+static bool verify_v19(sqlite3 *db, char *err, size_t cap)
+{
+    static const char *const kCols[] = {"kind", "render_pref", "task_id", "header",
+                                        "content", "highlight_lang"};
+    for (size_t i = 0; i < sizeof kCols / sizeof kCols[0]; i++)
+        if (!has_column(db, "chat_bubbles", kCols[i]))
+        {
+            set_err(err, cap, "v19 is stamped but chat_bubbles lacks column %s", kCols[i]);
+            return false;
+        }
+    if (has_column(db, "chat_bubbles", "line"))
+    {
+        set_err(err, cap, "v19 is stamped but the old line column still exists");
+        return false;
+    }
+    return true;
+}
+
 /* ══ The registry ══════════════════════════════════════════════════════════════════
  * Ascending by `from`, terminated by from == 0. Adding a step is the whole cost of a
  * schema bump now; everything else (backup, transaction, stamp, verify) is the runner's.
@@ -778,6 +896,7 @@ static const struct edc_migration EDC_MIGRATIONS[] = {
     {15, step_v15_to_v16, verify_v16},
     {16, step_v16_to_v17, verify_v17},
     {17, step_v17_to_v18, verify_v18},
+    {18, step_v18_to_v19, verify_v19},
     {0, NULL, NULL}, /* terminator */
 };
 

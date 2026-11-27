@@ -59,6 +59,11 @@ const char *edc_app_message_header(const struct edc_channel_message *message)
     return message ? message->header : NULL;
 }
 
+const char *edc_app_message_highlight_lang(const struct edc_channel_message *message)
+{
+    return message ? message->highlight_lang : NULL;
+}
+
 /* The task id that produced this message; NULL when no task did (user input, a
  * snapshot). */
 const char *edc_app_message_task_id(const struct edc_channel_message *message)

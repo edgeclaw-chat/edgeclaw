@@ -297,6 +297,79 @@ static void test_distinct_heading_and_table_head_colors()
     edc::style::SetPaletteProvider(nullptr);
 }
 
+static void test_fenced_code_syntax_highlighting()
+{
+    TEST("fenced code: registered language paints multiple syntax colours; unknown degrades");
+
+    edc::style::Palette p = edc::style::palette();
+    // Highly distinct, easy-to-identify colours for each syntax group.
+    p.md_code = ftxui::Color::RGB(255, 255, 255);
+    p.syntax_keyword = ftxui::Color::RGB(255, 0, 0);   // red
+    p.syntax_number = ftxui::Color::RGB(0, 0, 255);    // blue
+    p.syntax_function = ftxui::Color::RGB(0, 255, 0);  // green
+    p.syntax_type = ftxui::Color::RGB(255, 255, 0);
+    p.syntax_constant = ftxui::Color::RGB(0, 255, 255); // cyan; rust numbers are @constant.builtin
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    auto has_color = [](const ::ftxui::Screen &s, const ftxui::Color &want) {
+        for (int y = 0; y < s.dimy(); ++y)
+            for (int x = 0; x < s.dimx(); ++x)
+                if (s.CellAt(x, y).foreground_color == want)
+                    return true;
+        return false;
+    };
+
+    {
+        // Registered language: C keywords (int/return), a function (main) and a
+        // number (42) must be painted with three different syntax colours.
+        auto s = DrawColored("```c\nint main() { return 42; }\n```", 60, 12);
+        CHECK(has_color(s, p.syntax_keyword), "C keyword wears syntax_keyword");
+        CHECK(has_color(s, p.syntax_function), "C function wears syntax_function");
+        CHECK(has_color(s, p.syntax_number), "C number wears syntax_number");
+        // The body text is still drawn, not replaced by colour chips.
+        CHECK(Has(Draw("```c\nint main() { return 42; }\n```"), "return"), "code body still drawn");
+    }
+    {
+        // No language tag: the whole block stays the single md_code colour.
+        auto s = DrawColored("```\nint main() { return 42; }\n```", 60, 12);
+        CHECK(has_color(s, p.md_code), "unlabelled block wears md_code");
+        CHECK(!has_color(s, p.syntax_keyword), "unlabelled block has no keyword colour");
+        CHECK(!has_color(s, p.syntax_number), "unlabelled block has no number colour");
+    }
+    {
+        // Unknown language: same single-colour fallback.
+        auto s = DrawColored("```ruby\nputs 42\n```", 60, 12);
+        CHECK(has_color(s, p.md_code), "unknown language wears md_code");
+        CHECK(!has_color(s, p.syntax_number), "unknown language has no number colour");
+    }
+    {
+        // Multi-byte UTF-8 inside a highlighted token: spans are byte offsets
+        // landing on code-point boundaries; slicing by bytes must keep the
+        // wide characters intact and still paint the whole string token.
+        auto s = DrawColored("```c\nconst char *s = \"你好\"; int n = 1;\n```", 80, 12);
+        CHECK(has_color(s, p.syntax_string), "wide-char string literal wears string colour");
+        CHECK(has_color(s, p.syntax_number), "number after wide-char token still highlighted");
+        std::string text = Draw("```c\nconst char *s = \"你好\"; int n = 1;\n```");
+        CHECK(Has(text, "你"), "the wide character survives rendering intact");
+    }
+    {
+        // P5 languages reach the renderer too: Rust keyword + number.
+        auto s = DrawColored("```rust\nfn main() { let x = 1; }\n```", 60, 12);
+        CHECK(has_color(s, p.syntax_keyword), "Rust keyword wears syntax_keyword");
+        // nvim-treesitter tags Rust literals @constant.builtin, which maps to the
+        // constant group (not number) -- verify that group is reached.
+        CHECK(has_color(s, p.syntax_constant), "Rust literal wears syntax_constant");
+    }
+    {
+        // TypeScript: a built-in type annotation wears the type colour.
+        auto s = DrawColored("```typescript\nlet x: number = 1;\n```", 60, 12);
+        CHECK(has_color(s, p.syntax_type), "TypeScript type wears syntax_type");
+    }
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_plain_body_uses_palette_text()
 {
     TEST("md colours: plain prose wears pal.text, inner highlights still override");
@@ -445,6 +518,7 @@ int main()
     test_list_item_with_two_paragraphs();
     test_quote_has_a_gutter();
     test_code_block_keeps_its_body();
+    test_fenced_code_syntax_highlighting();
     test_horizontal_rule();
     test_table_header_is_above_the_body();
     test_distinct_heading_and_table_head_colors();

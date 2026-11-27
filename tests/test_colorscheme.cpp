@@ -342,10 +342,60 @@ static void test_install_list_load()
     ::remove(src.c_str());
 }
 
+static void test_syntax_palette()
+{
+    std::printf("  syntax colour slots: defaults, lookup, theme import\n");
+
+    // Every default slot is set to something other than pure black and has a
+    // distinct value from at least the plain code colour for keywords.
+    const edc::style::Palette &dark = edc::style::dark_palette();
+    CHECK(edc::style::SyntaxColor(dark, "keyword") == dark.syntax_keyword, "keyword lookup");
+    CHECK(edc::style::SyntaxColor(dark, "function") == dark.syntax_function, "function lookup");
+    CHECK(edc::style::SyntaxColor(dark, "string") == dark.syntax_string, "string lookup");
+    CHECK(edc::style::SyntaxColor(dark, "comment") == dark.syntax_comment, "comment lookup");
+    CHECK(edc::style::SyntaxColor(dark, "number") == dark.syntax_number, "number lookup");
+    CHECK(edc::style::SyntaxColor(dark, "type") == dark.syntax_type, "type lookup");
+    CHECK(edc::style::SyntaxColor(dark, "variable") == dark.syntax_variable, "variable lookup");
+    CHECK(edc::style::SyntaxColor(dark, "operator") == dark.syntax_operator, "operator lookup");
+    CHECK(edc::style::SyntaxColor(dark, "constant") == dark.syntax_constant, "constant lookup");
+    CHECK(edc::style::SyntaxColor(dark, "punctuation") == dark.syntax_punctuation, "punctuation lookup");
+    CHECK(edc::style::SyntaxColor(dark, "bogus-group") == dark.md_code, "unknown group falls back to code colour");
+    CHECK(edc::style::SyntaxColor(dark, nullptr) == dark.md_code, "null group falls back");
+
+    // A theme that defines standard Vim syntax groups recolours those slots.
+    const char *vim = "hi Normal guifg=#d0d0d0 guibg=#1c1c1c\n"
+                      "hi Comment guifg=#111111\n"
+                      "hi Keyword guifg=#220022\n"
+                      "hi Function guifg=#330033\n"
+                      "hi String guifg=#440044\n"
+                      "hi Type guifg=#550055\n";
+    edc_colorscheme cs;
+    edc_colorscheme_reset(&cs);
+    CHECK(edc_colorscheme_parse(vim, std::strlen(vim), &cs), "syntax vim parsed");
+    CHECK(cs.set[EDC_CS_SYNTAX_KEYWORD] && cs.rgb[EDC_CS_SYNTAX_KEYWORD] == 0x220022,
+          "Keyword -> syntax_keyword");
+    CHECK(cs.set[EDC_CS_SYNTAX_FUNCTION] && cs.rgb[EDC_CS_SYNTAX_FUNCTION] == 0x330033,
+          "Function -> syntax_function");
+    CHECK(cs.set[EDC_CS_SYNTAX_STRING] && cs.rgb[EDC_CS_SYNTAX_STRING] == 0x440044,
+          "String -> syntax_string");
+    CHECK(cs.set[EDC_CS_SYNTAX_TYPE] && cs.rgb[EDC_CS_SYNTAX_TYPE] == 0x550055,
+          "Type -> syntax_type");
+    CHECK(cs.set[EDC_CS_SYNTAX_COMMENT] && cs.rgb[EDC_CS_SYNTAX_COMMENT] == 0x111111,
+          "Comment -> syntax_comment");
+
+    edc::style::Palette p = edc::theme::PaletteFromScheme(cs, edc::style::dark_palette(), false);
+    CHECK(rgb_is(p.syntax_keyword, 0x22, 0x00, 0x22), "theme recolours keyword slot");
+    CHECK(rgb_is(p.syntax_function, 0x33, 0x00, 0x33), "theme recolours function slot");
+    CHECK(rgb_is(p.syntax_string, 0x44, 0x00, 0x44), "theme recolours string slot");
+    // Number was not in the theme: it keeps the built-in dark palette value.
+    CHECK(p.syntax_number == dark.syntax_number, "unset syntax group keeps fallback");
+}
+
 int main()
 {
     std::printf("colorscheme tests\n");
     test_parse_and_map();
+    test_syntax_palette();
     test_install_scheme_provider();
     test_thought_closed_is_dimmed_open();
     test_parse_branches();

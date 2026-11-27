@@ -36,7 +36,12 @@ struct ChatBubblePageRequest
 struct ChatBubbleRow
 {
     int64_t seq = 0;
-    std::string line;
+    std::string kind;
+    int render_pref = 0;
+    std::string task_id;
+    std::string header;
+    std::string content;
+    std::string highlight_lang;
 };
 
 struct ChatBubblePageReply

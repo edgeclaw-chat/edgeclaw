@@ -24,6 +24,7 @@
 #include "edc_tui_window.hpp"
 #include "edc_chat_bubble_page.hpp"
 #include "edc_compat.h"
+#include "edc_style.hpp"
 #include "tui_dispatch_msgs.h"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -39,6 +40,12 @@
 #include <string>
 #include <sys/stat.h>
 #include <utility>
+
+/* MSVC: <windows.h> defines RGB(r,g,b), which collides with the ftxui::Color::RGB
+ * calls in the live-highlighting test below (C2589). We never use the Win32 macro. */
+#ifdef RGB
+#undef RGB
+#endif
 
 namespace
 {
@@ -144,9 +151,9 @@ bool SetupHome(std::string *out_home)
 // ── 造一条真消息（生产路径用的是同一个构造器；那两个 sds 字段归 C 侧填）──────
 // |type| 是 HARNESS_MSG_*（C++ 侧引不到 edc_config.h：它拉 sds）。
 struct edc_channel_message *MakeMsg(int type, const char *content, const char *session_id, const char *header = nullptr,
-                                    int from_active_task = 0)
+                                    int from_active_task = 0, const char *highlight_lang = nullptr)
 {
-    return harness_msg_new(type, content, session_id, header, from_active_task);
+    return harness_msg_new(type, content, session_id, header, from_active_task, highlight_lang);
 }
 
 void Feed(edc::TUIWindow &win, struct edc_channel_message *m)
@@ -349,6 +356,47 @@ void TestLiveOutputRouting(edc::TUIWindow &win)
         Feed(win, MakeMsg(HARNESS_MSG_RESP, "HARNESS_BG_LINE", kOther, nullptr, /*from_active_task=*/1));
         Check(!Has(FrameOf(win), "HARNESS_BG_LINE"), "后台 session 的产出 → 不上屏");
     }
+}
+
+// 实时工具输出带语言标签时，气泡应显示语法高亮（与重启回放一致）。
+void TestLiveToolOutputHighlighting(edc::TUIWindow &win)
+{
+    std::cout << "实时工具输出语法高亮\n";
+    struct FixedPalette : edc::style::IPalette
+    {
+        edc::style::Palette p;
+        explicit FixedPalette(edc::style::Palette q) : p(std::move(q)) {}
+        const edc::style::Palette &colors() const override { return p; }
+    };
+    edc::style::Palette p = edc::style::palette();
+    const ftxui::Color number_color = ftxui::Color::RGB(0, 0, 255);
+    const ftxui::Color keyword_color = ftxui::Color::RGB(255, 0, 0);
+    p.syntax_number = number_color;
+    p.syntax_keyword = keyword_color;
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    // 一条完整 C 片段：既有 number 也有 keyword，且 <=14 行（展开态）。
+    Feed(win, MakeMsg(HARNESS_MSG_TOOL, "int main() { return 42; }", kShown, "read_file x.c",
+                      /*from_active_task=*/1, /*highlight_lang=*/"c"));
+    auto screen = ftxui::Screen::Create(::ftxui::Dimension::Fixed(kW), ::ftxui::Dimension::Fixed(kH));
+    for (int pass = 0; pass < 3; pass++)
+    {
+        screen = ftxui::Screen::Create(::ftxui::Dimension::Fixed(kW), ::ftxui::Dimension::Fixed(kH));
+        ::ftxui::Render(screen, win.OnRender());
+    }
+    bool has_number = false, has_keyword = false;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const ftxui::Color c = screen.CellAt(x, y).foreground_color;
+            if (c == number_color) has_number = true;
+            if (c == keyword_color) has_keyword = true;
+        }
+    Check(has_number, "实时 tool 输出的 number 有语法高亮");
+    Check(has_keyword, "实时 tool 输出的 keyword 有语法高亮");
+
+    edc::style::SetPaletteProvider(nullptr);
 }
 
 // 工具/思考/系统消息各归各位（kind 映射），todowrite 的 TOOL 不进对话区。
@@ -1152,6 +1200,7 @@ int main()
     TestSnapshotReachesSidebar(win);
     TestForeignSnapshotDropped(win);
     TestLiveOutputRouting(win);
+    TestLiveToolOutputHighlighting(win);
     TestKindRouting(win);
     TestUnknownMessageIgnored(win);
     TestFocusInRestoresCaret(win);

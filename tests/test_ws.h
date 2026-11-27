@@ -27,6 +27,7 @@
  */
 
 #include "edc_compat.h"
+#include "edc_chat_bubble_line.h"
 #include "edc_config.h"
 #include "edc_state_store.h"
 #include "edc_turn.h"
@@ -36,6 +37,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* Re-encode a typed chat_bubbles row back into its transcript line so tests
+ * written against the old single-line format keep working. Returns a malloc'd
+ * string the caller frees. */
+static char *edc_test_bubble_row_line(const struct edc_chat_bubble_row *r)
+{
+    if (!r)
+        return NULL;
+    return edc_chat_bubble_encode(r->kind, r->render_pref, r->task_id, r->header,
+                                  r->content, r->highlight_lang);
+}
 
 static char g_edc_test_ws[512];
 

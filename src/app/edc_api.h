@@ -36,6 +36,8 @@ struct edc_channel_message;
  * that message; everything else is int/bool. */
 extern const char *edc_app_message_content(const struct edc_channel_message *message);
 extern const char *edc_app_message_header(const struct edc_channel_message *message);
+/* Optional language tag for tool/code output (NULL when none). */
+extern const char *edc_app_message_highlight_lang(const struct edc_channel_message *message);
 extern const char *edc_app_message_task_id(const struct edc_channel_message *message);
 extern const char *edc_app_message_session_id(const struct edc_channel_message *message);
 extern int edc_app_message_is_user(const struct edc_channel_message *message);

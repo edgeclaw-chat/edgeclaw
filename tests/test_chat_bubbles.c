@@ -8,6 +8,7 @@
  *    (test_state_migrate covers the runner; here we cover the table's own API
  *    against a freshly created store).
  */
+#include "edc_chat_bubble_line.h"
 #include "edc_config.h"
 #include "edc_state_store.h"
 #include "sds.h"
@@ -74,7 +75,7 @@ static void append_n(const char *sid, int n)
         char line[128];
         snprintf(line, sizeof(line), "sys\t0\t\t\tbubble %d", i);
         int64_t seq = 0;
-        if (!edc_chat_bubble_append(sid, line, &seq) || seq != i + 1)
+        if (!edc_chat_bubble_append_line(sid, line, &seq) || seq != i + 1)
         {
             fprintf(stderr, "    FAIL: append #%d failed (seq=%" PRId64 ")\n", i, seq);
             g_failed++;
@@ -93,12 +94,13 @@ static void test_append_and_page(void)
     int64_t seq = 0;
     /* Encoded transcript lines carry escaped newlines/tabs/backslashes; the DB
      * must store the line verbatim, without decoding it. */
-    const char *tricky = "tool\\t0\\tt1\\theader\\tline one\\nline two\\twith a backslash \\\\ end";
-    CHECK(edc_chat_bubble_append("s1", tricky, &seq) && seq == 1, "first append gets seq 1");
-    CHECK(edc_chat_bubble_append("s1", "sys\\t0\\t\\t\\tbubble 1", &seq) && seq == 2,
-          "second append gets seq 2");
-    CHECK(edc_chat_bubble_append("s2", "sys\\t0\\t\\t\\tother session", &seq) && seq == 1,
-          "seq is per session");
+    char *tricky = edc_chat_bubble_encode("tool", 0, "t1", "header",
+                                          "line one\nline two\twith a backslash \\ end", "");
+    CHECK(tricky && edc_chat_bubble_append_line("s1", tricky, &seq) && seq == 1, "first append gets seq 1");
+    char *line2 = edc_chat_bubble_encode("sys", 0, "", "", "bubble 1", "");
+    CHECK(edc_chat_bubble_append_line("s1", line2, &seq) && seq == 2, "second append gets seq 2");
+    char *line3 = edc_chat_bubble_encode("sys", 0, "", "", "other session", "");
+    CHECK(edc_chat_bubble_append_line("s2", line3, &seq) && seq == 1, "seq is per session");
 
     struct edc_chat_bubble_row *rows = NULL;
     int n = 0;
@@ -106,8 +108,11 @@ static void test_append_and_page(void)
     CHECK(n == 2, "s1 has 2 rows, got %d", n);
     if (n == 2)
     {
-        CHECK(rows[0].seq == 1 && strcmp(rows[0].line, tricky) == 0,
-              "the escaped line is stored byte-for-byte");
+        CHECK(rows[0].seq == 1 && strcmp(rows[0].kind, "tool") == 0 &&
+                  strcmp(rows[0].task_id, "t1") == 0 && strcmp(rows[0].header, "header") == 0 &&
+                  strcmp(rows[0].content, "line one\nline two\twith a backslash \\ end") == 0 &&
+                  rows[0].highlight_lang[0] == '\0',
+              "the encoded line is stored as typed fields, escape-decoded byte-for-byte");
         CHECK(rows[1].seq == 2, "rows are in ascending seq order");
     }
     edc_chat_bubble_rows_free(rows, n);
@@ -121,6 +126,43 @@ static void test_append_and_page(void)
     CHECK(edc_chat_bubble_count("s1") == 2, "count(s1) == 2");
     CHECK(edc_chat_bubble_count("s2") == 1, "count(s2) == 1");
     CHECK(edc_chat_bubble_count("s3") == 0, "count(unknown) == 0");
+    free(tricky); free(line2); free(line3);
+    free_config(cfg);
+}
+
+static void test_highlight_lang_roundtrip(void)
+{
+    printf("\n-- highlight_lang survives encode + DB round trip --\n");
+    /* The Codec: encode/decode preserves the sixth field. */
+    char *line = edc_chat_bubble_encode("tool", 0, "", "read_file foo.cpp",
+                                        "int main() { return 0; }", "cpp");
+    CHECK(line != NULL, "encode with a language tag succeeds");
+    char *k = NULL, *t = NULL, *h = NULL, *c = NULL, *lang = NULL;
+    int pref = -1;
+    CHECK(edc_chat_bubble_decode_line(line, &k, &pref, &t, &h, &c, &lang),
+          "decode the six-field line");
+    CHECK(lang && strcmp(lang, "cpp") == 0, "language tag survives the codec round trip");
+    free(k); free(t); free(h); free(c); free(lang); free(line);
+
+    /* The store: append and page preserve the typed column. */
+    reset_dir();
+    struct edc_config *cfg = make_config();
+    CHECK(edc_state_store_open(cfg), "store opens");
+    struct edc_chat_bubble_fields f = {
+        .kind = "tool", .render_pref = 0, .task_id = "", .header = "read_file foo.py",
+        .content = "print(1)", .highlight_lang = "python",
+    };
+    int64_t seq = 0;
+    CHECK(edc_chat_bubble_append("lang-session", &f, &seq) && seq == 1, "append tagged bubble");
+    struct edc_chat_bubble_row *rows = NULL;
+    int n = 0;
+    CHECK(edc_chat_bubble_page("lang-session", INT64_MAX, 10, &rows, &n) && n == 1,
+          "page reads the tagged bubble");
+    if (n == 1)
+        CHECK(strcmp(rows[0].highlight_lang, "python") == 0 &&
+                  strcmp(rows[0].content, "print(1)") == 0,
+              "highlight_lang and content survive the DB round trip");
+    edc_chat_bubble_rows_free(rows, n);
     free_config(cfg);
 }
 
@@ -186,6 +228,7 @@ int main(void)
     }
     /* mkdtemp made the directory; reset_dir() will reuse the path. */
     test_append_and_page();
+    test_highlight_lang_roundtrip();
     test_paging_boundaries();
     edc_state_store_close();
     {
