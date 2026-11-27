@@ -31,6 +31,12 @@
 #include <string>
 #include <vector>
 
+/* MSVC: <windows.h> (via test_fs_util.h) defines RGB(r,g,b), which collides with
+ * ftxui::Color::RGB(...) below (C2589). We never use the Win32 macro here. */
+#ifdef RGB
+#undef RGB
+#endif
+
 static int tests_run = 0;
 static int tests_passed = 0;
 

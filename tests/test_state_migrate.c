@@ -23,6 +23,7 @@
  *   8. row counts and row data survive               (a migration that moves data)
  */
 
+#include "edc_chat_bubble_line.h"
 #include "edc_state_migrate.h"
 #include "edc_state_store.h"
 #include "sds.h"
@@ -104,6 +105,21 @@ static sqlite3_int64 query_int64(sqlite3 *db, const char *sql)
         out = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return out;
+}
+
+/* First TEXT column of the first row, or "" -- for asserting migrated field values. */
+static void query_text(sqlite3 *db, const char *sql, char *out, size_t cap)
+{
+    sqlite3_stmt *st = NULL;
+    out[0] = '\0';
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return;
+    if (sqlite3_step(st) == SQLITE_ROW)
+    {
+        const char *t = (const char *)sqlite3_column_text(st, 0);
+        snprintf(out, cap, "%s", t ? t : "");
+    }
+    sqlite3_finalize(st);
 }
 
 static bool column_exists(sqlite3 *db, const char *table, const char *column)
@@ -868,6 +884,71 @@ static void test_real_v17_repair_all_columns_missing(void)
     drop_dir();
 }
 
+/* v18 -> v19 splits chat_bubbles' single encoded line into typed columns. This
+ * fixture carries REAL legacy rows and asserts their fields survive the rewrite. */
+static void test_v18_to_v19_with_chat_bubbles(void)
+{
+    printf("\n── v18 -> v19 splits real chat_bubbles rows ──\n");
+    fresh_dir();
+    char path[600];
+    db_path(path, sizeof path);
+    sqlite3 *db = NULL;
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "open a fresh db");
+
+    /* Minimal v18 schema: the tables the post-migration verify expects, plus the
+     * OLD single-line chat_bubbles. */
+    bool built = exec_ok(db, "PRAGMA journal_mode=WAL") &&
+                 exec_ok(db, "CREATE TABLE sessions(session_id INTEGER PRIMARY KEY, "
+                             "name TEXT NOT NULL, workdir TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE groups(session_id INTEGER NOT NULL, group_id INTEGER PRIMARY KEY, "
+                             "is_orphaned INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, "
+                             "archived_at INTEGER NOT NULL DEFAULT 0, idle_since INTEGER NOT NULL DEFAULT 0)") &&
+                 exec_ok(db, "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_entries(entry_id TEXT PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE memo_events(seq INTEGER PRIMARY KEY)") &&
+                 exec_ok(db, "CREATE TABLE chat_bubbles(session_id TEXT NOT NULL, seq INTEGER NOT NULL, "
+                             "line TEXT NOT NULL, PRIMARY KEY(session_id,seq))") &&
+                 exec_ok(db, "PRAGMA user_version=18");
+    CHECK(built, "fixture: a v18 database with the old single-line chat_bubbles");
+
+    /* Two legacy encoded lines: a tool row with escaped content and a plain reply. */
+    char *line1 = edc_chat_bubble_encode("tool", 0, "task-7", "read_file foo.cpp",
+                                         "line one\nline two\tend \\ ok", "");
+    char *line2 = edc_chat_bubble_encode("reply", 1, "", "", "hello", "");
+    char ins[2048];
+    snprintf(ins, sizeof ins,
+             "INSERT INTO chat_bubbles(session_id,seq,line) VALUES('s1',1,'%s')", line1 ? line1 : "");
+    CHECK(exec_ok(db, ins), "fixture: first legacy bubble row");
+    snprintf(ins, sizeof ins,
+             "INSERT INTO chat_bubbles(session_id,seq,line) VALUES('s1',2,'%s')", line2 ? line2 : "");
+    CHECK(exec_ok(db, ins), "fixture: second legacy bubble row");
+    free(line1); free(line2);
+    sqlite3_close(db);
+
+    CHECK(sqlite3_open(path, &db) == SQLITE_OK, "reopen the fixture");
+    char err[1024] = {0};
+    CHECK(edc_migrate_run(db, path, 18, err, sizeof err), "v18 migrates to v19");
+    CHECK(query_int64(db, "PRAGMA user_version") == EDC_DB_VERSION, "user_version is current");
+    CHECK(column_exists(db, "chat_bubbles", "highlight_lang") &&
+              !column_exists(db, "chat_bubbles", "line"), "line column replaced by typed columns");
+    CHECK(query_int64(db, "SELECT count(*) FROM chat_bubbles") == 2, "both rows survive the split");
+
+    char v[512];
+    query_text(db, "SELECT kind FROM chat_bubbles WHERE seq=1", v, sizeof v);
+    CHECK(strcmp(v, "tool") == 0, "kind migrated");
+    query_text(db, "SELECT task_id FROM chat_bubbles WHERE seq=1", v, sizeof v);
+    CHECK(strcmp(v, "task-7") == 0, "task_id migrated");
+    query_text(db, "SELECT header FROM chat_bubbles WHERE seq=1", v, sizeof v);
+    CHECK(strcmp(v, "read_file foo.cpp") == 0, "header migrated");
+    query_text(db, "SELECT content FROM chat_bubbles WHERE seq=1", v, sizeof v);
+    CHECK(strcmp(v, "line one\nline two\tend \\ ok") == 0, "escaped content decoded byte-for-byte");
+    query_text(db, "SELECT highlight_lang FROM chat_bubbles WHERE seq=1", v, sizeof v);
+    CHECK(v[0] == '\0', "legacy row has empty highlight_lang");
+    CHECK(query_int64(db, "SELECT render_pref FROM chat_bubbles WHERE seq=2") == 1,
+          "render_pref migrated");
+    sqlite3_close(db);
+}
+
 /* The same step against a COMPLETE v17 must be a no-op: idempotence is what lets one
  * migration cover both the broken and the healthy upgrade path. */
 static void test_v18_repair_is_idempotent(void)
@@ -951,6 +1032,7 @@ int main(void)
     test_real_v17_repair();
     test_real_v17_repair_all_columns_missing();
     test_v18_repair_is_idempotent();
+    test_v18_to_v19_with_chat_bubbles();
     test_rerun_is_refused();
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);

@@ -41,6 +41,12 @@
 #include <sys/stat.h>
 #include <utility>
 
+/* MSVC: <windows.h> defines RGB(r,g,b), which collides with the ftxui::Color::RGB
+ * calls in the live-highlighting test below (C2589). We never use the Win32 macro. */
+#ifdef RGB
+#undef RGB
+#endif
+
 namespace
 {
 
