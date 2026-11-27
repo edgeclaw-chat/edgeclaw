@@ -112,6 +112,7 @@ cc_library(
         "//src/common:syntax_headers",
         # syntax highlighter (compiled into this archive above): tree-sitter core
         # plus the grammars; markdown.cpp tokenises fenced code into semantic spans.
+        "@pcre2//:pcre2",  # edc_syntax.c's #match? predicate evaluation
         "@tree-sitter-bazel//:tree-sitter",
         "@tree-sitter-c//:tree-sitter-c",
         "@tree-sitter-cpp//:tree-sitter-cpp",

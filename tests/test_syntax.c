@@ -21,6 +21,41 @@ static void assert_sorted(const edc_syntax_result *r)
         assert(r->spans[i - 1].start_byte <= r->spans[i].start_byte);
 }
 
+static void test_predicates(void)
+{
+    /* c.scm has two identifier patterns: `(identifier) @variable` (no predicate)
+     * and `((identifier) @constant (#match? @constant "^[A-Z][A-Z\\d_]*$"))`.
+     * The tree-sitter C API does NOT evaluate #match?, so without our predicate
+     * evaluation BOTH patterns match every identifier and dedupe makes even a
+     * lowercase name a @constant (purple). Verify the predicate discriminates. */
+    const char *code = "int MAX_COUNT = 1; int lower_name = 2;\n";
+    edc_syntax_result r;
+    assert(edc_syntax_highlight(code, strlen(code), "c", &r) == 0);
+
+    uint32_t caps = (uint32_t)(strstr(code, "MAX_COUNT") - code);
+    uint32_t low = (uint32_t)(strstr(code, "lower_name") - code);
+    edc_syntax_group gcap = span_at(&r, caps, caps + 9);
+    edc_syntax_group glow = span_at(&r, low, low + 10);
+    printf("predicate: MAX_COUNT group=%s lower_name group=%s\n",
+           edc_syntax_group_name(gcap), edc_syntax_group_name(glow));
+    assert(gcap == EDC_SYNTAX_CONSTANT);   /* ALL_CAPS matches the regex */
+    assert(glow == EDC_SYNTAX_VARIABLE);   /* lowercase rejected by the predicate */
+    edc_syntax_result_free(&r);
+
+    /* #eq? in javascript.scm: only `require(...)` is @function.builtin. */
+    const char *js = "require('x'); other('y');\n";
+    assert(edc_syntax_highlight(js, strlen(js), "javascript", &r) == 0);
+    uint32_t req = (uint32_t)(strstr(js, "require") - js);
+    /* require should be coloured as a function group (function/method/function.builtin
+     * all map to the FUNCTION group); other() must not be force-coloured. */
+    bool req_function = false;
+    for (size_t i = 0; i < r.count; ++i)
+        if (r.spans[i].start_byte == req && r.spans[i].group == EDC_SYNTAX_FUNCTION)
+            req_function = true;
+    assert(req_function);
+    edc_syntax_result_free(&r);
+}
+
 int main(void)
 {
     /* --- language registry --- */
@@ -115,6 +150,8 @@ int main(void)
     assert(edc_syntax_available("jsx"));
     assert(edc_syntax_available("rs"));
     assert(!edc_syntax_available("ruby"));
+
+    test_predicates();
 
     puts("test_syntax: PASS");
     return 0;

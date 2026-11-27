@@ -4,6 +4,9 @@
 
 #include <tree_sitter/api.h>
 
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -179,6 +182,111 @@ static bool push_span(edc_syntax_result *out, uint32_t start, uint32_t end,
     return true;
 }
 
+/* tree-sitter's C API records query predicates (#match?, #eq?, ...) but does
+ * NOT evaluate them: ts_query_cursor_next_match returns matches even when a
+ * predicate would reject them. nvim-treesitter queries rely on predicates to
+ * distinguish e.g. an ALL_CAPS constant from a plain variable, so ignoring them
+ * over-captures. Evaluate the two predicates our shipped .scm files actually
+ * use; anything else (including nvim's "#is-not? local") is left as a no-op. */
+
+/* Text of the capture with |capture_id| in |match|, or NULL when that capture
+ * is not part of this match. */
+static const char *capture_text(const TSQueryMatch *match, uint32_t capture_id,
+                                const char *code, size_t *out_len)
+{
+    for (uint16_t i = 0; i < match->capture_count; i++)
+    {
+        if (match->captures[i].index != capture_id)
+            continue;
+        TSNode node = match->captures[i].node;
+        uint32_t s = ts_node_start_byte(node), e = ts_node_end_byte(node);
+        *out_len = (size_t)(e - s);
+        return code + s;
+    }
+    return NULL;
+}
+
+/* One predicate = steps between two Done sentinels. Returns false only when a
+ * recognised predicate actively rejects the match. */
+static bool eval_predicate(const TSQueryPredicateStep *steps, uint32_t n,
+                           const TSQuery *query, const TSQueryMatch *match,
+                           const char *code)
+{
+    if (n < 3 || steps[0].type != TSQueryPredicateStepTypeString)
+        return true; /* malformed/unknown shape: do not reject */
+    uint32_t name_len = 0;
+    const char *name = ts_query_string_value_for_id(query, steps[0].value_id, &name_len);
+    /* tree-sitter stores predicate names WITHOUT the leading '#' that the .scm
+     * syntax uses: the string value here is "match?", "eq?", "is-not?", etc. */
+    bool is_match = name && strcmp(name, "match?") == 0;
+    bool is_eq = name && strcmp(name, "eq?") == 0;
+    if (!is_match && !is_eq)
+        return true; /* #is-not? and friends: not a colour decision */
+
+    uint32_t cap_id = 0;
+    const char *arg = NULL;
+    uint32_t arg_len = 0;
+    bool have_cap = false;
+    for (uint32_t i = 1; i < n; i++)
+    {
+        if (steps[i].type == TSQueryPredicateStepTypeCapture && !have_cap)
+        {
+            cap_id = steps[i].value_id;
+            have_cap = true;
+        }
+        else if (steps[i].type == TSQueryPredicateStepTypeString && !arg)
+        {
+            arg = ts_query_string_value_for_id(query, steps[i].value_id, &arg_len);
+        }
+    }
+    if (!have_cap || !arg)
+        return true;
+
+    size_t text_len = 0;
+    const char *text = capture_text(match, cap_id, code, &text_len);
+    if (!text)
+        return true; /* capture absent from this match: nothing to reject */
+
+    if (is_eq)
+    {
+        size_t arg_len = strlen(arg);
+        return text_len == arg_len && memcmp(text, arg, arg_len) == 0;
+    }
+    /* #match?: compile the query's PCRE (the .scm patterns use \d, which the
+     * POSIX ERE wrapper would not understand), match against the node text. */
+    int err = 0;
+    PCRE2_SIZE off = 0;
+    pcre2_code *re = pcre2_compile((PCRE2_SPTR)arg, PCRE2_ZERO_TERMINATED, 0,
+                                   &err, &off, NULL);
+    if (!re)
+        return true; /* bad pattern in a shipped query: do not reject */
+    pcre2_match_data *md = pcre2_match_data_create_from_pattern(re, NULL);
+    int rc = pcre2_match(re, (PCRE2_SPTR)text, text_len, 0, 0, md, NULL);
+    pcre2_match_data_free(md);
+    pcre2_code_free(re);
+    return rc >= 0; /* PCRE2_ERROR_NOMATCH => reject */
+}
+
+/* True when all recognised predicates of this match hold. */
+static bool match_predicates_hold(TSQuery *query, const TSQueryMatch *match, const char *code)
+{
+    uint32_t nsteps = 0;
+    const TSQueryPredicateStep *steps =
+        ts_query_predicates_for_pattern(query, match->pattern_index, &nsteps);
+    if (!steps || nsteps == 0)
+        return true;
+    uint32_t start = 0;
+    for (uint32_t i = 0; i < nsteps; i++)
+    {
+        if (steps[i].type != TSQueryPredicateStepTypeDone)
+            continue;
+        if (!eval_predicate(steps + start, i - start, query, match, code))
+            return false;
+        start = i + 1;
+    }
+    return true;
+}
+
 bool edc_syntax_available(const char *lang)
 {
     return find_lang(lang) != NULL;
@@ -222,6 +330,10 @@ int edc_syntax_highlight(const char *code, size_t len, const char *lang,
 
     TSQueryMatch match;
     while (ts_query_cursor_next_match(cursor, &match)) {
+        /* Honour #match?/#eq? predicates that the tree-sitter C API does not
+         * evaluate itself (e.g. only ALL_CAPS identifiers are @constant). */
+        if (!match_predicates_hold(query, &match, code))
+            continue;
         for (uint16_t i = 0; i < match.capture_count; ++i) {
             TSQueryCapture cap = match.captures[i];
             uint32_t nlen = 0;

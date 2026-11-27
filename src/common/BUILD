@@ -47,6 +47,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
+        "@pcre2//:pcre2",  # evaluate #match? predicates in highlight queries
         "@tree-sitter-bazel//:tree-sitter",
         "@tree-sitter-c//:tree-sitter-c",
         "@tree-sitter-cpp//:tree-sitter-cpp",
