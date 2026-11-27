@@ -356,14 +356,14 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     children.push_back(body);
     if (toggleable)
     {
-        /* Make the toggle read as a BUTTON, not another coloured line of code.
-         * Use the same solid-colour block as the /update dialog's buttons
-         * (bold, accent fill, inverted text) -- a filled slab is unmistakably a
-         * control, whereas any single foreground colour would collide with one
-         * of the syntax groups. No border: the house style is borderless. */
+        /* A subdued chip: dark raised surface with a small bold accent label,
+         * the same device as the toast/COPY chips (ChipShell in edc_clipboard.cpp).
+         * An accent-FILLED slab was too loud next to the code; dark fill keeps it
+         * unobtrusive while the accent text still marks it as interactive. No
+         * border: the house style is borderless. */
         const char *label = expanded_ ? " - Collapse " : " + Click to expand ";
         auto toggle = ::ftxui::text(label) | ::ftxui::bold |
-                      ::ftxui::bgcolor(pal.accent) | ::ftxui::color(pal.dialog_bg) |
+                      ::ftxui::bgcolor(pal.dialog_bg) | ::ftxui::color(pal.accent) |
                       ::ftxui::reflect(HitBox());
         auto footer = ::ftxui::hbox({std::move(toggle)});
         children.push_back(std::move(footer));

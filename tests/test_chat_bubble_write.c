@@ -71,12 +71,14 @@ static bool wait_seen(int want, int timeout_ms)
 }
 
 static void send_bubble(edc_actor_t *channel, edc_channel_message_type type, const char *sid,
-                        const char *content)
+                        const char *content, const char *header)
 {
     struct edc_channel_message *msg =
         edc_channel_message_new(edc_channel_adapter, type, sdsnew(content));
     msg->session_id = sdsnew(sid);
     msg->render_pref = 0;
+    if (header && *header)
+        msg->header = sdsnew(header);
     edc_actor_send(channel,
                    edc_actor_msg_new(BC_ACTOR_MSG_CHANNEL_SEND, channel, NULL, msg,
                                      (edc_actor_data_free_fn)edc_channel_message_free));
@@ -122,11 +124,11 @@ int main(void)
     const char *sid = "s42";
 
     printf("-- five bubble types, one row each --\n");
-    send_bubble(channel, EDC_CHANNEL_MESSAGE_USER_TYPE, sid, "hello");
-    send_bubble(channel, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sid, "tool output");
-    send_bubble(channel, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, sid, "thinking");
-    send_bubble(channel, EDC_CHANNEL_MESSAGE_RESP_TYPE, sid, "reply");
-    send_bubble(channel, EDC_CHANNEL_MESSAGE_SYS_TYPE, sid, "system note");
+    send_bubble(channel, EDC_CHANNEL_MESSAGE_USER_TYPE, sid, "hello", NULL);
+    send_bubble(channel, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sid, "tool output", NULL);
+    send_bubble(channel, EDC_CHANNEL_MESSAGE_THOUGHT_TYPE, sid, "thinking", NULL);
+    send_bubble(channel, EDC_CHANNEL_MESSAGE_RESP_TYPE, sid, "reply", NULL);
+    send_bubble(channel, EDC_CHANNEL_MESSAGE_SYS_TYPE, sid, "system note", NULL);
     CHECK(wait_seen(5, 3000), "all five bubbles reached the observer");
     CHECK(edc_chat_bubble_count(sid) == 5, "exactly 5 rows written, got %" PRId64,
           edc_chat_bubble_count(sid));
@@ -142,6 +144,20 @@ int main(void)
         CHECK(wait_seen(7, 3000), "both control replies reached the observer");
         CHECK(edc_chat_bubble_count(sid) == 5, "control messages added no rows, got %" PRId64,
               edc_chat_bubble_count(sid));
+    }
+
+    printf("-- todowrite display echoes are not persisted --\n");
+    {
+        g_seen = 0;
+        const int64_t before = edc_chat_bubble_count(sid);
+        /* The TUI filters header=="todowrite" tool messages from chat (TODO state
+         * lives in the sidebar). They must not be persisted either, or a restart
+         * replays them into the chat. The message still reaches the adapter. */
+        send_bubble(channel, EDC_CHANNEL_MESSAGE_TOOL_TYPE, sid,
+                    "<system-reminder>\n- [ ] task\n</system-reminder>", "todowrite");
+        CHECK(wait_seen(1, 3000), "the todowrite message reached the observer");
+        CHECK(edc_chat_bubble_count(sid) == before,
+              "todowrite echo added no row, got %" PRId64, edc_chat_bubble_count(sid) - before);
     }
 
     printf("-- non-active task output: not persisted, still delivered --\n");

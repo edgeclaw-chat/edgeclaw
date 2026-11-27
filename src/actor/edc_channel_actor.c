@@ -109,6 +109,14 @@ static void chat_bubble_persist(struct edc_channel_message *msg)
      * one must too, or persistence and display drift apart again. */
     if (msg->task_id && !msg->from_active_task && !msg->interface_feedback)
         return;
+    /* The todowrite display echo is a pure UI hint (TODO state lives in the
+     * sidebar); the frontend filters it from chat in ChannelDispatcher. Skip it
+     * here too, or a restart replays it into the transcript as a system-reminder
+     * bubble the user never saw live. The tool result still reaches the model
+     * through its own callback. */
+    if (msg->message_type == EDC_CHANNEL_MESSAGE_TOOL_TYPE && msg->header &&
+        strcmp(msg->header, "todowrite") == 0)
+        return;
     if (!msg->session_id || !*msg->session_id)
     {
         log_warn("chat bubble of type %d has no session_id -- refusing to persist it", (int)msg->message_type);

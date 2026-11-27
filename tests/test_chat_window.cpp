@@ -405,7 +405,7 @@ static void test_tool_output_syntax_highlighting()
 
 static void test_tool_toggle_is_a_chip()
 {
-    TEST("collapsible tool toggle is a borderless solid-colour button, distinct from code");
+    TEST("collapsible tool toggle is a subdued dark chip, distinct from code");
     struct FixedPalette : edc::style::IPalette
     {
         edc::style::Palette pal;
@@ -413,8 +413,8 @@ static void test_tool_toggle_is_a_chip()
         const edc::style::Palette &colors() const override { return pal; }
     };
     edc::style::Palette p = edc::style::palette();
-    p.accent = ftxui::Color::RGB(20, 200, 200);      // unique cyan-ish button fill
-    p.dialog_bg = ftxui::Color::RGB(30, 30, 90);     // unique inverted text colour
+    p.accent = ftxui::Color::RGB(20, 200, 200);      // unique accent label colour
+    p.dialog_bg = ftxui::Color::RGB(30, 30, 90);     // unique dark chip fill
     auto provider = std::make_shared<FixedPalette>(p);
     edc::style::SetPaletteProvider(provider);
 
@@ -425,23 +425,23 @@ static void test_tool_toggle_is_a_chip()
     auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(40));
     ftxui::Render(screen, b->OnRender());
 
-    // House style: a solid accent-coloured slab (the /update buttons' look),
-    // with inverted text -- never a syntax-coloured line of code.
+    // Subdued chip (toast/COPY style): dark raised-surface fill with a bold
+    // accent label -- not a loud accent slab, not a syntax-coloured line.
     int fill_cells = 0;
-    bool inverted_text = false;
+    bool accent_label = false;
     for (int y = 0; y < screen.dimy(); ++y)
         for (int x = 0; x < screen.dimx(); ++x)
         {
             const ftxui::Cell &cell = screen.CellAt(x, y);
-            if (cell.background_color == p.accent)
+            if (cell.background_color == p.dialog_bg)
             {
                 fill_cells++;
-                if (cell.foreground_color == p.dialog_bg)
-                    inverted_text = true;
+                if (cell.foreground_color == p.accent)
+                    accent_label = true;
             }
         }
-    ASSERT(fill_cells >= 10, "the toggle has a solid button fill (%d cells)", fill_cells);
-    ASSERT(inverted_text, "the button text is inverted against the fill");
+    ASSERT(fill_cells >= 10, "the toggle has a dark chip fill (%d cells)", fill_cells);
+    ASSERT(accent_label, "the chip label is drawn in the accent colour");
 
     // No box-drawing glyphs: the house style is borderless.
     const std::string box[] = {"\xe2\x95\xad", "\xe2\x95\xae", "\xe2\x95\xb0", "\xe2\x95\xaf",
