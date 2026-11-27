@@ -254,8 +254,9 @@ std::string FirstLines(const std::string &text, size_t max_lines)
 } // namespace
 
 ToolMessage::ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown,
-                         const std::string_view task_id)
-    : Message(content, ts, task_id), header_(header), markdown_(markdown), line_count_(CountLines(content_))
+                         const std::string_view task_id, const std::string_view highlight_lang)
+    : Message(content, ts, task_id), header_(header), highlight_lang_(highlight_lang), markdown_(markdown),
+      line_count_(CountLines(content_))
 {
 }
 
@@ -326,20 +327,30 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     }
     else if (!truncated)
     {
-        body = WrappedText(content_, BodyWidth());
+        // Plain tool output with a registered language (e.g. read_file) is
+        // painted with syntax colours; the content itself is untouched, so the
+        // model's copy and the folded preview still show the same raw text.
+        body = !highlight_lang_.empty()
+                   ? HighlightedCode(content_, highlight_lang_.c_str()) | ::ftxui::flex
+                   : WrappedText(content_, BodyWidth());
     }
     else
     {
         // First kPreviewLines lines, with the line after them replaced by "...".
+        // The preview is still real code, so colour it when a language tag is
+        // present -- otherwise a long read_file output looked unhighlighted until
+        // the user expanded it.
         if (!preview_ready_)
         {
             preview_ = FirstLines(content_, kPreviewLines);
             if (!preview_.empty())
                 preview_ += "\n";
-            preview_ += "...";
             preview_ready_ = true;
         }
-        body = WrappedText(preview_, BodyWidth());
+        body = !highlight_lang_.empty()
+                   ? ::ftxui::hbox({HighlightedCode(preview_, highlight_lang_.c_str()) | ::ftxui::flex,
+                                    ::ftxui::text("...") | ::ftxui::color(pal.text_dim)})
+                   : WrappedText(preview_ + "...", BodyWidth());
     }
 
     children.push_back(body);
@@ -357,7 +368,7 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
 
 std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
                                         const std::string &content, const std::string &task_id, int render_pref,
-                                        time_t ts)
+                                        time_t ts, const std::string &highlight_lang)
 {
     if (kind == "user")
         return std::make_shared<UserMessage>(content, ts, task_id);
@@ -374,7 +385,7 @@ std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::stri
                 return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/true, task_id);
             return std::make_shared<Message>(content, ts, task_id);
         }
-        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id);
+        return std::make_shared<ToolMessage>(header, content, ts, /*markdown=*/false, task_id, highlight_lang);
     }
 
     if (kind == "thought")

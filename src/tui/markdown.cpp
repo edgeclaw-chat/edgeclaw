@@ -799,4 +799,66 @@ Element RenderMarkdown(std::string_view md, int wrap_cols)
     return body | color(style::palette().text);
 }
 
+Element HighlightedCode(std::string_view code, const char *lang)
+{
+    const auto &pal = style::palette();
+    edc_syntax_result hl;
+    const bool ok = lang && edc_syntax_available(lang) &&
+                    edc_syntax_highlight(code.data(), code.size(), lang, &hl) == 0 && hl.count > 0;
+
+    Elements lines;
+    size_t start = 0;
+    for (size_t i = 0; i <= code.size(); ++i)
+    {
+        if (i != code.size() && code[i] != '\n')
+            continue;
+        std::string_view line = code.substr(start, i - start);
+        if (!ok)
+        {
+            lines.push_back(text(std::string(line)) | color(pal.md_code));
+        }
+        else
+        {
+            // Cut at span byte boundaries within this line; ftxui lays out each
+            // fragment by display width, so no manual byte->cell maths is needed.
+            std::vector<size_t> cuts{0, line.size()};
+            struct H { size_t lo, hi; const char *group; };
+            std::vector<H> hits;
+            for (size_t s = 0; s < hl.count; ++s)
+            {
+                const edc_syntax_span &sp = hl.spans[s];
+                if (sp.end_byte <= start || sp.start_byte >= start + line.size())
+                    continue;
+                size_t lo = sp.start_byte > start ? sp.start_byte - start : 0;
+                size_t hi = sp.end_byte < start + line.size() ? sp.end_byte - start : line.size();
+                if (lo >= hi) continue;
+                hits.push_back({lo, hi, edc_syntax_group_name(sp.group)});
+                cuts.push_back(lo); cuts.push_back(hi);
+            }
+            std::sort(cuts.begin(), cuts.end());
+            cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+            Elements parts;
+            for (size_t k = 0; k + 1 < cuts.size(); ++k)
+            {
+                size_t lo = cuts[k], hi = cuts[k + 1];
+                if (lo >= hi) continue;
+                const char *group = nullptr;
+                size_t blo = 0, bhi = line.size() + 1;
+                for (const H &h : hits)
+                    if (h.lo <= lo && h.hi >= hi &&
+                        (h.lo > blo || (h.lo == blo && h.hi < bhi)))
+                    { group = h.group; blo = h.lo; bhi = h.hi; }
+                parts.push_back(text(std::string(line.substr(lo, hi - lo))) |
+                                color(style::SyntaxColor(pal, group)));
+            }
+            lines.push_back(parts.empty() ? text(std::string(line)) | color(pal.md_code)
+                                          : hbox(std::move(parts)));
+        }
+        start = i + 1;
+    }
+    if (ok)
+        edc_syntax_result_free(&hl);
+    return vbox(std::move(lines));
+}
+
 } // namespace edc

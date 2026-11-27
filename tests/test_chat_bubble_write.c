@@ -172,22 +172,22 @@ int main(void)
 
     printf("-- the stored line is byte-identical to what the UI renders --\n");
     {
-        char *expected = edc_chat_bubble_encode("sys", 0, "", "", "a\\n escaped newline");
+        char *expected = edc_chat_bubble_encode("sys", 0, "", "", "a\\n escaped newline", "");
         CHECK(expected != NULL, "shared encoder produced a line");
         struct edc_chat_bubble_row *rows = NULL;
         int n = 0;
         CHECK(edc_chat_bubble_page(sid, INT64_MAX, 10, &rows, &n) && n == 7, "page reads 7 rows");
         if (n == 7 && expected)
         {
-            CHECK(rows[4].line && strcmp(rows[4].line, "sys\t0\t\t\tsystem note") == 0,
+            CHECK(edc_test_bubble_row_line(&rows[4]) && strcmp(edc_test_bubble_row_line(&rows[4]), "sys\t0\t\t\tsystem note\t") == 0,
                   "the sys row's encoded shape is exactly kind/pref/task/header/content");
-            CHECK(strstr(rows[4].line, "system note") != NULL, "content survives verbatim");
+            CHECK(edc_test_bubble_row_line(&rows[4]) && strstr(edc_test_bubble_row_line(&rows[4]), "system note") != NULL, "content survives verbatim");
             /* Feedback (task 1073) and the active-task reply (1071) were written; the
              * non-active chatter from task 1073 was not. Verify by task id in the
              * encoded kind/pref/task/header/content line. */
-            CHECK(rows[5].line && strstr(rows[5].line, "\t1073\t") != NULL,
+            CHECK(edc_test_bubble_row_line(&rows[5]) && strstr(edc_test_bubble_row_line(&rows[5]), "\t1073\t") != NULL,
                   "the non-active task's interface feedback row is present");
-            CHECK(rows[6].line && strstr(rows[6].line, "\t1071\t") != NULL,
+            CHECK(edc_test_bubble_row_line(&rows[6]) && strstr(edc_test_bubble_row_line(&rows[6]), "\t1071\t") != NULL,
                   "the active task's row is present and newest");
         }
         edc_chat_bubble_rows_free(rows, n);

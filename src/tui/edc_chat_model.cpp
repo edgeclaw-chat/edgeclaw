@@ -1,5 +1,6 @@
 #include "edc_chat_model.hpp"
 #include "edc_chat_bubble_page.hpp"
+#include "edc_chat_transcript.hpp"
 
 #include <algorithm>
 #include <ctime>
@@ -81,15 +82,22 @@ bool ChatModel::LoadFromPage(const std::string &session_id, const std::string &p
         return false; /* a late reply for a session the reader left */
 
     refs_holder_ = std::make_unique<std::vector<ChatBubbleRef>>();
+    std::vector<std::string> line_storage; // keep encoded lines alive for BuildChatBubbleRefsFromPage
     std::vector<const char *> lines;
     std::vector<int64_t> seqs;
+    line_storage.reserve(reply.rows.size());
     lines.reserve(reply.rows.size());
     seqs.reserve(reply.rows.size());
     for (const auto &row : reply.rows)
     {
-        lines.push_back(row.line.c_str());
+        ChatTranscriptEntry e;
+        e.kind = row.kind; e.render_pref = row.render_pref; e.task_id = row.task_id;
+        e.header = row.header; e.content = row.content; e.highlight_lang = row.highlight_lang;
+        line_storage.push_back(EncodeTranscriptLine(e));
         seqs.push_back(row.seq);
     }
+    for (const auto &s : line_storage)
+        lines.push_back(s.c_str());
     BuildChatBubbleRefsFromPage(seqs.data(), lines.data(), lines.size(), refs_holder_.get());
     window_ = std::make_unique<MessageWindow>(refs_holder_.get());
 
@@ -129,13 +137,19 @@ bool ChatModel::ApplyOlderPage(const std::string &session_id, const std::string 
         return false;
 
     std::vector<ChatBubbleRef> older;
+    std::vector<std::string> line_storage;
     std::vector<const char *> lines;
     std::vector<int64_t> seqs;
     for (const auto &row : reply.rows)
     {
-        lines.push_back(row.line.c_str());
+        ChatTranscriptEntry e;
+        e.kind = row.kind; e.render_pref = row.render_pref; e.task_id = row.task_id;
+        e.header = row.header; e.content = row.content; e.highlight_lang = row.highlight_lang;
+        line_storage.push_back(EncodeTranscriptLine(e));
         seqs.push_back(row.seq);
     }
+    for (const auto &s : line_storage)
+        lines.push_back(s.c_str());
     BuildChatBubbleRefsFromPage(seqs.data(), lines.data(), lines.size(), &older);
     if (older.empty())
         return false;

@@ -80,4 +80,7 @@ extern void edc_toolbox_exec(struct edc_toolbox_call_ctx *, const char *name, cJ
 extern void edc_toolbox_emit_tool_message_plain(struct edc_toolbox_call_ctx *ctx, const char *header,
                                                 const char *content);
 extern void edc_toolbox_emit_tool_message_md(struct edc_toolbox_call_ctx *ctx, const char *header, const char *content);
+/* Plain tool output carrying a language tag for TUI syntax highlighting. */
+extern void edc_toolbox_emit_tool_message_code(struct edc_toolbox_call_ctx *ctx, const char *header,
+                                               const char *content, const char *highlight_lang);
 #endif

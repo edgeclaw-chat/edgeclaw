@@ -647,5 +647,6 @@ bool edc_executor_view_tool_emit(void *emit_msg, struct edc_tool_emit_view *out)
     out->header = emit->header;
     out->content = emit->content;
     out->render_pref = emit->render_pref;
+    out->highlight_lang = emit->highlight_lang;
     return true;
 }

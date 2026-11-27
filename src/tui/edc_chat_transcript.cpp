@@ -68,15 +68,14 @@ bool DecodeLineView(std::string_view line, ChatTranscriptEntry *out)
     if (line.empty())
         return false;
 
-    /* Split on the first four raw tabs; escaped tabs are not raw. Only the last
-     * field may contain raw tabs (a bubble written by a build that did not
-     * escape them), which keeps such a line readable instead of dropping it. */
-    std::string_view parts[5];
+    /* Split on up to five raw tabs; escaped tabs are not raw. Four tabs = legacy
+     * five-field line (lang empty), five tabs = six-field line with lang. */
+    std::string_view parts[6];
     size_t start = 0;
     int field = 0;
     for (size_t i = 0; i < line.size(); i++)
     {
-        if (line[i] == '\t' && field < 4)
+        if (line[i] == '\t' && field < 5)
         {
             parts[field++] = line.substr(start, i - start);
             start = i + 1;
@@ -84,14 +83,17 @@ bool DecodeLineView(std::string_view line, ChatTranscriptEntry *out)
     }
     if (field < 4)
         return false; /* fewer columns than a bubble: a truncated line */
-    parts[4] = line.substr(start);
+    parts[field] = line.substr(start);
+    const std::string_view content_part = parts[4];
+    const std::string_view lang_part = (field == 5) ? parts[5] : std::string_view();
 
     ChatTranscriptEntry entry;
     UnescapeInto(parts[0], entry.kind);
     entry.render_pref = ParseRenderPref(parts[1]);
     UnescapeInto(parts[2], entry.task_id);
     UnescapeInto(parts[3], entry.header);
-    UnescapeInto(parts[4], entry.content);
+    UnescapeInto(content_part, entry.content);
+    UnescapeInto(lang_part, entry.highlight_lang);
     if (entry.kind.empty())
         return false;
 
@@ -107,7 +109,8 @@ std::string EncodeTranscriptLine(const ChatTranscriptEntry &entry)
      * encoder on both sides is what guarantees a bubble survives a restart
      * byte-for-byte. */
     char *raw = edc_chat_bubble_encode(entry.kind.c_str(), entry.render_pref, entry.task_id.c_str(),
-                                       entry.header.c_str(), entry.content.c_str());
+                                       entry.header.c_str(), entry.content.c_str(),
+                                       entry.highlight_lang.c_str());
     if (!raw)
         return {};
     std::string out(raw);

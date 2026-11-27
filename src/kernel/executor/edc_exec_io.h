@@ -116,6 +116,7 @@ struct edc_toolbox_emit_msg
     sds header;
     sds content;
     edc_render_pref_t render_pref; /* render preference declared by the sender (default/PLAIN = plain text) */
+    sds highlight_lang; /* optional language tag for tool/code output; persisted on the bubble */
 };
 
 #endif /* __EDC_EXEC_IO_H__ */

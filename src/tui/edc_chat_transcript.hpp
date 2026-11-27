@@ -17,6 +17,7 @@ struct ChatTranscriptEntry
     std::string task_id;
     std::string header;
     std::string content;
+    std::string highlight_lang; /* language tag for tool/code output; '' when none */
 };
 
 /* Encode one bubble as an escaped, newline-terminated line. */

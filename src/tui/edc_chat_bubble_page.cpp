@@ -1,5 +1,7 @@
 #include "edc_chat_bubble_page.hpp"
 
+#include "edc_chat_transcript.hpp"
+
 #include "cJSON.h"
 
 #include <cstdlib>
@@ -59,9 +61,23 @@ std::string EncodeChatBubblePageReply(const char *session_id, int64_t before_seq
     cJSON *arr = cJSON_AddArrayToObject(root, "rows");
     for (int i = 0; i < n; i++)
     {
+        /* Test helper: callers still hand us an encoded legacy line; decode it
+         * into the typed wire fields the production scheduler emits. */
+        ChatTranscriptEntry e;
+        std::string raw = lines[i] ? lines[i] : "";
+        if (!DecodeTranscriptLine(raw, &e))
+        {
+            e.kind = "sys";
+            e.render_pref = 0;
+        }
         cJSON *item = cJSON_CreateObject();
         cJSON_AddNumberToObject(item, "seq", (double)seqs[i]);
-        cJSON_AddStringToObject(item, "line", lines[i] ? lines[i] : "");
+        cJSON_AddStringToObject(item, "kind", e.kind.c_str());
+        cJSON_AddNumberToObject(item, "render_pref", e.render_pref);
+        cJSON_AddStringToObject(item, "task_id", e.task_id.c_str());
+        cJSON_AddStringToObject(item, "header", e.header.c_str());
+        cJSON_AddStringToObject(item, "content", e.content.c_str());
+        cJSON_AddStringToObject(item, "highlight_lang", "");
         cJSON_AddItemToArray(arr, item);
     }
     char *printed = cJSON_PrintUnformatted(root);
@@ -102,10 +118,23 @@ bool DecodeChatBubblePageReply(const char *header, const char *json, ChatBubbleP
         cJSON_ArrayForEach(item, arr)
         {
             const cJSON *seq = cJSON_GetObjectItem(item, "seq");
-            const cJSON *line = cJSON_GetObjectItem(item, "line");
-            if (!cJSON_IsNumber(seq) || !cJSON_IsString(line) || !line->valuestring)
+            const cJSON *kind = cJSON_GetObjectItem(item, "kind");
+            const cJSON *pref = cJSON_GetObjectItem(item, "render_pref");
+            const cJSON *tid = cJSON_GetObjectItem(item, "task_id");
+            const cJSON *hdr = cJSON_GetObjectItem(item, "header");
+            const cJSON *content = cJSON_GetObjectItem(item, "content");
+            const cJSON *lang = cJSON_GetObjectItem(item, "highlight_lang");
+            if (!cJSON_IsNumber(seq) || !cJSON_IsString(content) || !content->valuestring)
                 continue;
-            out->rows.push_back({(int64_t)seq->valuedouble, line->valuestring});
+            ChatBubbleRow row;
+            row.seq = (int64_t)seq->valuedouble;
+            row.kind = cJSON_IsString(kind) && kind->valuestring ? kind->valuestring : "";
+            row.render_pref = cJSON_IsNumber(pref) ? pref->valueint : 0;
+            row.task_id = cJSON_IsString(tid) && tid->valuestring ? tid->valuestring : "";
+            row.header = cJSON_IsString(hdr) && hdr->valuestring ? hdr->valuestring : "";
+            row.content = content->valuestring;
+            row.highlight_lang = cJSON_IsString(lang) && lang->valuestring ? lang->valuestring : "";
+            out->rows.push_back(std::move(row));
         }
     }
     cJSON_Delete(root);

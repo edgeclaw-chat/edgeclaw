@@ -327,14 +327,13 @@ static void sched_write_interrupted_hints(struct edc_scheduler *sched, struct sc
 
         char sid[24];
         snprintf(sid, sizeof(sid), "%" PRId64, (int64_t)g->session_id);
-        char *encoded = edc_chat_bubble_encode("sys", 0, NULL, NULL, line);
-        if (encoded)
-        {
-            int64_t seq = 0;
-            if (!edc_chat_bubble_append(sid, encoded, &seq))
-                log_warn("interrupted hint not persisted for session %s -- is the state store open?", sid);
-            free(encoded);
-        }
+        struct edc_chat_bubble_fields fields = {
+            .kind = "sys", .render_pref = 0, .task_id = "", .header = "",
+            .content = line, .highlight_lang = "",
+        };
+        int64_t seq = 0;
+        if (!edc_chat_bubble_append(sid, &fields, &seq))
+            log_warn("interrupted hint not persisted for session %s -- is the state store open?", sid);
         sdsfree(line);
         sdsfree(g->task_ids);
     }
@@ -1842,7 +1841,8 @@ static void sched_handle_tool_emit(struct edc_scheduler *sched, struct edc_actor
     /* The display gate is in the frontend; core only states the fact. */
 
     if (sched->send_tool_message)
-        sched->send_tool_message(sched, task, v.header, v.content, v.render_pref, msg->request_id);
+        sched->send_tool_message(sched, task, v.header, v.content, v.render_pref,
+                                 v.highlight_lang, msg->request_id);
 
     /* todowrite changes no task state, so push a snapshot to refresh the TodoWidget. */
     if (v.header && strcmp(v.header, "todowrite") == 0)
@@ -2136,7 +2136,12 @@ static void sched_handle_pull_chat_bubble_page(struct edc_scheduler *sched, cons
     {
         cJSON *item = cJSON_CreateObject();
         cJSON_AddNumberToObject(item, "seq", (double)rows[i].seq);
-        cJSON_AddStringToObject(item, "line", rows[i].line ? rows[i].line : "");
+        cJSON_AddStringToObject(item, "kind", rows[i].kind ? rows[i].kind : "");
+        cJSON_AddNumberToObject(item, "render_pref", rows[i].render_pref);
+        cJSON_AddStringToObject(item, "task_id", rows[i].task_id ? rows[i].task_id : "");
+        cJSON_AddStringToObject(item, "header", rows[i].header ? rows[i].header : "");
+        cJSON_AddStringToObject(item, "content", rows[i].content ? rows[i].content : "");
+        cJSON_AddStringToObject(item, "highlight_lang", rows[i].highlight_lang ? rows[i].highlight_lang : "");
         cJSON_AddItemToArray(arr, item);
     }
     edc_chat_bubble_rows_free(rows, n);

@@ -97,11 +97,10 @@ static int page_rows(int64_t *seqs, const char **lines, int cap, int *has_more_o
             if (n >= cap)
                 break;
             const cJSON *seq = cJSON_GetObjectItem(item, "seq");
-            const cJSON *line = cJSON_GetObjectItem(item, "line");
-            if (cJSON_IsNumber(seq) && cJSON_IsString(line) && line->valuestring)
+            if (cJSON_IsNumber(seq))
             {
                 seqs[n] = (int64_t)seq->valuedouble;
-                lines[n] = line->valuestring;
+                lines[n] = ""; /* wire is typed fields now; this test only checks seqs */
                 n++;
             }
         }
@@ -118,10 +117,13 @@ int main(void)
     const char *sid = "sess-7";
     for (int i = 0; i < 25; i++)
     {
-        char line[128];
-        snprintf(line, sizeof(line), "sys\\t0\\t\\t\\tbubble %d", i);
+        char content[64];
+        snprintf(content, sizeof(content), "bubble %d", i);
+        char *line = edc_chat_bubble_encode("sys", 0, "", "", content, "");
         int64_t seq = 0;
-        if (!edc_chat_bubble_append(sid, line, &seq) || seq != i + 1)
+        const bool appended = line && edc_chat_bubble_append_line(sid, line, &seq);
+        free(line);
+        if (!appended || seq != i + 1)
         {
             fprintf(stderr, "seed append #%d failed\n", i);
             return 2;

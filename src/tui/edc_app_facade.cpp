@@ -545,6 +545,8 @@ void AppFacade::TranslateAndDispatch(struct edc_channel_message *message)
     const char *session_id_c = edc_app_message_session_id(message);
     event.session_id = session_id_c ? session_id_c : "";
     event.render_pref = edc_app_message_render_pref(message);
+    const char *lang_c = edc_app_message_highlight_lang(message);
+    event.highlight_lang = lang_c ? lang_c : "";
     event.from_active_task = edc_app_message_from_active_task(message) != 0;
     event.interface_feedback = edc_app_message_is_interface_feedback(message) != 0;
     event.ts = ::time(nullptr);

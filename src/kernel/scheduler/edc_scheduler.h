@@ -34,7 +34,8 @@ typedef void (*edc_scheduler_send_llm_fn)(struct edc_scheduler *sched, struct ed
 typedef void (*edc_scheduler_send_reply_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *content,
                                             edc_channel_message_type message_type, void *request_id);
 typedef void (*edc_scheduler_send_tool_fn)(struct edc_scheduler *sched, struct edc_task *task, const char *header,
-                                           const char *content, edc_render_pref_t render_pref, void *request_id);
+                                           const char *content, edc_render_pref_t render_pref,
+                                           const char *highlight_lang, void *request_id);
 typedef void (*edc_scheduler_dispatch_tools_fn)(struct edc_scheduler *sched, struct edc_task *task, void *llm_resp,
                                                 void *request_id);
 /** Replays the task's PENDING tool ledger; returns how many requests were posted. */

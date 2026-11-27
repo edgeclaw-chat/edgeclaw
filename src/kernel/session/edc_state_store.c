@@ -10,6 +10,7 @@
  *  - the startup checks exist because the workspace is a MODEL-WRITABLE directory.
  */
 
+#include "edc_chat_bubble_line.h"
 #include "edc_scheduler.h"
 #include "edc_state_migrate.h"
 #include "edc_state_store.h"
@@ -397,9 +398,14 @@ static const char *const EDC_SCHEMA_SQL =
      * reader reuses DecodeTranscriptLine, so no escape rule is duplicated. session_id
      * is TEXT because that is the identity the frontend and channel events carry. */
     "CREATE TABLE IF NOT EXISTS chat_bubbles ("
-    "  session_id TEXT NOT NULL,"
-    "  seq        INTEGER NOT NULL,"
-    "  line       TEXT NOT NULL,"
+    "  session_id     TEXT NOT NULL,"
+    "  seq            INTEGER NOT NULL,"
+    "  kind           TEXT NOT NULL,"
+    "  render_pref    INTEGER NOT NULL,"
+    "  task_id        TEXT NOT NULL,"
+    "  header         TEXT NOT NULL,"
+    "  content        TEXT NOT NULL,"
+    "  highlight_lang TEXT NOT NULL DEFAULT '',"
     "  PRIMARY KEY (session_id, seq)"
     ");"
     "CREATE INDEX IF NOT EXISTS chat_bubbles_by_session ON chat_bubbles(session_id, seq DESC);"
@@ -3960,9 +3966,10 @@ char *edc_state_store_session_for_task(int64_t task_id)
  * in edc_chat_transcript.cpp so no escape rule is duplicated here.
  */
 
-bool edc_chat_bubble_append(const char *session_id, const char *line, int64_t *out_seq)
+bool edc_chat_bubble_append(const char *session_id, const struct edc_chat_bubble_fields *f,
+                            int64_t *out_seq)
 {
-    if (!g_db || !session_id || !*session_id || !line || !*line)
+    if (!g_db || !session_id || !*session_id || !f || !f->kind)
         return false;
     if (out_seq)
         *out_seq = 0;
@@ -3981,16 +3988,39 @@ bool edc_chat_bubble_append(const char *session_id, const char *line, int64_t *o
         return false;
 
     if (sqlite3_prepare_v2(g_db,
-                           "INSERT INTO chat_bubbles(session_id,seq,line) VALUES(?,?,?)",
+                           "INSERT INTO chat_bubbles(session_id,seq,kind,render_pref,task_id,header,content,highlight_lang)"
+                           " VALUES(?,?,?,?,?,?,?,?)",
                            -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)seq);
-    sqlite3_bind_text(st, 3, line, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, f->kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(st, 4, f->render_pref);
+    sqlite3_bind_text(st, 5, f->task_id ? f->task_id : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 6, f->header ? f->header : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 7, f->content ? f->content : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 8, f->highlight_lang ? f->highlight_lang : "", -1, SQLITE_TRANSIENT);
     const bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     if (ok && out_seq)
         *out_seq = seq;
+    return ok;
+}
+
+bool edc_chat_bubble_append_line(const char *session_id, const char *line, int64_t *out_seq)
+{
+    if (!line)
+        return false;
+    char *kind = NULL, *task_id = NULL, *header = NULL, *content = NULL, *lang = NULL;
+    int pref = 0;
+    if (!edc_chat_bubble_decode_line(line, &kind, &pref, &task_id, &header, &content, &lang))
+        return false;
+    struct edc_chat_bubble_fields f = {
+        .kind = kind, .render_pref = pref, .task_id = task_id,
+        .header = header, .content = content, .highlight_lang = lang ? lang : "",
+    };
+    const bool ok = edc_chat_bubble_append(session_id, &f, out_seq);
+    free(kind); free(task_id); free(header); free(content); free(lang);
     return ok;
 }
 
@@ -4004,13 +4034,10 @@ bool edc_chat_bubble_page(const char *session_id, int64_t before_seq, int limit,
     if (!g_db || !session_id || !*session_id || limit <= 0)
         return false;
 
-    /* Descending scan to take the newest rows under the cursor, then reverse so
-     * callers always see file order. chat_bubbles_by_session makes this an index
-     * range, not a scan of the whole log. */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db,
-                           "SELECT seq,line FROM chat_bubbles "
-                           "WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
+                           "SELECT seq,kind,render_pref,task_id,header,content,highlight_lang "
+                           "FROM chat_bubbles WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
                            -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_text(st, 1, session_id, -1, SQLITE_TRANSIENT);
@@ -4018,42 +4045,46 @@ bool edc_chat_bubble_page(const char *session_id, int64_t before_seq, int limit,
     sqlite3_bind_int(st, 3, limit);
 
     int cap = 0;
-    while (sqlite3_step(st) == SQLITE_ROW)
+    int loaded = 0;
+    bool ok = true;
+    int step_rc;
+    while ((step_rc = sqlite3_step(st)) == SQLITE_ROW)
     {
-        if (*n == cap)
+        if (loaded == cap)
         {
             cap = cap ? cap * 2 : 32;
             struct edc_chat_bubble_row *grown =
                 (struct edc_chat_bubble_row *)realloc(*out, (size_t)cap * sizeof(**out));
-            if (!grown)
-            {
-                edc_chat_bubble_rows_free(*out, *n);
-                *out = NULL;
-                *n = 0;
-                sqlite3_finalize(st);
-                return false;
-            }
+            if (!grown) { ok = false; break; }
             *out = grown;
         }
-        const char *text = (const char *)sqlite3_column_text(st, 1);
-        if (!text)
-            text = "";
-        (*out)[*n].seq = sqlite3_column_int64(st, 0);
-        (*out)[*n].line = strdup(text);
-        if (!(*out)[*n].line)
-        {
-            edc_chat_bubble_rows_free(*out, *n);
-            *out = NULL;
-            *n = 0;
-            sqlite3_finalize(st);
-            return false;
+        struct edc_chat_bubble_row *r = &(*out)[loaded];
+        memset(r, 0, sizeof(*r));
+        r->seq = sqlite3_column_int64(st, 0);
+        r->render_pref = sqlite3_column_int(st, 2);
+        /* SELECT columns: 0=seq, 1=kind, 2=render_pref(int), 3=task_id,
+         * 4=header, 5=content, 6=highlight_lang. Skip column 2 here. */
+        const int text_cols[5] = {1, 3, 4, 5, 6};
+        char **dst[5] = {&r->kind, &r->task_id, &r->header, &r->content, &r->highlight_lang};
+        for (int ci = 0; ci < 5; ci++) {
+            const char *t = (const char *)sqlite3_column_text(st, text_cols[ci]);
+            *dst[ci] = strdup(t ? t : "");
+            if (!*dst[ci]) { ok = false; break; }
         }
-        (*n)++;
+        if (!ok) break;
+        loaded++;
     }
+    if (ok && step_rc != SQLITE_DONE)
+        ok = false; /* real DB error (OOM / locked) mid-scan */
     sqlite3_finalize(st);
-
-    for (int i = 0, j = *n - 1; i < j; i++, j--)
-    {
+    if (!ok) {
+        edc_chat_bubble_rows_free(*out, loaded);
+        *out = NULL; *n = 0;
+        return false;
+    }
+    /* An empty page (*out == NULL, loaded == 0) is a valid result, not an error. */
+    *n = loaded;
+    for (int i = 0, j = *n - 1; i < j; i++, j--) {
         struct edc_chat_bubble_row tmp = (*out)[i];
         (*out)[i] = (*out)[j];
         (*out)[j] = tmp;
@@ -4065,8 +4096,13 @@ void edc_chat_bubble_rows_free(struct edc_chat_bubble_row *rows, int n)
 {
     if (!rows)
         return;
-    for (int i = 0; i < n; i++)
-        free(rows[i].line);
+    for (int i = 0; i < n; i++) {
+        free(rows[i].kind);
+        free(rows[i].task_id);
+        free(rows[i].header);
+        free(rows[i].content);
+        free(rows[i].highlight_lang);
+    }
     free(rows);
 }
 

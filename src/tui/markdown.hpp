@@ -12,4 +12,10 @@ namespace edc
 // (see State::AddWord).
 ftxui::Element RenderMarkdown(std::string_view md, int wrap_cols = 0);
 
+// Render a plain code snippet with tree-sitter syntax colours. |lang| is a
+// registered language tag; when empty/unknown the text is returned unhighlighted
+// in the plain code colour. Used by fenced blocks and by plain tool output
+// (read_file) alike, so both share one painting path.
+ftxui::Element HighlightedCode(std::string_view code, const char *lang);
+
 } // namespace edc

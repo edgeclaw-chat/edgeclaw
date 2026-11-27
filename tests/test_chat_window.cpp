@@ -14,6 +14,8 @@
 #include "edc_chat_bubble_page.hpp"
 #include "edc_chat_widget.hpp"
 #include "edc_message.hpp"
+#include "edc_style.hpp"
+#include "edc_api.h"
 #include "ftxui/component/event.hpp"
 #include "ftxui/component/mouse.hpp"
 #include "ftxui/dom/elements.hpp"
@@ -350,6 +352,113 @@ static void test_scrolling_keeps_both_ends_rendered(void)
     PASS();
 }
 
+static void test_tool_output_syntax_highlighting()
+{
+    TEST("plain tool output with a language tag is syntax-coloured");
+    struct FixedPalette : edc::style::IPalette
+    {
+        edc::style::Palette pal;
+        explicit FixedPalette(edc::style::Palette p) : pal(std::move(p)) {}
+        const edc::style::Palette &colors() const override { return pal; }
+    };
+    edc::style::Palette p = edc::style::palette();
+    p.md_code = ftxui::Color::RGB(255, 255, 255);
+    p.syntax_keyword = ftxui::Color::RGB(255, 0, 0);
+    p.syntax_number = ftxui::Color::RGB(0, 0, 255);
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    // A read_file-style tool bubble: PLAIN content, but with a language tag.
+    auto b = edc::MakeChatBubble("tool", "read_file x.c", "int main() { return 42; }", "",
+                                 EDC_APP_RENDER_PLAIN, 0, "c");
+    ASSERT(b != nullptr, "tool bubble built");
+    auto element = b->OnRender();
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(25));
+    ftxui::Render(screen, element);
+
+    bool keyword = false, number = false;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const ftxui::Color c = screen.CellAt(x, y).foreground_color;
+            if (c == p.syntax_keyword) keyword = true;
+            if (c == p.syntax_number) number = true;
+        }
+    ASSERT(keyword && number, "tagged tool output shows keyword+number colours (kw=%d num=%d)",
+           (int)keyword, (int)number);
+
+    // An untagged tool bubble stays single-colour (no regression to plain output).
+    auto plain = edc::MakeChatBubble("tool", "shell", "int main() { return 42; }", "",
+                                     EDC_APP_RENDER_PLAIN, 0, "");
+    auto pe = plain->OnRender();
+    auto pscreen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(25));
+    ftxui::Render(pscreen, pe);
+    bool plain_kw = false;
+    for (int y = 0; y < pscreen.dimy(); ++y)
+        for (int x = 0; x < pscreen.dimx(); ++x)
+            if (pscreen.CellAt(x, y).foreground_color == p.syntax_keyword) plain_kw = true;
+    ASSERT(!plain_kw, "untagged tool output has no syntax colour");
+
+    edc::style::SetPaletteProvider(nullptr);
+    PASS();
+}
+
+static void test_long_tool_output_highlighting()
+{
+    TEST("long tagged tool output: collapsed preview and expanded body both colour");
+    struct FixedPalette : edc::style::IPalette
+    {
+        edc::style::Palette pal;
+        explicit FixedPalette(edc::style::Palette p) : pal(std::move(p)) {}
+        const edc::style::Palette &colors() const override { return pal; }
+    };
+    edc::style::Palette p = edc::style::palette();
+    p.md_code = ftxui::Color::RGB(255, 255, 255);
+    p.syntax_keyword = ftxui::Color::RGB(255, 0, 0);
+    p.syntax_number = ftxui::Color::RGB(0, 0, 255);
+    p.syntax_type = ftxui::Color::RGB(255, 255, 0);
+    auto provider = std::make_shared<FixedPalette>(p);
+    edc::style::SetPaletteProvider(provider);
+
+    std::string code;
+    for (int i = 0; i < 20; i++)
+        code += "int x" + std::to_string(i) + " = " + std::to_string(i) + ";\n";
+    auto b = edc::MakeChatBubble("tool", "read_file x.c", code, "", EDC_APP_RENDER_PLAIN, 0, "c");
+    ASSERT(b != nullptr, "long tool bubble built");
+
+    // Default state: collapsed (20 lines > 14). What does the user SEE?
+    auto screen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(40));
+    ftxui::Render(screen, b->OnRender());
+    bool collapsed_kw = false, collapsed_num = false;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const ftxui::Color c = screen.CellAt(x, y).foreground_color;
+            if (c == p.syntax_keyword) collapsed_kw = true;
+            if (c == p.syntax_number) collapsed_num = true;
+        }
+    printf("    [collapsed] keyword=%d number=%d\n", (int)collapsed_kw, (int)collapsed_num);
+    ASSERT(collapsed_num, "collapsed preview of a long tagged output is already coloured");
+
+    // Expanded: what the user sees after clicking.
+    b->SetExpanded(true);
+    auto escreen = ftxui::Screen::Create(ftxui::Dimension::Fixed(80), ftxui::Dimension::Fixed(40));
+    ftxui::Render(escreen, b->OnRender());
+    bool exp_kw = false, exp_num = false;
+    for (int y = 0; y < escreen.dimy(); ++y)
+        for (int x = 0; x < escreen.dimx(); ++x)
+        {
+            const ftxui::Color c = escreen.CellAt(x, y).foreground_color;
+            if (c == p.syntax_keyword) exp_kw = true;
+            if (c == p.syntax_number) exp_num = true;
+        }
+    printf("    [expanded]  keyword=%d number=%d\n", (int)exp_kw, (int)exp_num);
+    ASSERT(exp_num, "expanded long output is coloured");
+
+    edc::style::SetPaletteProvider(nullptr);
+    PASS();
+}
+
 } // namespace
 
 int main(void)
@@ -360,6 +469,8 @@ int main(void)
     test_cached_trees_stay_bounded();
     test_cached_tree_survives_real_bubble_eviction();
     test_scrolling_keeps_both_ends_rendered();
+    test_tool_output_syntax_highlighting();
+    test_long_tool_output_highlighting();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

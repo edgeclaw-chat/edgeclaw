@@ -184,7 +184,7 @@ class ToolMessage : public Message
 {
   public:
     ToolMessage(const std::string_view header, const std::string_view content, time_t ts, bool markdown = false,
-                const std::string_view task_id = "");
+                const std::string_view task_id = "", const std::string_view highlight_lang = "");
     bool OnEvent(ftxui::Event) override;
     ftxui::Element OnRender() override;
 
@@ -220,6 +220,7 @@ class ToolMessage : public Message
     static constexpr size_t kPreviewLines = 14;
 
     std::string header_;
+    std::string highlight_lang_; /* language tag for plain tool output; '' when none */
     bool expanded_ = false;
     bool markdown_ = false;
     // Line count of content_, computed once (the collapsed view needs it every
@@ -237,6 +238,6 @@ class ToolMessage : public Message
  * reply | sys; |render_pref| is EDC_APP_RENDER_PLAIN / _MARKDOWN. */
 std::shared_ptr<Message> MakeChatBubble(const std::string &kind, const std::string &header,
                                         const std::string &content, const std::string &task_id, int render_pref,
-                                        time_t ts);
+                                        time_t ts, const std::string &highlight_lang = "");
 
 } // namespace edc

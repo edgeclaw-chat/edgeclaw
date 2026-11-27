@@ -770,9 +770,9 @@ void TUIWindow::RequestTaskSnapshot()
 // same shape. |kind| is the bridge's tag: user | tool | thought | reply | sys.
 static std::shared_ptr<Message> MakeChatWidget(const std::string &kind, const std::string &header,
                                                const std::string &content, const std::string &task_id, int render_pref,
-                                               time_t ts)
+                                               time_t ts, const std::string &highlight_lang = "")
 {
-    return MakeChatBubble(kind, header, content, task_id, render_pref, ts);
+    return MakeChatBubble(kind, header, content, task_id, render_pref, ts, highlight_lang);
 }
 
 bool SnapshotIsForSession(const TaskSnapshot *snap, const std::string &displayed_session)
@@ -1899,7 +1899,8 @@ bool TUIWindow::PresentChat(const port::ChatMessageEvent &event, const std::stri
         return false;
 
     if (std::shared_ptr<Message> widget =
-            MakeChatWidget(kind_str, event.header, event.content, event.task_id, event.render_pref, event.ts))
+            MakeChatWidget(kind_str, event.header, event.content, event.task_id, event.render_pref, event.ts,
+                           event.highlight_lang))
         chat_widget_->AddMessage(widget);
 
     /* Its output is on screen, so this task has been read -- whatever the scheduler's

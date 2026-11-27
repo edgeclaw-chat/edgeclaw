@@ -6,6 +6,7 @@
  * These tests pin the exact bytes and the cursor echo.
  */
 #include "edc_chat_bubble_page.hpp"
+#include "edc_chat_transcript.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -35,7 +36,12 @@ static int g_passed = 0;
 
 int main(void)
 {
-    const std::string tricky = "tool\\t0\\tt1\\thdr\\tline one\\nline two\\tand a backslash \\\\ end";
+    const std::string tricky = edc::EncodeTranscriptLine([] {
+        edc::ChatTranscriptEntry e;
+        e.kind = "tool"; e.render_pref = 0; e.task_id = "t1"; e.header = "hdr";
+        e.content = "line one\nline two\tand a backslash \\ end";
+        return e;
+    }());
 
     printf("-- request round trip --\n");
     {
@@ -70,8 +76,11 @@ int main(void)
         {
             CHECK(got.rows[0].seq == 7 && got.rows[1].seq == 8 && got.rows[2].seq == 9,
                   "seqs preserved in order");
-            CHECK(got.rows[1].line == tricky,
-                  "the escaped tool line is byte-for-byte identical after JSON round trip");
+            CHECK(got.rows[1].kind == "tool" && got.rows[1].render_pref == 0 &&
+                      got.rows[1].task_id == "t1" && got.rows[1].header == "hdr" &&
+                      got.rows[1].content == "line one\nline two\tand a backslash \\ end" &&
+                      got.rows[1].highlight_lang.empty(),
+                  "the tool line's fields survive the JSON round trip byte-for-byte");
         }
     }
 

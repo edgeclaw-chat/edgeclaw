@@ -106,8 +106,14 @@ static sds read_chat_bubbles(const char *sid)
         return NULL;
     sds out = sdsempty();
     for (int i = 0; i < n; i++)
-        if (rows[i].line)
-            out = sdscatprintf(out, "%s\n", rows[i].line);
+    {
+        char *line = edc_test_bubble_row_line(&rows[i]);
+        if (line)
+        {
+            out = sdscatprintf(out, "%s\n", line);
+            free(line);
+        }
+    }
     edc_chat_bubble_rows_free(rows, n);
     if (sdslen(out) == 0)
     {

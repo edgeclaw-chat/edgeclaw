@@ -66,9 +66,9 @@ int main(void)
          * with no file I/O and no second DB read. MessageWindow() owns an EMPTY
          * refs vector, so we hand it ours. */
         edc::MessageWindow window(&refs);
-        std::string kind, task_id, header, content;
+        std::string kind, task_id, header, content, lang;
         int render_pref = -1;
-        CHECK(window.Fields(1, &kind, &render_pref, &task_id, &header, &content),
+        CHECK(window.Fields(1, &kind, &render_pref, &task_id, &header, &content, &lang),
               "Fields() decodes a kDatabase row");
         CHECK(kind == "tool" && render_pref == 0, "kind / render_pref decoded");
         CHECK(task_id == "task-7", "task_id decoded");
@@ -77,7 +77,7 @@ int main(void)
               "escaped content survives verbatim (got '%s')", content.c_str());
 
         /* Out-of-range is an honest failure, not a crash. */
-        CHECK(!window.Fields(99, &kind, &render_pref, &task_id, &header, &content),
+        CHECK(!window.Fields(99, &kind, &render_pref, &task_id, &header, &content, &lang),
               "an out-of-range index is refused");
     }
 
