@@ -387,6 +387,35 @@ int main(void)
               "材料里**没有** group memory —— 压缩只动 session memory 自己");
     }
 
+    TEST("compact 材料给出明确目标（远低于 cap），防止贴着 cap 震荡");
+    {
+        /* 目标必须显式写进材料，且严格小于触发 cap，留出的余量才打破锯齿。
+         * 只说 "under the cap" 会让模型停在 196，几条第目后又撞 200。 */
+        CHECK(EDC_SESSION_MEMORY_COMPACT_TARGET < EDC_SESSION_MEMORY_COMPACT_ENTRIES,
+              "目标常量严格小于 cap（防空洞守卫）");
+        CHECK(EDC_SESSION_MEMORY_COMPACT_TARGET <= EDC_SESSION_MEMORY_COMPACT_ENTRIES * 3 / 4,
+              "目标不超过 cap 的 75%（留足余量）");
+        const char *sys = edc_session_memory_compact_prompt();
+        CHECK(sys && strstr(sys, "reached the target stated at the top of the material") != NULL,
+              "system prompt 指向材料里的目标，不再说 under the cap 就停");
+        CHECK(sys && strstr(sys, "when the memory is under the cap") == NULL,
+              "旧的 under-the-cap 停止条件已移除");
+
+        /* 用当前压缩任务的材料验证数字真的注入了。 */
+        struct edc_task *ct3 = find_compact_task(sess);
+        const char *material = compact_material(ct3);
+        char needle[64];
+        snprintf(needle, sizeof(needle), "DOWN TO ABOUT %d entries", EDC_SESSION_MEMORY_COMPACT_TARGET);
+        CHECK(material && strstr(material, needle) != NULL, "材料里写明目标条目数");
+        char cap_needle[64];
+        snprintf(cap_needle, sizeof(cap_needle), "hard cap is %d", EDC_SESSION_MEMORY_COMPACT_ENTRIES);
+        CHECK(material && strstr(material, cap_needle) != NULL, "材料里也写明硬 cap");
+        CHECK(material && strstr(material, "not merely under the cap") != NULL,
+              "明确要求不能只压到 cap 以下就停");
+        CHECK(material && strstr(material, "stopping at 196") != NULL,
+              "解释了为什么贴着 cap 停会有问题");
+    }
+
     printf("\n  %d passed, %d failed\n\n", passed, failed);
     edc_scheduler_free(sched);
     edc_session_free(sess);
