@@ -1,4 +1,5 @@
 #include "edc_syntax.h"
+#include "edc_syntax_lang.h"
 
 #include "edc_embedded_queries.h"
 
@@ -32,52 +33,38 @@ const TSLanguage *tree_sitter_typescript(void);
 const TSLanguage *tree_sitter_tsx(void);
 const TSLanguage *tree_sitter_rust(void);
 
-#define NALIASES 4
-
 typedef struct {
-    const char *name;
-    const char *aliases[NALIASES]; /* NULL-terminated, excludes primary name */
+    const char *name; /* canonical language tag (see edc_syntax_lang.h) */
     const TSLanguage *(*language)(void);
     const char *query;
     size_t query_size;
 } syntax_lang;
 
 static const syntax_lang LANGS[] = {
-    {"c", {"h", "hpp", NULL}, tree_sitter_c,
-     edc_query_c, EDC_QUERY_C_SIZE},
-    {"cpp", {"cc", "cxx", "c++", NULL}, tree_sitter_cpp,
-     edc_query_cpp, EDC_QUERY_CPP_SIZE},
-    {"python", {"py", NULL}, tree_sitter_python,
-     edc_query_python, EDC_QUERY_PYTHON_SIZE},
-    {"bash", {"sh", "shell", "zsh", NULL}, tree_sitter_bash,
-     edc_query_bash, EDC_QUERY_BASH_SIZE},
-    {"json", {NULL}, tree_sitter_json,
-     edc_query_json, EDC_QUERY_JSON_SIZE},
-    {"go", {"golang", NULL}, tree_sitter_go,
-     edc_query_go, EDC_QUERY_GO_SIZE},
-    {"javascript", {"js", "node", NULL}, tree_sitter_javascript,
-     edc_query_javascript, EDC_QUERY_JAVASCRIPT_SIZE},
-    {"typescript", {"ts", NULL}, tree_sitter_typescript,
-     edc_query_typescript, EDC_QUERY_TYPESCRIPT_SIZE},
-    {"tsx", {"jsx", NULL}, tree_sitter_tsx,
-     edc_query_tsx, EDC_QUERY_TSX_SIZE},
-    {"rust", {"rs", NULL}, tree_sitter_rust,
-     edc_query_rust, EDC_QUERY_RUST_SIZE},
+    {"c", tree_sitter_c, edc_query_c, EDC_QUERY_C_SIZE},
+    {"cpp", tree_sitter_cpp, edc_query_cpp, EDC_QUERY_CPP_SIZE},
+    {"python", tree_sitter_python, edc_query_python, EDC_QUERY_PYTHON_SIZE},
+    {"bash", tree_sitter_bash, edc_query_bash, EDC_QUERY_BASH_SIZE},
+    {"json", tree_sitter_json, edc_query_json, EDC_QUERY_JSON_SIZE},
+    {"go", tree_sitter_go, edc_query_go, EDC_QUERY_GO_SIZE},
+    {"javascript", tree_sitter_javascript, edc_query_javascript, EDC_QUERY_JAVASCRIPT_SIZE},
+    {"typescript", tree_sitter_typescript, edc_query_typescript, EDC_QUERY_TYPESCRIPT_SIZE},
+    {"tsx", tree_sitter_tsx, edc_query_tsx, EDC_QUERY_TSX_SIZE},
+    {"rust", tree_sitter_rust, edc_query_rust, EDC_QUERY_RUST_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);
 
 static const syntax_lang *find_lang(const char *lang)
 {
-    if (!lang)
+    /* Aliases/extension names are resolved by the shared mapping so the
+     * highlighter and the fs tool's path tagging can never drift apart. */
+    const char *canonical = edc_syntax_normalize_lang(lang);
+    if (!canonical)
         return NULL;
-    for (size_t i = 0; i < NLANGS; ++i) {
-        if (strcmp(lang, LANGS[i].name) == 0)
+    for (size_t i = 0; i < NLANGS; ++i)
+        if (strcmp(canonical, LANGS[i].name) == 0)
             return &LANGS[i];
-        for (size_t j = 0; j < NALIASES && LANGS[i].aliases[j]; ++j)
-            if (strcmp(lang, LANGS[i].aliases[j]) == 0)
-                return &LANGS[i];
-    }
     return NULL;
 }
 

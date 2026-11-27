@@ -16,6 +16,17 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Tree-sitter-free language/extension mapping. Shared by the highlight engine
+# (canonical names) and the fs tool (path -> lang), so the two cannot drift.
+# Kept dependency-free so C callers need not link tree-sitter/PCRE2.
+cc_library(
+    name = "syntax_lang",
+    srcs = ["edc_syntax_lang.c"],
+    hdrs = ["edc_syntax_lang.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
 # Syntax-highlighting engine: tree-sitter based source -> semantic-span parser.
 # Kept out of :common so a binary that does not render code pays no dependency
 # on the tree-sitter runtime or any grammar. Language grammars link here.
@@ -47,6 +58,7 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
+        ":syntax_lang",
         "@pcre2//:pcre2",  # evaluate #match? predicates in highlight queries
         "@tree-sitter-bazel//:tree-sitter",
         "@tree-sitter-c//:tree-sitter-c",

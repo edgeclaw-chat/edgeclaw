@@ -110,6 +110,7 @@ cc_library(
         "//src/app:app",
         "//src/common:common",
         "//src/common:syntax_headers",
+        "//src/common:syntax_lang",
         # syntax highlighter (compiled into this archive above): tree-sitter core
         # plus the grammars; markdown.cpp tokenises fenced code into semantic spans.
         "@pcre2//:pcre2",  # edc_syntax.c's #match? predicate evaluation

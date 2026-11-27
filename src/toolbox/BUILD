@@ -43,6 +43,7 @@ cc_library(
         "//src/actor:actors",
         "//src/common:common",
         "//src/common:edc_list",
+        "//src/common:syntax_lang",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
         "//src/sandbox:sandbox",

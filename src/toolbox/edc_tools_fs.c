@@ -4,6 +4,7 @@
 #include "edc_platform.h"
 #include "edc_sandbox.h"
 #include "edc_scheduler.h"
+#include "edc_syntax_lang.h"
 #include "edc_string_utils.h"
 #include "edc_toolbox.h"
 #include "edc_tools.h"
@@ -13,27 +14,6 @@
 #include <inttypes.h> /* PRId64 */
 #include <string.h>
 #include "edc_list.h"
-
-/* Map a file path's extension to a syntax-highlight language tag. Mirrors the
- * aliases registered in edc_syntax.c (kept here to avoid pulling the C++
- * highlighter's symbol into this C target); the TUI validates the tag again. */
-static const char *fs_lang_for_path(const char *path)
-{
-    if (!path) return NULL;
-    const char *dot = strrchr(path, '.');
-    if (!dot || !dot[1]) return NULL;
-    const char *ext = dot + 1;
-    struct { const char *ext; const char *lang; } map[] = {
-        {"c","c"}, {"h","c"}, {"hpp","c"}, {"cpp","cpp"}, {"cc","cpp"}, {"cxx","cpp"},
-        {"py","python"}, {"sh","bash"}, {"bash","bash"}, {"zsh","bash"},
-        {"json","json"}, {"go","go"}, {"js","javascript"}, {"jsx","tsx"},
-        {"ts","typescript"}, {"tsx","tsx"}, {"rs","rust"},
-    };
-    for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++)
-        if (strcmp(ext, map[i].ext) == 0)
-            return map[i].lang;
-    return NULL;
-}
 
 static UT_icd ut_size_t_icd = {sizeof(size_t), NULL, NULL, NULL};
 static UT_icd ut_int64_icd = {sizeof(int64_t), NULL, NULL, NULL};
@@ -77,7 +57,7 @@ struct fs_job
     sds safe_path;                           /* computed on the runner; read-only in the pool */
     sds arg_path;                            /* the raw path, for the reply text only */
     sds header;                              /* send a tool message only when non-NULL (edit_file does not, as before) */
-    const char *highlight_lang;              /* static tag from fs_lang_for_path(arg_path); borrowed, not owned */
+    const char *highlight_lang;              /* static tag from edc_syntax_lang_for_path(arg_path); borrowed, not owned */
     sds content;                             /* write_file's body */
     sds old_text;                            /* edit_file */
     sds new_text;
@@ -141,7 +121,7 @@ static struct fs_job *edc_fs_job_new(struct edc_toolbox_call_ctx *ctx,
     job->io = io;
     job->safe_path = safe_path;
     job->arg_path = sdsnew(arg_path ? arg_path : "");
-    job->highlight_lang = fs_lang_for_path(arg_path);
+    job->highlight_lang = edc_syntax_lang_for_path(arg_path);
     if (tool_name)
         job->header = sdscatprintf(sdsempty(), "%s %s", tool_name, arg_path ? arg_path : "");
     return job;

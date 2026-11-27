@@ -1,4 +1,5 @@
 #include "edc_syntax.h"
+#include "edc_syntax_lang.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -56,8 +57,40 @@ static void test_predicates(void)
     edc_syntax_result_free(&r);
 }
 
+static void test_shared_lang_map(void)
+{
+    /* The fs tool tags read_file bubbles via edc_syntax_lang_for_path; the
+     * highlighter resolves names via the same table. Assert both agree, and
+     * that every path-derived tag is actually registered (no drift). */
+    struct { const char *path; const char *canonical; } cases[] = {
+        {"x.c", "c"}, {"x.h", "c"}, {"x.hpp", "c"},
+        {"x.cpp", "cpp"}, {"x.cc", "cpp"}, {"x.cxx", "cpp"}, {"x.c++", "cpp"},
+        {"x.py", "python"}, {"x.sh", "bash"}, {"x.bash", "bash"}, {"x.zsh", "bash"},
+        {"x.json", "json"}, {"x.go", "go"}, {"x.golang", "go"},
+        {"x.js", "javascript"}, {"x.node", "javascript"},
+        {"x.ts", "typescript"}, {"x.jsx", "tsx"}, {"x.tsx", "tsx"},
+        {"x.rs", "rust"},
+        {"a/b/c/file.py", "python"}, /* full path */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const char *lang = edc_syntax_lang_for_path(cases[i].path);
+        assert(lang && strcmp(lang, cases[i].canonical) == 0);
+        assert(edc_syntax_normalize_lang(cases[i].canonical) &&
+               strcmp(edc_syntax_normalize_lang(cases[i].canonical), cases[i].canonical) == 0);
+        /* The tag the fs tool emits must be one the highlighter accepts. */
+        assert(edc_syntax_available(lang));
+    }
+    assert(edc_syntax_lang_for_path("x.unknown") == NULL);
+    assert(edc_syntax_lang_for_path("noext") == NULL);
+    assert(edc_syntax_lang_for_path(NULL) == NULL);
+    assert(edc_syntax_normalize_lang("py") && strcmp(edc_syntax_normalize_lang("py"), "python") == 0);
+    assert(edc_syntax_normalize_lang("hpp") && strcmp(edc_syntax_normalize_lang("hpp"), "c") == 0);
+    puts("shared lang map: path/alias -> canonical, all tags registered");
+}
+
 int main(void)
 {
+    test_shared_lang_map();
     /* --- language registry --- */
     assert(edc_syntax_available("c"));
     assert(edc_syntax_available("h")); /* alias */
