@@ -393,8 +393,8 @@ int main(void)
          * 只说 "under the cap" 会让模型停在 196，几条第目后又撞 200。 */
         CHECK(EDC_SESSION_MEMORY_COMPACT_TARGET < EDC_SESSION_MEMORY_COMPACT_ENTRIES,
               "目标常量严格小于 cap（防空洞守卫）");
-        CHECK(EDC_SESSION_MEMORY_COMPACT_TARGET <= EDC_SESSION_MEMORY_COMPACT_ENTRIES * 3 / 4,
-              "目标不超过 cap 的 75%（留足余量）");
+        CHECK(EDC_SESSION_MEMORY_COMPACT_TARGET <= EDC_SESSION_MEMORY_COMPACT_ENTRIES / 2,
+              "目标不超过 cap 的 50%（留足余量）");
         const char *sys = edc_session_memory_compact_prompt();
         CHECK(sys && strstr(sys, "reached the target stated at the top of the material") != NULL,
               "system prompt 指向材料里的目标，不再说 under the cap 就停");

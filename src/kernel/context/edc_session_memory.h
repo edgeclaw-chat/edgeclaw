@@ -151,10 +151,10 @@ extern enum edc_memo_event_kind edc_memo_event_classify_kind(const char *name);
 
 /* Compaction TARGET, deliberately well below the trigger cap. Without a number the model
  * stops at the first size under the cap (e.g. 201 -> 196), so the table sawtooths back to
- * the cap after only a handful of new entries. Aiming at ~75% of the cap leaves real
+ * the cap after only a handful of new entries. Aiming at ~50% of the cap leaves real
  * headroom, turning every compaction into a long-lived shrink instead of a visible cycle.
  * The cap stays a hard ceiling; this is what the compact prompt asks the model to reach. */
-#define EDC_SESSION_MEMORY_COMPACT_TARGET 150
+#define EDC_SESSION_MEMORY_COMPACT_TARGET 100
 
 /* ── Compaction's material: the whole index, never a slice ────
  * The task's material is the INDEX only (id / rev / updated / title / summary, never the
