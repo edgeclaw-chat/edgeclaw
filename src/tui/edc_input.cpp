@@ -1,5 +1,6 @@
 #include "edc_input.hpp"
 
+#include "edc_style.hpp"
 #include "edc_token_style.hpp"
 #include "edc_text_util.hpp"
 #include <algorithm>
@@ -529,9 +530,13 @@ int EdcInput::CaretColumn()
         ::ftxui::Element e =
             ::ftxui::text(content_->substr(static_cast<size_t>(a), static_cast<size_t>(b - a)));
         /* One styling function, shared with the chat bubble (edc_token_style.hpp): the
-         * line must look the same before and after it is sent. */
+         * line must look the same before and after it is sent. ftxui's color() decorators
+         * compose so the INNER (earlier) one wins, so the plain-text foreground is added
+         * only to non-token runs -- adding it first would override StyleToken's colour. */
         if (token)
             e = StyleToken(e, paste);
+        else
+            e = e | ::ftxui::color(style::palette().text);
         parts.push_back(e);
     };
 

@@ -683,6 +683,28 @@ struct FixedPalette : edc::style::IPalette
 };
 } // namespace
 
+static void test_plain_text_colour(void)
+{
+    std::printf("  plain input text wears the theme foreground (not terminal white)\n");
+    auto provider = std::make_shared<FixedPalette>();
+    provider->pal = edc::style::palette();
+    const ftxui::Color text_fg = ftxui::Color::RGB(12, 34, 56);
+    provider->pal.text = text_fg;
+    edc::style::SetPaletteProvider(provider);
+
+    std::string text = "plain words";
+    edc::EdcInput input(&text, "");
+    const auto screen = render_twice(input, 40, 4);
+    bool coloured = false;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+            if (screen.CellAt(x, y).foreground_color == text_fg)
+                coloured = true;
+    CHECK(coloured, "ordinary input glyphs wear pal.text");
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_token_colours(void)
 {
     std::printf("  tokens: both kinds are colour-highlighted on screen\n");
@@ -886,6 +908,7 @@ int main(void)
     test_history_entry_removal();
     test_mention_atom();
     test_token_colours();
+    test_plain_text_colour();
     test_recalled_line_matches_typed();
     test_mention_mark_rules();
     test_input_mode_label();

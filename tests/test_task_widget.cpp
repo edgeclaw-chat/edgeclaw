@@ -621,11 +621,41 @@ void TestGroupUsageLine(void)
           "a group that has not spent anything draws no footer");
 }
 
+struct FixedPalette : edc::style::IPalette
+{
+    edc::style::Palette pal;
+    explicit FixedPalette(edc::style::Palette p) : pal(std::move(p)) {}
+    const edc::style::Palette &colors() const override { return pal; }
+};
+
+void TestDescriptionWearsThemeText()
+{
+    auto provider = std::make_shared<FixedPalette>(edc::style::palette());
+    const ftxui::Color text_fg = ftxui::Color::RGB(11, 22, 33);
+    provider->pal.text = text_fg;
+    edc::style::SetPaletteProvider(provider);
+
+    auto widget = MakeWidget({{"1", "running", "ZZDESC"}});
+    auto screen = Render(*widget);
+    bool desc_coloured = false;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const auto &cell = screen.CellAt(x, y);
+            if (cell.character == "Z" && cell.foreground_color == text_fg)
+                desc_coloured = true;
+        }
+    Check(desc_coloured, "task id + description wear the theme foreground (pal.text)");
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 } // namespace
 
 int main()
 {
     TestMarkerPerStateInItsColor();
+    TestDescriptionWearsThemeText();
     TestMarkerShapeFollowsTheEndReason();
     TestActiveTaskWearsTheBlock();
     TestInterruptedWearsTheHollowSquare();
