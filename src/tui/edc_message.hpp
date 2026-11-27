@@ -48,6 +48,14 @@ class Message : public ::ftxui::ComponentBase
     {
         return 0;
     }
+    /* Language tag for code/tool output (empty when none). A kMemory bubble is
+     * rebuilt from a ChatTranscriptEntry on eviction, so the tag must be readable
+     * here or syntax highlighting is lost the moment the bubble is re-materialized. */
+    virtual const std::string &HighlightLang() const
+    {
+        static const std::string kEmpty;
+        return kEmpty;
+    }
 
     /* Read-only probe for the windowing regression test: does this object
      * still pin a cached ftxui element tree? LiveCount() cannot see this. */
@@ -202,6 +210,10 @@ class ToolMessage : public Message
     int RenderPref() const override
     {
         return markdown_ ? 1 : 0; /* EDC_APP_RENDER_MARKDOWN == 1 */
+    }
+    const std::string &HighlightLang() const override
+    {
+        return highlight_lang_;
     }
     bool Expanded() const override
     {

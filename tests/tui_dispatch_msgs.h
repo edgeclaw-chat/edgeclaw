@@ -37,9 +37,16 @@ extern "C"
 {
 #endif
 
-/* |header| / |session_id| 为 NULL 或空 = 不设该字段。 */
+/* |header| / |session_id| / |highlight_lang| 为 NULL 或空 = 不设该字段。 */
+#ifdef __cplusplus
 extern struct edc_channel_message *harness_msg_new(int message_type, const char *content, const char *session_id,
-                                                   const char *header, int from_active_task);
+                                                   const char *header, int from_active_task,
+                                                   const char *highlight_lang = nullptr);
+#else
+extern struct edc_channel_message *harness_msg_new(int message_type, const char *content, const char *session_id,
+                                                   const char *header, int from_active_task,
+                                                   const char *highlight_lang);
+#endif
 extern void harness_msg_free(struct edc_channel_message *m);
 
 #ifdef __cplusplus

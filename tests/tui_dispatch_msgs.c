@@ -20,7 +20,8 @@ _Static_assert(HARNESS_MSG_CHAT_BUBBLE_PAGE == EDC_CHANNEL_MESSAGE_CHAT_BUBBLE_P
                "HARNESS_MSG_CHAT_BUBBLE_PAGE 镜像");
 
 struct edc_channel_message *harness_msg_new(int message_type, const char *content, const char *session_id,
-                                            const char *header, int from_active_task)
+                                            const char *header, int from_active_task,
+                                            const char *highlight_lang)
 {
     /* 与生产路径同一个构造器 (channel actor 的)。 */
     struct edc_channel_message *m =
@@ -29,6 +30,8 @@ struct edc_channel_message *harness_msg_new(int message_type, const char *conten
         m->session_id = sdsnew(session_id);
     if (header && *header)
         m->header = sdsnew(header);
+    if (highlight_lang && *highlight_lang)
+        m->highlight_lang = sdsnew(highlight_lang);
     m->from_active_task = from_active_task != 0;
     return m;
 }

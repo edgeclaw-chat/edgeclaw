@@ -356,9 +356,17 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
     children.push_back(body);
     if (toggleable)
     {
-        auto toggle = expanded_ ? ::ftxui::text("- Collapse") : ::ftxui::text("+ Click to expand");
-        auto footer = ::ftxui::hbox({toggle | ::ftxui::color(pal.accent) | ::ftxui::reflect(HitBox())}) | ::ftxui::flex;
-        children.push_back(footer);
+        /* Make the toggle read as a BUTTON, not another coloured line of code.
+         * Use the same solid-colour block as the /update dialog's buttons
+         * (bold, accent fill, inverted text) -- a filled slab is unmistakably a
+         * control, whereas any single foreground colour would collide with one
+         * of the syntax groups. No border: the house style is borderless. */
+        const char *label = expanded_ ? " - Collapse " : " + Click to expand ";
+        auto toggle = ::ftxui::text(label) | ::ftxui::bold |
+                      ::ftxui::bgcolor(pal.accent) | ::ftxui::color(pal.dialog_bg) |
+                      ::ftxui::reflect(HitBox());
+        auto footer = ::ftxui::hbox({std::move(toggle)});
+        children.push_back(std::move(footer));
     }
 
     body_ = ::ftxui::vbox(children) | ::ftxui::borderStyled(::ftxui::BorderStyle::EMPTY) |

@@ -52,6 +52,7 @@ void ChatModel::AddMessage(std::shared_ptr<Message> message)
     entry.task_id = message->TaskId();
     entry.header = message->Header();
     entry.content = message->Content();
+    entry.highlight_lang = message->HighlightLang();
     const size_t index = window_->AddMemoryBubble(entry);
 
     std::shared_ptr<Message> proxy = window_->Proxy(index);
