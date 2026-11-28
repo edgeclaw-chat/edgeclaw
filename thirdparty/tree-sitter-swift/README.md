@@ -18,6 +18,13 @@ matches the previously vendored file, `af17e2cc…`) and both inputs are pinned,
 so builds remain reproducible. `parser.c` is platform-independent, so
 cross-compiling to musl uses the build machine's CLI without issue.
 
+Upstream patch: `src/scanner.c` in v0.7.1 allocates its state with
+`calloc(0, sizeof(struct ScannerState))` (a zero-byte allocation). Under ASan
+the subsequent 4-byte field access is a heap-buffer-overflow. The repo rule
+rewrites that to `calloc(1, ...)` at fetch time; semantics are unchanged for a
+non-sanitized build. If upstream fixes this, remove the patch block in
+`repo.bzl` (it fails loudly when the expected text is gone).
+
 Requires `gzip` on the build machine (present in Git bash on Windows CI) and
 network access for the two pinned downloads on first fetch (Bazel caches them
 afterwards).

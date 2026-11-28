@@ -76,6 +76,18 @@ def _swift_grammar_repo_impl(repository_ctx):
     if gen.return_code != 0:
         fail("tree-sitter generate failed: %s" % gen.stderr)
 
+    # 3b. Upstream bug in tree-sitter-swift@0.7.1: the external scanner creates
+    #     its state with calloc(0, sizeof(...)), a zero-byte allocation. ASan
+    #     catches the subsequent 4-byte field access as a heap overflow. Allocate
+    #     one element instead; semantics are identical for a non-ASan build.
+    scanner_path = repository_ctx.path("src/scanner.c")
+    scanner = repository_ctx.read(scanner_path)
+    old = "calloc(0, sizeof(struct ScannerState))"
+    if old not in scanner:
+        fail("tree-sitter-swift scanner.c no longer has the expected calloc(0,...) -- recheck the upstream patch")
+    repository_ctx.file(scanner_path,
+                        content = scanner.replace(old, "calloc(1, sizeof(struct ScannerState))"))
+
     # 4. Expose the same target shape the old vendored repo had.
     repository_ctx.file("BUILD.bazel", """
 load("@rules_cc//cc:defs.bzl", "cc_library")
