@@ -1,6 +1,6 @@
 """Build-time generation of the Swift tree-sitter grammar.
 
-The upstream repo (alex-pinkus/tree-sitter-swift@0.7.1) does not commit
+The upstream repo (alex-pinkus/tree-sitter-swift@0.7.4) does not commit
 src/parser.c; it is generated from grammar.js by tree-sitter CLI. Instead of
 vendoring the ~18 MB generated C file, we download the pinned CLI binary for the
 BUILD machine's OS/arch from the tree-sitter GitHub release and run
@@ -22,8 +22,8 @@ _CLI_ASSETS = {
     ("windows", "x86_64"): ("tree-sitter-windows-x64.gz", "0adfa6a81fd94d3a8eda9d9c89333bf1263bc112c7797dc90bea80b519fe2181"),
 }
 
-_GRAMMAR_URL = "https://codeload.github.com/alex-pinkus/tree-sitter-swift/tar.gz/refs/tags/0.7.1"
-_GRAMMAR_SHA = "e3bcd98c07243e45ee1e85c3c03359cd38a85645544d8a3d5678076ec5f8c772"
+_GRAMMAR_URL = "https://codeload.github.com/alex-pinkus/tree-sitter-swift/tar.gz/refs/tags/0.7.4"
+_GRAMMAR_SHA = "3e451bde981f0110cdc2028b5b4a9dd7752fe77778f1a22607ddbf752ae7efd3"
 
 
 def _swift_grammar_repo_impl(repository_ctx):
@@ -54,7 +54,7 @@ def _swift_grammar_repo_impl(repository_ctx):
     # 1. Grammar tarball, pinned.
     grammar = repository_ctx.path("grammar.tar.gz")
     repository_ctx.download(_GRAMMAR_URL, grammar, sha256 = _GRAMMAR_SHA)
-    repository_ctx.extract(grammar, stripPrefix = "tree-sitter-swift-0.7.1")
+    repository_ctx.extract(grammar, stripPrefix = "tree-sitter-swift-0.7.4")
 
     # 2. CLI binary for the BUILD machine, pinned. Release assets are single-file
     #    gzip streams; decompress with the system gzip (present in Git bash on CI).
@@ -75,18 +75,6 @@ def _swift_grammar_repo_impl(repository_ctx):
                                  working_directory = ".")
     if gen.return_code != 0:
         fail("tree-sitter generate failed: %s" % gen.stderr)
-
-    # 3b. Upstream bug in tree-sitter-swift@0.7.1: the external scanner creates
-    #     its state with calloc(0, sizeof(...)), a zero-byte allocation. ASan
-    #     catches the subsequent 4-byte field access as a heap overflow. Allocate
-    #     one element instead; semantics are identical for a non-ASan build.
-    scanner_path = repository_ctx.path("src/scanner.c")
-    scanner = repository_ctx.read(scanner_path)
-    old = "calloc(0, sizeof(struct ScannerState))"
-    if old not in scanner:
-        fail("tree-sitter-swift scanner.c no longer has the expected calloc(0,...) -- recheck the upstream patch")
-    repository_ctx.file(scanner_path,
-                        content = scanner.replace(old, "calloc(1, sizeof(struct ScannerState))"))
 
     # 4. Expose the same target shape the old vendored repo had.
     repository_ctx.file("BUILD.bazel", """

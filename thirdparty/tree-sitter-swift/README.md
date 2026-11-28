@@ -1,6 +1,6 @@
 # tree-sitter-swift grammar (generated at build time)
 
-The upstream repo `alex-pinkus/tree-sitter-swift@0.7.1` does not commit
+The upstream repo `alex-pinkus/tree-sitter-swift@0.7.4` does not commit
 `src/parser.c` — it is generated from `grammar.js` by tree-sitter CLI. Its
 releases ship a precompiled WASM module (for web-tree-sitter consumers such as
 opencode), which our native C tree-sitter engine cannot load.
@@ -13,17 +13,13 @@ opencode), which our native C tree-sitter engine cannot load.
 - exposes a `cc_library` target `@tree-sitter-swift//:tree-sitter-swift`.
 
 No generated C is checked in, so the PR/repo stays small. Generation is
-byte-for-byte deterministic (verified: the CLI-generated parser.c sha256
-matches the previously vendored file, `af17e2cc…`) and both inputs are pinned,
-so builds remain reproducible. `parser.c` is platform-independent, so
-cross-compiling to musl uses the build machine's CLI without issue.
+deterministic and both inputs are pinned, so builds remain reproducible.
+`parser.c` is platform-independent, so cross-compiling to musl uses the build
+machine's CLI without issue.
 
-Upstream patch: `src/scanner.c` in v0.7.1 allocates its state with
-`calloc(0, sizeof(struct ScannerState))` (a zero-byte allocation). Under ASan
-the subsequent 4-byte field access is a heap-buffer-overflow. The repo rule
-rewrites that to `calloc(1, ...)` at fetch time; semantics are unchanged for a
-non-sanitized build. If upstream fixes this, remove the patch block in
-`repo.bzl` (it fails loudly when the expected text is gone).
+We pin 0.7.4 (the latest release): it also fixes an ASan-detectable bug in
+earlier versions where `scanner.c` called `calloc(0, sizeof(ScannerState))`.
+No local patch is needed.
 
 Requires `gzip` on the build machine (present in Git bash on Windows CI) and
 network access for the two pinned downloads on first fetch (Bazel caches them
