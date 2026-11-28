@@ -27,11 +27,29 @@ _GRAMMAR_SHA = "e3bcd98c07243e45ee1e85c3c03359cd38a85645544d8a3d5678076ec5f8c772
 
 
 def _swift_grammar_repo_impl(repository_ctx):
-    os_name = repository_ctx.os.name
-    arch = repository_ctx.os.arch
+    # Bazel's os.name/arch use platform-specific spellings: "mac os x" vs
+    # "macos", "windows server 2022" vs "windows", "amd64" vs "x86_64".
+    # Normalise both before looking up the pinned CLI asset.
+    raw_os = repository_ctx.os.name
+    raw_arch = repository_ctx.os.arch
+    if raw_os.startswith("mac os") or raw_os.startswith("macos"):
+        os_name = "macos"
+    elif raw_os.startswith("windows"):
+        os_name = "windows"
+    elif raw_os.startswith("linux"):
+        os_name = "linux"
+    else:
+        os_name = raw_os
+    if raw_arch in ("amd64", "x86_64", "x64"):
+        arch = "x86_64"
+    elif raw_arch in ("aarch64", "arm64"):
+        arch = "aarch64"
+    else:
+        arch = raw_arch
     asset = _CLI_ASSETS.get((os_name, arch))
     if asset == None:
-        fail("tree-sitter-swift: no CLI asset for build machine %s/%s" % (os_name, arch))
+        fail("tree-sitter-swift: no CLI asset for build machine %s/%s (raw %s/%s)" %
+             (os_name, arch, raw_os, raw_arch))
 
     # 1. Grammar tarball, pinned.
     grammar = repository_ctx.path("grammar.tar.gz")
