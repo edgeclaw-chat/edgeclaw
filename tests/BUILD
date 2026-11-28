@@ -1020,6 +1020,20 @@ cc_test(
 )
 
 cc_test(
+    name = "test_payload_no_body",
+    srcs = ["test_payload_no_body.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
     name = "test_leak_regression",
     srcs = ["test_leak_regression.c", "test_ws.h"],
     deps = [

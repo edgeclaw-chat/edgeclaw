@@ -3743,6 +3743,49 @@ bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to, struct e
     return true;
 }
 
+char *edc_msg_user_payload_in_span(int64_t task_id, int turn_ord, int from, int to, bool *found)
+{
+    if (found)
+        *found = false;
+    if (!g_db || task_id <= 0)
+        return NULL;
+    if (from < 0)
+        from = 0;
+
+    /* Read ONLY the payload column; role/synthetic are column filters. body is never
+     * selected nor parsed -- a folded-paste lookup has no reason to decode the message
+     * text (perf showed parse_string dominating the sidebar after the token fix). */
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             (to < 0) ? "SELECT payload FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=? "
+                        "AND role='user' AND (synthetic=0 OR synthetic IS NULL) "
+                        "ORDER BY msg_ord LIMIT 1"
+                      : "SELECT payload FROM messages WHERE task_id=? AND turn_ord=? "
+                        "AND msg_ord>=? AND msg_ord<? AND role='user' "
+                        "AND (synthetic=0 OR synthetic IS NULL) "
+                        "ORDER BY msg_ord LIMIT 1");
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
+        return NULL;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)task_id);
+    sqlite3_bind_int(st, 2, turn_ord);
+    sqlite3_bind_int(st, 3, from);
+    if (to >= 0)
+        sqlite3_bind_int(st, 4, to);
+
+    char *out = NULL;
+    if (sqlite3_step(st) == SQLITE_ROW)
+    {
+        if (found)
+            *found = true; /* a matching user message exists, even if payload is empty */
+        const char *p = col_str(st, 0);
+        if (p && *p)
+            out = strdup(p);
+    }
+    sqlite3_finalize(st);
+    return out;
+}
+
 /* ── Addressing messages by id ─────────────────────────────────────────────── */
 
 bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,

@@ -664,19 +664,33 @@ cJSON *edc_task_user_payload(struct edc_task *task)
 {
     if (!task)
         return NULL;
-    cJSON *msg = turn_user_message(task->active_turn);
-    if (!msg)
+
+    /* Ask the store for just the payload column of the first non-synthetic user message.
+     * The old path read the whole message (edc_msg_get -> msg_from_columns) and cJSON_Parse'd
+     * its body just to discover role=="user" -- the top sidebar CPU hotspot. The store now
+     * filters on columns and never touches body; only this small payload map is parsed. */
+    char *text = NULL;
+    bool found = false;
+    struct edc_turn *active = task->active_turn;
+    if (active)
+        text = edc_msg_user_payload_in_span(active->task_id, active->turn_ord, 0, active->msg_count, &found);
+    /* Only keep looking through committed turns if this turn had NO user message at all.
+     * If it had one with no payload, the old lookup stopped there (turn_user_message found
+     * the message, its payload was NULL) -- preserve that by honouring |found|. */
+    if (!found)
     {
-        for (size_t i = task->turns.tail; i > task->turns.head && !msg; i--)
-            msg = turn_user_message((struct edc_turn *)task->turns.data[i - 1]);
+        for (size_t i = task->turns.tail; i > task->turns.head && !found; i--)
+        {
+            struct edc_turn *turn = (struct edc_turn *)task->turns.data[i - 1];
+            if (turn)
+                text = edc_msg_user_payload_in_span(turn->task_id, turn->turn_ord, 0, turn->msg_count, &found);
+        }
     }
-    if (!msg)
+    if (!text)
         return NULL;
-    /* The message is a query result owned here; the caller gets its own copy of the
-     * payload because the message itself does not survive this call any more. */
-    cJSON *payload = cJSON_GetObjectItem(msg, "payload");
-    cJSON *out = payload ? cJSON_Duplicate(payload, 1) : NULL;
-    cJSON_Delete(msg);
+
+    cJSON *out = cJSON_Parse(text);
+    free(text);
     return out;
 }
 

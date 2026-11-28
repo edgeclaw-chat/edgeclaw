@@ -318,6 +318,15 @@ struct edc_msg_span
 bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to,
                        struct edc_msg_span *out);
 
+/* The payload column text of the FIRST non-synthetic "user" message in [from, to)
+ * (|to| < 0 means to the end), as a malloc'd string the caller frees. Returns NULL when
+ * that message's payload is absent/empty. |found| (when non-NULL) distinguishes "no such
+ * user message at all" (false) from "found one but it had no payload" (true) so callers
+ * scanning several turns can stop at the same point the old whole-message lookup did.
+ * Reads ONLY the role/synthetic/payload columns -- never body -- so the sidebar's
+ * folded-paste lookup does not cJSON_Parse the whole message text just to find the role. */
+char *edc_msg_user_payload_in_span(int64_t task_id, int turn_ord, int from, int to, bool *found);
+
 /* ── Addressing messages by id ──────────────────────────────────────────────
  *
  * The group history holds message IDS, not copies (a copy of every unfolded message was
