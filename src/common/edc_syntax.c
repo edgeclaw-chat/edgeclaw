@@ -45,6 +45,11 @@ const TSLanguage *tree_sitter_r(void);
 const TSLanguage *tree_sitter_clojure(void);
 const TSLanguage *tree_sitter_hcl(void);
 const TSLanguage *tree_sitter_vim(void);
+const TSLanguage *tree_sitter_kotlin(void);
+const TSLanguage *tree_sitter_yaml(void);
+const TSLanguage *tree_sitter_vue(void);
+const TSLanguage *tree_sitter_ocaml(void);
+const TSLanguage *tree_sitter_php(void);
 
 typedef struct {
     const char *name; /* canonical language tag (see edc_syntax_lang.h) */
@@ -77,6 +82,11 @@ static const syntax_lang LANGS[] = {
     {"clojure", tree_sitter_clojure, edc_query_clojure, EDC_QUERY_CLOJURE_SIZE},
     {"hcl", tree_sitter_hcl, edc_query_hcl, EDC_QUERY_HCL_SIZE},
     {"vim", tree_sitter_vim, edc_query_vim, EDC_QUERY_VIM_SIZE},
+    {"kotlin", tree_sitter_kotlin, edc_query_kotlin, EDC_QUERY_KOTLIN_SIZE},
+    {"yaml", tree_sitter_yaml, edc_query_yaml, EDC_QUERY_YAML_SIZE},
+    {"vue", tree_sitter_vue, edc_query_vue, EDC_QUERY_VUE_SIZE},
+    {"ocaml", tree_sitter_ocaml, edc_query_ocaml, EDC_QUERY_OCAML_SIZE},
+    {"php", tree_sitter_php, edc_query_php, EDC_QUERY_PHP_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);

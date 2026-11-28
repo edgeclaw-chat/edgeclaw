@@ -200,4 +200,9 @@ use_repo(
     "tree-sitter-clojure",
     "tree-sitter-hcl",
     "tree-sitter-vim",
+    "tree-sitter-kotlin",
+    "tree-sitter-yaml",
+    "tree-sitter-vue",
+    "tree-sitter-ocaml",
+    "tree-sitter-php",
 )

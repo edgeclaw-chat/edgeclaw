@@ -84,6 +84,11 @@ cc_library(
         "@tree-sitter-clojure//:tree-sitter-clojure",
         "@tree-sitter-hcl//:tree-sitter-hcl",
         "@tree-sitter-vim//:tree-sitter-vim",
+        "@tree-sitter-kotlin//:tree-sitter-kotlin",
+        "@tree-sitter-yaml//:tree-sitter-yaml",
+        "@tree-sitter-vue//:tree-sitter-vue",
+        "@tree-sitter-ocaml//:tree-sitter-ocaml",
+        "@tree-sitter-php//:tree-sitter-php",
     ],
 )
 

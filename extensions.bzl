@@ -81,6 +81,23 @@ def _bc_thirdparty_deps_impl(module_ctx):
     grammar_repo(name = "tree-sitter-vim", version = "0.8.1",
                  sha256 = "93cafb9a0269420362454ace725a118ff1c3e08dcdfdc228aa86334b54d53c2a",
                  has_scanner = True, org = "tree-sitter-grammars", extra_srcs = ["src/keywords.h"])
+    # C-class: grammars with a non-standard source layout or extra sources.
+    grammar_repo(name = "tree-sitter-kotlin", version = "0.3.8",
+                 sha256 = "7dd60975786bf9cb4be6a5176f5ccb5fed505f9929a012da30762505b1015669",
+                 has_scanner = True, org = "fwcd", tag = "0.3.8")
+    grammar_repo(name = "tree-sitter-yaml", version = "0.7.2",
+                 sha256 = "aeaff5731bb8b66c7054c8aed33cd5edea5f4cd2ac71654f3f6c2ba2073d8fac",
+                 has_scanner = True, org = "tree-sitter-grammars",
+                 extra_hdrs = ["src/schema.core.c"], extra_copts = ["-DYAML_SCHEMA=core"])
+    grammar_repo(name = "tree-sitter-vue", version = "0.1.2",
+                 sha256 = "85a79bcdff46cb9317540016f77d6b2361d9547924786398e0f8d2ffe0a1ebf0",
+                 has_scanner = True, org = "anomalyco", extra_hdrs = ["src/tag.h"])
+    grammar_repo(name = "tree-sitter-ocaml", version = "0.24.2",
+                 sha256 = "f6d91b01940e6764c2d587b9932b954922f42c3204ae5470557d1b7c3977a7ee",
+                 has_scanner = True, src_dir = "grammars/ocaml/src", extra_hdrs = ["common/scanner.h"])
+    grammar_repo(name = "tree-sitter-php", version = "0.24.2",
+                 sha256 = "0e73ad63dda67ac12c0e012726a4e1a9811c26b020a0a2dea3e889f8246d9cf4",
+                 has_scanner = True, src_dir = "php/src", extra_hdrs = ["common/scanner.h"])
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

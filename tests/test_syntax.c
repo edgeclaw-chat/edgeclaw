@@ -76,6 +76,8 @@ static void test_shared_lang_map(void)
         {"x.diff", "diff"}, {"x.mk", "make"}, {"x.r", "r"},
         {"x.clj", "clojure"},
         {"x.hcl", "hcl"}, {"x.tf", "hcl"}, {"x.vim", "vim"},
+        {"x.kt", "kotlin"}, {"x.yml", "yaml"}, {"x.vue", "vue"},
+        {"x.ml", "ocaml"}, {"x.php", "php"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -117,6 +119,13 @@ int main(void)
     assert(edc_syntax_available("hcl"));
     assert(edc_syntax_available("tf")); /* alias */
     assert(edc_syntax_available("vim"));
+    assert(edc_syntax_available("kotlin"));
+    assert(edc_syntax_available("kt")); /* alias */
+    assert(edc_syntax_available("yaml"));
+    assert(edc_syntax_available("yml")); /* alias */
+    assert(edc_syntax_available("vue"));
+    assert(edc_syntax_available("ocaml"));
+    assert(edc_syntax_available("php"));
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -185,6 +194,11 @@ int main(void)
             {"clojure", "; comment\n", EDC_SYNTAX_COMMENT},
             {"hcl", "key = \"value\"\n", EDC_SYNTAX_STRING},
             {"vim", "\" comment\n", EDC_SYNTAX_COMMENT},
+            {"kotlin", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"yaml", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"vue", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
+            {"ocaml", "(* comment *)\n", EDC_SYNTAX_COMMENT},
+            {"php", "<?php\n// comment\n", EDC_SYNTAX_COMMENT},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));
