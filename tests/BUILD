@@ -2061,6 +2061,18 @@ cc_test(
     }),
 )
 cc_test(
+    name = "test_highlight_fold",
+    srcs = ["test_highlight_fold.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
+cc_test(
     name = "test_message_list",
     srcs = ["test_message_list.cpp", "test_fs_util.h"],
     deps = [
