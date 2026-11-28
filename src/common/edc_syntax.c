@@ -134,6 +134,12 @@ static const syntax_lang *find_lang(const char *lang)
  * are checked before short ones so "constant.builtin" is not mislabeled. */
 static edc_syntax_group map_capture(const char *name, uint32_t len)
 {
+    /* diff.plus / diff.minus mark whole added/removed lines; check them before
+     * the generic prefixes so the renderer can paint row backgrounds. */
+    if (len >= 9 && memcmp(name, "diff.plus", 9) == 0)
+        return EDC_SYNTAX_DIFF_PLUS;
+    if (len >= 10 && memcmp(name, "diff.minus", 10) == 0)
+        return EDC_SYNTAX_DIFF_MINUS;
     if (len >= 11 && memcmp(name, "punctuation", 11) == 0)
         return EDC_SYNTAX_PUNCTUATION;
     if (len >= 8 && memcmp(name, "constant", 8) == 0)
@@ -188,6 +194,8 @@ static int group_priority(edc_syntax_group g)
     case EDC_SYNTAX_CONSTANT: return 4;
     case EDC_SYNTAX_OPERATOR: return 3;
     case EDC_SYNTAX_VARIABLE: return 2;
+    case EDC_SYNTAX_DIFF_PLUS: return 1; /* row background, lowest: tokens win */
+    case EDC_SYNTAX_DIFF_MINUS: return 1;
     default:                  return 1;
     }
 }
@@ -464,6 +472,7 @@ const char *edc_syntax_group_name(edc_syntax_group group)
     static const char *names[] = {
         "comment", "keyword", "string", "number", "function",
         "variable", "type", "operator", "constant", "punctuation",
+        "diff.plus", "diff.minus",
     };
     if ((size_t)group >= EDC_SYNTAX_COUNT)
         return "unknown";

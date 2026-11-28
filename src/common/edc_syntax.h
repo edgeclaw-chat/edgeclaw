@@ -34,6 +34,10 @@ typedef enum {
     EDC_SYNTAX_OPERATOR,
     EDC_SYNTAX_CONSTANT,
     EDC_SYNTAX_PUNCTUATION,
+    /* Diff-specific groups: a span of an added/removed line, used by the
+     * renderer to paint a row-wide red/green background behind the tokens. */
+    EDC_SYNTAX_DIFF_PLUS,
+    EDC_SYNTAX_DIFF_MINUS,
     EDC_SYNTAX_COUNT,
 } edc_syntax_group;
 

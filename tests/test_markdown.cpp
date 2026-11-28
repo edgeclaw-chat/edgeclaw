@@ -254,6 +254,38 @@ static void test_table_header_is_above_the_body()
 
 // ── Inline styling ──────────────────────────────────────────────────────────
 
+static void test_diff_code_block_row_backgrounds()
+{
+    TEST("diff code: added/removed rows get green/red backgrounds, syntax colours stay");
+    auto provider = std::make_shared<FixedPalette>(edc::style::palette());
+    const ftxui::Color add_bg = ftxui::Color::RGB(20, 90, 40);
+    const ftxui::Color del_bg = ftxui::Color::RGB(90, 20, 25);
+    provider->pal.diff_add_bg = add_bg;
+    provider->pal.diff_del_bg = del_bg;
+    const ftxui::Color punct_fg = ftxui::Color::RGB(240, 130, 40);
+    provider->pal.syntax_punctuation = punct_fg;
+    edc::style::SetPaletteProvider(provider);
+
+    auto screen = DrawColored("```diff\n--- a.c\n+++ b.c\n@@ -1 +1 @@\n-old\n+new\n```", 70, 14);
+
+    int green = 0, red = 0, syntax_on_bg = 0;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const auto &cell = screen.CellAt(x, y);
+            const ftxui::Color bg = cell.background_color;
+            if (bg == add_bg) green++;
+            if (bg == del_bg) red++;
+            if ((bg == add_bg || bg == del_bg) && cell.foreground_color == punct_fg)
+                syntax_on_bg++;
+        }
+    CHECK(green > 4, "added lines have a green row background (%d cells)", green);
+    CHECK(red > 4, "removed lines have a red row background (%d cells)", red);
+    CHECK(syntax_on_bg > 0, "syntax colours are drawn on top of the diff background (%d cells)", syntax_on_bg);
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_inline_marks_keep_their_text()
 {
     TEST("inline: bold/italic/strike/link keep the words and drop the markup");
@@ -529,6 +561,7 @@ int main()
     test_horizontal_rule();
     test_table_header_is_above_the_body();
     test_distinct_heading_and_table_head_colors();
+    test_diff_code_block_row_backgrounds();
     test_plain_body_uses_palette_text();
     test_inline_marks_keep_their_text();
     test_hard_break_starts_a_new_row();

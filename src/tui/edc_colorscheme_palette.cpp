@@ -124,6 +124,8 @@ style::Palette PaletteFromScheme(const edc_colorscheme &cs, const style::Palette
     apply(EDC_CS_SYNTAX_OPERATOR, &style::Palette::syntax_operator);
     apply(EDC_CS_SYNTAX_CONSTANT, &style::Palette::syntax_constant);
     apply(EDC_CS_SYNTAX_PUNCTUATION, &style::Palette::syntax_punctuation);
+    apply(EDC_CS_DIFF_ADD_BG, &style::Palette::diff_add_bg);
+    apply(EDC_CS_DIFF_DEL_BG, &style::Palette::diff_del_bg);
 
     /* The Thought toggle's two states must be the SAME hue at two brightnesses:
      * collapsed = a dimmed version of the expanded theme colour. The built-in

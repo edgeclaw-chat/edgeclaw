@@ -16,6 +16,8 @@ ftxui::Element RenderMarkdown(std::string_view md, int wrap_cols = 0);
 // registered language tag; when empty/unknown the text is returned unhighlighted
 // in the plain code colour. Used by fenced blocks and by plain tool output
 // (read_file) alike, so both share one painting path.
-ftxui::Element HighlightedCode(std::string_view code, const char *lang);
+// |indent| is prepended to every rendered line (the fenced-code block's
+// two-space gutter); pass "" for plain tool output.
+ftxui::Element HighlightedCode(std::string_view code, const char *lang, const char *indent = "");
 
 } // namespace edc

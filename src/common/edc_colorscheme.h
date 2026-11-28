@@ -76,6 +76,9 @@ enum edc_cs_role
     EDC_CS_SYNTAX_OPERATOR,
     EDC_CS_SYNTAX_CONSTANT,
     EDC_CS_SYNTAX_PUNCTUATION,
+    /* Unified-diff row backgrounds (no direct vim group; built-in default). */
+    EDC_CS_DIFF_ADD_BG,
+    EDC_CS_DIFF_DEL_BG,
 
     EDC_CS_ROLE_COUNT
 };

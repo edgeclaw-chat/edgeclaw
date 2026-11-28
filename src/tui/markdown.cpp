@@ -182,108 +182,13 @@ struct CodeB : Builder
         buf.append(s);
     }
 
-    // Paint one line by cutting it at the byte boundaries of the spans that
-    // cover it. tree-sitter's byte offsets always land on UTF-8 code-point
-    // boundaries, so substr() is safe; ftxui computes each fragment's display
-    // width itself, so no manual byte->cell conversion is needed. Spans from
-    // the engine are sorted and non-overlapping at identical ranges, but a
-    // nested span (e.g. an identifier inside a call) may still cover a byte;
-    // the innermost such span wins.
-    static Element PaintLine(std::string_view line, size_t line_byte_base,
-                             const edc_syntax_result &hl, const style::Palette &pal)
-    {
-        if (hl.count == 0)
-            return text("  " + std::string(line)) | color(pal.md_code);
-
-        // Collect cut points: line start/end plus each span boundary clipped
-        // to this line.
-        std::vector<size_t> cuts;
-        cuts.push_back(0);
-        cuts.push_back(line.size());
-        struct Hit
-        {
-            size_t lo, hi;
-            const char *group;
-        };
-        std::vector<Hit> hits;
-        for (size_t i = 0; i < hl.count; ++i)
-        {
-            const edc_syntax_span &sp = hl.spans[i];
-            if (sp.end_byte <= line_byte_base || sp.start_byte >= line_byte_base + line.size())
-                continue;
-            size_t lo = sp.start_byte > line_byte_base ? sp.start_byte - line_byte_base : 0;
-            size_t hi = sp.end_byte < line_byte_base + line.size()
-                            ? sp.end_byte - line_byte_base
-                            : line.size();
-            if (lo >= hi)
-                continue;
-            hits.push_back({lo, hi, edc_syntax_group_name(sp.group)});
-            cuts.push_back(lo);
-            cuts.push_back(hi);
-        }
-        if (hits.empty())
-            return text("  " + std::string(line)) | color(pal.md_code);
-
-        std::sort(cuts.begin(), cuts.end());
-        cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
-
-        Elements parts;
-        for (size_t k = 0; k + 1 < cuts.size(); ++k)
-        {
-            size_t lo = cuts[k], hi = cuts[k + 1];
-            if (lo >= hi)
-                continue;
-            // The innermost span containing [lo,hi) wins: the one with the
-            // largest lo (or, on a tie, the smallest hi).
-            const char *group = nullptr;
-            size_t best_lo = 0, best_hi = line.size() + 1;
-            for (const Hit &h : hits)
-            {
-                if (h.lo <= lo && h.hi >= hi &&
-                    (h.lo > best_lo || (h.lo == best_lo && h.hi < best_hi)))
-                {
-                    group = h.group;
-                    best_lo = h.lo;
-                    best_hi = h.hi;
-                }
-            }
-            std::string seg = std::string(line.substr(lo, hi - lo));
-            if (parts.empty())
-                seg.insert(0, "  "); // the borderless block's two-space indent
-            parts.push_back(text(std::move(seg)) | color(style::SyntaxColor(pal, group)));
-        }
-        if (parts.empty())
-            return text("  " + std::string(line)) | color(pal.md_code);
-        return hbox(std::move(parts));
-    }
-
     Element Finish() override
     {
-        const auto &pal = style::palette();
-
-        // Try the syntax highlighter only when the fence declared a language
-        // that is registered. Any failure falls back to the old single-colour
-        // rendering, so highlighting can never break a code block.
-        edc_syntax_result hl;
-        bool highlighted = !lang.empty() && edc_syntax_available(lang.c_str()) &&
-                           edc_syntax_highlight(buf.data(), buf.size(), lang.c_str(), &hl) == 0;
-
-        Elements lines;
-        size_t start = 0;
-        for (size_t i = 0; i <= buf.size(); ++i)
-        {
-            if (i == buf.size() || buf[i] == '\n')
-            {
-                std::string_view line(buf.data() + start, i - start);
-                lines.push_back(highlighted ? PaintLine(line, start, hl, pal)
-                                            : text("  " + std::string(line)) | color(pal.md_code));
-                start = i + 1;
-            }
-        }
-        if (highlighted)
-            edc_syntax_result_free(&hl);
-
-        Element body = vbox(std::move(lines));
+        // Fenced code shares ONE painting path with tool output: HighlightedCode
+        // tokenises with tree-sitter, applies SyntaxColor per semantic group,
+        // paints unified-diff row backgrounds, and falls back to a single colour
+        // for unknown languages. The two-space gutter is its |indent| argument.
+        Element body = HighlightedCode(buf, lang.empty() ? nullptr : lang.c_str(), "  ");
         // Blank lines above and below keep the borderless block readable.
         return vbox({text(""), std::move(body), text("")});
     }
@@ -803,7 +708,30 @@ Element RenderMarkdown(std::string_view md, int wrap_cols)
     return body | color(style::palette().text);
 }
 
-Element HighlightedCode(std::string_view code, const char *lang)
+/* Row-level diff background: an added/removed line is tagged by a DIFF_PLUS /
+ * DIFF_MINUS span that covers the whole line (the tree-sitter `addition` /
+ * `deletion` node). Return the matching background colour, or an uninitialised
+ * caller-owned flag = false when the line is ordinary source. */
+static bool diff_row_bg(const edc_syntax_result &hl, size_t line_start, size_t line_end,
+                        const style::Palette &pal, ::ftxui::Color *out)
+{
+    for (size_t s = 0; s < hl.count; ++s)
+    {
+        const edc_syntax_span &sp = hl.spans[s];
+        if (sp.group != EDC_SYNTAX_DIFF_PLUS && sp.group != EDC_SYNTAX_DIFF_MINUS)
+            continue;
+        /* The line's own '+' / '-' marker is inside this span; require the span
+         * to start at or before the line's first byte and cover most of it. */
+        if (sp.start_byte <= line_start && sp.end_byte >= line_end)
+        {
+            *out = sp.group == EDC_SYNTAX_DIFF_PLUS ? pal.diff_add_bg : pal.diff_del_bg;
+            return true;
+        }
+    }
+    return false;
+}
+
+Element HighlightedCode(std::string_view code, const char *lang, const char *indent)
 {
     const auto &pal = style::palette();
     edc_syntax_result hl;
@@ -817,9 +745,10 @@ Element HighlightedCode(std::string_view code, const char *lang)
         if (i != code.size() && code[i] != '\n')
             continue;
         std::string_view line = code.substr(start, i - start);
+        Element line_el;
         if (!ok)
         {
-            lines.push_back(text(std::string(line)) | color(pal.md_code));
+            line_el = text(std::string(indent) + std::string(line)) | color(pal.md_code);
         }
         else
         {
@@ -852,12 +781,22 @@ Element HighlightedCode(std::string_view code, const char *lang)
                     if (h.lo <= lo && h.hi >= hi &&
                         (h.lo > blo || (h.lo == blo && h.hi < bhi)))
                     { group = h.group; blo = h.lo; bhi = h.hi; }
-                parts.push_back(text(std::string(line.substr(lo, hi - lo))) |
+                std::string seg = std::string(line.substr(lo, hi - lo));
+                if (parts.empty())
+                    seg.insert(0, indent); // fenced-code gutter, not part of the source bytes
+                parts.push_back(text(std::move(seg)) |
                                 color(style::SyntaxColor(pal, group)));
             }
-            lines.push_back(parts.empty() ? text(std::string(line)) | color(pal.md_code)
-                                          : hbox(std::move(parts)));
+            line_el = parts.empty() ? text(std::string(indent) + std::string(line)) | color(pal.md_code)
+                                    : hbox(std::move(parts));
         }
+        /* Paint the whole row for unified-diff additions/deletions. The
+         * decorator sits OUTSIDE the token colours, so syntax colours remain
+         * visible on top of the green/red background. */
+        ::ftxui::Color row_bg;
+        if (ok && diff_row_bg(hl, start, i, pal, &row_bg))
+            line_el = bgcolor(row_bg, std::move(line_el));
+        lines.push_back(std::move(line_el));
         start = i + 1;
     }
     if (ok)
