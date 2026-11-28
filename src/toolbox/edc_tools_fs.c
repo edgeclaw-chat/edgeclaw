@@ -70,6 +70,7 @@ struct fs_job
     int64_t line_hint;
     int64_t expected_replacements;
     sds result; /* filled by the pool thread */
+    sds diff;   /* edit_file: unified diff of the edit, emitted on screen (not to the model) */
     EdcError *error;
 };
 
@@ -84,7 +85,11 @@ static void edc_fs_after_cb(uv_work_t *req, int status)
     (void)status;
     struct fs_job *job = (struct fs_job *)req->data;
 
-    if (job->result && job->header)
+    /* edit_file emits its diff (lang=diff) so the TUI paints added/removed rows
+     * green/red; the model still gets job->result via the callback below. */
+    if (job->diff && job->header)
+        edc_toolbox_emit_tool_message_code(job->ctx, job->header, job->diff, "diff");
+    else if (job->result && job->header)
     {
         if (job->highlight_lang)
             edc_toolbox_emit_tool_message_code(job->ctx, job->header, job->result, job->highlight_lang);
@@ -105,6 +110,8 @@ static void edc_fs_after_cb(uv_work_t *req, int status)
         sdsfree(job->old_text);
     if (job->new_text)
         sdsfree(job->new_text);
+    if (job->diff)
+        sdsfree(job->diff);
     free(job);
 }
 
@@ -736,6 +743,46 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
 }
 
 /* edit_file's I/O half. All 7 arguments were copied into the job on the runner -- the pool thread must not read args (§4.4). */
+/* Build a unified-diff hunk for an exact old_text -> new_text replacement.
+ * The TUI feeds this to tree-sitter-diff so added/removed lines get green/red
+ * backgrounds. We deliberately show just the replaced fragment (not a full-file
+ * LCS): edit_file semantics are an exact replacement, so this is precise and
+ * cheap. |first_line| is the 1-based line where old_text starts. */
+sds edc_fs_unified_diff(const char *path, const char *old_text, const char *new_text,
+                        int64_t first_line)
+{
+    sds out = sdscatprintf(sdsempty(), "--- a/%s\n+++ b/%s\n", path ? path : "(file)", path ? path : "(file)");
+
+    int old_lines = 1, new_lines = 1;
+    for (const char *p = old_text; *p; ++p) if (*p == '\n') old_lines++;
+    for (const char *p = new_text; *p; ++p) if (*p == '\n') new_lines++;
+    /* A trailing newline terminates the last line; it does not start a new one. */
+    size_t ol = strlen(old_text), nl = strlen(new_text);
+    if (ol && old_text[ol - 1] == '\n') old_lines--;
+    if (nl && new_text[nl - 1] == '\n') new_lines--;
+    if (first_line < 1) first_line = 1;
+    out = sdscatprintf(out, "@@ -%" PRId64 ",%d +%" PRId64 ",%d @@\n",
+                       first_line, old_lines, first_line, new_lines);
+
+    /* Emit removed lines, then added lines. Trim a single trailing newline so
+     * the last line does not become an empty +/- row. */
+    size_t olen = strlen(old_text);
+    if (olen && old_text[olen - 1] == '\n') olen--;
+    size_t nlen = strlen(new_text);
+    if (nlen && new_text[nlen - 1] == '\n') nlen--;
+
+    const char *p = old_text;
+    for (size_t i = 0; i < olen; ++i)
+        if (old_text[i] == '\n') { out = sdscatprintf(out, "-%.*s\n", (int)(old_text + i - p), p); p = old_text + i + 1; }
+    out = sdscatprintf(out, "-%.*s\n", (int)(old_text + olen - p), p);
+
+    p = new_text;
+    for (size_t i = 0; i < nlen; ++i)
+        if (new_text[i] == '\n') { out = sdscatprintf(out, "+%.*s\n", (int)(new_text + i - p), p); p = new_text + i + 1; }
+    out = sdscatprintf(out, "+%.*s\n", (int)(new_text + nlen - p), p);
+    return out;
+}
+
 static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
 {
     /* Local names match the old implementation, so the whole body below is unchanged. */
@@ -835,6 +882,16 @@ static sds edc_tool_edit_file_io(struct fs_job *job, EdcError **error)
     }
     else
     {
+        /* Emit a diff for the TUI (lang=diff -> red/green rows). The first
+         * selected match's line number gives the hunk header position. */
+        int64_t first_line = 1;
+        if (selected && utarray_len(selected) > 0 && line_nums)
+        {
+            unsigned int idx = *(unsigned int *)utarray_eltptr(selected, 0);
+            if (idx < utarray_len(line_nums))
+                first_line = *(int64_t *)utarray_eltptr(line_nums, (unsigned)idx);
+        }
+        job->diff = edc_fs_unified_diff(path, old_text, new_text, first_line);
         sdsfree(new_content);
         result = sdscatprintf(sdsempty(), "Successfully edited %s", path);
     }
@@ -903,8 +960,9 @@ static void edc_tool_exec_edit_file_async(struct edc_toolbox_call_ctx *ctx, stru
         return;
     }
 
-    /* tool_name = NULL: edit_file never sends a tool message, unchanged. */
-    struct fs_job *job = edc_fs_job_new(ctx, callback, edc_tool_edit_file_io, NULL, path, safe);
+    /* edit_file now emits a diff tool message (header set, diff filled by the
+     * pool thread); the model's result is still delivered via the callback. */
+    struct fs_job *job = edc_fs_job_new(ctx, callback, edc_tool_edit_file_io, "edit_file", path, safe);
     job->old_text = sdsnew(old_text);
     job->new_text = sdsnew(new_text);
     job->replace_all = replace_all;
