@@ -14,6 +14,7 @@
 #include "edc_tools_fs.h"
 #include "edc_file_utils.h"
 #include "edc_tools_search.h"
+#include "edc_tools_shell.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -674,6 +675,66 @@ static void test_search_tools_flip_the_search_rule(void)
     edc_toolbox_free(after);
 }
 
+/* The schema `description` is what the model reads when choosing a function. Guidelines live
+ * only in the prose <tools> section, which is weaker; so the "prefer the dedicated tool"
+ * guidance must ALSO be in each schema description. Otherwise the model keeps reaching for
+ * exec_shell (its description sounds universal) to run `grep`/`find`, as observed in real use.
+ * This pins the fix at the layer that actually drives tool selection. */
+static void test_search_preference_is_in_the_schema_description(void)
+{
+    TEST("schema: grep/find descriptions prefer themselves, exec_shell defers searching");
+
+    struct edc_toolbox *tb = bare_toolbox();
+    edc_tools_search_register(tb);
+    edc_tools_shell_register(tb);
+
+    struct edc_tool *grep = NULL;
+    struct edc_tool *find = NULL;
+    struct edc_tool *shell = NULL;
+    HASH_FIND_STR(tb->tools, "grep", grep);
+    HASH_FIND_STR(tb->tools, "find", find);
+    HASH_FIND_STR(tb->tools, "exec_shell", shell);
+    CHECK(grep && find && shell, "all three real tools are registered");
+
+    if (grep && find && shell)
+    {
+        cJSON *grep_schema = edc_tool_to_schema(grep);
+        cJSON *find_schema = edc_tool_to_schema(find);
+        cJSON *shell_schema = edc_tool_to_schema(shell);
+        cJSON *grep_fn = cJSON_GetObjectItem(grep_schema, "function");
+        cJSON *find_fn = cJSON_GetObjectItem(find_schema, "function");
+        cJSON *shell_fn = cJSON_GetObjectItem(shell_schema, "function");
+        const cJSON *grep_desc = grep_fn ? cJSON_GetObjectItem(grep_fn, "description") : NULL;
+        const cJSON *find_desc = find_fn ? cJSON_GetObjectItem(find_fn, "description") : NULL;
+        const cJSON *shell_desc = shell_fn ? cJSON_GetObjectItem(shell_fn, "description") : NULL;
+
+        CHECK(grep_desc && cJSON_IsString(grep_desc), "grep schema has a description");
+        CHECK(find_desc && cJSON_IsString(find_desc), "find schema has a description");
+        CHECK(shell_desc && cJSON_IsString(shell_desc), "exec_shell schema has a description");
+
+        /* Guard against vacuous passes: descriptions exist AND carry the preference. */
+        if (grep_desc && cJSON_IsString(grep_desc))
+            CHECK(strstr(grep_desc->valuestring, "exec_shell") != NULL &&
+                  strstr(grep_desc->valuestring, "Prefer") != NULL,
+                  "grep's schema description tells the model to prefer it over exec_shell");
+        if (find_desc && cJSON_IsString(find_desc))
+            CHECK(strstr(find_desc->valuestring, "exec_shell") != NULL &&
+                  strstr(find_desc->valuestring, "Prefer") != NULL,
+                  "find's schema description tells the model to prefer it over exec_shell");
+        if (shell_desc && cJSON_IsString(shell_desc))
+            CHECK(strstr(shell_desc->valuestring, "grep") != NULL &&
+                  (strstr(shell_desc->valuestring, "use the") != NULL ||
+                   strstr(shell_desc->valuestring, "Use the") != NULL),
+                  "exec_shell's schema description defers searching to grep/find");
+
+        cJSON_Delete(grep_schema);
+        cJSON_Delete(find_schema);
+        cJSON_Delete(shell_schema);
+    }
+
+    edc_toolbox_free(tb);
+}
+
 /* 模型的 pattern 是任意字符串。它进了 `sh -c` 的脚本，所以引号必须被真正关住 ——
  * 这条测试钉的就是"注入不成立"。 */
 /* find/grep 用同一个 glob 匹配器：`*` 与 `?`，且 `*` 不跨越 '/'
@@ -1009,6 +1070,7 @@ int main(void)
     test_resolve_always_reflects_the_current_set();
     test_render_prompt_is_terse_and_ruleful();
     test_search_tools_flip_the_search_rule();
+    test_search_preference_is_in_the_schema_description();
     test_read_file_window();
     test_read_capped();
     test_search_glob_matching();

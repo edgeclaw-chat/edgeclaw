@@ -8,6 +8,7 @@
 #include "uthash.h"
 #include "utlist_fix.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef void (*EdcDestroyNotify)(void *data);
 
@@ -109,4 +110,10 @@ extern void edc_tool_set_abort(struct edc_tool *tool, edc_tool_abort_fn abort);
 extern void edc_tool_set_keep_full_output(struct edc_tool *tool, bool keep);
 extern struct edc_tool *edc_tool_new_v(const char *name, const char *desc, struct edc_tool_param **params,
                                        edc_tool_exec_async_fn exec);
+
+/* Build a unified-diff hunk for an exact old_text -> new_text replacement.
+ * Used by edit_file to show the edit on screen (lang=diff); the returned sds
+ * is owned by the caller. |first_line| is the 1-based line of the replacement. */
+extern sds edc_fs_unified_diff(const char *path, const char *old_text, const char *new_text,
+                               int64_t first_line);
 #endif

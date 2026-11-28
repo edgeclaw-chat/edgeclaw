@@ -131,11 +131,15 @@ bool ForegroundProcessBusy(const TaskSnapshot *snap)
     return style::TaskStateProcessing(ForegroundActiveTaskState(snap));
 }
 
-// How often the working spinner repaints: the bar (ui::WorkingIndicatorView)
-// moves one cell per its own step, so a frame per loop tick would redraw the
-// whole tree for sub-cell movement nobody can see; see TickAnimations() for why
-// the pacing cannot live in the render.
-constexpr long long kSpinnerFrameMs = 33;
+// How often the working spinner (and the sidebar's breathing task marker, which
+// shares this tempo) repaints. The whole tree is rebuilt and rewritten on every
+// animated frame -- perf showed ~80% of CPU in the render loop while a task was
+// processing -- so this is a smoothness/power trade-off. The breath is a 1.8s
+// cosine curve (kBreathPeriodMs): 33ms gave 54 steps/cycle (smooth but ~0.5 core
+// idle-busy), 100ms gave 18 steps/cycle and visibly stuttered. 50ms (~20fps, 36
+// steps/cycle) keeps the breathing smooth while cutting repaints ~40% vs 33ms.
+// See TickAnimations() for why the pacing cannot live in the render.
+constexpr long long kSpinnerFrameMs = 50;
 
 // Cadence of the frames that drain the chat log's post-resize re-measure (see
 // TickAnimations). The work is invisible cleanup (off-screen rows only), so it

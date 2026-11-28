@@ -9,6 +9,8 @@ load('//thirdparty/llhttp:repo.bzl', llhttp_repo = "repo")
 load('//thirdparty/libyuarel:repo.bzl', libyuarel_repo = "repo")
 load('//thirdparty/tree-sitter-c:repo.bzl', tree_sitter_c_repo = "repo")
 load('//thirdparty/tree-sitter-grammar:repo.bzl', grammar_repo = "grammar_repo")
+load('//thirdparty/tree-sitter-markdown:repo.bzl', markdown_repo = "repo")
+load('//thirdparty/tree-sitter-swift:repo.bzl', swift_grammar_repo = "swift_grammar_repo")
 load('//thirdparty/tree-sitter-typescript:repo.bzl', typescript_repo = "repo")
 load('//toolchain:arm_toolchain_repo.bzl', 'arm_toolchain_repo')
 load('//toolchain:aarch64_toolchain_repo.bzl', 'aarch64_toolchain_repo')
@@ -51,6 +53,87 @@ def _bc_thirdparty_deps_impl(module_ctx):
                  sha256 = "03965344d8c0435dc54fb45b281578420bb7db8b99df4d34e7e74105a274cb79", has_scanner = True)
     grammar_repo(name = "tree-sitter-ruby", version = "0.23.1",
                  sha256 = "e7e49577ddc1f2de8e42d42353b477e338c15bbb95b2558e123ddc13d88789f0", has_scanner = True)
+    grammar_repo(name = "tree-sitter-toml", version = "0.7.0",
+                 sha256 = "7d52a7d4884f307aabc872867c69084d94456d8afcdc63b0a73031a8b29036dc",
+                 has_scanner = True, org = "tree-sitter-grammars")
+    # A-class languages (standard layout, ABI-compatible, self-contained scm).
+    grammar_repo(name = "tree-sitter-agda", version = "1.3.3",
+                 sha256 = "f09055ac4df99d8c27af4a80442abd0659b75babd46e8693a7dd9133d5711ef5", has_scanner = True)
+    grammar_repo(name = "tree-sitter-c-sharp", version = "0.23.1",
+                 sha256 = "c0b008dca3c6820604bf0853b9668ba034f9750d89d170ba834261e94e2cd917", has_scanner = True)
+    grammar_repo(name = "tree-sitter-scala", version = "0.24.0",
+                 sha256 = "6ba17e09ba035a4a1b19db7906b87ec2c56cf400073e8e7272e8bdc9413921f8", has_scanner = True)
+    grammar_repo(name = "tree-sitter-diff", version = "0.1.0",
+                 sha256 = "0d0414ac873c33154b458f4d62fe096aa966392ff416920a08c5629c765aaed3",
+                 org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-make", version = "1.1.1",
+                 sha256 = "31affca06041623cfa5f6a728cb3f0f2a8eb7fd01607e1a2681ea1f318367211",
+                 org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-r", version = "1.2.0",
+                 sha256 = "a95b6e79a40b6b906a3b61ec040c15422c549d599e01d87092bf7ae78ebcadc5",
+                 has_scanner = True, org = "r-lib")
+    grammar_repo(name = "tree-sitter-clojure", version = "0.0.1",
+                 sha256 = "d933f33de79d6743631499fb0b643e2d40b3ba0a3abd0449a092d1cb84112ed1",
+                 org = "anomalyco")
+    # B-class: grammar has no top-level query; scm sourced from nvim-treesitter
+    # (hcl) or the grammar's queries/<lang>/ subdirectory (vim).
+    grammar_repo(name = "tree-sitter-hcl", version = "1.2.0",
+                 sha256 = "a95bc6b00271e08dee9e63b895b2563dac802db0015fdf5a24a1b0244f2cb560",
+                 has_scanner = True, org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-vim", version = "0.8.1",
+                 sha256 = "93cafb9a0269420362454ace725a118ff1c3e08dcdfdc228aa86334b54d53c2a",
+                 has_scanner = True, org = "tree-sitter-grammars", extra_srcs = ["src/keywords.h"])
+    # C-class: grammars with a non-standard source layout or extra sources.
+    grammar_repo(name = "tree-sitter-kotlin", version = "0.3.8",
+                 sha256 = "7dd60975786bf9cb4be6a5176f5ccb5fed505f9929a012da30762505b1015669",
+                 has_scanner = True, org = "fwcd", tag = "0.3.8")
+    grammar_repo(name = "tree-sitter-yaml", version = "0.7.2",
+                 sha256 = "aeaff5731bb8b66c7054c8aed33cd5edea5f4cd2ac71654f3f6c2ba2073d8fac",
+                 has_scanner = True, org = "tree-sitter-grammars",
+                 extra_hdrs = ["src/schema.core.c"], extra_copts = ["-DYAML_SCHEMA=core"])
+    grammar_repo(name = "tree-sitter-vue", version = "0.1.2",
+                 sha256 = "85a79bcdff46cb9317540016f77d6b2361d9547924786398e0f8d2ffe0a1ebf0",
+                 has_scanner = True, org = "anomalyco", extra_hdrs = ["src/tag.h"])
+    grammar_repo(name = "tree-sitter-ocaml", version = "0.24.2",
+                 sha256 = "f6d91b01940e6764c2d587b9932b954922f42c3204ae5470557d1b7c3977a7ee",
+                 has_scanner = True, src_dir = "grammars/ocaml/src", extra_hdrs = ["common/scanner.h"])
+    grammar_repo(name = "tree-sitter-php", version = "0.24.2",
+                 sha256 = "0e73ad63dda67ac12c0e012726a4e1a9811c26b020a0a2dea3e889f8246d9cf4",
+                 has_scanner = True, src_dir = "php/src", extra_hdrs = ["common/scanner.h"])
+    # D-class: standard/near-standard grammars whose queries use only predicates
+    # we now implement (#match?/#eq?/#any-of?).
+    grammar_repo(name = "tree-sitter-html", version = "0.23.2",
+                 sha256 = "21fa4f2d4dcb890ef12d09f4979a0007814f67f1c7294a9b17b0108a09e45ef7",
+                 has_scanner = True, extra_hdrs = ["src/tag.h"])
+    grammar_repo(name = "tree-sitter-elixir", version = "0.3.5",
+                 sha256 = "7d8bf37949e2bea75a19d38491d7680ed1c9f0f5a41a5235832d718ec174c7c4",
+                 has_scanner = True, org = "elixir-lang")
+    grammar_repo(name = "tree-sitter-fsharp", version = "0.3.0",
+                 sha256 = "0a121a918c38e7b135565c7d809ccf097c5254c000a67074e808677d5aeb5aef",
+                 has_scanner = True, org = "ionide", src_dir = "fsharp/src", tag = "0.3.0",
+                 extra_hdrs = ["common/scanner.h"])
+    grammar_repo(name = "tree-sitter-xml", version = "0.7.0",
+                 sha256 = "4330a6b3685c2f66d108e1df0448eb40c468518c3a66f2c1607a924c262a3eb9",
+                 has_scanner = True, org = "tree-sitter-grammars", src_dir = "xml/src",
+                 extra_hdrs = ["common/scanner.h"])
+    # D-class predicate languages: queries use #any-of?/#eq?/#match? and
+    # (for Julia) #has-ancestor?, all now implemented by the engine.
+    grammar_repo(name = "tree-sitter-haskell", version = "0.23.1",
+                 sha256 = "bac7d0a37730af62d883e2bdbafb68f47e7ab4f5e744c7586bffc589906a8cc2",
+                 has_scanner = True, extra_hdrs = ["src/unicode.h"])
+    grammar_repo(name = "tree-sitter-lua", version = "0.5.0",
+                 sha256 = "cf01b93f4b61b96a6d27942cf28eeda4cbce7d503c3bef773a8930b3d778a2d9",
+                 has_scanner = True, org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-julia", version = "0.23.1",
+                 sha256 = "9f6926734e09110dd4792f6c327c6b547834b52b8ce2bc7c1eba2ed4f7f7aba0",
+                 has_scanner = True)
+    # Final three: nix, and markdown + markdown_inline from one two-grammar repo.
+    grammar_repo(name = "tree-sitter-nix", version = "0.3.0",
+                 sha256 = "5805dfb3b1ab30fadf7b3436abaadb1e204d44f101b840ac8ab9c6edb5bf4924",
+                 has_scanner = True, org = "nix-community", has_alloc_array = False)
+    markdown_repo()
+    # Swift parser.c is generated at build time from grammar.js (see its repo.bzl).
+    swift_grammar_repo(name = "tree-sitter-swift")
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

@@ -71,6 +71,18 @@ static void test_shared_lang_map(void)
         {"x.ts", "typescript"}, {"x.jsx", "tsx"}, {"x.tsx", "tsx"},
         {"x.rs", "rust"},
         {"x.java", "java"}, {"x.css", "css"}, {"x.rb", "ruby"},
+        {"x.toml", "toml"},
+        {"x.agda", "agda"}, {"x.cs", "csharp"}, {"x.scala", "scala"},
+        {"x.diff", "diff"}, {"x.mk", "make"}, {"x.r", "r"},
+        {"x.clj", "clojure"},
+        {"x.hcl", "hcl"}, {"x.tf", "hcl"}, {"x.vim", "vim"},
+        {"x.kt", "kotlin"}, {"x.yml", "yaml"}, {"x.vue", "vue"},
+        {"x.ml", "ocaml"}, {"x.php", "php"},
+        {"x.html", "html"}, {"x.htm", "html"}, {"x.ex", "elixir"},
+        {"x.fs", "fsharp"}, {"x.xml", "xml"},
+        {"x.hs", "haskell"}, {"x.lua", "lua"}, {"x.jl", "julia"},
+        {"x.swift", "swift"},
+        {"x.nix", "nix"}, {"x.md", "markdown"}, {"x.markdown", "markdown"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -99,6 +111,43 @@ int main(void)
     assert(edc_syntax_available("css"));
     assert(edc_syntax_available("ruby"));
     assert(edc_syntax_available("rb")); /* alias */
+    assert(edc_syntax_available("toml"));
+    assert(edc_syntax_available("agda"));
+    assert(edc_syntax_available("csharp"));
+    assert(edc_syntax_available("cs")); /* alias */
+    assert(edc_syntax_available("scala"));
+    assert(edc_syntax_available("diff"));
+    assert(edc_syntax_available("make"));
+    assert(edc_syntax_available("r"));
+    assert(edc_syntax_available("clojure"));
+    assert(edc_syntax_available("clj")); /* alias */
+    assert(edc_syntax_available("hcl"));
+    assert(edc_syntax_available("tf")); /* alias */
+    assert(edc_syntax_available("vim"));
+    assert(edc_syntax_available("kotlin"));
+    assert(edc_syntax_available("kt")); /* alias */
+    assert(edc_syntax_available("yaml"));
+    assert(edc_syntax_available("yml")); /* alias */
+    assert(edc_syntax_available("vue"));
+    assert(edc_syntax_available("ocaml"));
+    assert(edc_syntax_available("php"));
+    assert(edc_syntax_available("html"));
+    assert(edc_syntax_available("htm")); /* alias */
+    assert(edc_syntax_available("elixir"));
+    assert(edc_syntax_available("ex")); /* alias */
+    assert(edc_syntax_available("fsharp"));
+    assert(edc_syntax_available("fs")); /* alias */
+    assert(edc_syntax_available("xml"));
+    assert(edc_syntax_available("haskell"));
+    assert(edc_syntax_available("hs")); /* alias */
+    assert(edc_syntax_available("lua"));
+    assert(edc_syntax_available("julia"));
+    assert(edc_syntax_available("jl")); /* alias */
+    assert(edc_syntax_available("swift"));
+    assert(edc_syntax_available("nix"));
+    assert(edc_syntax_available("markdown"));
+    assert(edc_syntax_available("md")); /* alias */
+    assert(edc_syntax_available("markdown_inline"));
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -157,6 +206,32 @@ int main(void)
             {"java", "public class X {}", EDC_SYNTAX_KEYWORD},
             {"css", "a { color: red; }", EDC_SYNTAX_PUNCTUATION},
             {"ruby", "def foo; end", EDC_SYNTAX_KEYWORD},
+            {"toml", "answer = 42", EDC_SYNTAX_NUMBER},
+            {"agda", "-- comment\n", EDC_SYNTAX_COMMENT},
+            {"csharp", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"scala", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"diff", "+added line\n", EDC_SYNTAX_PUNCTUATION},
+            {"make", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"r", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"clojure", "; comment\n", EDC_SYNTAX_COMMENT},
+            {"hcl", "key = \"value\"\n", EDC_SYNTAX_STRING},
+            {"vim", "\" comment\n", EDC_SYNTAX_COMMENT},
+            {"kotlin", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"yaml", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"vue", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
+            {"ocaml", "(* comment *)\n", EDC_SYNTAX_COMMENT},
+            {"php", "<?php\n// comment\n", EDC_SYNTAX_COMMENT},
+            {"html", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
+            {"elixir", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"fsharp", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"xml", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
+            {"haskell", "-- comment\n", EDC_SYNTAX_COMMENT},
+            {"lua", "-- comment\n", EDC_SYNTAX_COMMENT},
+            {"julia", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"swift", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"nix", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"markdown", "# heading\n", EDC_SYNTAX_PUNCTUATION},
+            {"markdown_inline", "*em*\n", EDC_SYNTAX_PUNCTUATION},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));

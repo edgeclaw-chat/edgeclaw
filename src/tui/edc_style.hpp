@@ -96,6 +96,12 @@ struct Palette
     ::ftxui::Color syntax_operator;
     ::ftxui::Color syntax_constant;
     ::ftxui::Color syntax_punctuation;
+
+    // Row backgrounds for unified-diff code blocks: added lines green-tinted,
+    // removed lines red-tinted, like opencode's diff renderable. Kept last so
+    // the aggregate initialisers below only append two values.
+    ::ftxui::Color diff_add_bg;
+    ::ftxui::Color diff_del_bg;
 };
 
 // Function-local statics on purpose: ftxui::Color::RGB() resolves against the
@@ -158,6 +164,8 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(249, 38, 114),  // syntax_operator
         ::ftxui::Color::RGB(174, 129, 255), // syntax_constant
         ::ftxui::Color::RGB(117, 113, 94),  // syntax_punctuation
+        ::ftxui::Color::RGB(24, 38, 30),    // diff_add_bg: GitHub dark diff green (rgb(24,38,30))
+        ::ftxui::Color::RGB(36, 25, 28),    // diff_del_bg: GitHub dark diff red (rgb(36,25,28))
     };
     return k;
 }
@@ -218,6 +226,8 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(249, 38, 114),  // syntax_operator
         ::ftxui::Color::RGB(174, 60, 180),  // syntax_constant
         ::ftxui::Color::RGB(159, 159, 143), // syntax_punctuation
+        ::ftxui::Color::RGB(218, 251, 225), // diff_add_bg: GitHub light diff green (#dafbe1)
+        ::ftxui::Color::RGB(255, 235, 233), // diff_del_bg: GitHub light diff red   (#ffebe9)
     };
     return k;
 }

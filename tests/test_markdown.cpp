@@ -254,6 +254,108 @@ static void test_table_header_is_above_the_body()
 
 // ── Inline styling ──────────────────────────────────────────────────────────
 
+static void test_diff_code_block_row_backgrounds()
+{
+    TEST("diff code: added/removed rows get green/red backgrounds, syntax colours stay");
+    auto provider = std::make_shared<FixedPalette>(edc::style::palette());
+    const ftxui::Color add_bg = ftxui::Color::RGB(20, 90, 40);
+    const ftxui::Color del_bg = ftxui::Color::RGB(90, 20, 25);
+    provider->pal.diff_add_bg = add_bg;
+    provider->pal.diff_del_bg = del_bg;
+    const ftxui::Color punct_fg = ftxui::Color::RGB(240, 130, 40);
+    provider->pal.syntax_punctuation = punct_fg;
+    edc::style::SetPaletteProvider(provider);
+
+    auto screen = DrawColored("```diff\n--- a.c\n+++ b.c\n@@ -1 +1 @@\n-old\n+new\n```", 70, 14);
+
+    int green = 0, red = 0, syntax_on_bg = 0;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const auto &cell = screen.CellAt(x, y);
+            const ftxui::Color bg = cell.background_color;
+            if (bg == add_bg) green++;
+            if (bg == del_bg) red++;
+            if ((bg == add_bg || bg == del_bg) && cell.foreground_color == punct_fg)
+                syntax_on_bg++;
+        }
+    CHECK(green > 4, "added lines have a green row background (%d cells)", green);
+    CHECK(red > 4, "removed lines have a red row background (%d cells)", red);
+    CHECK(syntax_on_bg > 0, "syntax colours are drawn on top of the diff background (%d cells)", syntax_on_bg);
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+static void test_diff_inner_source_colours()
+{
+    TEST("diff:c keeps C type/number colours inside +/- rows over green/red backgrounds");
+    /* The default tints must differ from the pane in the real theme (a 22%
+     * RGB tint collapsed to the same 256-colour index as the pane would be
+     * invisible). Fixed Palette256 indices guarantee that. */
+    const auto &def = edc::style::palette();
+    CHECK(def.diff_add_bg != def.pane_bg && def.diff_del_bg != def.pane_bg &&
+              def.diff_add_bg != def.diff_del_bg,
+          "default diff backgrounds are distinct from the pane and from each other");
+    auto provider = std::make_shared<FixedPalette>(edc::style::palette());
+    const ftxui::Color kw = ftxui::Color::RGB(200, 40, 120);   // distinct C type
+    const ftxui::Color add = ftxui::Color::RGB(20, 90, 40);
+    const ftxui::Color del = ftxui::Color::RGB(90, 20, 25);
+    provider->pal.syntax_type = kw;
+    provider->pal.diff_add_bg = add;
+    provider->pal.diff_del_bg = del;
+    edc::style::SetPaletteProvider(provider);
+
+    auto e = edc::HighlightedCode("-int x = 1;\n+int y = 2;\n", "diff:c");
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(40), ::ftxui::Dimension::Fixed(6));
+    ::ftxui::Render(screen, e);
+    int green = 0, red = 0, kw_on_diff = 0;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const auto &c = screen.CellAt(x, y);
+            if (c.background_color == add) green++;
+            if (c.background_color == del) red++;
+            if ((c.background_color == add || c.background_color == del) && c.foreground_color == kw)
+                kw_on_diff++;
+        }
+    CHECK(green > 2, "added row keeps green background (%d)", green);
+    CHECK(red > 2, "removed row keeps red background (%d)", red);
+    CHECK(kw_on_diff > 0, "C type colour drawn on the diff rows (%d)", kw_on_diff);
+
+    edc::style::SetPaletteProvider(nullptr);
+}
+
+static void test_diff_marker_colours_consistent()
+{
+    TEST("diff: empty and non-empty '+' rows use the same marker colour");
+    auto provider = std::make_shared<FixedPalette>(edc::style::palette());
+    const ftxui::Color punct = ftxui::Color::RGB(10, 120, 200);
+    provider->pal.syntax_punctuation = punct;
+    edc::style::SetPaletteProvider(provider);
+
+    /* Row 2 is an empty '+' line; row 3 has code after '+'. tree-sitter-diff
+     * tags only the latter's marker as punctuation, so without the forced
+     * marker span the two '+' glyphs would render differently. */
+    auto e = edc::HighlightedCode("+\n+int x = 1;\n", "diff:c");
+    auto screen = ::ftxui::Screen::Create(::ftxui::Dimension::Fixed(30), ::ftxui::Dimension::Fixed(5));
+    ::ftxui::Render(screen, e);
+    int plus_cells = 0, plus_punct = 0;
+    for (int y = 0; y < screen.dimy(); ++y)
+        for (int x = 0; x < screen.dimx(); ++x)
+        {
+            const auto &c = screen.CellAt(x, y);
+            if (c.character == "+")
+            {
+                plus_cells++;
+                if (c.foreground_color == punct) plus_punct++;
+            }
+        }
+    CHECK(plus_cells >= 2, "both '+' markers are on screen (%d)", plus_cells);
+    CHECK(plus_punct == plus_cells, "every '+' marker uses the same punctuation colour (%d/%d)",
+          plus_punct, plus_cells);
+    edc::style::SetPaletteProvider(nullptr);
+}
+
 static void test_inline_marks_keep_their_text()
 {
     TEST("inline: bold/italic/strike/link keep the words and drop the markup");
@@ -529,6 +631,9 @@ int main()
     test_horizontal_rule();
     test_table_header_is_above_the_body();
     test_distinct_heading_and_table_head_colors();
+    test_diff_code_block_row_backgrounds();
+    test_diff_inner_source_colours();
+    test_diff_marker_colours_consistent();
     test_plain_body_uses_palette_text();
     test_inline_marks_keep_their_text();
     test_hard_break_starts_a_new_row();

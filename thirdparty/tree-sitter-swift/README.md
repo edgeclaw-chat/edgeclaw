@@ -1,0 +1,30 @@
+# tree-sitter-swift grammar (generated at build time)
+
+The upstream repo `alex-pinkus/tree-sitter-swift@0.7.4` does not commit
+`src/parser.c` — it is generated from `grammar.js` by tree-sitter CLI. Its
+releases ship a precompiled WASM module (for web-tree-sitter consumers such as
+opencode), which our native C tree-sitter engine cannot load.
+
+`repo.bzl` therefore generates `parser.c` at repository-fetch time:
+- downloads the grammar tarball, pinned by sha256;
+- downloads the tree-sitter CLI 0.26.5 binary for the **build machine**'s
+  OS/arch from the pinned GitHub release (sha256 per platform);
+- runs `tree-sitter generate --abi 15` to produce `src/parser.c`;
+- exposes a `cc_library` target `@tree-sitter-swift//:tree-sitter-swift`.
+
+No generated C is checked in, so the PR/repo stays small. Generation is
+deterministic and both inputs are pinned, so builds remain reproducible.
+`parser.c` is platform-independent, so cross-compiling to musl uses the build
+machine's CLI without issue.
+
+We pin 0.7.4 (the latest release): it also fixes an ASan-detectable bug in
+earlier versions where `scanner.c` called `calloc(0, sizeof(ScannerState))`.
+No local patch is needed.
+
+Requires `gzip` on the build machine (present in Git bash on Windows CI) and
+network access for the two pinned downloads on first fetch (Bazel caches them
+afterwards).
+
+To change the grammar version: update `_GRAMMAR_URL`, `_GRAMMAR_SHA`, and the
+`stripPrefix` in `repo.bzl`. To change the CLI version: update `_CLI_VERSION`
+and the per-platform asset sha256 values.

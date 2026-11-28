@@ -668,24 +668,28 @@ void test_detect_color_depth(void)
 
     using edc::theme::ColorDepth;
     const auto detect = [](const char *colorterm, const char *term, const char *term_program,
-                           const char *wt_session, const char *conemu, bool windows) {
-        return edc::theme::DetectColorDepth(colorterm, term, term_program, wt_session, conemu, windows);
+                           const char *lc_terminal, const char *wt_session, const char *conemu, bool windows) {
+        return edc::theme::DetectColorDepth(colorterm, term, term_program, lc_terminal, wt_session, conemu, windows);
     };
 
     // Windows Terminal sets neither COLORTERM nor TERM, only WT_SESSION. This is
     // the case that made every surface step invisible on Windows.
-    CHECK(detect("", "", "", "8f3c9d10-...", "", false) == ColorDepth::kTrueColor, "$WT_SESSION ignored");
-    CHECK(detect("", "", "", "", "ON", false) == ColorDepth::kTrueColor, "$ConEmuANSI=ON ignored");
+    CHECK(detect("", "", "", "", "8f3c9d10-...", "", false) == ColorDepth::kTrueColor, "$WT_SESSION ignored");
+    CHECK(detect("", "", "", "", "", "ON", false) == ColorDepth::kTrueColor, "$ConEmuANSI=ON ignored");
     // A legacy conhost sets no variable at all.
-    CHECK(detect("", "", "", "", "", true) == ColorDepth::kTrueColor, "conhost left at 256 colours");
+    CHECK(detect("", "", "", "", "", "", true) == ColorDepth::kTrueColor, "conhost left at 256 colours");
     // ...but an explicit "this terminal does 256" still wins over the platform default.
-    CHECK(detect("", "xterm-256color", "", "", "", true) == ColorDepth::kPalette256,
+    CHECK(detect("", "xterm-256color", "", "", "", "", true) == ColorDepth::kPalette256,
           "an explicit 256 hint was overruled by the Windows default");
+    // iTerm2 sets LC_TERMINAL=iTerm2 with TERM=xterm-256color; it is 24-bit and
+    // must not be downgraded by the generic xterm rule.
+    CHECK(detect("", "xterm-256color", "", "iTerm2", "", "", false) == ColorDepth::kTrueColor,
+          "LC_TERMINAL=iTerm2 wins over xterm-256color");
     // The POSIX signals keep their meaning.
-    CHECK(detect("truecolor", "", "", "", "", false) == ColorDepth::kTrueColor, "$COLORTERM ignored");
-    CHECK(detect("", "screen-256color", "", "", "", false) == ColorDepth::kPalette256, "$TERM=screen ignored");
+    CHECK(detect("truecolor", "", "", "", "", "", false) == ColorDepth::kTrueColor, "$COLORTERM ignored");
+    CHECK(detect("", "screen-256color", "", "", "", "", false) == ColorDepth::kPalette256, "$TERM=screen ignored");
     // Nothing to go on: leave ftxui's own detection alone rather than guessing.
-    CHECK(detect("", "", "", "", "", false) == ColorDepth::kUnset,
+    CHECK(detect("", "", "", "", "", "", false) == ColorDepth::kUnset,
           "a POSIX shell with no hints forced a depth");
 }
 

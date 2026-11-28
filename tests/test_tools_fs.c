@@ -31,6 +31,7 @@
 #include "edc_platform.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
+#include "edc_tools.h"
 #include "edc_tools_fs.h"
 #include "log.h"
 
@@ -842,6 +843,34 @@ static void test_edit_preserves_untouched_bytes(void)
     harness_down(&h);
 }
 
+/* edit_file emits a unified diff so the TUI can paint added/removed rows. Verify
+ * the generated text has the hunk structure tree-sitter-diff highlights. */
+static void test_edit_diff_text(void)
+{
+    sds d = edc_fs_unified_diff("src/foo.c", "int x = 1;\nint y = 2;\n",
+                                "int x = 42;\nint y = 2;\n", 7);
+    CHECK(d != NULL, "diff generated");
+    if (!d) return;
+    CHECK(strstr(d, "--- a/src/foo.c") != NULL, "diff has old-file header");
+    CHECK(strstr(d, "+++ b/src/foo.c") != NULL, "diff has new-file header");
+    CHECK(strstr(d, "@@ -7,2 +7,2 @@") != NULL, "diff has hunk header at the right line");
+    CHECK(strstr(d, "-int x = 1;") != NULL, "removed line present");
+    CHECK(strstr(d, "+int x = 42;") != NULL, "added line present");
+    sdsfree(d);
+
+    /* Lines present in BOTH old and new must be context (space prefix), not a
+     * matched pair of identical -/+ rows. Before the LCS fix these were emitted
+     * as "-same" and "+same". */
+    d = edc_fs_unified_diff("f.c", "keep\nold line\nkeep\n", "keep\nnew line\nkeep\n", 1);
+    CHECK(d != NULL, "diff generated (context case)");
+    if (!d) return;
+    CHECK(strstr(d, "\n keep\n") != NULL, "unchanged lines are context, not -/+ pairs");
+    CHECK(strstr(d, "-keep") == NULL, "unchanged line not marked removed");
+    CHECK(strstr(d, "+keep") == NULL, "unchanged line not marked added");
+    CHECK(strstr(d, "-old line") != NULL && strstr(d, "+new line") != NULL, "only the changed line is -/+");
+    sdsfree(d);
+}
+
 int main(void)
 {
     edc_test_workspace(); /* the disposable workspace, before anything writes into it */
@@ -865,6 +894,7 @@ int main(void)
     test_edit_create_convention();
     test_edit_argument_validation();
     test_edit_preserves_untouched_bytes();
+    test_edit_diff_text();
 
     log_info("");
     log_info("=== 测试结果: %d passed, %d failed ===", test_passed, test_failed);
