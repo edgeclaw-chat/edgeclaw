@@ -9,6 +9,7 @@ load('//thirdparty/llhttp:repo.bzl', llhttp_repo = "repo")
 load('//thirdparty/libyuarel:repo.bzl', libyuarel_repo = "repo")
 load('//thirdparty/tree-sitter-c:repo.bzl', tree_sitter_c_repo = "repo")
 load('//thirdparty/tree-sitter-grammar:repo.bzl', grammar_repo = "grammar_repo")
+load('//thirdparty/tree-sitter-markdown:repo.bzl', markdown_repo = "repo")
 load('//thirdparty/tree-sitter-typescript:repo.bzl', typescript_repo = "repo")
 load('//toolchain:arm_toolchain_repo.bzl', 'arm_toolchain_repo')
 load('//toolchain:aarch64_toolchain_repo.bzl', 'aarch64_toolchain_repo')
@@ -125,6 +126,11 @@ def _bc_thirdparty_deps_impl(module_ctx):
     grammar_repo(name = "tree-sitter-julia", version = "0.23.1",
                  sha256 = "9f6926734e09110dd4792f6c327c6b547834b52b8ce2bc7c1eba2ed4f7f7aba0",
                  has_scanner = True)
+    # Final three: nix, and markdown + markdown_inline from one two-grammar repo.
+    grammar_repo(name = "tree-sitter-nix", version = "0.3.0",
+                 sha256 = "5805dfb3b1ab30fadf7b3436abaadb1e204d44f101b840ac8ab9c6edb5bf4924",
+                 has_scanner = True, org = "nix-community", has_alloc_array = False)
+    markdown_repo()
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

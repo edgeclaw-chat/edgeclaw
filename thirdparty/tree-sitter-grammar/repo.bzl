@@ -9,17 +9,20 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # taken from these archives: they live under //src/common:highlight_queries and
 # are embedded at build time (see //src/common:syntax), so a query can be tuned
 # or patched without refetching the grammar.
-def grammar_repo(name, version, sha256, has_scanner = False, aliases = [], org = "tree-sitter", extra_srcs = [], extra_copts = [], src_dir = "src", tag = None, extra_hdrs = []):
+def grammar_repo(name, version, sha256, has_scanner = False, aliases = [], org = "tree-sitter", extra_srcs = [], extra_copts = [], src_dir = "src", tag = None, extra_hdrs = [], has_alloc_array = True):
     # `tag` overrides the URL tag when a release has no "v" prefix.
     tag = tag if tag != None else "v" + version
-    srcs = [src_dir + "/parser.c", src_dir + "/tree_sitter/parser.h",
-            src_dir + "/tree_sitter/alloc.h", src_dir + "/tree_sitter/array.h"]
+    srcs = [src_dir + "/parser.c", src_dir + "/tree_sitter/parser.h"]
+    # Older grammars (e.g. nix 0.3.0) ship only parser.h, no alloc.h/array.h.
+    if has_alloc_array:
+        srcs.extend([src_dir + "/tree_sitter/alloc.h", src_dir + "/tree_sitter/array.h"])
     if has_scanner:
         srcs.append(src_dir + "/scanner.c")
     # A file #included by scanner.c must be a header (so it lands in every
     # CppCompile sandbox). Some grammars #include a ".c" as a schema fragment.
-    hdrs = [src_dir + "/tree_sitter/parser.h", src_dir + "/tree_sitter/alloc.h",
-            src_dir + "/tree_sitter/array.h"] + extra_hdrs
+    hdrs = [src_dir + "/tree_sitter/parser.h"] + extra_hdrs
+    if has_alloc_array:
+        hdrs.extend([src_dir + "/tree_sitter/alloc.h", src_dir + "/tree_sitter/array.h"])
     srcs.extend([s for s in extra_srcs if s not in hdrs])
     srcs_literal = "[\n"
     for s in srcs:

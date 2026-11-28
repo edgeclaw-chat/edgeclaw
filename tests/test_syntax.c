@@ -82,6 +82,7 @@ static void test_shared_lang_map(void)
         {"x.fs", "fsharp"}, {"x.xml", "xml"},
         {"x.hs", "haskell"}, {"x.lua", "lua"}, {"x.jl", "julia"},
         {"x.swift", "swift"},
+        {"x.nix", "nix"}, {"x.md", "markdown"}, {"x.markdown", "markdown"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -143,6 +144,10 @@ int main(void)
     assert(edc_syntax_available("julia"));
     assert(edc_syntax_available("jl")); /* alias */
     assert(edc_syntax_available("swift"));
+    assert(edc_syntax_available("nix"));
+    assert(edc_syntax_available("markdown"));
+    assert(edc_syntax_available("md")); /* alias */
+    assert(edc_syntax_available("markdown_inline"));
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -224,6 +229,9 @@ int main(void)
             {"lua", "-- comment\n", EDC_SYNTAX_COMMENT},
             {"julia", "# comment\n", EDC_SYNTAX_COMMENT},
             {"swift", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"nix", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"markdown", "# heading\n", EDC_SYNTAX_PUNCTUATION},
+            {"markdown_inline", "*em*\n", EDC_SYNTAX_PUNCTUATION},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));

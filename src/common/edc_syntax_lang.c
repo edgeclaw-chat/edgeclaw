@@ -47,6 +47,9 @@ static const lang_alias kLangs[] = {
     {"lua", {NULL}},
     {"julia", {"jl", NULL}},
     {"swift", {NULL}},
+    {"nix", {"nix", NULL}},
+    {"markdown", {"md", "markdown", "mdx", NULL}},
+    {"markdown_inline", {NULL}},
 };
 
 static const char *lookup(const char *name, size_t len)

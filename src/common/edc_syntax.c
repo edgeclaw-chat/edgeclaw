@@ -61,6 +61,9 @@ const TSLanguage *tree_sitter_haskell(void);
 const TSLanguage *tree_sitter_lua(void);
 const TSLanguage *tree_sitter_julia(void);
 const TSLanguage *tree_sitter_swift(void);
+const TSLanguage *tree_sitter_nix(void);
+const TSLanguage *tree_sitter_markdown(void);
+const TSLanguage *tree_sitter_markdown_inline(void);
 
 typedef struct {
     const char *name; /* canonical language tag (see edc_syntax_lang.h) */
@@ -106,6 +109,9 @@ static const syntax_lang LANGS[] = {
     {"lua", tree_sitter_lua, edc_query_lua, EDC_QUERY_LUA_SIZE},
     {"julia", tree_sitter_julia, edc_query_julia, EDC_QUERY_JULIA_SIZE},
     {"swift", tree_sitter_swift, edc_query_swift, EDC_QUERY_SWIFT_SIZE},
+    {"nix", tree_sitter_nix, edc_query_nix, EDC_QUERY_NIX_SIZE},
+    {"markdown", tree_sitter_markdown, edc_query_markdown, EDC_QUERY_MARKDOWN_SIZE},
+    {"markdown_inline", tree_sitter_markdown_inline, edc_query_markdown_inline, EDC_QUERY_MARKDOWN_INLINE_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);

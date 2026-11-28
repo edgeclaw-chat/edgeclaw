@@ -212,4 +212,6 @@ use_repo(
     "tree-sitter-haskell",
     "tree-sitter-lua",
     "tree-sitter-julia",
+    "tree-sitter-nix",
+    "tree-sitter-markdown",
 )
