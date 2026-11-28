@@ -119,11 +119,15 @@ int main(void)
     {
         CHECK(dots.row == footer.row - 1,
               "... is on the line just above the expand footer (not the same row / a right column)");
-        const std::string plain = Plain(frame);
-        const size_t nl = plain.find('\n', plain.find("..."));
         // A trailing right-hand column would sit at the far edge; the appended marker does not.
         CHECK(dots.col < kW - 10, "... is not pinned to the far right column");
-        (void)nl;
+
+        /* The dots are a UI marker, not code: they must be dim, NOT run through the syntax
+         * highlighter. This is RED when "..." is fed to HighlightedCode (it picks up a
+         * syntax colour) and GREEN when it is rendered as its own dim line. */
+        const auto &pal = edc::style::palette();
+        const auto dot_color = screen.PixelAt(dots.col, dots.row).foreground_color;
+        CHECK(dot_color == pal.text_dim, "... is dim, not syntax-highlighted");
     }
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
