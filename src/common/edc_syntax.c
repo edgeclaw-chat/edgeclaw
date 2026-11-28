@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Max string arguments a predicate like #any-of? may carry from a query. */
+#define EDC_SYNTAX_MAX_PRED_ARGS 32
+
 /*
  * Syntax highlighting engine.
  *
@@ -50,6 +53,14 @@ const TSLanguage *tree_sitter_yaml(void);
 const TSLanguage *tree_sitter_vue(void);
 const TSLanguage *tree_sitter_ocaml(void);
 const TSLanguage *tree_sitter_php(void);
+const TSLanguage *tree_sitter_html(void);
+const TSLanguage *tree_sitter_elixir(void);
+const TSLanguage *tree_sitter_fsharp(void);
+const TSLanguage *tree_sitter_xml(void);
+const TSLanguage *tree_sitter_haskell(void);
+const TSLanguage *tree_sitter_lua(void);
+const TSLanguage *tree_sitter_julia(void);
+const TSLanguage *tree_sitter_swift(void);
 
 typedef struct {
     const char *name; /* canonical language tag (see edc_syntax_lang.h) */
@@ -87,6 +98,14 @@ static const syntax_lang LANGS[] = {
     {"vue", tree_sitter_vue, edc_query_vue, EDC_QUERY_VUE_SIZE},
     {"ocaml", tree_sitter_ocaml, edc_query_ocaml, EDC_QUERY_OCAML_SIZE},
     {"php", tree_sitter_php, edc_query_php, EDC_QUERY_PHP_SIZE},
+    {"html", tree_sitter_html, edc_query_html, EDC_QUERY_HTML_SIZE},
+    {"elixir", tree_sitter_elixir, edc_query_elixir, EDC_QUERY_ELIXIR_SIZE},
+    {"fsharp", tree_sitter_fsharp, edc_query_fsharp, EDC_QUERY_FSHARP_SIZE},
+    {"xml", tree_sitter_xml, edc_query_xml, EDC_QUERY_XML_SIZE},
+    {"haskell", tree_sitter_haskell, edc_query_haskell, EDC_QUERY_HASKELL_SIZE},
+    {"lua", tree_sitter_lua, edc_query_lua, EDC_QUERY_LUA_SIZE},
+    {"julia", tree_sitter_julia, edc_query_julia, EDC_QUERY_JULIA_SIZE},
+    {"swift", tree_sitter_swift, edc_query_swift, EDC_QUERY_SWIFT_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);
@@ -209,24 +228,31 @@ static bool push_span(edc_syntax_result *out, uint32_t start, uint32_t end,
  * NOT evaluate them: ts_query_cursor_next_match returns matches even when a
  * predicate would reject them. nvim-treesitter queries rely on predicates to
  * distinguish e.g. an ALL_CAPS constant from a plain variable, so ignoring them
- * over-captures. Evaluate the two predicates our shipped .scm files actually
- * use; anything else (including nvim's "#is-not? local") is left as a no-op. */
+ * over-captures. Evaluate the predicates our shipped .scm files use; anything
+ * else (including nvim's "#is-not? local") is left as a no-op. */
+
+/* The node captured with |capture_id| in |match|, or a null node when that
+ * capture is not part of this match. */
+static TSNode capture_node(const TSQueryMatch *match, uint32_t capture_id)
+{
+    for (uint16_t i = 0; i < match->capture_count; i++)
+        if (match->captures[i].index == capture_id)
+            return match->captures[i].node;
+    TSNode null_node = {0}; /* no ts_node_null_node() in this tree-sitter version */
+    return null_node;
+}
 
 /* Text of the capture with |capture_id| in |match|, or NULL when that capture
  * is not part of this match. */
 static const char *capture_text(const TSQueryMatch *match, uint32_t capture_id,
                                 const char *code, size_t *out_len)
 {
-    for (uint16_t i = 0; i < match->capture_count; i++)
-    {
-        if (match->captures[i].index != capture_id)
-            continue;
-        TSNode node = match->captures[i].node;
-        uint32_t s = ts_node_start_byte(node), e = ts_node_end_byte(node);
-        *out_len = (size_t)(e - s);
-        return code + s;
-    }
-    return NULL;
+    TSNode node = capture_node(match, capture_id);
+    if (ts_node_is_null(node))
+        return NULL;
+    uint32_t s = ts_node_start_byte(node), e = ts_node_end_byte(node);
+    *out_len = (size_t)(e - s);
+    return code + s;
 }
 
 /* One predicate = steps between two Done sentinels. Returns false only when a
@@ -243,13 +269,18 @@ static bool eval_predicate(const TSQueryPredicateStep *steps, uint32_t n,
      * syntax uses: the string value here is "match?", "eq?", "is-not?", etc. */
     bool is_match = name && strcmp(name, "match?") == 0;
     bool is_eq = name && strcmp(name, "eq?") == 0;
-    if (!is_match && !is_eq)
+    bool is_any_of = name && strcmp(name, "any-of?") == 0;
+    bool is_ancestor = name && strcmp(name, "has-ancestor?") == 0;
+    if (!is_match && !is_eq && !is_any_of && !is_ancestor)
         return true; /* #is-not? and friends: not a colour decision */
 
     uint32_t cap_id = 0;
-    const char *arg = NULL;
-    uint32_t arg_len = 0;
     bool have_cap = false;
+    /* #eq?/#match? have one string argument; #any-of? has several. Collect
+     * up to EDC_SYNTAX_MAX_PRED_ARGS, ignoring any extra (malformed) ones. */
+    const char *args[EDC_SYNTAX_MAX_PRED_ARGS];
+    uint32_t arg_lens[EDC_SYNTAX_MAX_PRED_ARGS];
+    uint32_t nargs = 0;
     for (uint32_t i = 1; i < n; i++)
     {
         if (steps[i].type == TSQueryPredicateStepTypeCapture && !have_cap)
@@ -257,13 +288,33 @@ static bool eval_predicate(const TSQueryPredicateStep *steps, uint32_t n,
             cap_id = steps[i].value_id;
             have_cap = true;
         }
-        else if (steps[i].type == TSQueryPredicateStepTypeString && !arg)
+        else if (steps[i].type == TSQueryPredicateStepTypeString && nargs < EDC_SYNTAX_MAX_PRED_ARGS)
         {
-            arg = ts_query_string_value_for_id(query, steps[i].value_id, &arg_len);
+            args[nargs] = ts_query_string_value_for_id(query, steps[i].value_id, &arg_lens[nargs]);
+            if (args[nargs])
+                nargs++;
         }
     }
-    if (!have_cap || !arg)
+    if (!have_cap || nargs == 0)
         return true;
+
+    if (is_ancestor)
+    {
+        /* (#has-ancestor? @cap "type1" "type2"): true when any ancestor node
+         * of @cap has a type equal to one of the string arguments. */
+        TSNode node = capture_node(match, cap_id);
+        if (ts_node_is_null(node))
+            return true;
+        for (TSNode parent = ts_node_parent(node); !ts_node_is_null(parent);
+             parent = ts_node_parent(parent))
+        {
+            const char *ptype = ts_node_type(parent);
+            for (uint32_t a = 0; a < nargs; a++)
+                if (strlen(ptype) == arg_lens[a] && memcmp(ptype, args[a], arg_lens[a]) == 0)
+                    return true;
+        }
+        return false; /* no ancestor of a listed type -> reject */
+    }
 
     size_t text_len = 0;
     const char *text = capture_text(match, cap_id, code, &text_len);
@@ -271,15 +322,19 @@ static bool eval_predicate(const TSQueryPredicateStep *steps, uint32_t n,
         return true; /* capture absent from this match: nothing to reject */
 
     if (is_eq)
+        return text_len == arg_lens[0] && memcmp(text, args[0], arg_lens[0]) == 0;
+    if (is_any_of)
     {
-        size_t arg_len = strlen(arg);
-        return text_len == arg_len && memcmp(text, arg, arg_len) == 0;
+        for (uint32_t a = 0; a < nargs; a++)
+            if (text_len == arg_lens[a] && memcmp(text, args[a], arg_lens[a]) == 0)
+                return true; /* one match is enough */
+        return false; /* none matched -> reject */
     }
     /* #match?: compile the query's PCRE (the .scm patterns use \d, which the
      * POSIX ERE wrapper would not understand), match against the node text. */
     int err = 0;
     PCRE2_SIZE off = 0;
-    pcre2_code *re = pcre2_compile((PCRE2_SPTR)arg, PCRE2_ZERO_TERMINATED, 0,
+    pcre2_code *re = pcre2_compile((PCRE2_SPTR)args[0], arg_lens[0], 0,
                                    &err, &off, NULL);
     if (!re)
         return true; /* bad pattern in a shipped query: do not reject */

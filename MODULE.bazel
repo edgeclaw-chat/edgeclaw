@@ -205,4 +205,11 @@ use_repo(
     "tree-sitter-vue",
     "tree-sitter-ocaml",
     "tree-sitter-php",
+    "tree-sitter-html",
+    "tree-sitter-elixir",
+    "tree-sitter-fsharp",
+    "tree-sitter-xml",
+    "tree-sitter-haskell",
+    "tree-sitter-lua",
+    "tree-sitter-julia",
 )

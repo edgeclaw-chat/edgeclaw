@@ -78,6 +78,10 @@ static void test_shared_lang_map(void)
         {"x.hcl", "hcl"}, {"x.tf", "hcl"}, {"x.vim", "vim"},
         {"x.kt", "kotlin"}, {"x.yml", "yaml"}, {"x.vue", "vue"},
         {"x.ml", "ocaml"}, {"x.php", "php"},
+        {"x.html", "html"}, {"x.htm", "html"}, {"x.ex", "elixir"},
+        {"x.fs", "fsharp"}, {"x.xml", "xml"},
+        {"x.hs", "haskell"}, {"x.lua", "lua"}, {"x.jl", "julia"},
+        {"x.swift", "swift"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -126,6 +130,19 @@ int main(void)
     assert(edc_syntax_available("vue"));
     assert(edc_syntax_available("ocaml"));
     assert(edc_syntax_available("php"));
+    assert(edc_syntax_available("html"));
+    assert(edc_syntax_available("htm")); /* alias */
+    assert(edc_syntax_available("elixir"));
+    assert(edc_syntax_available("ex")); /* alias */
+    assert(edc_syntax_available("fsharp"));
+    assert(edc_syntax_available("fs")); /* alias */
+    assert(edc_syntax_available("xml"));
+    assert(edc_syntax_available("haskell"));
+    assert(edc_syntax_available("hs")); /* alias */
+    assert(edc_syntax_available("lua"));
+    assert(edc_syntax_available("julia"));
+    assert(edc_syntax_available("jl")); /* alias */
+    assert(edc_syntax_available("swift"));
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -199,6 +216,14 @@ int main(void)
             {"vue", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
             {"ocaml", "(* comment *)\n", EDC_SYNTAX_COMMENT},
             {"php", "<?php\n// comment\n", EDC_SYNTAX_COMMENT},
+            {"html", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
+            {"elixir", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"fsharp", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"xml", "<!-- comment -->\n", EDC_SYNTAX_COMMENT},
+            {"haskell", "-- comment\n", EDC_SYNTAX_COMMENT},
+            {"lua", "-- comment\n", EDC_SYNTAX_COMMENT},
+            {"julia", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"swift", "// comment\n", EDC_SYNTAX_COMMENT},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));

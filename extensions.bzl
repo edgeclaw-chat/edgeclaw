@@ -98,6 +98,33 @@ def _bc_thirdparty_deps_impl(module_ctx):
     grammar_repo(name = "tree-sitter-php", version = "0.24.2",
                  sha256 = "0e73ad63dda67ac12c0e012726a4e1a9811c26b020a0a2dea3e889f8246d9cf4",
                  has_scanner = True, src_dir = "php/src", extra_hdrs = ["common/scanner.h"])
+    # D-class: standard/near-standard grammars whose queries use only predicates
+    # we now implement (#match?/#eq?/#any-of?).
+    grammar_repo(name = "tree-sitter-html", version = "0.23.2",
+                 sha256 = "21fa4f2d4dcb890ef12d09f4979a0007814f67f1c7294a9b17b0108a09e45ef7",
+                 has_scanner = True, extra_hdrs = ["src/tag.h"])
+    grammar_repo(name = "tree-sitter-elixir", version = "0.3.5",
+                 sha256 = "7d8bf37949e2bea75a19d38491d7680ed1c9f0f5a41a5235832d718ec174c7c4",
+                 has_scanner = True, org = "elixir-lang")
+    grammar_repo(name = "tree-sitter-fsharp", version = "0.3.0",
+                 sha256 = "0a121a918c38e7b135565c7d809ccf097c5254c000a67074e808677d5aeb5aef",
+                 has_scanner = True, org = "ionide", src_dir = "fsharp/src", tag = "0.3.0",
+                 extra_hdrs = ["common/scanner.h"])
+    grammar_repo(name = "tree-sitter-xml", version = "0.7.0",
+                 sha256 = "4330a6b3685c2f66d108e1df0448eb40c468518c3a66f2c1607a924c262a3eb9",
+                 has_scanner = True, org = "tree-sitter-grammars", src_dir = "xml/src",
+                 extra_hdrs = ["common/scanner.h"])
+    # D-class predicate languages: queries use #any-of?/#eq?/#match? and
+    # (for Julia) #has-ancestor?, all now implemented by the engine.
+    grammar_repo(name = "tree-sitter-haskell", version = "0.23.1",
+                 sha256 = "bac7d0a37730af62d883e2bdbafb68f47e7ab4f5e744c7586bffc589906a8cc2",
+                 has_scanner = True, extra_hdrs = ["src/unicode.h"])
+    grammar_repo(name = "tree-sitter-lua", version = "0.5.0",
+                 sha256 = "cf01b93f4b61b96a6d27942cf28eeda4cbce7d503c3bef773a8930b3d778a2d9",
+                 has_scanner = True, org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-julia", version = "0.23.1",
+                 sha256 = "9f6926734e09110dd4792f6c327c6b547834b52b8ce2bc7c1eba2ed4f7f7aba0",
+                 has_scanner = True)
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

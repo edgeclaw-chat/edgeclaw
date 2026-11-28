@@ -39,6 +39,14 @@ static const lang_alias kLangs[] = {
     {"vue", {NULL}},
     {"ocaml", {"ml", NULL}},
     {"php", {"php", "phtml", NULL}},
+    {"html", {"htm", NULL}},
+    {"elixir", {"ex", "exs", NULL}},
+    {"fsharp", {"fs", "fsx", NULL}},
+    {"xml", {NULL}},
+    {"haskell", {"hs", NULL}},
+    {"lua", {NULL}},
+    {"julia", {"jl", NULL}},
+    {"swift", {NULL}},
 };
 
 static const char *lookup(const char *name, size_t len)
