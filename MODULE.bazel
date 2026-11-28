@@ -214,4 +214,5 @@ use_repo(
     "tree-sitter-julia",
     "tree-sitter-nix",
     "tree-sitter-markdown",
+    "tree-sitter-swift",
 )

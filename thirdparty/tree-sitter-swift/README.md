@@ -1,25 +1,27 @@
-# Vendored tree-sitter-swift grammar (generated parser.c)
+# tree-sitter-swift grammar (generated at build time)
 
-Unlike most tree-sitter grammars, `alex-pinkus/tree-sitter-swift` does NOT
-commit `src/parser.c` to its git repository — it only ships `grammar.js`,
-`src/grammar.json`, `src/scanner.c` and the headers. Its releases provide a
-precompiled WASM module (for web-tree-sitter consumers like opencode), which we
-cannot use: our highlighter is the native C tree-sitter library from BCR and
-needs `parser.c` source.
+The upstream repo `alex-pinkus/tree-sitter-swift@0.7.1` does not commit
+`src/parser.c` — it is generated from `grammar.js` by tree-sitter CLI. Its
+releases ship a precompiled WASM module (for web-tree-sitter consumers such as
+opencode), which our native C tree-sitter engine cannot load.
 
-So `src/parser.c` here is **generated locally and vendored** as a fixed source
-file. This is a grammar source, not the tree-sitter core (the core still comes
-from BCR via `bazel_dep(tree-sitter-bazel)`).
+`repo.bzl` therefore generates `parser.c` at repository-fetch time:
+- downloads the grammar tarball, pinned by sha256;
+- downloads the tree-sitter CLI 0.26.5 binary for the **build machine**'s
+  OS/arch from the pinned GitHub release (sha256 per platform);
+- runs `tree-sitter generate --abi 15` to produce `src/parser.c`;
+- exposes a `cc_library` target `@tree-sitter-swift//:tree-sitter-swift`.
 
-Provenance / regeneration:
-- upstream: https://github.com/alex-pinkus/tree-sitter-swift at tag `0.7.1`
-- generated with `tree-sitter-cli` **0.26.5** (same version as the core lib):
-  ```
-  cd <checkout of tree-sitter-swift@0.7.1>
-  tree-sitter generate --abi 15      # writes src/parser.c (LANGUAGE_VERSION 15)
-  ```
-- `scanner.c` and `src/tree_sitter/*.h` come verbatim from that tag.
-- generation is deterministic: two runs produced byte-identical `parser.c`
-  (sha256 af17e2ccfa504cd3...).
-- The CLI is a one-off local tool and is NOT part of the build/CI; only the
-  generated C source is in the repo, so builds stay offline and reproducible.
+No generated C is checked in, so the PR/repo stays small. Generation is
+byte-for-byte deterministic (verified: the CLI-generated parser.c sha256
+matches the previously vendored file, `af17e2cc…`) and both inputs are pinned,
+so builds remain reproducible. `parser.c` is platform-independent, so
+cross-compiling to musl uses the build machine's CLI without issue.
+
+Requires `gzip` on the build machine (present in Git bash on Windows CI) and
+network access for the two pinned downloads on first fetch (Bazel caches them
+afterwards).
+
+To change the grammar version: update `_GRAMMAR_URL`, `_GRAMMAR_SHA`, and the
+`stripPrefix` in `repo.bzl`. To change the CLI version: update `_CLI_VERSION`
+and the per-platform asset sha256 values.

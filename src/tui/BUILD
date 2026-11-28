@@ -150,7 +150,7 @@ cc_library(
         "@tree-sitter-haskell//:tree-sitter-haskell",
         "@tree-sitter-lua//:tree-sitter-lua",
         "@tree-sitter-julia//:tree-sitter-julia",
-        "//thirdparty/tree-sitter-swift",
+        "@tree-sitter-swift//:tree-sitter-swift",
         "@tree-sitter-nix//:tree-sitter-nix",
         "@tree-sitter-markdown//:tree-sitter-markdown",
         "@tree-sitter-markdown//:tree-sitter-markdown-inline",
