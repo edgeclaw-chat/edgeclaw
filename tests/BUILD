@@ -819,6 +819,34 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+cc_test(
+    name = "test_history_token_cache",
+    srcs = ["test_history_token_cache.c", "test_ws.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_msg_tokens_readonly",
+    srcs = ["test_msg_tokens_readonly.c", "test_ws.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # The startup contract of the SQLite state store: PRAGMAs, schema, version refusal,
 # symlink refusal, exclusive workspace lock, checkpoint on close.
 cc_test(

@@ -330,6 +330,10 @@ bool edc_msg_span_load(int64_t task_id, int turn_ord, int from, int to,
 struct edc_msg_ids
 {
     char **ids;
+    /* Parallel to ids: the stored token estimate of each message, fetched in the same
+     * query. Lets callers (group history) cache the tokens alongside the id instead of
+     * re-querying the store every time a snapshot needs a sum. */
+    int64_t *tokens;
     int n;
 };
 bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,

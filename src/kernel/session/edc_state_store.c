@@ -3751,6 +3751,7 @@ bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,
     if (!out)
         return false;
     out->ids = NULL;
+    out->tokens = NULL;
     out->n = 0;
     if (!g_db || task_id <= 0)
         return false;
@@ -3759,9 +3760,9 @@ bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,
 
     char sql[256];
     snprintf(sql, sizeof(sql),
-             (to < 0) ? "SELECT id FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=? "
+             (to < 0) ? "SELECT id, tokens FROM messages WHERE task_id=? AND turn_ord=? AND msg_ord>=? "
                         "ORDER BY msg_ord"
-                      : "SELECT id FROM messages WHERE task_id=? AND turn_ord=? "
+                      : "SELECT id, tokens FROM messages WHERE task_id=? AND turn_ord=? "
                         "AND msg_ord>=? AND msg_ord<? ORDER BY msg_ord");
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(g_db, sql, -1, &st, NULL) != SQLITE_OK)
@@ -3781,13 +3782,19 @@ bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,
         if (out->n == cap)
         {
             const int ncap = cap ? cap * 2 : 16;
-            char **grown = realloc(out->ids, (size_t)ncap * sizeof(*grown));
-            if (!grown)
+            char **grown_ids = realloc(out->ids, (size_t)ncap * sizeof(*grown_ids));
+            if (!grown_ids)
                 break;
-            out->ids = grown;
+            out->ids = grown_ids;
+            int64_t *grown_tokens = realloc(out->tokens, (size_t)ncap * sizeof(*grown_tokens));
+            if (!grown_tokens)
+                break; /* out->ids grew but n is unchanged -- free() still owns the old slots */
+            out->tokens = grown_tokens;
             cap = ncap;
         }
-        out->ids[out->n++] = strdup(id);
+        out->ids[out->n] = strdup(id);
+        out->tokens[out->n] = sqlite3_column_int64(st, 1);
+        out->n++;
     }
     sqlite3_finalize(st);
     return true;
@@ -3795,12 +3802,17 @@ bool edc_msg_ids_for_turn(int64_t task_id, int turn_ord, int from, int to,
 
 void edc_msg_ids_free(struct edc_msg_ids *s)
 {
-    if (!s || !s->ids)
+    if (!s)
         return;
-    for (int i = 0; i < s->n; i++)
-        free(s->ids[i]);
-    free(s->ids);
-    s->ids = NULL;
+    if (s->ids)
+    {
+        for (int i = 0; i < s->n; i++)
+            free(s->ids[i]);
+        free(s->ids);
+        s->ids = NULL;
+    }
+    free(s->tokens);
+    s->tokens = NULL;
     s->n = 0;
 }
 
@@ -3910,20 +3922,30 @@ int64_t edc_msg_tokens_by_ids(const char *const *ids, int n)
         return -1;
     if (!ids || n <= 0)
         return 0;
-    if (!msg_ids_stage(ids, n))
+
+    /* Pure read. This used to stage ids in the want_msg TEMP table before the SUM --
+     * CREATE/DELETE/INSERT per call -> a WAL commit just to compute a number (measured in
+     * the perf trace as vdbeCommit/PagerCommit). A SUM has no ordering requirement, so a
+     * point query per id is equivalent and touches nothing. Missing ids contribute zero,
+     * matching the old JOIN's behaviour. One prepared statement serves the whole batch.
+     * (The sidebar's hot path now caches tokens in the group history and no longer calls
+     * this at all; keeping it read-only still matters for any other caller.) */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(g_db, "SELECT tokens FROM messages WHERE id=?", -1, &st, NULL) != SQLITE_OK)
         return -1;
 
-    sqlite3_stmt *st = NULL;
     int64_t total = 0;
-    if (sqlite3_prepare_v2(g_db,
-                           "SELECT coalesce(sum(m.tokens),0) FROM want_msg w "
-                           "JOIN messages m ON m.id=w.msg_id",
-                           -1, &st, NULL) == SQLITE_OK)
+    for (int i = 0; i < n; i++)
     {
+        if (!ids[i] || !*ids[i])
+            continue;
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        sqlite3_bind_text(st, 1, ids[i], -1, SQLITE_STATIC);
         if (sqlite3_step(st) == SQLITE_ROW)
-            total = sqlite3_column_int64(st, 0);
-        sqlite3_finalize(st);
+            total += sqlite3_column_int64(st, 0);
     }
+    sqlite3_finalize(st);
     return total;
 }
 
