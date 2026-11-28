@@ -1,4 +1,5 @@
 #include "edc_syntax.h"
+#include "edc_syntax_lang.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -21,11 +22,83 @@ static void assert_sorted(const edc_syntax_result *r)
         assert(r->spans[i - 1].start_byte <= r->spans[i].start_byte);
 }
 
+static void test_predicates(void)
+{
+    /* c.scm has two identifier patterns: `(identifier) @variable` (no predicate)
+     * and `((identifier) @constant (#match? @constant "^[A-Z][A-Z\\d_]*$"))`.
+     * The tree-sitter C API does NOT evaluate #match?, so without our predicate
+     * evaluation BOTH patterns match every identifier and dedupe makes even a
+     * lowercase name a @constant (purple). Verify the predicate discriminates. */
+    const char *code = "int MAX_COUNT = 1; int lower_name = 2;\n";
+    edc_syntax_result r;
+    assert(edc_syntax_highlight(code, strlen(code), "c", &r) == 0);
+
+    uint32_t caps = (uint32_t)(strstr(code, "MAX_COUNT") - code);
+    uint32_t low = (uint32_t)(strstr(code, "lower_name") - code);
+    edc_syntax_group gcap = span_at(&r, caps, caps + 9);
+    edc_syntax_group glow = span_at(&r, low, low + 10);
+    printf("predicate: MAX_COUNT group=%s lower_name group=%s\n",
+           edc_syntax_group_name(gcap), edc_syntax_group_name(glow));
+    assert(gcap == EDC_SYNTAX_CONSTANT);   /* ALL_CAPS matches the regex */
+    assert(glow == EDC_SYNTAX_VARIABLE);   /* lowercase rejected by the predicate */
+    edc_syntax_result_free(&r);
+
+    /* #eq? in javascript.scm: only `require(...)` is @function.builtin. */
+    const char *js = "require('x'); other('y');\n";
+    assert(edc_syntax_highlight(js, strlen(js), "javascript", &r) == 0);
+    uint32_t req = (uint32_t)(strstr(js, "require") - js);
+    /* require should be coloured as a function group (function/method/function.builtin
+     * all map to the FUNCTION group); other() must not be force-coloured. */
+    bool req_function = false;
+    for (size_t i = 0; i < r.count; ++i)
+        if (r.spans[i].start_byte == req && r.spans[i].group == EDC_SYNTAX_FUNCTION)
+            req_function = true;
+    assert(req_function);
+    edc_syntax_result_free(&r);
+}
+
+static void test_shared_lang_map(void)
+{
+    /* The fs tool tags read_file bubbles via edc_syntax_lang_for_path; the
+     * highlighter resolves names via the same table. Assert both agree, and
+     * that every path-derived tag is actually registered (no drift). */
+    struct { const char *path; const char *canonical; } cases[] = {
+        {"x.c", "c"}, {"x.h", "c"}, {"x.hpp", "c"},
+        {"x.cpp", "cpp"}, {"x.cc", "cpp"}, {"x.cxx", "cpp"}, {"x.c++", "cpp"},
+        {"x.py", "python"}, {"x.sh", "bash"}, {"x.bash", "bash"}, {"x.zsh", "bash"},
+        {"x.json", "json"}, {"x.go", "go"}, {"x.golang", "go"},
+        {"x.js", "javascript"}, {"x.node", "javascript"},
+        {"x.ts", "typescript"}, {"x.jsx", "tsx"}, {"x.tsx", "tsx"},
+        {"x.rs", "rust"},
+        {"x.java", "java"}, {"x.css", "css"}, {"x.rb", "ruby"},
+        {"a/b/c/file.py", "python"}, /* full path */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        const char *lang = edc_syntax_lang_for_path(cases[i].path);
+        assert(lang && strcmp(lang, cases[i].canonical) == 0);
+        assert(edc_syntax_normalize_lang(cases[i].canonical) &&
+               strcmp(edc_syntax_normalize_lang(cases[i].canonical), cases[i].canonical) == 0);
+        /* The tag the fs tool emits must be one the highlighter accepts. */
+        assert(edc_syntax_available(lang));
+    }
+    assert(edc_syntax_lang_for_path("x.unknown") == NULL);
+    assert(edc_syntax_lang_for_path("noext") == NULL);
+    assert(edc_syntax_lang_for_path(NULL) == NULL);
+    assert(edc_syntax_normalize_lang("py") && strcmp(edc_syntax_normalize_lang("py"), "python") == 0);
+    assert(edc_syntax_normalize_lang("hpp") && strcmp(edc_syntax_normalize_lang("hpp"), "c") == 0);
+    puts("shared lang map: path/alias -> canonical, all tags registered");
+}
+
 int main(void)
 {
+    test_shared_lang_map();
     /* --- language registry --- */
     assert(edc_syntax_available("c"));
     assert(edc_syntax_available("h")); /* alias */
+    assert(edc_syntax_available("java"));
+    assert(edc_syntax_available("css"));
+    assert(edc_syntax_available("ruby"));
+    assert(edc_syntax_available("rb")); /* alias */
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -81,6 +154,9 @@ int main(void)
             {"typescript", "let x: number = 1;", EDC_SYNTAX_TYPE},
             {"tsx", "const n = 42;", EDC_SYNTAX_NUMBER},
             {"rust", "fn main() { let x = 1; }", EDC_SYNTAX_KEYWORD},
+            {"java", "public class X {}", EDC_SYNTAX_KEYWORD},
+            {"css", "a { color: red; }", EDC_SYNTAX_PUNCTUATION},
+            {"ruby", "def foo; end", EDC_SYNTAX_KEYWORD},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));
@@ -114,7 +190,9 @@ int main(void)
     assert(edc_syntax_available("tsx"));
     assert(edc_syntax_available("jsx"));
     assert(edc_syntax_available("rs"));
-    assert(!edc_syntax_available("ruby"));
+    assert(!edc_syntax_available("cobol"));
+
+    test_predicates();
 
     puts("test_syntax: PASS");
     return 0;

@@ -332,6 +332,29 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# The bundled default colorscheme. Released into $EDC_HOME/colors at startup
+# (like the manual, it tracks the binary: bytes differing from the bundle are
+# rewritten). A fresh config.json names this theme as the default.
+COLORS_FILES = [
+    "colors/tokyonight-moon.vim",
+]
+
+filegroup(
+    name = "colors_files",
+    srcs = COLORS_FILES,
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "colors_embedded_c",
+    srcs = [":colors_files"],
+    outs = ["colors_embedded.c"],
+    cmd = "$(execpath //tools:embed_workspace) --out $@ --prefix colors --name edc_bundled_colors --header edc_bundled_colors.h $(SRCS)",
+    cmd_bat = "$(execpath //tools:embed_workspace) --out $@ --prefix colors --name edc_bundled_colors --header edc_bundled_colors.h $(SRCS)",
+    tools = ["//tools:embed_workspace"],
+    visibility = ["//visibility:public"],
+)
+
 # Reuses the workspace embedder: same struct edc_bundled_file, same path-sorted output;
 # only the symbol base name and the stripped prefix differ.
 genrule(

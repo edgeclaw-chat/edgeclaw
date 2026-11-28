@@ -52,7 +52,6 @@ static const char *name(int t){ switch(t){
 "--new-group"([ \t\n]|$)      { return T_OPT; }
     /* 带值的选项：吃后面一个 word 当参数（后随一个空白是 TRAILING CONTEXT，
      * 那个空白必须活下来结束当前 word —— 否则 `-d t1` 会拼成 `-dt1`）。 */
-"--with"/[ \t\n]            { return T_OPTARG; }
 "--group"/[ \t\n]           { return T_OPTARG; }
 "-d"/[ \t\n]                { return T_OPTARG; }
 "-g"/[ \t\n]                { return T_OPTARG; }

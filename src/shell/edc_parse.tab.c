@@ -163,7 +163,7 @@ static sds opt_needs_value(const edc_tok *o)
 {
     if (!o || !o->value)
         return NULL;
-    const char *arg = (strcmp(o->value, "-d") == 0 || strcmp(o->value, "--with") == 0) ? "<task id>" : "<group id>";
+    const char *arg = strcmp(o->value, "-d") == 0 ? "<task id>" : "<group id>";
     return sdscatprintf(sdsempty(), "`%s` needs a value: write `\"desc\" %s %s`.", o->value, o->value, arg);
 }
 /* 带参选项：参数是紧接的那个 word（所以 `-d \"a b\"` 也成立）。 */
@@ -172,7 +172,7 @@ static void opt_witharg(const edc_tok *o, const edc_tok *val)
     struct edc_ast_stage *s = cur_stage();
     if (!o || !o->value || !val)
         return;
-    if (strcmp(o->value, "-d") == 0 || strcmp(o->value, "--with") == 0)
+    if (strcmp(o->value, "-d") == 0)
     {
         s->deps = realloc(s->deps, sizeof(sds) * (size_t)(s->ndep + 1));
         s->deps[s->ndep++] = sdsdup(val->value ? val->value : sdsempty());

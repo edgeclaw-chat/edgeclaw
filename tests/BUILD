@@ -819,6 +819,34 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+cc_test(
+    name = "test_history_token_cache",
+    srcs = ["test_history_token_cache.c", "test_ws.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_msg_tokens_readonly",
+    srcs = ["test_msg_tokens_readonly.c", "test_ws.h", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # The startup contract of the SQLite state store: PRAGMAs, schema, version refusal,
 # symlink refusal, exclusive workspace lock, checkpoint on close.
 cc_test(
@@ -987,6 +1015,20 @@ cc_test(
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
         "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_payload_no_body",
+    srcs = ["test_payload_no_body.c", "test_ws.h"],
+    deps = [
+        "//src/common:common",
+        "//src/kernel:kernel",
+        "@cjson//:cjson",
+        "@log.c//:log.c",
+        "@sds//:sds",
+        "@sqlite3//:sqlite3",
     ],
     linkopts = LINK_OPTS,
 )
@@ -1402,6 +1444,16 @@ cc_test(
     deps = [
         "//src/common:common",
         "//src/kernel:kernel",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
+cc_test(
+    name = "test_bundled_colors",
+    srcs = ["test_bundled_colors.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
         "@log.c//:log.c",
     ],
     linkopts = LINK_OPTS,
@@ -2022,6 +2074,18 @@ cc_test(
         "//conditions:default": [],
     }),
 )
+cc_test(
+    name = "test_highlight_fold",
+    srcs = ["test_highlight_fold.cpp"],
+    deps = [
+        "//src/tui:tui",
+        "@ftxui//:dom",
+        "@ftxui//:screen",
+    ],
+    linkstatic = True,
+    linkopts = TUI_TEST_LINK_OPTS,
+)
+
 cc_test(
     name = "test_message_list",
     srcs = ["test_message_list.cpp", "test_fs_util.h"],

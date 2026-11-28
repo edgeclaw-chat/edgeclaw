@@ -505,6 +505,35 @@ int main(void)
         CHECK(t && edc_task_awaits_deps(t), "so it waits for the task still running there");
     }
 
+    TEST("`-g <member task id>` joins that task's group, not a new group");
+    {
+        /* The group is led by `owner`; add a second member and name THAT task's id.
+         * A group id is its leader's task id, so using a member id proves the resolver
+         * maps task -> owning group rather than trusting the number as a group id. */
+        struct edc_task *owner = drive_command(cfg, sm, sched, "+\"member id owner\"");
+        struct edc_task_group *named = owner ? owner->group : NULL;
+        {
+            char add[256];
+            snprintf(add, sizeof(add), "\"member id owner 2\" -g %s", edc_id_str(owner ? owner->task_id : 0));
+            drive_command(cfg, sm, sched, add);
+        }
+        struct edc_task *member = find_task_by_desc(sess, "member id owner 2");
+        drive_command(cfg, sm, sched, "+\"member id front\"");
+        CHECK(member && member->group == named && sess->foreground_group != named,
+              "the member is in a background group, led by another task");
+
+        char line[256];
+        snprintf(line, sizeof(line), "\"join by member id\" -g %s", edc_id_str(member ? member->task_id : 0));
+        const int before = task_count(sess);
+        const int groups_before = group_count(sess);
+        drive_command(cfg, sm, sched, line);
+
+        struct edc_task *t = find_task_by_desc(sess, "join by member id");
+        CHECK(task_count(sess) == before + 1, "exactly one task was created");
+        CHECK(t && t->group == named, "it joined the member's group, not a new one");
+        CHECK(group_count(sess) == groups_before, "no new group was opened");
+    }
+
     TEST("`--group` with an unknown id creates nothing");
     {
         const int before = task_count(sess);

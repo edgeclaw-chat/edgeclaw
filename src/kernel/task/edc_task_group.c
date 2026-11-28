@@ -147,10 +147,11 @@ static struct edc_history_slot *history_slot_new(struct edc_task_group *group)
     struct edc_history_slot *slot = &group->history[group->history_count++];
     slot->msg_id = NULL;
     slot->owned = NULL;
+    slot->tokens = 0;
     return slot;
 }
 
-static void history_add_id(struct edc_task_group *group, const char *msg_id)
+static void history_add_id(struct edc_task_group *group, const char *msg_id, int64_t tokens)
 {
     if (!group || !msg_id || !*msg_id)
         return;
@@ -158,6 +159,7 @@ static void history_add_id(struct edc_task_group *group, const char *msg_id)
     if (!slot)
         return;
     slot->msg_id = sdsnew(msg_id);
+    slot->tokens = tokens;
 }
 
 static void history_clear(struct edc_task_group *group)
@@ -208,7 +210,7 @@ void edc_task_group_history_add_turn(struct edc_task_group *group, struct edc_tu
     if (!edc_msg_ids_for_turn(turn->task_id, turn->turn_ord, folded, turn->msg_count, &ids))
         return;
     for (int i = 0; i < ids.n; i++)
-        history_add_id(group, ids.ids[i]);
+        history_add_id(group, ids.ids[i], ids.tokens ? ids.tokens[i] : 0);
     edc_msg_ids_free(&ids);
 }
 
@@ -363,24 +365,22 @@ int64_t edc_task_group_history_tokens(struct edc_task_group *group, int from, in
     if (to <= from)
         return 0;
 
-    const int n = to - from;
-    const char **ids = malloc((size_t)n * sizeof(*ids));
-    if (!ids)
-        return 0;
-    int n_ids = 0;
-    int64_t owned_tokens = 0;
+    /* Sum the tokens cached in each slot when its id was staged into the history. The
+     * stored estimate is immutable once a message is appended, so the cache cannot drift;
+     * history is rebuilt (slots including tokens cleared) at fold landing and on load.
+     * This turns every sidebar snapshot's context-token walk into a pure in-memory sum --
+     * no id collection, no store query, no WAL commit. Owned slots have no stored token,
+     * so derive those from the in-memory object as before. */
+    int64_t total = 0;
     for (int i = from; i < to; i++)
     {
-        if (group->history[i].msg_id)
-            ids[n_ids++] = group->history[i].msg_id;
-        else if (group->history[i].owned)
-            owned_tokens += edc_token_estimate_msg(group->history[i].owned);
+        const struct edc_history_slot *slot = &group->history[i];
+        if (slot->msg_id)
+            total += slot->tokens;
+        else if (slot->owned)
+            total += edc_token_estimate_msg(slot->owned);
     }
-    int64_t db_tokens = n_ids > 0 ? edc_msg_tokens_by_ids(ids, n_ids) : 0;
-    free(ids);
-    if (db_tokens < 0)
-        db_tokens = 0;
-    return db_tokens + owned_tokens;
+    return total;
 }
 
 

@@ -366,7 +366,10 @@ int TaskWidget::RowWidth() const
                                                                        : style::TaskStateColor(pal, t.state);
                 lines.push_back(hbox({
                                     text("  " + std::string(marker)) | color(tint),
-                                    text(left) | flex,
+                                    // The task id + description is body text: use the
+                                    // theme foreground like chat bubbles, not the bare
+                                    // text() that inherits the terminal default white.
+                                    text(left) | color(pal.text) | flex,
                                     text(std::string(kRightPad, ' ')),
                                 }));
             }

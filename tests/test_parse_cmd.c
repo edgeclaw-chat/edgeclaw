@@ -202,7 +202,6 @@ int main(void)
             const char *option; /* the name that has to appear in the reason */
         } cases[] = {{"\"a\" -d", "-d"},
                      {"\"a\" -g", "-g"},
-                     {"\"a\" --with", "--with"},
                      {"\"a\" --group", "--group"}};
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ci++)
         {
@@ -216,6 +215,24 @@ int main(void)
             CHECK(perr != NULL && strstr(perr, "needs a value") != NULL, what);
             snprintf(what, sizeof(what), "%s: it names `%s`", cases[ci].line, cases[ci].option);
             CHECK(perr != NULL && strstr(perr, cases[ci].option) != NULL, what);
+            sdsfree(perr);
+            edc_ast_free(&a);
+        }
+    }
+
+    TEST("shell line: `--with` is retired -- an unknown option, never a dependency");
+    {
+        static const char *const retired[] = {"\"a\" --with t1", "\"a\" --with"};
+        for (size_t i = 0; i < sizeof(retired) / sizeof(retired[0]); i++)
+        {
+            edc_ast a;
+            sds perr = NULL;
+            const bool ok = parse_shell_line(retired[i], &a, &perr);
+            char what[128];
+            snprintf(what, sizeof(what), "%s is refused", retired[i]);
+            CHECK(!ok, what);
+            snprintf(what, sizeof(what), "%s: the reason names the retired option", retired[i]);
+            CHECK(perr != NULL && strstr(perr, "--with") != NULL, what);
             sdsfree(perr);
             edc_ast_free(&a);
         }

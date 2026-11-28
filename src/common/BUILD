@@ -16,6 +16,17 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+# Tree-sitter-free language/extension mapping. Shared by the highlight engine
+# (canonical names) and the fs tool (path -> lang), so the two cannot drift.
+# Kept dependency-free so C callers need not link tree-sitter/PCRE2.
+cc_library(
+    name = "syntax_lang",
+    srcs = ["edc_syntax_lang.c"],
+    hdrs = ["edc_syntax_lang.h"],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
 # Syntax-highlighting engine: tree-sitter based source -> semantic-span parser.
 # Kept out of :common so a binary that does not render code pays no dependency
 # on the tree-sitter runtime or any grammar. Language grammars link here.
@@ -47,6 +58,8 @@ cc_library(
     includes = ["."],
     visibility = ["//visibility:public"],
     deps = [
+        ":syntax_lang",
+        "@pcre2//:pcre2",  # evaluate #match? predicates in highlight queries
         "@tree-sitter-bazel//:tree-sitter",
         "@tree-sitter-c//:tree-sitter-c",
         "@tree-sitter-cpp//:tree-sitter-cpp",
@@ -58,7 +71,23 @@ cc_library(
         "@tree-sitter-rust//:tree-sitter-rust",
         "@tree-sitter-typescript//:tree-sitter-typescript",
         "@tree-sitter-typescript//:tree-sitter-tsx",
+        "@tree-sitter-java//:tree-sitter-java",
+        "@tree-sitter-css//:tree-sitter-css",
+        "@tree-sitter-ruby//:tree-sitter-ruby",
     ],
+)
+
+# PCRE2-backed regex wrapper shared by grep and session-memory search. A separate
+# target (rather than part of :common) so both callers get exactly one set of compile
+# flags, and :common stays free of a PCRE2 dependency it does not need.
+cc_library(
+    name = "edc_regex",
+    srcs = ["edc_regex.c"],
+    hdrs = ["edc_regex.h"],
+    includes = ["."],
+    deps = ["@pcre2//:pcre2"],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
 )
 
 # Top-level utility: utlist 的兼容修正（原 //src:utlist_fix，随 core 一起下沉）
@@ -331,6 +360,7 @@ cc_library(
     srcs = [
         ":workspace_embedded.c",
         "//:docs_embedded_c",
+        "//:colors_embedded_c",
         "//:models_catalog_embedded_c",
         "edc_chat_bubble_line.c",
         "edc_colorscheme.c",
@@ -350,6 +380,7 @@ cc_library(
         "edc_upgrade.c",
     ],
     hdrs = [
+        "edc_bundled_colors.h",
         "edc_bundled_docs.h",
         "edc_bundled_files.h",
         "edc_bundled_workspace.h",

@@ -208,7 +208,7 @@ static void test_read_write_api(void)
         sdsfree(rr2);
     }
 
-    /* 正则搜索: POSIX ERE + 大小写不敏感; 非法正则置 out_regerror 且不回行 */
+    /* 正则搜索: PCRE2 + 大小写不敏感; 非法正则置 out_regerror 且不回行 */
     int regerr = 0;
     sds rr = edc_session_memory_search_regex_lines(m, "^沙", 5, &hits, &regerr, NULL);
     CHECK(regerr == 0 && hits == 1 && strstr(rr, "[m2]") != NULL, "正则锚定命中标题");
@@ -218,6 +218,19 @@ static void test_read_write_api(void)
     sdsfree(rr);
     rr = edc_session_memory_search_regex_lines(m, "(", 5, &hits, &regerr, NULL);
     CHECK(regerr == 1 && hits == 0 && sdslen(rr) == 0, "非法正则: 置 regerror, 不回行");
+    sdsfree(rr);
+
+    /* PCRE2-only syntax: \d is a digit class (POSIX ERE treated it as a literal d).
+     * m2's summary is "uid 1000 + sudo". */
+    rr = edc_session_memory_search_regex_lines(m, "\\d+", 5, &hits, &regerr, NULL);
+    CHECK(regerr == 0 && hits == 1 && strstr(rr, "[m2]") != NULL, "\\d+ 命中数字 (PCRE2 语法)");
+    sdsfree(rr);
+    /* \b word boundaries are PCRE2 too: \bsudo\b hits m2's summary, \bsud\b does not. */
+    rr = edc_session_memory_search_regex_lines(m, "\\bsudo\\b", 5, &hits, &regerr, NULL);
+    CHECK(regerr == 0 && hits == 1 && strstr(rr, "[m2]") != NULL, "\\b 词边界命中");
+    sdsfree(rr);
+    rr = edc_session_memory_search_regex_lines(m, "\\bsud\\b", 5, &hits, &regerr, NULL);
+    CHECK(regerr == 0 && hits == 0, "\\b 词边界: 非整词不命中");
     sdsfree(rr);
 
     /* Detail is DB-only: with no session bound (this pure-data test) get_detail degrades

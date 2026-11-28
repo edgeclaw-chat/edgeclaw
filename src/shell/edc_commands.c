@@ -373,9 +373,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Session", "/session memo compact", "merge / condense the session memory entries now",
      "Compaction only rewrites the session entries (merge / condense / drop / rebuild the index)."},
 
-    {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task> | --with <task>]", "create a task",
+    {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task>]", "create a task",
      "`--bg` runs it in the background (no foreground) · `--new-group` gives it a fresh "
-     "conversation · `-g <group>` puts it in an existing group · `-d` / `--with <task>` makes it "
+     "conversation · `-g <id>` puts it in an existing group (a group id or any task id in it) · `-d <task>` makes it "
      "wait for that task AND injects its output into this one's context. `+/task new <desc>` says the "
      "same thing as `--new-group`.\n\n"
      "The description does NOT have to be quoted: an option is a whole word, so `/task new 写脚本 -d 1` "
@@ -1134,7 +1134,7 @@ static struct edc_session *cmd_input_session(struct edc_session_manager *sm, str
  * required the description to be quoted precisely because the raw text could not say where
  * the description stopped; now the splitter can, so the restriction is gone.
  *
- * The vocabulary (`--bg`, `--new-group`, `-d|--with`, `-g|--group`) is this command's
+ * The vocabulary (`--bg`, `--new-group`, `-d`, `-g|--group`) is this command's
  * business, exactly as `-l` is `ls`'s: the splitter must not know it. Separated form only --
  * `-dt1` stays a word, because the lexer never makes it an option. */
 /* |out_group_text| is an OUT parameter, not part of edc_cmd_task_opts: the group is
@@ -1163,7 +1163,7 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
             continue;
         }
 
-        const bool is_dep = (strcmp(w, "-d") == 0 || strcmp(w, "--with") == 0);
+        const bool is_dep = (strcmp(w, "-d") == 0);
         const bool is_group = (strcmp(w, "-g") == 0 || strcmp(w, "--group") == 0);
         if (is_dep || is_group)
         {
@@ -1200,7 +1200,7 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
              * a typo would silently become part of the task's name. */
             sds reply = sdscatprintf(sdsempty(),
                                      "**Not an option** — `/task new` knows `--bg`, `--new-group`, "
-                                     "`-d|--with <id>` and `-g|--group <id>`, not `%s`.\n\n"
+                                     "`-d <id>` and `-g|--group <id>`, not `%s`.\n\n"
                                      "If it belongs to the description, quote the description: "
                                      "`/task new '<text with %s>'`.",
                                      w, w);
@@ -1292,7 +1292,10 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
          * EXISTING group that cannot take work (system / archived / orphaned / empty) is
          * refused via the same predicate the other named-group resolvers use. */
         const int64_t gid = (int64_t)strtoll(group_text, NULL, 10);
-        struct edc_task_group *named = edc_session_find_group(session, gid);
+        /* The name may be a group id (its leader's task id) or ANY task id inside
+         * the group (shared resolver). Keep the numeric id for the spec: the scheduler
+         * creates a group led by this task when the id matches neither. */
+        struct edc_task_group *named = edc_shell_resolve_named_group(sm, sched, session, group_text);
         if (named && !edc_task_group_accepts_work(named))
         {
             sds reply = edc_task_group_unavailable_reason(named, "-g|--group");
@@ -1307,7 +1310,7 @@ static void edc_commands_handle_task_new(struct edc_session_manager *sm, struct 
             sdsfree(reply);
         }
         spec.place = EDC_TASK_PLACE_GROUP;
-        spec.group_id = gid;
+        spec.group_id = named ? named->group_id : gid;
     }
     else
     {
@@ -3491,7 +3494,8 @@ static bool cmd_place_from_argv(struct edc_reply_to to, const char *cmd_name, co
 
 /* Where does this task go? |*out| == NULL means "open a group of its own" (the contract
  * of edc_shell_spawn_task). false = the request cannot be honoured; |*err| is the reply. */
-static bool cmd_resolve_place(struct edc_session *session, const struct cmd_place_flags *flags,
+static bool cmd_resolve_place(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                              struct edc_session *session, const struct cmd_place_flags *flags,
                               struct edc_task_group **out, sds *err)
 {
     *out = NULL;
@@ -3507,8 +3511,9 @@ static bool cmd_resolve_place(struct edc_session *session, const struct cmd_plac
 
     if (flags->group_id)
     {
-        struct edc_task_group *group =
-            session ? edc_session_find_group(session, (int64_t)strtoll(flags->group_id, NULL, 10)) : NULL;
+        /* A group id is its leader's task id; any other task id names its group too
+         * (shared resolver). Unknown ids are refused here, not made into a group. */
+        struct edc_task_group *group = edc_shell_resolve_named_group(sm, sched, session, flags->group_id);
         if (!group)
         {
             *err = sdscatprintf(sdsempty(), "**No group** named `%s`.\n\nRun `/group list` to see them.",
@@ -3613,7 +3618,7 @@ static bool edc_commands_handle_prompt(struct edc_config *cfg, struct edc_sessio
     struct edc_session *session = cmd_input_session(sm, message);
     struct edc_task_group *group = NULL;
     sds place_err = NULL;
-    if (!cmd_resolve_place(session, &flags, &group, &place_err))
+    if (!cmd_resolve_place(sm, sched, session, &flags, &group, &place_err))
     {
         edc_commands_reply(to, place_err);
         sdsfree(place_err);
@@ -3820,7 +3825,7 @@ static bool edc_commands_handle_skill(struct edc_config *cfg, struct edc_session
     struct edc_session *session = cmd_input_session(sm, message);
     struct edc_task_group *group = NULL;
     sds place_err = NULL;
-    if (!cmd_resolve_place(session, &flags, &group, &place_err))
+    if (!cmd_resolve_place(sm, sched, session, &flags, &group, &place_err))
     {
         edc_commands_reply(to, place_err);
         sdsfree(place_err);

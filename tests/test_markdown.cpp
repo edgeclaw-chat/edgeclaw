@@ -339,7 +339,7 @@ static void test_fenced_code_syntax_highlighting()
     }
     {
         // Unknown language: same single-colour fallback.
-        auto s = DrawColored("```ruby\nputs 42\n```", 60, 12);
+        auto s = DrawColored("```cobol\nDISPLAY 42\n```", 60, 12);
         CHECK(has_color(s, p.md_code), "unknown language wears md_code");
         CHECK(!has_color(s, p.syntax_number), "unknown language has no number colour");
     }
@@ -365,6 +365,13 @@ static void test_fenced_code_syntax_highlighting()
         // TypeScript: a built-in type annotation wears the type colour.
         auto s = DrawColored("```typescript\nlet x: number = 1;\n```", 60, 12);
         CHECK(has_color(s, p.syntax_type), "TypeScript type wears syntax_type");
+    }
+    {
+        // CommonMark: only the first info-string token is the language. Extra
+        // arguments (linenums, title=...) must not disable highlighting.
+        auto s = DrawColored("```cpp linenums title=\"x.cpp\"\nint main() { return 42; }\n```", 60, 12);
+        CHECK(has_color(s, p.syntax_keyword), "fence with arguments: keyword still coloured");
+        CHECK(has_color(s, p.syntax_number), "fence with arguments: number still coloured");
     }
 
     edc::style::SetPaletteProvider(nullptr);

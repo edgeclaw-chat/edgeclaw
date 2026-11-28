@@ -233,7 +233,9 @@ int main(void)
      * /theme use|off are the only writers; both must leave a file the next load
      * agrees with. */
     cfg = edc_config_load(home);
-    T_CHECK(cfg && cfg->theme == NULL, "fresh config has no theme");
+    /* A fresh config now ships with the bundled tokyonight-moon theme. */
+    T_CHECK(cfg && cfg->theme && strcmp(cfg->theme, "tokyonight-moon") == 0,
+            "fresh config defaults to the bundled theme");
     T_CHECK(cfg && cfg->theme_rev == 0, "theme_rev starts at zero");
     if (cfg)
     {

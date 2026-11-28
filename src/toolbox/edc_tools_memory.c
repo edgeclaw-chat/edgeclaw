@@ -180,7 +180,7 @@ static void memory_search_exec(struct edc_toolbox_call_ctx *ctx, struct edc_tool
     int n = (arr && cJSON_IsArray(arr)) ? cJSON_GetArraySize(arr) : 0;
     if (n <= 0)
     {
-        fail(ctx, callback, "Error: `patterns` must be a non-empty array of POSIX ERE (grep -E) regexes.");
+        fail(ctx, callback, "Error: `patterns` must be a non-empty array of PCRE2 regexes.");
         return;
     }
 
@@ -720,14 +720,14 @@ void edc_tools_memory_register(struct edc_toolbox *tb)
         "decisions, constraints, gotchas, external facts — never progress logs, todos or transient conclusions.";
 
     {
-        const char *desc = "Search this session's shared memory entries with one or more POSIX ERE regexes "
-                           "(grep -E syntax), case-insensitive, matched anywhere in title / summary / detail. "
+        const char *desc = "Search this session's shared memory entries with one or more PCRE2 regexes "
+                           "(case-insensitive), matched anywhere in title / summary / detail. "
                            "Returns one index line per hit, grouped per pattern; use memory_get for the full detail.";
         struct edc_tool *tool = edc_tool_new(
             "memory_search", desc,
             edc_tool_param_new("patterns",
                                edc_param_array_type("Regexes to look for, e.g. [\"bazel\",\"^m3\\\\b\"]",
-                                                    edc_param_str_type("POSIX ERE (grep -E)", NULL)),
+                                                    edc_param_str_type("PCRE2 regex", NULL)),
                                true),
             memory_search_exec);
         edc_tool_set_snippet(tool, "Search this session's durable notes");

@@ -212,8 +212,10 @@ What follows the closing quote of a **shell line** is the **option area** (`-d <
 `-g <group>`, `2>`, …). Anything else there is refused rather than dropped, so `"hello" and
 more` is an error — not a task quietly called `hello`. `-g <id>` / `--group <id>` put that
 stage's task in an existing group (it queues there if the group is busy, and leaves the group
-in front where it was); `+` opens a new group instead, and `&` means "run alongside". An
-unknown or unusable group id is refused, not quietly turned into a task in the current group.
+in front where it was). The id may be a group's own id (its leader's task id) or **any task
+id inside that group** — a member task id names its conversation just as well. `+` opens a
+new group instead, and `&` means "run alongside". An unknown or unusable id is refused, not
+quietly turned into a task in the current group.
 
 A `/` command is different: its words are handed to the command, which reads its own
 options out of them (the way `ls` reads `-l`). So there is no "option area" on a command
@@ -532,7 +534,7 @@ Two dependency types:
 
 | Type | Syntax | Behavior | On source CANCELLED |
 |------|--------|----------|---------------------|
-| **JOIN** | `\|` (pipe), `-d`/`--with` | Source output is spliced in front of the destination's input, once per edge (see Context Sharing) | Destination is CANCELLED too — the dependency can never be satisfied |
+| **JOIN** | `\|` (pipe), `-d` | Source output is spliced in front of the destination's input, once per edge (see Context Sharing) | Destination is CANCELLED too — the dependency can never be satisfied |
 | **SEQUENCE** | `;` | Destination waits for source, but no output injection | Destination is cancelled too, and the edge stays: resuming it returns it to the wait |
 
 ### Fork
@@ -649,8 +651,8 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/task new <desc>` | Create a task in the group in front (queues behind whatever runs there) |
 | `/task new <desc> --bg` | Same group, but background: runs alongside, takes no foreground |
 | `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
-| `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
-| `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
+| `/task new <desc> -g <id>` | Create in that existing group (`--group <id>` is the long form). The id may be a group id (its leader's task id) or any task id inside the group |
+| `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable) |
 
 `<desc>` does not need quotes. Quote it when the description itself contains something
 that looks like an option: `/task new 'fix -d 1'` is a description, `/task new fix -d 1`

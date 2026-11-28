@@ -110,8 +110,10 @@ cc_library(
         "//src/app:app",
         "//src/common:common",
         "//src/common:syntax_headers",
+        "//src/common:syntax_lang",
         # syntax highlighter (compiled into this archive above): tree-sitter core
         # plus the grammars; markdown.cpp tokenises fenced code into semantic spans.
+        "@pcre2//:pcre2",  # edc_syntax.c's #match? predicate evaluation
         "@tree-sitter-bazel//:tree-sitter",
         "@tree-sitter-c//:tree-sitter-c",
         "@tree-sitter-cpp//:tree-sitter-cpp",
@@ -123,6 +125,9 @@ cc_library(
         "@tree-sitter-rust//:tree-sitter-rust",
         "@tree-sitter-typescript//:tree-sitter-typescript",
         "@tree-sitter-typescript//:tree-sitter-tsx",
+        "@tree-sitter-java//:tree-sitter-java",
+        "@tree-sitter-css//:tree-sitter-css",
+        "@tree-sitter-ruby//:tree-sitter-ruby",
         # edc_mention.h: the `@reference` grammar the input line paints is the one the
         # mention pass expands (see that header on why it is not duplicated here).
         "//src/shell:shell_parse",

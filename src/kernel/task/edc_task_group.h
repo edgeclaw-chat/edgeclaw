@@ -223,6 +223,11 @@ struct edc_history_slot
 {
     sds msg_id;   /* non-NULL: a message row, loaded on demand */
     cJSON *owned; /* non-NULL: an in-memory message (system prompt / tool notice) */
+    /* Token estimate of a DB-backed message, cached when the id is staged into the history
+     * (messages.tokens is immutable once appended). Lets token accounting sum the history
+     * without re-querying the store on every sidebar snapshot. Zero for owned slots, whose
+     * estimate is derived from the in-memory object on demand. */
+    int64_t tokens;
 };
 
 /* Append a message the caller owns and that has no row (the system prompt, a

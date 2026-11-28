@@ -7,6 +7,7 @@
 #include <md4c.h>
 
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <string>
 #include <utility>
@@ -498,11 +499,18 @@ int on_enter_block(MD_BLOCKTYPE type, void *det, void *ud)
         break;
     case MD_BLOCK_CODE: {
         auto code = std::make_unique<CodeB>();
-        // The fence's info string is the language tag the highlighter keys on.
-        // md4c does not NUL-terminate it, so copy by explicit length.
+        // Per CommonMark, the FIRST token of the info string is the language;
+        // anything after it (linenums, title=..., {...}) is an optional argument.
+        // Taking the whole string would make "```cpp linenums" an unknown lang
+        // and silently drop highlighting. md4c does not NUL-terminate, so bound
+        // the scan by lang.size.
         const auto *cd = static_cast<const MD_BLOCK_CODE_DETAIL *>(det);
-        if (cd && cd->lang.text && cd->lang.size)
-            code->lang.assign(cd->lang.text, cd->lang.size);
+        if (cd && cd->lang.text && cd->lang.size) {
+            size_t n = 0;
+            while (n < cd->lang.size && !std::isspace(static_cast<unsigned char>(cd->lang.text[n])))
+                n++;
+            code->lang.assign(cd->lang.text, n);
+        }
         s->stack.push_back(std::move(code));
         break;
     }

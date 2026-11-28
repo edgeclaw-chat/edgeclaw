@@ -358,7 +358,7 @@ static const char kSessionMemoryHint[] =
     "  entry changed, re-read it and redo the merge with the new rev.\n"
     "\n"
     "Tools:\n"
-    "- `memory_search <patterns...>`                   -- regex (grep -E, case-insensitive) over title/summary/detail\n"
+    "- `memory_search <patterns...>`                   -- PCRE2 regex, case-insensitive, over title/summary/detail\n"
     "- `memory_list [offset] [n]`                      -- enumerate entries\n"
     "- `memory_get <ids...>`                           -- read entries (each with its rev)\n"
     "- `memory_update <entries>`                       -- update entries: [{id, expected_rev, title?, summary?, detail?}] (atomic)\n"

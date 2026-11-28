@@ -311,7 +311,7 @@ int main(void)
         sdsfreesplitres(argv, n);
     }
 
-    TEST("argv: `-d` / `-g` / `--with` / `--group` never swallow their value");
+    TEST("argv: `-d` / `-g` / `--group` never swallow their value");
     {
         int n = 0;
         sds err = NULL;
@@ -328,9 +328,12 @@ int main(void)
               "`-g g1` is two words");
         sdsfreesplitres(argv, n);
 
+        /* `--with` is retired: with the option table gone it is just a bare word, so
+         * `x --with t1` is three plain words and no option eats `t1`. The command layer
+         * refuses the word rather than treating it as a dep. */
         argv = edc_argv_from_tail("x --with t1", &n, &err);
         CHECK(argv != NULL && n == 3 && strcmp(argv[1], "--with") == 0 && strcmp(argv[2], "t1") == 0,
-              "`--with t1` is two words");
+              "`--with t1` is three plain words (no special option)");
         sdsfreesplitres(argv, n);
 
         argv = edc_argv_from_tail("x --group g1", &n, &err);
