@@ -269,6 +269,32 @@ int main(void)
         sdsfree(quoted);
     }
 
+    TEST("/task new -g <member task id> joins that task's group");
+    {
+        /* Two groups; the second takes the front. Name a NON-leader member of the
+         * first one, so a group-id lookup cannot accidentally find it. */
+        drive_command(cfg, sm, sched, "/task new \"member-id owner\" --new-group");
+        struct edc_task *owner = g_llm_task;
+        struct edc_task_group *named = owner ? owner->group : NULL;
+        sds member_line = sdscatprintf(sdsempty(), "/task new \"member-id member\" -g %s",
+                                       edc_id_str(owner ? owner->task_id : 0));
+        drive_command(cfg, sm, sched, member_line);
+        sdsfree(member_line);
+        struct edc_task *member = find_task_by_desc(sess, "member-id member");
+        drive_command(cfg, sm, sched, "/task new \"member-id front\" --new-group");
+        CHECK(member && member->group == named && sess->foreground_group != named,
+              "the named task is a non-leader member of a background group");
+
+        sds line = sdscatprintf(sdsempty(), "/task new \"join by member id\" -g %s",
+                                edc_id_str(member ? member->task_id : 0));
+        drive_command(cfg, sm, sched, line);
+        sdsfree(line);
+        struct edc_task *joined = find_task_by_desc(sess, "join by member id");
+        CHECK(joined && joined->group == named, "it joined the member's group, not a new one");
+        CHECK(!(joined && joined->group != named && joined->group && joined->group->group_id == member->task_id),
+              "and no group keyed by the member id was created");
+    }
+
     /* ── 没有输入: 和 shell 那条路一样, 不该建任务 ───────────────── */
 
     TEST("/task new with an empty description creates nothing");

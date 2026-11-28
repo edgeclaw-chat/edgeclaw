@@ -433,6 +433,32 @@ bool edc_shell_handle_builtin(struct edc_config *cfg, struct edc_session_manager
     return false;
 }
 
+struct edc_task_group *edc_shell_resolve_named_group(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                                     struct edc_session *session, const char *text)
+{
+    if (!session || !text || !*text)
+        return NULL;
+    const int64_t id = (int64_t)strtoll(text, NULL, 10);
+    if (id <= 0)
+        return NULL;
+
+    /* A group id IS its leader's task id, so try the direct lookup first: an existing
+     * group wins even if some other task happens to reuse the number (it cannot, ids
+     * are globally unique, but the direct path is also the cheap one). */
+    struct edc_task_group *group = edc_session_find_group(session, id);
+    if (group)
+        return group;
+
+    /* Otherwise the number may be a task id -- any member, not just the leader.
+     * Task ids are globally unique, so cross-session resolution is safe; the owning
+     * session is authoritative for which group that task lives in. */
+    struct edc_session *owner = NULL;
+    struct edc_task *task = edc_session_store_resolve_task(sm, sched, id, &owner);
+    if (!task || !owner || !task->group)
+        return NULL;
+    return edc_session_find_group(owner, task->group_id);
+}
+
 struct edc_task *edc_shell_spawn_task(struct edc_session_manager *sm, struct edc_scheduler *sched,
                                       edc_channel_type channel_type, struct edc_session *session,
                                       struct edc_cmd_task_opts *opts,

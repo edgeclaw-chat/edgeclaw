@@ -379,6 +379,31 @@ int main(void)
         CHECK(older && last_member(older) && last_member(older)->group == older, "and the task joined it");
     }
 
+    TEST("--group <member task id> puts the task in that task's group");
+    {
+        complete_all_tasks(sess);
+        drive_command(cfg, sm, sched, "/prompt --new-group review owner");
+        struct edc_task_group *older = sess->foreground_group;
+        struct edc_task *owner = older ? last_member(older) : NULL;
+        /* Add a non-leader member to the older group, still in the background. */
+        char add[256];
+        snprintf(add, sizeof(add), "/prompt review --group %s member", edc_id_str(owner ? owner->task_id : 0));
+        drive_command(cfg, sm, sched, add);
+        struct edc_task *member = last_member(older);
+        drive_command(cfg, sm, sched, "/prompt --new-group review front");
+        CHECK(member && member != older->leader && sess->foreground_group != older,
+              "a non-leader member of a background group");
+
+        char line[256];
+        snprintf(line, sizeof(line), "/prompt review --group %s focus", edc_id_str(member ? member->task_id : 0));
+        const int groups_before = count_groups(sess);
+        const int tasks_before = count_tasks(sess);
+        drive_command(cfg, sm, sched, line);
+        CHECK(count_tasks(sess) == tasks_before + 1, "exactly one task was created");
+        CHECK(count_groups(sess) == groups_before, "no new group was opened");
+        CHECK(older && last_member(older) && last_member(older)->group == older, "it joined the member's group");
+    }
+
     TEST("--group refuses a conversation whose leader is gone");
     {
         complete_all_tasks(sess);

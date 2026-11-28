@@ -120,13 +120,17 @@ edc_in_kind edc_classify(const edc_lex_out *toks, sds *err)
  * group": the caller resolves the name to a pointer, edc_shell_spawn_task only sees
  * that pointer. A bad id is a refusal, never a silent fall-back to the group in front.
  *
+ * The name may be a group id (its leader's task id) or ANY task id in that group
+ * (edc_shell_resolve_named_group). One lookup shared with /task new and /prompt --group.
+ *
  * Usability is decided by ONE predicate shared with /task new and /prompt --group
  * (edc_task_group_accepts_work / _unavailable_reason): system / orphaned / archived /
  * empty groups all refuse new work, with one wording source. */
-static struct edc_task_group *shell_named_group(struct edc_session *session, const char *text, sds *err)
+static struct edc_task_group *shell_named_group(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                                struct edc_session *session, const char *text, sds *err)
 {
     *err = NULL;
-    struct edc_task_group *g = edc_session_find_group(session, (int64_t)strtoll(text, NULL, 10));
+    struct edc_task_group *g = edc_shell_resolve_named_group(sm, sched, session, text);
     if (!g)
     {
         *err = sdscatprintf(sdsempty(), "**No group** named `%s`.\n\nRun `/group list` to see them.", text);
@@ -250,7 +254,7 @@ bool edc_interp_shell(struct edc_session_manager *sm, struct edc_scheduler *sche
             struct edc_task_group *stage_group = group;
             if (s->group)
             {
-                stage_group = shell_named_group(session, s->group, &group_err);
+                stage_group = shell_named_group(sm, sched, session, s->group, &group_err);
                 /* The group is now target_group. The only remaining fact is a FOREGROUND
                  * policy: an explicitly named group leaves the front alone, but still
                  * queues there (background stays false unless the line ended with `&`). */

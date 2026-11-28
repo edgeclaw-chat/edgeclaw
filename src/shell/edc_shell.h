@@ -10,6 +10,8 @@
 #include <stdbool.h>
 
 struct edc_session;
+struct edc_session_manager;
+struct edc_scheduler;
 
 struct edc_config;
 struct edc_scheduler;
@@ -20,6 +22,14 @@ struct edc_cmd_task_opts;
 struct edc_msg_payload;
 struct edc_task;
 struct edc_task_group;
+
+/* Resolve a `-g/--group <id>` argument to an existing group. A group's id is its
+ * leader's task id, so the argument is tried as a group id first; when that misses it
+ * is tried as ANY task id, and the task's owning group is used. This lets a member task
+ * id name its conversation. Returns NULL for an unknown id -- callers keep their own
+ * "create a new group" / "refuse" policy. Pure lookup: no reply, no side effects. */
+struct edc_task_group *edc_shell_resolve_named_group(struct edc_session_manager *sm, struct edc_scheduler *sched,
+                                                     struct edc_session *session, const char *text);
 
 /* ── Shell execution / command handling ────────────────────── */
 
