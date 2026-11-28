@@ -164,8 +164,8 @@ inline const Palette &dark_palette()
         ::ftxui::Color::RGB(249, 38, 114),  // syntax_operator
         ::ftxui::Color::RGB(174, 129, 255), // syntax_constant
         ::ftxui::Color::RGB(117, 113, 94),  // syntax_punctuation
-        ::ftxui::Color::RGB(30, 58, 42),    // diff_add_bg (dark green tint)
-        ::ftxui::Color::RGB(58, 30, 36),    // diff_del_bg (dark red tint)
+        ::ftxui::Color::RGB(24, 38, 30),    // diff_add_bg: GitHub dark diff green (rgb(24,38,30))
+        ::ftxui::Color::RGB(36, 25, 28),    // diff_del_bg: GitHub dark diff red (rgb(36,25,28))
     };
     return k;
 }
@@ -226,8 +226,8 @@ inline const Palette &light_palette()
         ::ftxui::Color::RGB(249, 38, 114),  // syntax_operator
         ::ftxui::Color::RGB(174, 60, 180),  // syntax_constant
         ::ftxui::Color::RGB(159, 159, 143), // syntax_punctuation
-        ::ftxui::Color::RGB(214, 240, 220), // diff_add_bg (light green tint)
-        ::ftxui::Color::RGB(248, 220, 222), // diff_del_bg (light red tint)
+        ::ftxui::Color::RGB(218, 251, 225), // diff_add_bg: GitHub light diff green (#dafbe1)
+        ::ftxui::Color::RGB(255, 235, 233), // diff_del_bg: GitHub light diff red   (#ffebe9)
     };
     return k;
 }

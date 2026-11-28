@@ -135,6 +135,7 @@ bool ParseColorDepth(std::string_view name, ColorDepth &out)
 ColorDepth DetectColorDepth(std::string_view colorterm,
                             std::string_view term,
                             std::string_view term_program,
+                            std::string_view lc_terminal,
                             std::string_view wt_session,
                             std::string_view conemu_ansi,
                             bool windows_console)
@@ -146,6 +147,10 @@ ColorDepth DetectColorDepth(std::string_view colorterm,
         return ColorDepth::kTrueColor;
     if (ContainsAnyNoCase(term_program,
                           {"vscode", "wezterm", "iterm", "ghostty", "warp", "apple_terminal"}))
+        return ColorDepth::kTrueColor;
+    // iTerm2 sets LC_TERMINAL=iTerm2 but not always TERM_PROGRAM. Check it too,
+    // before the generic xterm-256 rule below downgrades a 24-bit terminal.
+    if (ContainsAnyNoCase(lc_terminal, {"iterm", "kitty", "wezterm", "ghostty"}))
         return ColorDepth::kTrueColor;
 
     // 2. Terminals that do 24-bit but do not fill in $COLORTERM.
@@ -186,6 +191,7 @@ void InitColorSupport()
         depth = DetectColorDepth(Safe(std::getenv("COLORTERM")),
                                  Safe(std::getenv("TERM")),
                                  Safe(std::getenv("TERM_PROGRAM")),
+                                 Safe(std::getenv("LC_TERMINAL")),
                                  Safe(std::getenv("WT_SESSION")),
                                  Safe(std::getenv("ConEmuANSI")),
                                  kWindowsConsole);

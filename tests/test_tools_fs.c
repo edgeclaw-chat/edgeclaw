@@ -857,6 +857,18 @@ static void test_edit_diff_text(void)
     CHECK(strstr(d, "-int x = 1;") != NULL, "removed line present");
     CHECK(strstr(d, "+int x = 42;") != NULL, "added line present");
     sdsfree(d);
+
+    /* Lines present in BOTH old and new must be context (space prefix), not a
+     * matched pair of identical -/+ rows. Before the LCS fix these were emitted
+     * as "-same" and "+same". */
+    d = edc_fs_unified_diff("f.c", "keep\nold line\nkeep\n", "keep\nnew line\nkeep\n", 1);
+    CHECK(d != NULL, "diff generated (context case)");
+    if (!d) return;
+    CHECK(strstr(d, "\n keep\n") != NULL, "unchanged lines are context, not -/+ pairs");
+    CHECK(strstr(d, "-keep") == NULL, "unchanged line not marked removed");
+    CHECK(strstr(d, "+keep") == NULL, "unchanged line not marked added");
+    CHECK(strstr(d, "-old line") != NULL && strstr(d, "+new line") != NULL, "only the changed line is -/+");
+    sdsfree(d);
 }
 
 int main(void)

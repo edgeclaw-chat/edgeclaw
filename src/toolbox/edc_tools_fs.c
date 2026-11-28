@@ -58,6 +58,7 @@ struct fs_job
     sds arg_path;                            /* the raw path, for the reply text only */
     sds header;                              /* send a tool message only when non-NULL (edit_file does not, as before) */
     const char *highlight_lang;              /* static tag from edc_syntax_lang_for_path(arg_path); borrowed, not owned */
+    bool highlight_result;                   /* true only when result IS source content (read_file), not a status message */
     sds content;                             /* write_file's body */
     sds old_text;                            /* edit_file */
     sds new_text;
@@ -85,16 +86,36 @@ static void edc_fs_after_cb(uv_work_t *req, int status)
     (void)status;
     struct fs_job *job = (struct fs_job *)req->data;
 
-    /* edit_file emits its diff (lang=diff) so the TUI paints added/removed rows
-     * green/red; the model still gets job->result via the callback below. */
-    if (job->diff && job->header)
-        edc_toolbox_emit_tool_message_code(job->ctx, job->header, job->diff, "diff");
-    else if (job->result && job->header)
+    /* One emit path: decide (content, lang) from what the pool thread produced,
+     * then emit once. The model still gets job->result via the callback below.
+     *  - edit_file: content = the diff, lang = "diff:<src>" -> red/green rows
+     *    with the source language's token colours inside them.
+     *  - read_file: content = the file, lang = the path-derived source language.
+     *  - write_file/list_dir: content = a status message -> plain (no lang).
+     */
+    if (job->header)
     {
-        if (job->highlight_lang)
-            edc_toolbox_emit_tool_message_code(job->ctx, job->header, job->result, job->highlight_lang);
-        else
-            edc_toolbox_emit_tool_message_plain(job->ctx, job->header, job->result);
+        const char *content = NULL;
+        const char *lang = NULL;
+        sds diff_tag = NULL;
+        if (job->diff)
+        {
+            content = job->diff;
+            diff_tag = job->highlight_lang ? sdscatprintf(sdsempty(), "diff:%s", job->highlight_lang)
+                                           : sdsnew("diff");
+            lang = diff_tag;
+        }
+        else if (job->result)
+        {
+            content = job->result;
+            lang = job->highlight_result ? job->highlight_lang : NULL;
+        }
+        if (content && lang)
+            edc_toolbox_emit_tool_message_code(job->ctx, job->header, content, lang);
+        else if (content)
+            edc_toolbox_emit_tool_message_plain(job->ctx, job->header, content);
+        if (diff_tag)
+            sdsfree(diff_tag);
     }
     job->callback(job->ctx, job->result, job->error);
 
@@ -404,6 +425,9 @@ static sds edc_tool_list_dir_io(struct fs_job *job, EdcError **error)
  * thread must not read `args` (§4.4). Absent/0 keeps the defaults (offset 1, limit 2000). */
 static void read_file_fill(struct fs_job *job, cJSON *args)
 {
+    /* read_file's result IS the file content, so it may be syntax-highlighted
+     * by extension. Other fs tools emit status text and stay plain. */
+    job->highlight_result = true;
     cJSON *j = cJSON_GetObjectItemCaseSensitive(args, "offset");
     if (j && cJSON_IsNumber(j) && j->valuedouble > 0)
         job->offset = (int64_t)j->valuedouble;
@@ -743,43 +767,90 @@ static void edc_edit_file_apply_replacements(const char *content, size_t content
 }
 
 /* edit_file's I/O half. All 7 arguments were copied into the job on the runner -- the pool thread must not read args (§4.4). */
+/* A line with its byte length (text is NOT NUL-terminated at the line end). */
+struct diff_line { const char *p; size_t n; };
+
+static size_t split_diff_lines(const char *text, size_t len, struct diff_line **out)
+{
+    size_t cap = 8, n = 0;
+    struct diff_line *arr = malloc(cap * sizeof(*arr));
+    size_t start = 0;
+    for (size_t i = 0; i < len; ++i)
+    {
+        if (text[i] != '\n') continue;
+        if (n == cap) { cap *= 2; arr = realloc(arr, cap * sizeof(*arr)); }
+        arr[n].p = text + start;
+        arr[n].n = i - start;
+        n++;
+        start = i + 1;
+    }
+    /* Last line after the final newline (or the whole input if none). A
+     * trailing newline leaves start == len -> nothing more to emit. */
+    if (start < len)
+    {
+        if (n == cap) { cap *= 2; arr = realloc(arr, cap * sizeof(*arr)); }
+        arr[n].p = text + start;
+        arr[n].n = len - start;
+        n++;
+    }
+    *out = arr;
+    return n;
+}
+
+static bool same_line(const struct diff_line *a, const struct diff_line *b)
+{
+    return a->n == b->n && memcmp(a->p, b->p, a->n) == 0;
+}
+
 /* Build a unified-diff hunk for an exact old_text -> new_text replacement.
- * The TUI feeds this to tree-sitter-diff so added/removed lines get green/red
- * backgrounds. We deliberately show just the replaced fragment (not a full-file
- * LCS): edit_file semantics are an exact replacement, so this is precise and
- * cheap. |first_line| is the 1-based line where old_text starts. */
+ * A line-level LCS marks only genuinely changed lines as -/+; lines present in
+ * both fragments are emitted as context so identical -/+ pairs never appear.
+ * The TUI feeds this to tree-sitter-diff for green/red row backgrounds. */
 sds edc_fs_unified_diff(const char *path, const char *old_text, const char *new_text,
                         int64_t first_line)
 {
-    sds out = sdscatprintf(sdsempty(), "--- a/%s\n+++ b/%s\n", path ? path : "(file)", path ? path : "(file)");
-
-    int old_lines = 1, new_lines = 1;
-    for (const char *p = old_text; *p; ++p) if (*p == '\n') old_lines++;
-    for (const char *p = new_text; *p; ++p) if (*p == '\n') new_lines++;
-    /* A trailing newline terminates the last line; it does not start a new one. */
     size_t ol = strlen(old_text), nl = strlen(new_text);
-    if (ol && old_text[ol - 1] == '\n') old_lines--;
-    if (nl && new_text[nl - 1] == '\n') new_lines--;
+    struct diff_line *old_lines = NULL, *new_lines = NULL;
+    size_t on = split_diff_lines(old_text, ol, &old_lines);
+    size_t nn = split_diff_lines(new_text, nl, &new_lines);
+
+    /* LCS DP: dp[i*(nn+1)+j] = LCS length of old[i:] and new[j:]. */
+    size_t *dp = calloc((on + 1) * (nn + 1), sizeof(*dp));
+    if (!dp) { free(old_lines); free(new_lines); return NULL; }
+    for (size_t i = on; i-- > 0;)
+        for (size_t j = nn; j-- > 0;)
+            dp[i * (nn + 1) + j] = same_line(&old_lines[i], &new_lines[j])
+                                       ? 1 + dp[(i + 1) * (nn + 1) + (j + 1)]
+                                       : (dp[(i + 1) * (nn + 1) + j] > dp[i * (nn + 1) + (j + 1)]
+                                              ? dp[(i + 1) * (nn + 1) + j]
+                                              : dp[i * (nn + 1) + (j + 1)]);
+
+    /* First pass: compute counts for the @@ header. */
+    size_t ocount = 0, ncount = 0, i = 0, j = 0;
+    while (i < on || j < nn)
+    {
+        if (i < on && j < nn && same_line(&old_lines[i], &new_lines[j])) { ocount++; ncount++; i++; j++; }
+        else if (i < on && (j == nn || dp[(i + 1) * (nn + 1) + j] >= dp[i * (nn + 1) + (j + 1)])) { ocount++; i++; }
+        else { ncount++; j++; }
+    }
     if (first_line < 1) first_line = 1;
-    out = sdscatprintf(out, "@@ -%" PRId64 ",%d +%" PRId64 ",%d @@\n",
-                       first_line, old_lines, first_line, new_lines);
+    sds out = sdscatprintf(sdsempty(), "--- a/%s\n+++ b/%s\n@@ -%" PRId64 ",%zu +%" PRId64 ",%zu @@\n",
+                           path ? path : "(file)", path ? path : "(file)",
+                           first_line, ocount, first_line, ncount);
 
-    /* Emit removed lines, then added lines. Trim a single trailing newline so
-     * the last line does not become an empty +/- row. */
-    size_t olen = strlen(old_text);
-    if (olen && old_text[olen - 1] == '\n') olen--;
-    size_t nlen = strlen(new_text);
-    if (nlen && new_text[nlen - 1] == '\n') nlen--;
+    /* Second pass: emit context/delete/add lines. */
+    i = 0; j = 0;
+    while (i < on || j < nn)
+    {
+        if (i < on && j < nn && same_line(&old_lines[i], &new_lines[j]))
+        { out = sdscatprintf(out, " %.*s\n", (int)old_lines[i].n, old_lines[i].p); i++; j++; }
+        else if (i < on && (j == nn || dp[(i + 1) * (nn + 1) + j] >= dp[i * (nn + 1) + (j + 1)]))
+        { out = sdscatprintf(out, "-%.*s\n", (int)old_lines[i].n, old_lines[i].p); i++; }
+        else
+        { out = sdscatprintf(out, "+%.*s\n", (int)new_lines[j].n, new_lines[j].p); j++; }
+    }
 
-    const char *p = old_text;
-    for (size_t i = 0; i < olen; ++i)
-        if (old_text[i] == '\n') { out = sdscatprintf(out, "-%.*s\n", (int)(old_text + i - p), p); p = old_text + i + 1; }
-    out = sdscatprintf(out, "-%.*s\n", (int)(old_text + olen - p), p);
-
-    p = new_text;
-    for (size_t i = 0; i < nlen; ++i)
-        if (new_text[i] == '\n') { out = sdscatprintf(out, "+%.*s\n", (int)(new_text + i - p), p); p = new_text + i + 1; }
-    out = sdscatprintf(out, "+%.*s\n", (int)(new_text + nlen - p), p);
+    free(dp); free(old_lines); free(new_lines);
     return out;
 }
 

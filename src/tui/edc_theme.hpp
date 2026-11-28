@@ -67,6 +67,7 @@ bool ParseColorDepth(std::string_view name, ColorDepth &out);
 ColorDepth DetectColorDepth(std::string_view colorterm,
                             std::string_view term,
                             std::string_view term_program,
+                            std::string_view lc_terminal,
                             std::string_view wt_session,
                             std::string_view conemu_ansi,
                             bool windows_console);

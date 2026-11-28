@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -731,12 +732,57 @@ static bool diff_row_bg(const edc_syntax_result &hl, size_t line_start, size_t l
     return false;
 }
 
+/* A language tag may be "diff:<src>" (emitted by edit_file): the outer "diff"
+ * grammar supplies row backgrounds, while <src> re-parses each +/- line for
+ * token colours, so the code inside a diff keeps its source syntax colours. */
+struct HighlightLang
+{
+    const char *outer;
+    const char *inner; /* NULL when the tag is a plain language */
+};
+static HighlightLang parse_highlight_lang(const char *tag)
+{
+    if (!tag) return {NULL, NULL};
+    const char *colon = strchr(tag, ':');
+    if (colon && colon > tag && edc_syntax_available("diff"))
+    {
+        static std::string outer = "diff";
+        static std::string inner;
+        inner.assign(colon + 1);
+        return {outer.c_str(), inner.c_str()};
+    }
+    return {tag, NULL};
+}
+
+/* Token spans for one code line, from the inner (source) grammar. Returns false
+ * when the inner language is unregistered or produces no spans. |marker_len| is
+ * the number of leading bytes (the '+' / '-') to skip before parsing. */
+static bool inner_line_spans(std::string_view line, size_t marker_len, const char *lang,
+                             std::vector<std::pair<size_t, size_t>> *ranges,
+                             std::vector<const char *> *groups)
+{
+    if (!lang || !edc_syntax_available(lang) || marker_len >= line.size())
+        return false;
+    std::string_view body = line.substr(marker_len);
+    edc_syntax_result ih;
+    if (edc_syntax_highlight(body.data(), body.size(), lang, &ih) != 0 || ih.count == 0)
+        return false;
+    for (size_t s = 0; s < ih.count; ++s) {
+        ranges->push_back({ih.spans[s].start_byte + marker_len, ih.spans[s].end_byte + marker_len});
+        groups->push_back(edc_syntax_group_name(ih.spans[s].group));
+    }
+    edc_syntax_result_free(&ih);
+    return !ranges->empty();
+}
+
 Element HighlightedCode(std::string_view code, const char *lang, const char *indent)
 {
     const auto &pal = style::palette();
+    const HighlightLang tags = parse_highlight_lang(lang);
+    const char *outer_lang = tags.outer;
     edc_syntax_result hl;
-    const bool ok = lang && edc_syntax_available(lang) &&
-                    edc_syntax_highlight(code.data(), code.size(), lang, &hl) == 0 && hl.count > 0;
+    const bool ok = outer_lang && edc_syntax_available(outer_lang) &&
+                    edc_syntax_highlight(code.data(), code.size(), outer_lang, &hl) == 0 && hl.count > 0;
 
     Elements lines;
     size_t start = 0;
@@ -768,6 +814,22 @@ Element HighlightedCode(std::string_view code, const char *lang, const char *ind
                 hits.push_back({lo, hi, edc_syntax_group_name(sp.group)});
                 cuts.push_back(lo); cuts.push_back(hi);
             }
+            /* In a diff:<src> block, re-parse +/- line bodies with the source
+             * grammar so keywords/strings/numbers keep their source colours.
+             * These inner spans are narrower than the whole-row diff span, so
+             * the innermost-wins selection below picks them for the tokens. */
+            if (tags.inner && !line.empty() &&
+                (line[0] == '+' || line[0] == '-' || line[0] == ' '))
+            {
+                std::vector<std::pair<size_t, size_t>> ranges;
+                std::vector<const char *> groups;
+                if (inner_line_spans(line, 1, tags.inner, &ranges, &groups))
+                    for (size_t s = 0; s < ranges.size(); ++s)
+                    {
+                        hits.push_back({ranges[s].first, ranges[s].second, groups[s]});
+                        cuts.push_back(ranges[s].first); cuts.push_back(ranges[s].second);
+                    }
+            }
             std::sort(cuts.begin(), cuts.end());
             cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
             Elements parts;
@@ -781,6 +843,13 @@ Element HighlightedCode(std::string_view code, const char *lang, const char *ind
                     if (h.lo <= lo && h.hi >= hi &&
                         (h.lo > blo || (h.lo == blo && h.hi < bhi)))
                     { group = h.group; blo = h.lo; bhi = h.hi; }
+                /* tree-sitter-diff tags the marker of an empty +/- line only as
+                 * diff.plus/minus (no punctuation token), while a non-empty
+                 * line's marker also gets punctuation. Force the one-byte
+                 * marker to punctuation so both render identically. */
+                if (tags.inner && lo == 0 && hi == 1 && !line.empty() &&
+                    (line[0] == '+' || line[0] == '-' || line[0] == ' '))
+                    group = "punctuation";
                 std::string seg = std::string(line.substr(lo, hi - lo));
                 if (parts.empty())
                     seg.insert(0, indent); // fenced-code gutter, not part of the source bytes
