@@ -71,6 +71,10 @@ static void test_shared_lang_map(void)
         {"x.ts", "typescript"}, {"x.jsx", "tsx"}, {"x.tsx", "tsx"},
         {"x.rs", "rust"},
         {"x.java", "java"}, {"x.css", "css"}, {"x.rb", "ruby"},
+        {"x.toml", "toml"},
+        {"x.agda", "agda"}, {"x.cs", "csharp"}, {"x.scala", "scala"},
+        {"x.diff", "diff"}, {"x.mk", "make"}, {"x.r", "r"},
+        {"x.clj", "clojure"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -99,6 +103,16 @@ int main(void)
     assert(edc_syntax_available("css"));
     assert(edc_syntax_available("ruby"));
     assert(edc_syntax_available("rb")); /* alias */
+    assert(edc_syntax_available("toml"));
+    assert(edc_syntax_available("agda"));
+    assert(edc_syntax_available("csharp"));
+    assert(edc_syntax_available("cs")); /* alias */
+    assert(edc_syntax_available("scala"));
+    assert(edc_syntax_available("diff"));
+    assert(edc_syntax_available("make"));
+    assert(edc_syntax_available("r"));
+    assert(edc_syntax_available("clojure"));
+    assert(edc_syntax_available("clj")); /* alias */
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -157,6 +171,14 @@ int main(void)
             {"java", "public class X {}", EDC_SYNTAX_KEYWORD},
             {"css", "a { color: red; }", EDC_SYNTAX_PUNCTUATION},
             {"ruby", "def foo; end", EDC_SYNTAX_KEYWORD},
+            {"toml", "answer = 42", EDC_SYNTAX_NUMBER},
+            {"agda", "-- comment\n", EDC_SYNTAX_COMMENT},
+            {"csharp", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"scala", "// comment\n", EDC_SYNTAX_COMMENT},
+            {"diff", "+added line\n", EDC_SYNTAX_PUNCTUATION},
+            {"make", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"r", "# comment\n", EDC_SYNTAX_COMMENT},
+            {"clojure", "; comment\n", EDC_SYNTAX_COMMENT},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));

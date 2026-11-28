@@ -51,6 +51,28 @@ def _bc_thirdparty_deps_impl(module_ctx):
                  sha256 = "03965344d8c0435dc54fb45b281578420bb7db8b99df4d34e7e74105a274cb79", has_scanner = True)
     grammar_repo(name = "tree-sitter-ruby", version = "0.23.1",
                  sha256 = "e7e49577ddc1f2de8e42d42353b477e338c15bbb95b2558e123ddc13d88789f0", has_scanner = True)
+    grammar_repo(name = "tree-sitter-toml", version = "0.7.0",
+                 sha256 = "7d52a7d4884f307aabc872867c69084d94456d8afcdc63b0a73031a8b29036dc",
+                 has_scanner = True, org = "tree-sitter-grammars")
+    # A-class languages (standard layout, ABI-compatible, self-contained scm).
+    grammar_repo(name = "tree-sitter-agda", version = "1.3.3",
+                 sha256 = "f09055ac4df99d8c27af4a80442abd0659b75babd46e8693a7dd9133d5711ef5", has_scanner = True)
+    grammar_repo(name = "tree-sitter-c-sharp", version = "0.23.1",
+                 sha256 = "c0b008dca3c6820604bf0853b9668ba034f9750d89d170ba834261e94e2cd917", has_scanner = True)
+    grammar_repo(name = "tree-sitter-scala", version = "0.24.0",
+                 sha256 = "6ba17e09ba035a4a1b19db7906b87ec2c56cf400073e8e7272e8bdc9413921f8", has_scanner = True)
+    grammar_repo(name = "tree-sitter-diff", version = "0.1.0",
+                 sha256 = "0d0414ac873c33154b458f4d62fe096aa966392ff416920a08c5629c765aaed3",
+                 org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-make", version = "1.1.1",
+                 sha256 = "31affca06041623cfa5f6a728cb3f0f2a8eb7fd01607e1a2681ea1f318367211",
+                 org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-r", version = "1.2.0",
+                 sha256 = "a95b6e79a40b6b906a3b61ec040c15422c549d599e01d87092bf7ae78ebcadc5",
+                 has_scanner = True, org = "r-lib")
+    grammar_repo(name = "tree-sitter-clojure", version = "0.0.1",
+                 sha256 = "d933f33de79d6743631499fb0b643e2d40b3ba0a3abd0449a092d1cb84112ed1",
+                 org = "anomalyco")
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

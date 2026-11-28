@@ -9,7 +9,7 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # taken from these archives: they live under //src/common:highlight_queries and
 # are embedded at build time (see //src/common:syntax), so a query can be tuned
 # or patched without refetching the grammar.
-def grammar_repo(name, version, sha256, has_scanner = False, aliases = []):
+def grammar_repo(name, version, sha256, has_scanner = False, aliases = [], org = "tree-sitter"):
     srcs = ["src/parser.c", "src/tree_sitter/parser.h",
             "src/tree_sitter/alloc.h", "src/tree_sitter/array.h"]
     if has_scanner:
@@ -39,6 +39,6 @@ cc_library(
         build_file_content = build_content,
         sha256 = sha256,
         strip_prefix = "tree-sitter-%s-%s" % (name.replace("tree-sitter-", ""), version),
-        urls = ["https://github.com/tree-sitter/tree-sitter-%s/archive/refs/tags/v%s.tar.gz" % (
-            name.replace("tree-sitter-", ""), version)],
+        urls = ["https://github.com/%s/tree-sitter-%s/archive/refs/tags/v%s.tar.gz" % (
+            org, name.replace("tree-sitter-", ""), version)],
     )

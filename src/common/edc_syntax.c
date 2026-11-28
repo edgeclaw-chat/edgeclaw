@@ -35,6 +35,14 @@ const TSLanguage *tree_sitter_rust(void);
 const TSLanguage *tree_sitter_java(void);
 const TSLanguage *tree_sitter_css(void);
 const TSLanguage *tree_sitter_ruby(void);
+const TSLanguage *tree_sitter_toml(void);
+const TSLanguage *tree_sitter_agda(void);
+const TSLanguage *tree_sitter_c_sharp(void);
+const TSLanguage *tree_sitter_scala(void);
+const TSLanguage *tree_sitter_diff(void);
+const TSLanguage *tree_sitter_make(void);
+const TSLanguage *tree_sitter_r(void);
+const TSLanguage *tree_sitter_clojure(void);
 
 typedef struct {
     const char *name; /* canonical language tag (see edc_syntax_lang.h) */
@@ -57,6 +65,14 @@ static const syntax_lang LANGS[] = {
     {"java", tree_sitter_java, edc_query_java, EDC_QUERY_JAVA_SIZE},
     {"css", tree_sitter_css, edc_query_css, EDC_QUERY_CSS_SIZE},
     {"ruby", tree_sitter_ruby, edc_query_ruby, EDC_QUERY_RUBY_SIZE},
+    {"toml", tree_sitter_toml, edc_query_toml, EDC_QUERY_TOML_SIZE},
+    {"agda", tree_sitter_agda, edc_query_agda, EDC_QUERY_AGDA_SIZE},
+    {"csharp", tree_sitter_c_sharp, edc_query_csharp, EDC_QUERY_CSHARP_SIZE},
+    {"scala", tree_sitter_scala, edc_query_scala, EDC_QUERY_SCALA_SIZE},
+    {"diff", tree_sitter_diff, edc_query_diff, EDC_QUERY_DIFF_SIZE},
+    {"make", tree_sitter_make, edc_query_make, EDC_QUERY_MAKE_SIZE},
+    {"r", tree_sitter_r, edc_query_r, EDC_QUERY_R_SIZE},
+    {"clojure", tree_sitter_clojure, edc_query_clojure, EDC_QUERY_CLOJURE_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);
