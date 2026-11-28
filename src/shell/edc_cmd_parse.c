@@ -350,25 +350,6 @@ void edc_cmd_parse_task_opts(sds arg, struct edc_cmd_task_opts *opts)
                 }
                 continue;
             }
-            /* --with <id>: the explicit spelling of -d -- wait for that task AND inject its
-             * output into this one's context (TASK_DEP_JOIN). Named "with" because that is
-             * what it does; `-d` stays as the short form. */
-            if (strncmp(p, "--with ", 7) == 0)
-            {
-                p += 7;
-                while (*p == ' ')
-                    p++;
-                char *start = p;
-                while (*p && *p != ' ')
-                    p++;
-                if (p > start)
-                {
-                    opts->dep_count++;
-                    opts->dep_ids = realloc(opts->dep_ids, (size_t)opts->dep_count * sizeof(sds));
-                    opts->dep_ids[opts->dep_count - 1] = sdsnewlen(start, p - start);
-                }
-                continue;
-            }
             /* `-g/--group <id>` is consumed here only to keep this legacy parser's
              * input/desc extraction working; it produces NO group value. The modern
              * input pipeline parses shell options into an AST and resolves the named
@@ -433,7 +414,6 @@ static const struct
     {"-g <group>", "put the task in that existing group"},
     {"--group <id>", "same as -g"},
     {"-d <task>", "wait for that task and inject its output"},
-    {"--with <task>", "same as -d"},
 };
 #define EDC_SHELL_OPTION_COUNT (sizeof(k_shell_options) / sizeof(k_shell_options[0]))
 

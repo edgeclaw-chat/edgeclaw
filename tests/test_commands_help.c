@@ -67,7 +67,8 @@ int main(void)
     CHECK(has(full, "/session memo"), "/session memo");
     CHECK(has(full, "/session status"), "/session status");
     CHECK(has(full, "/task history"), "/task history");
-    CHECK(has(full, "--with"), "/task new --with");
+    CHECK(has(full, "-d <task>"), "/task new -d <task>");
+    CHECK(!has(full, "--with"), "the redundant `--with` spelling is gone from help");
     CHECK(has(full, "/group list"), "/group list (groups live here)");
     CHECK(has(full, "/group fold"), "/group fold");
     CHECK(has(full, "/group archive <id>"), "/group archive");

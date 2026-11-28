@@ -532,7 +532,7 @@ Two dependency types:
 
 | Type | Syntax | Behavior | On source CANCELLED |
 |------|--------|----------|---------------------|
-| **JOIN** | `\|` (pipe), `-d`/`--with` | Source output is spliced in front of the destination's input, once per edge (see Context Sharing) | Destination is CANCELLED too — the dependency can never be satisfied |
+| **JOIN** | `\|` (pipe), `-d` | Source output is spliced in front of the destination's input, once per edge (see Context Sharing) | Destination is CANCELLED too — the dependency can never be satisfied |
 | **SEQUENCE** | `;` | Destination waits for source, but no output injection | Destination is cancelled too, and the edge stays: resuming it returns it to the wait |
 
 ### Fork
@@ -650,7 +650,7 @@ splits words, and nothing is expanded (no `$VAR`, globs or backticks):
 | `/task new <desc> --bg` | Same group, but background: runs alongside, takes no foreground |
 | `/task new <desc> --new-group` | Open a group of its own (a fresh conversation) and take the foreground |
 | `/task new <desc> -g <gid>` | Create in that existing group (`--group <gid>` is the long form) |
-| `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable; `--with <tid>` is the explicit form) |
+| `/task new <desc> -d <tid>` | Create + wait for dependency, injecting its output (repeatable) |
 
 `<desc>` does not need quotes. Quote it when the description itself contains something
 that looks like an option: `/task new 'fix -d 1'` is a description, `/task new fix -d 1`

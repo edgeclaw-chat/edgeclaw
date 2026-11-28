@@ -49,7 +49,7 @@ struct edc_ast_stage
 {
     struct edc_msg_payload msg; /* 已去引号的 word + pass 展开出的块 */
     bool has_var_refs;
-    sds *deps;      /* -d / --with */
+    sds *deps;      /* -d */
     int ndep;
     sds group;      /* -g / --group */
     struct edc_ast_redir *redirs;

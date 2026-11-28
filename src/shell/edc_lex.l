@@ -120,7 +120,6 @@ static void push_unquoted(const char *raw, size_t len)
      * while `/task new 'x -d 1'` gives ["x -d 1"] (one word, the text). */
 "--bg"/[ \t\n]              { chunk_t *c = push(C_OPT); c->text = sdsnew("--bg"); }
 "--new-group"/[ \t\n]       { chunk_t *c = push(C_OPT); c->text = sdsnew("--new-group"); }
-"--with"/[ \t\n]            { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--with"); }
 "--group"/[ \t\n]           { chunk_t *c = push(C_OPTARG); c->text = sdsnew("--group"); }
 "-d"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-d"); }
 "-g"/[ \t\n]                { chunk_t *c = push(C_OPTARG); c->text = sdsnew("-g"); }

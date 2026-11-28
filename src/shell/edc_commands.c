@@ -373,9 +373,9 @@ static const struct edc_cmd_doc k_cmd_docs[] = {
     {"Session", "/session memo compact", "merge / condense the session memory entries now",
      "Compaction only rewrites the session entries (merge / condense / drop / rebuild the index)."},
 
-    {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task> | --with <task>]", "create a task",
+    {"Task", "/task new <desc>   [--bg] [--new-group] [-g <group>] [-d <task>]", "create a task",
      "`--bg` runs it in the background (no foreground) · `--new-group` gives it a fresh "
-     "conversation · `-g <group>` puts it in an existing group · `-d` / `--with <task>` makes it "
+     "conversation · `-g <group>` puts it in an existing group · `-d <task>` makes it "
      "wait for that task AND injects its output into this one's context. `+/task new <desc>` says the "
      "same thing as `--new-group`.\n\n"
      "The description does NOT have to be quoted: an option is a whole word, so `/task new 写脚本 -d 1` "
@@ -1134,7 +1134,7 @@ static struct edc_session *cmd_input_session(struct edc_session_manager *sm, str
  * required the description to be quoted precisely because the raw text could not say where
  * the description stopped; now the splitter can, so the restriction is gone.
  *
- * The vocabulary (`--bg`, `--new-group`, `-d|--with`, `-g|--group`) is this command's
+ * The vocabulary (`--bg`, `--new-group`, `-d`, `-g|--group`) is this command's
  * business, exactly as `-l` is `ls`'s: the splitter must not know it. Separated form only --
  * `-dt1` stays a word, because the lexer never makes it an option. */
 /* |out_group_text| is an OUT parameter, not part of edc_cmd_task_opts: the group is
@@ -1163,7 +1163,7 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
             continue;
         }
 
-        const bool is_dep = (strcmp(w, "-d") == 0 || strcmp(w, "--with") == 0);
+        const bool is_dep = (strcmp(w, "-d") == 0);
         const bool is_group = (strcmp(w, "-g") == 0 || strcmp(w, "--group") == 0);
         if (is_dep || is_group)
         {
@@ -1200,7 +1200,7 @@ static bool cmd_task_opts_from_argv(struct edc_reply_to to, const struct edc_sub
              * a typo would silently become part of the task's name. */
             sds reply = sdscatprintf(sdsempty(),
                                      "**Not an option** — `/task new` knows `--bg`, `--new-group`, "
-                                     "`-d|--with <id>` and `-g|--group <id>`, not `%s`.\n\n"
+                                     "`-d <id>` and `-g|--group <id>`, not `%s`.\n\n"
                                      "If it belongs to the description, quote the description: "
                                      "`/task new '<text with %s>'`.",
                                      w, w);

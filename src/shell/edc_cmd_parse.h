@@ -17,7 +17,7 @@ struct edc_cmd_task_opts
     bool bg;        /* --bg background */
     bool new_group; /* --new-group: open a group of its own instead of joining the one in front */
     bool literal; /* input came from a '''/''' block or single quotes: do not expand {{…}} refs */
-    sds *dep_ids; /* -d/--with <id> dependency list (JOIN: waits and injects) */
+    sds *dep_ids; /* -d <id> dependency list (JOIN: waits and injects) */
     int dep_count;
     /* There is deliberately NO `group_id` field here. A task's group has ONE
      * representation at spawn time: the `target_group` pointer passed to

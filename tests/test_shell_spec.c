@@ -551,13 +551,14 @@ static void test_redirects(void)
 
 static void test_option_area(void)
 {
-    printf("\n[5] 引号闭合之后是选项区：只认 -d/-g/--with/--group/重定向，别的字要报错\n");
+    printf("\n[5] 引号闭合之后是选项区：只认 -d/-g/--group/重定向，别的字要报错\n");
 
     /* 合法：选项、选项带值、引号带空格的值、重定向。 */
     {
         static const char *const one[] = {"a"};
         expect_shell("`\"a\" -d t1` : a dependency", D "a" D " -d t1", 1, one);
-        expect_shell("`\"a\" --with t1` : the long spelling", D "a" D " --with t1", 1, one);
+        expect_reject("`\"a\" --with t1` : the retired spelling is refused", D "a" D " --with t1", EDC_LEX_SHELL_ON,
+                      "`--with`");
         expect_shell("`\"a\" -g g1` : a target group", D "a" D " -g g1", 1, one);
         expect_shell("`\"a\" --group g1`", D "a" D " --group g1", 1, one);
     }
@@ -577,7 +578,7 @@ static void test_option_area(void)
     }
     {
         struct line r;
-        line_run(&r, D "a" D " -g g1 -d t1 --with t2", EDC_LEX_SHELL_ON);
+        line_run(&r, D "a" D " -g g1 -d t1 -d t2", EDC_LEX_SHELL_ON);
         printf("  %-58s ", "options accumulate (2 deps + a group)");
         const struct edc_ast_stage *s = r.shell_ok ? ast_stage(&r.ast, 0) : NULL;
         if (!s || s->ndep != 2)
