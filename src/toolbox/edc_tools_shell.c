@@ -697,7 +697,8 @@ void edc_tool_shell_abort_all(void)
 struct edc_tool *edc_tool_create_exec_shell(struct edc_toolbox *tb)
 {
     const char *name = "exec_shell";
-    const char *desc = "Execute shell command and return output";
+    const char *desc = "Execute shell commands and return output. Use the grep/find tools for searching file "
+                       "contents or listing files; the shell is for commands that must actually run.";
     struct edc_tool_param *params = NULL;
     EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("command", edc_param_str_type("The shell command to execute", NULL), true));
     EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("timeout", edc_param_int_type("Timeout in seconds (default 30)", 1, 3600), false));

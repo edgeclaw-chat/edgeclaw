@@ -695,7 +695,8 @@ void edc_tools_search_register(struct edc_toolbox *tb)
         struct edc_tool *tool = edc_tool_new("grep",
                                              "Search file contents for a pattern. Returns matching lines as "
                                              "path:line:text, relative to the searched directory. Skips binary "
-                                             "files, VCS metadata and build output.",
+                                             "files, VCS metadata and build output. Prefer this over exec_shell "
+                                             "for searching -- do not run grep/rg through the shell.",
                                              params, edc_tool_exec_grep_async);
         edc_tool_set_snippet(tool, "Search file contents for a pattern");
         edc_tool_set_guidelines(tool, "Prefer this over exec_shell for searching.\n"
@@ -712,7 +713,8 @@ void edc_tools_search_register(struct edc_toolbox *tb)
 
         struct edc_tool *tool = edc_tool_new("find",
                                              "List files under a directory, optionally filtered by a name glob. "
-                                             "Skips VCS metadata and build output.",
+                                             "Skips VCS metadata and build output. Prefer this over exec_shell "
+                                             "for listing files -- do not run find/ls through the shell.",
                                              params, edc_tool_exec_find_async);
         edc_tool_set_snippet(tool, "Find files by name glob");
         edc_tool_set_guidelines(tool, "Prefer this over `exec_shell find`: same walk, without the noise.\n"
