@@ -350,16 +350,17 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
         /* The "..." sits on the line just above the +Click to expand footer, exactly like
          * the unhighlighted path below. For highlighted code it must NOT be fed through the
          * syntax highlighter (dots are not code): render the highlighted preview on its own
-         * and stack a separate dim "..." line under it. preview_ ends with "\n" so drop that
-         * trailing newline first, otherwise HighlightedCode would add a blank line and the
-         * marker would be pushed one row too far down. */
+         * and stack a separate "..." line under it in the theme's normal text colour, so the
+         * marker never picks up a syntax colour. preview_ ends with "\n" so drop that trailing
+         * newline first, otherwise HighlightedCode would add a blank line and the marker would
+         * be pushed one row too far down. */
         if (!highlight_lang_.empty())
         {
             std::string code = preview_;
             if (!code.empty() && code.back() == '\n')
                 code.pop_back();
             body = ::ftxui::vbox({HighlightedCode(code, highlight_lang_.c_str()),
-                                  ::ftxui::text("...") | ::ftxui::color(pal.text_dim)});
+                                  ::ftxui::text("...") | ::ftxui::color(pal.text)});
         }
         else
         {

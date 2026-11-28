@@ -122,12 +122,12 @@ int main(void)
         // A trailing right-hand column would sit at the far edge; the appended marker does not.
         CHECK(dots.col < kW - 10, "... is not pinned to the far right column");
 
-        /* The dots are a UI marker, not code: they must be dim, NOT run through the syntax
-         * highlighter. This is RED when "..." is fed to HighlightedCode (it picks up a
-         * syntax colour) and GREEN when it is rendered as its own dim line. */
+        /* The dots are a UI marker, not code: they must use the theme's normal text colour,
+         * NOT a syntax colour and NOT dimmed. RED when "..." is fed to HighlightedCode (it
+         * picks up a syntax colour) or left dim; GREEN with the plain theme-text line. */
         const auto &pal = edc::style::palette();
         const auto dot_color = screen.PixelAt(dots.col, dots.row).foreground_color;
-        CHECK(dot_color == pal.text_dim, "... is dim, not syntax-highlighted");
+        CHECK(dot_color == pal.text, "... uses the normal theme text colour, not syntax-highlighted or dim");
     }
 
     printf("\n%d passed, %d failed\n", g_passed, g_failed);
