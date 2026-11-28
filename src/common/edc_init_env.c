@@ -1,5 +1,6 @@
 ﻿#include "edc_init_env.h"
 #include "cJSON.h"
+#include "edc_bundled_colors.h"
 #include "edc_bundled_docs.h"
 #include "edc_bundled_workspace.h"
 #include "edc_compat.h"
@@ -355,6 +356,62 @@ static bool edc_init_env_docs(const char *dest_docs)
 
     if (written > 0)
         log_info("Released bundled manual (%zu of %zu files) to %s", written, edc_bundled_docs_count, dest_docs);
+    return true;
+}
+
+/* Release the built-in colorschemes (see edc_bundled_colors.h) into dest_colors.
+ * Same policy as the manual -- this is a REFERENCE the loader reads, so a file
+ * whose bytes differ from the bundle (a new release, or a local edit) is
+ * rewritten to track the binary; a normal start performs no writes. Files no
+ * longer bundled are NOT deleted (not a mirror; never prune user files). */
+static bool edc_init_env_colors(const char *dest_colors)
+{
+    size_t written = 0;
+
+    for (size_t i = 0; i < edc_bundled_colors_count; i++)
+    {
+        const struct edc_bundled_file *file = &edc_bundled_colors_entries[i];
+        sds dest_path = edc_path_join(dest_colors, file->path, NULL);
+
+        EdcError *error = NULL;
+        sds current = edc_file_read(dest_path, &error);
+        if (error)
+            edc_error_free(error);
+
+        const bool same = current && sdslen(current) == file->size && memcmp(current, file->data, file->size) == 0;
+        sdsfree(current);
+        if (same)
+        {
+            sdsfree(dest_path);
+            continue;
+        }
+
+        sds parent = edc_path_dirname(dest_path);
+        bool parent_ok = edc_dir_create_with_parents(parent, 0755, NULL);
+        sdsfree(parent);
+        if (!parent_ok)
+        {
+            log_error("Failed to create parent directory for %s", dest_path);
+            sdsfree(dest_path);
+            return false;
+        }
+
+        error = NULL;
+        if (!edc_file_write(dest_path, (const char *)file->data, (ssize_t)file->size, &error))
+        {
+            log_error("Failed to write %s: %s", dest_path, error ? error->message : "Unknown");
+            if (error)
+                edc_error_free(error);
+            sdsfree(dest_path);
+            return false;
+        }
+        sdsfree(dest_path);
+        written++;
+    }
+
+    if (written > 0)
+        log_info("Released bundled colorschemes (%zu of %zu files) to %s", written,
+                 edc_bundled_colors_count, dest_colors);
     return true;
 }
 
@@ -867,6 +924,11 @@ static bool edc_init_env_conf_file(const char *conf_file, const char *edc_home)
 
     cJSON_AddStringToObject(config, "model", env_result.model);
     cJSON_AddStringToObject(config, "api_url", env_result.api_url);
+    /* A fresh config selects the bundled colorscheme as the default. An existing
+     * config keeps whatever theme the user chose (or none); edc_init_env_conf_file
+     * with is_create=false is a top-up, not a reset. */
+    if (is_create)
+        cJSON_AddStringToObject(config, "theme", "tokyonight-moon");
     cJSON_AddNumberToObject(config, "max_iter", env_result.max_iter);
     cJSON_AddNumberToObject(config, "context_window", env_result.context_window);
     cJSON_AddNumberToObject(config, "tool_max_output_size", env_result.tool_max_output_size);
@@ -957,6 +1019,7 @@ bool edc_init_env(const char *edc_home, bool setup)
 {
     sds workspace = edc_path_join(edc_home, "workspace", NULL);
     sds docs = edc_path_join(edc_home, "docs", NULL);
+    sds colors = edc_path_join(edc_home, "colors", NULL);
     sds conf_file = edc_path_join(edc_home, "config.json", NULL);
 
     bool ret = true;
@@ -1013,9 +1076,20 @@ bool edc_init_env(const char *edc_home, bool setup)
         goto exit_;
     }
 
+    /* Built-in colorscheme. The loader (TUIWindow::SyncTheme) reads
+     * <home>/colors/<name>.vim from config.json's "theme", so release before
+     * any theme is applied. Tracks the binary like the manual. */
+    if (!edc_init_env_colors(colors))
+    {
+        log_error("Failed to initialize colorschemes.");
+        ret = false;
+        goto exit_;
+    }
+
 exit_:
     sdsfree(workspace);
     sdsfree(docs);
+    sdsfree(colors);
     sdsfree(conf_file);
     return ret;
 }

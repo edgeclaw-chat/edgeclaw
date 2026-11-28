@@ -441,6 +441,15 @@ static void test_literal_vs_regex(void)
     CHECK(strstr(alt, "a.c:2:") != NULL && strstr(alt, "b.h:2:") != NULL, "alternation spans files");
     sdsfree(alt);
 
+    /* PCRE2-only syntax: a lookahead. POSIX ERE has no (?=...), so this only works
+     * after the engine swap. a.c has "TODO: alpha" (colon follows) and nothing else. */
+    sds la = edc_search_run_blocking(g_root, true, "TODO(?=:)", "a.c", false, false, 10);
+    CHECK(strstr(la, "a.c:2:TODO: alpha") != NULL, "PCRE2 lookahead (?=) matches: %s", la);
+    sdsfree(la);
+    sds nla = edc_search_run_blocking(g_root, true, "TODO(?!:)", "a.c", false, false, 10);
+    CHECK(strstr(nla, "no matches") != NULL, "PCRE2 negative lookahead (?! ) excludes it: %s", nla);
+    sdsfree(nla);
+
     /* A pattern with a newline cannot match: the file is split into lines first. */
     sds nl = edc_search_run_blocking(g_root, true, "alpha\nreturn", "a.c", false, false, 10);
     CHECK(strstr(nl, "no matches") != NULL, "a multi-line pattern matches nothing: %s", nl);

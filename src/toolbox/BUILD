@@ -43,6 +43,7 @@ cc_library(
         "//src/actor:actors",
         "//src/common:common",
         "//src/common:edc_list",
+        "//src/common:edc_regex",
         "//src/common:syntax_lang",
         "//src/common:utlist_fix",
         "//src/kernel:kernel",
@@ -54,9 +55,7 @@ cc_library(
         "@sds//:sds",
         "@uthash//:uthash",
     ] + select({
-        # Windows has no system <regex.h>; grep uses pcre2's POSIX wrapper there (the same
-        # arrangement as the kernel's session-memory regex).
-        "//:windows": ["@pcre2//:pcre2-posix"],
+        "//:windows": [],
         "//conditions:default": [
             "//src/device:device",
             "@lwip//:lwip",

@@ -44,6 +44,13 @@ def _bc_thirdparty_deps_impl(module_ctx):
     grammar_repo(name = "tree-sitter-rust", version = "0.24.2",
                  sha256 = "061e90a539a55a6aa65dceb0ad6425c50ab1a6e3e6d4ba430e2795ed4550f10e", has_scanner = True)
     typescript_repo()
+    # Java / CSS / Ruby.
+    grammar_repo(name = "tree-sitter-java", version = "0.23.5",
+                 sha256 = "cb199e0faae4b2c08425f88cbb51c1a9319612e7b96315a174a624db9bf3d9f0")
+    grammar_repo(name = "tree-sitter-css", version = "0.25.0",
+                 sha256 = "03965344d8c0435dc54fb45b281578420bb7db8b99df4d34e7e74105a274cb79", has_scanner = True)
+    grammar_repo(name = "tree-sitter-ruby", version = "0.23.1",
+                 sha256 = "e7e49577ddc1f2de8e42d42353b477e338c15bbb95b2558e123ddc13d88789f0", has_scanner = True)
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

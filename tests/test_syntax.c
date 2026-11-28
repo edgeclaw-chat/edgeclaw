@@ -70,6 +70,7 @@ static void test_shared_lang_map(void)
         {"x.js", "javascript"}, {"x.node", "javascript"},
         {"x.ts", "typescript"}, {"x.jsx", "tsx"}, {"x.tsx", "tsx"},
         {"x.rs", "rust"},
+        {"x.java", "java"}, {"x.css", "css"}, {"x.rb", "ruby"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -94,6 +95,10 @@ int main(void)
     /* --- language registry --- */
     assert(edc_syntax_available("c"));
     assert(edc_syntax_available("h")); /* alias */
+    assert(edc_syntax_available("java"));
+    assert(edc_syntax_available("css"));
+    assert(edc_syntax_available("ruby"));
+    assert(edc_syntax_available("rb")); /* alias */
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -149,6 +154,9 @@ int main(void)
             {"typescript", "let x: number = 1;", EDC_SYNTAX_TYPE},
             {"tsx", "const n = 42;", EDC_SYNTAX_NUMBER},
             {"rust", "fn main() { let x = 1; }", EDC_SYNTAX_KEYWORD},
+            {"java", "public class X {}", EDC_SYNTAX_KEYWORD},
+            {"css", "a { color: red; }", EDC_SYNTAX_PUNCTUATION},
+            {"ruby", "def foo; end", EDC_SYNTAX_KEYWORD},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));
@@ -182,7 +190,7 @@ int main(void)
     assert(edc_syntax_available("tsx"));
     assert(edc_syntax_available("jsx"));
     assert(edc_syntax_available("rs"));
-    assert(!edc_syntax_available("ruby"));
+    assert(!edc_syntax_available("cobol"));
 
     test_predicates();
 

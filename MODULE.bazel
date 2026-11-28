@@ -107,9 +107,10 @@ single_version_override(
     patch_strip = 1,
 )
 
-# POSIX regex (regcomp/regexec) for Windows, where no system <regex.h> exists.
-# PCRE2 ships a POSIX-compatible wrapper (pcre2posix.h) used only on Windows;
-# other platforms keep using the system regex.
+# Regex engine for the whole project: grep, session-memory search and the syntax
+# highlighter's #match? predicates all go through PCRE2 (//src/common:edc_regex
+# for the first two, pcre2 native in edc_syntax.c). No system <regex.h> / POSIX
+# wrapper is used on any platform.
 bazel_dep(name = "pcre2", version = "10.49")
 
 bazel_dep(name = "cjson", version = "1.7.19-0.20240923110858-12c4bf1986c2.bcr.4")
@@ -186,4 +187,7 @@ use_repo(
     "tree-sitter-javascript",
     "tree-sitter-rust",
     "tree-sitter-typescript",
+    "tree-sitter-java",
+    "tree-sitter-css",
+    "tree-sitter-ruby",
 )

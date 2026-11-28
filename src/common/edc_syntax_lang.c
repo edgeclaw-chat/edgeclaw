@@ -21,6 +21,9 @@ static const lang_alias kLangs[] = {
     {"typescript", {"ts", NULL}},
     {"tsx", {"jsx", NULL}},
     {"rust", {"rs", NULL}},
+    {"java", {NULL}},
+    {"css", {NULL}},
+    {"ruby", {"rb", NULL}},
 };
 
 static const char *lookup(const char *name, size_t len)

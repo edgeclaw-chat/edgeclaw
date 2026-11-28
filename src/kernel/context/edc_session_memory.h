@@ -224,8 +224,9 @@ extern sds edc_session_memory_index_lines(const struct edc_session_memory *m, si
 extern sds edc_session_memory_search_lines(const struct edc_session_memory *m, const char *query, size_t cap,
                                            size_t *out_hits);
 
-/* Regex search: `pattern` is a POSIX ERE (grep -E), case-insensitive, matched anywhere
- * in title/summary/detail. Same rows/ordering/cap semantics as the substring search.
+/* Regex search: `pattern` is a PCRE2 regex, case-insensitive and UTF-8 aware; it may
+ * match anywhere in title/summary/detail. Same rows/ordering/cap semantics as the
+ * substring search.
  * `*out_regerror` (may be NULL) = 1 when the pattern is refused (invalid or too long);
  * the result is empty then. */
 extern sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, const char *pattern, size_t cap,

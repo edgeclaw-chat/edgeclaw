@@ -1407,6 +1407,16 @@ cc_test(
     linkopts = LINK_OPTS,
 )
 
+cc_test(
+    name = "test_bundled_colors",
+    srcs = ["test_bundled_colors.c", "test_fs_util.h"],
+    deps = [
+        "//src/common:common",
+        "@log.c//:log.c",
+    ],
+    linkopts = LINK_OPTS,
+)
+
 # context_window 的配置面（默认 0 = 未配置/未知）：三个生产者都跑真的
 # —— edc_init_env 建/补 config.json + edc_config_load 读回。
 cc_test(

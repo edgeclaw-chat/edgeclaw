@@ -2,6 +2,7 @@
 #include "edc_error.h"
 #include "edc_file_utils.h"
 #include "edc_path.h" /* edc_path_norm: the search root has to match the walker's spelling */
+#include "edc_regex.h"
 #include "edc_sandbox.h"
 #include "edc_scheduler.h"
 #include "edc_toolbox.h"
@@ -14,16 +15,8 @@
 #include <ctype.h>
 #include <string.h>
 
-/* POSIX regex on every platform: the system <regex.h> on POSIX, and pcre2's POSIX wrapper
- * on Windows (which has no <regex.h>). Note the HEADER NAME differs -- pcre2 ships
- * `pcre2posix.h`, and it maps regcomp/regexec/regerror/regfree onto pcre2_* with macros, so
- * only the include changes, not the calls. The BUILD select wires the dependency; it cannot
- * make `<regex.h>` exist. */
-#ifdef _WIN32
-#include <pcre2posix.h>
-#else
-#include <regex.h>
-#endif
+/* Regex matching goes through the shared PCRE2 wrapper (edc_regex.h), so grep and
+ * session-memory search compile patterns with identical flags on every platform. */
 
 /* Outside the conditional above: EDC_LL_APPEND is used on every platform. */
 #include "edc_list.h"
@@ -291,7 +284,7 @@ static void append_hit(struct search_job *job, const char *full, int lineno, con
 }
 
 /* Scan one file for matches. Runs on the pool thread. */
-static void grep_file(struct search_job *job, const char *full, regex_t *re)
+static void grep_file(struct search_job *job, const char *full, struct edc_regex *re)
 {
     if (job_stop(job))
         return;
@@ -309,7 +302,7 @@ static void grep_file(struct search_job *job, const char *full, regex_t *re)
     }
     job->files_scanned++;
 
-    /* The whole buffer, not a prefix: `regexec`/`find_literal` stop at a NUL, so a NUL
+    /* The whole buffer, not a prefix: the matcher/`find_literal` stop at a NUL, so a NUL
      * further in would silently end that line's match candidate -- a false negative with no
      * trace in the output. Reading the file is already done; this second pass is cheap. */
     if (memchr(content, '\0', sdslen(content)) != NULL)
@@ -336,7 +329,7 @@ static void grep_file(struct search_job *job, const char *full, regex_t *re)
         if (job->literal)
             hit = find_literal(line, job->pattern, job->ignore_case) != NULL;
         else
-            hit = regexec(re, line, 0, NULL, 0) == 0;
+            hit = edc_regex_match(re, line, sdslen(line));
         if (hit)
             append_hit(job, full, lineno, line, len);
         sdsfree(line);
@@ -354,7 +347,7 @@ static void grep_file(struct search_job *job, const char *full, regex_t *re)
 struct dir_frame
 {
     struct search_job *job;
-    regex_t *re;
+    struct edc_regex *re;
     sds dir;
     int depth;
 };
@@ -497,14 +490,11 @@ static void run_search(struct search_job *job)
         job->root = normalised_root;
     }
 
-    regex_t re;
-    regex_t *rep = NULL;
+    struct edc_regex re;
+    struct edc_regex *rep = NULL;
     if (job->is_grep && !job->literal)
     {
-        int flags = REG_EXTENDED | REG_NOSUB;
-        if (job->ignore_case)
-            flags |= REG_ICASE;
-        if (regcomp(&re, job->pattern, flags) != 0)
+        if (!edc_regex_compile(&re, job->pattern, sdslen(job->pattern), job->ignore_case, NULL, NULL))
         {
             job->error = edc_error_new(EDC_ERR_INVAL, "grep: invalid pattern '%s'", job->pattern);
             return;
@@ -516,7 +506,7 @@ static void run_search(struct search_job *job)
     edc_dir_foreach(job->root, on_entry, &root, NULL);
 
     if (rep)
-        regfree(&re);
+        edc_regex_free(rep);
 }
 
 /* Synchronous entry point: the same walk, on the caller's thread. The tool path calls it
@@ -694,7 +684,7 @@ void edc_tools_search_register(struct edc_toolbox *tb)
 {
     {
         struct edc_tool_param *params = NULL;
-        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("pattern", edc_param_str_type("Search pattern (POSIX ERE, or a literal string when `literal` is set)", NULL), true));
+        EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("pattern", edc_param_str_type("Search pattern (PCRE2 regex, or a literal string when `literal` is set)", NULL), true));
         EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("path", edc_param_str_type("Directory to search (default: the session's directory)", NULL), false));
         EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("glob", edc_param_str_type("Only search files matching this glob, e.g. \"*.c\"", NULL), false));
         EDC_LL_APPEND(struct edc_tool_param, params, edc_tool_param_new("ignore_case", edc_param_bool_type("Case-insensitive match"), false));

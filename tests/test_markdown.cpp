@@ -339,7 +339,7 @@ static void test_fenced_code_syntax_highlighting()
     }
     {
         // Unknown language: same single-colour fallback.
-        auto s = DrawColored("```ruby\nputs 42\n```", 60, 12);
+        auto s = DrawColored("```cobol\nDISPLAY 42\n```", 60, 12);
         CHECK(has_color(s, p.md_code), "unknown language wears md_code");
         CHECK(!has_color(s, p.syntax_number), "unknown language has no number colour");
     }

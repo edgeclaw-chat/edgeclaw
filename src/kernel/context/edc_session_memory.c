@@ -3,6 +3,7 @@
 #include "edc_config.h"
 #include "edc_datetime_utils.h"
 #include "edc_group_fold.h"
+#include "edc_regex.h"
 #include "edc_scheduler.h"
 #include "edc_session.h"
 #include "edc_session_manager.h"
@@ -19,12 +20,6 @@
 
 #include <ctype.h>
 #include <inttypes.h> /* PRId64 / PRIu64 */
-#ifdef _WIN32
-/* Windows ships no POSIX <regex.h>; PCRE2 provides a drop-in wrapper. */
-#include <pcre2posix.h>
-#else
-#include <regex.h>
-#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -504,9 +499,9 @@ sds edc_session_memory_search_lines(const struct edc_session_memory *m, const ch
     return out;
 }
 
-/* Regex search: POSIX ERE (grep -E), case-insensitive, matched ANYWHERE in title /
- * summary / detail. `*out_regerror` (may be NULL) is set to 1 when the pattern is
- * refused (failed to compile, or longer than the bound) -- the returned sds is empty
+/* Regex search: PCRE2 (UTF, \d/\w Unicode classes), case-insensitive, matched ANYWHERE
+ * in title / summary / detail. `*out_regerror` (may be NULL) is set to 1 when the pattern
+ * is refused (failed to compile, or longer than the bound) -- the returned sds is empty
  * then. Same ordering (newest first) and cap semantics as the substring search. */
 #define EDC_MEMO_MAX_PATTERN_LEN 512
 
@@ -530,8 +525,9 @@ sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, co
         return sdsempty();
     }
 
-    regex_t re;
-    if (regcomp(&re, pattern, REG_EXTENDED | REG_ICASE | REG_NOSUB) != 0)
+    struct edc_regex re;
+    /* Session-memory search is always case-insensitive (the substring search is too). */
+    if (!edc_regex_compile(&re, pattern, strlen(pattern), true, NULL, NULL))
     {
         if (out_regerror)
             *out_regerror = 1;
@@ -541,15 +537,15 @@ sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, co
     size_t *hits = malloc(m->entry_count * sizeof(*hits));
     if (!hits)
     {
-        regfree(&re);
+        edc_regex_free(&re);
         return sdsempty();
     }
     size_t nhits = 0;
     for (size_t i = 0; i < m->entry_count; i++)
     {
         const struct edc_memo_entry *e = &m->entries[i];
-        bool hit = (e->title && regexec(&re, e->title, 0, NULL, 0) == 0) ||
-                   (e->summary && regexec(&re, e->summary, 0, NULL, 0) == 0);
+        bool hit = (e->title && edc_regex_match(&re, e->title, strlen(e->title))) ||
+                   (e->summary && edc_regex_match(&re, e->summary, strlen(e->summary)));
         if (!hit)
             continue;
         size_t j = nhits++;
@@ -565,7 +561,7 @@ sds edc_session_memory_search_regex_lines(const struct edc_session_memory *m, co
         }
         hits[j] = i;
     }
-    regfree(&re);
+    edc_regex_free(&re);
 
     sds out = sdsempty();
     for (size_t i = 0; i < nhits && i < cap; i++)
@@ -1062,7 +1058,7 @@ static const char kCurateSystemPrompt[] =
     "   one when nothing related exists.\n"
     "\n"
     "Rules:\n"
-    "- SEARCH FIRST: use memory_search (POSIX ERE regexes) / memory_list to find related entries, and\n"
+    "- SEARCH FIRST: use memory_search (PCRE2 regexes) / memory_list to find related entries, and\n"
     "  memory_get (a list of ids) to read them in full before changing them.\n"
     "- Prefer UPDATE over creating a near-duplicate. memory_update takes a list; for each item pass\n"
     "  the `rev` you read as `expected_rev`; if the tool says an item is stale, re-read and redo it.\n"
@@ -1357,7 +1353,7 @@ static const char kExtractSystemPrompt[] =
     "   one when nothing related exists.\n"
     "\n"
     "Rules:\n"
-    "- SEARCH FIRST: use memory_search (POSIX ERE regexes) / memory_list to find related entries, and\n"
+    "- SEARCH FIRST: use memory_search (PCRE2 regexes) / memory_list to find related entries, and\n"
     "  memory_get (a list of ids) to read them in full before changing them.\n"
     "- Prefer UPDATE over creating a near-duplicate. memory_update takes a list; for each item pass\n"
     "  the `rev` you read as `expected_rev`; if the tool says an item is stale, re-read and redo it.\n"

@@ -32,6 +32,9 @@ const TSLanguage *tree_sitter_javascript(void);
 const TSLanguage *tree_sitter_typescript(void);
 const TSLanguage *tree_sitter_tsx(void);
 const TSLanguage *tree_sitter_rust(void);
+const TSLanguage *tree_sitter_java(void);
+const TSLanguage *tree_sitter_css(void);
+const TSLanguage *tree_sitter_ruby(void);
 
 typedef struct {
     const char *name; /* canonical language tag (see edc_syntax_lang.h) */
@@ -51,6 +54,9 @@ static const syntax_lang LANGS[] = {
     {"typescript", tree_sitter_typescript, edc_query_typescript, EDC_QUERY_TYPESCRIPT_SIZE},
     {"tsx", tree_sitter_tsx, edc_query_tsx, EDC_QUERY_TSX_SIZE},
     {"rust", tree_sitter_rust, edc_query_rust, EDC_QUERY_RUST_SIZE},
+    {"java", tree_sitter_java, edc_query_java, EDC_QUERY_JAVA_SIZE},
+    {"css", tree_sitter_css, edc_query_css, EDC_QUERY_CSS_SIZE},
+    {"ruby", tree_sitter_ruby, edc_query_ruby, EDC_QUERY_RUBY_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);

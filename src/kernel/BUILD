@@ -63,6 +63,7 @@ cc_library(
             "//src/actor:actor",
             "//src/common:common",
             "//src/common:edc_list",
+            "//src/common:edc_regex",
             "//src/common:utlist_fix",
             "//src/common:version",
             "//src/shell:shell_parse",
@@ -71,11 +72,7 @@ cc_library(
             "@sds//:sds",
             "@sqlite3//:sqlite3",
             "@uthash//:uthash",
-        ] + select({
-            # Windows has no system <regex.h>; use PCRE2's POSIX wrapper instead.
-            "//:windows": ["@pcre2//:pcre2-posix"],
-            "//conditions:default": [],
-        }),
+        ],
     linkstatic = True,
     visibility = ["//visibility:public"],
 )
