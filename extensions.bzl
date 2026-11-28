@@ -73,6 +73,14 @@ def _bc_thirdparty_deps_impl(module_ctx):
     grammar_repo(name = "tree-sitter-clojure", version = "0.0.1",
                  sha256 = "d933f33de79d6743631499fb0b643e2d40b3ba0a3abd0449a092d1cb84112ed1",
                  org = "anomalyco")
+    # B-class: grammar has no top-level query; scm sourced from nvim-treesitter
+    # (hcl) or the grammar's queries/<lang>/ subdirectory (vim).
+    grammar_repo(name = "tree-sitter-hcl", version = "1.2.0",
+                 sha256 = "a95bc6b00271e08dee9e63b895b2563dac802db0015fdf5a24a1b0244f2cb560",
+                 has_scanner = True, org = "tree-sitter-grammars")
+    grammar_repo(name = "tree-sitter-vim", version = "0.8.1",
+                 sha256 = "93cafb9a0269420362454ace725a118ff1c3e08dcdfdc228aa86334b54d53c2a",
+                 has_scanner = True, org = "tree-sitter-grammars", extra_srcs = ["src/keywords.h"])
 
 bc_thirdparty_deps = module_extension(
     implementation = _bc_thirdparty_deps_impl,

@@ -82,6 +82,8 @@ cc_library(
         "@tree-sitter-make//:tree-sitter-make",
         "@tree-sitter-r//:tree-sitter-r",
         "@tree-sitter-clojure//:tree-sitter-clojure",
+        "@tree-sitter-hcl//:tree-sitter-hcl",
+        "@tree-sitter-vim//:tree-sitter-vim",
     ],
 )
 

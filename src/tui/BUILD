@@ -136,6 +136,8 @@ cc_library(
         "@tree-sitter-make//:tree-sitter-make",
         "@tree-sitter-r//:tree-sitter-r",
         "@tree-sitter-clojure//:tree-sitter-clojure",
+        "@tree-sitter-hcl//:tree-sitter-hcl",
+        "@tree-sitter-vim//:tree-sitter-vim",
         # edc_mention.h: the `@reference` grammar the input line paints is the one the
         # mention pass expands (see that header on why it is not duplicated here).
         "//src/shell:shell_parse",

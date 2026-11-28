@@ -75,6 +75,7 @@ static void test_shared_lang_map(void)
         {"x.agda", "agda"}, {"x.cs", "csharp"}, {"x.scala", "scala"},
         {"x.diff", "diff"}, {"x.mk", "make"}, {"x.r", "r"},
         {"x.clj", "clojure"},
+        {"x.hcl", "hcl"}, {"x.tf", "hcl"}, {"x.vim", "vim"},
         {"a/b/c/file.py", "python"}, /* full path */
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -113,6 +114,9 @@ int main(void)
     assert(edc_syntax_available("r"));
     assert(edc_syntax_available("clojure"));
     assert(edc_syntax_available("clj")); /* alias */
+    assert(edc_syntax_available("hcl"));
+    assert(edc_syntax_available("tf")); /* alias */
+    assert(edc_syntax_available("vim"));
     assert(!edc_syntax_available("cobol"));
     assert(!edc_syntax_available(NULL));
 
@@ -179,6 +183,8 @@ int main(void)
             {"make", "# comment\n", EDC_SYNTAX_COMMENT},
             {"r", "# comment\n", EDC_SYNTAX_COMMENT},
             {"clojure", "; comment\n", EDC_SYNTAX_COMMENT},
+            {"hcl", "key = \"value\"\n", EDC_SYNTAX_STRING},
+            {"vim", "\" comment\n", EDC_SYNTAX_COMMENT},
         };
         for (size_t ci = 0; ci < sizeof(cases) / sizeof(cases[0]); ++ci) {
             assert(edc_syntax_available(cases[ci].lang));

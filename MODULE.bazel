@@ -198,4 +198,6 @@ use_repo(
     "tree-sitter-make",
     "tree-sitter-r",
     "tree-sitter-clojure",
+    "tree-sitter-hcl",
+    "tree-sitter-vim",
 )

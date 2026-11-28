@@ -43,6 +43,8 @@ const TSLanguage *tree_sitter_diff(void);
 const TSLanguage *tree_sitter_make(void);
 const TSLanguage *tree_sitter_r(void);
 const TSLanguage *tree_sitter_clojure(void);
+const TSLanguage *tree_sitter_hcl(void);
+const TSLanguage *tree_sitter_vim(void);
 
 typedef struct {
     const char *name; /* canonical language tag (see edc_syntax_lang.h) */
@@ -73,6 +75,8 @@ static const syntax_lang LANGS[] = {
     {"make", tree_sitter_make, edc_query_make, EDC_QUERY_MAKE_SIZE},
     {"r", tree_sitter_r, edc_query_r, EDC_QUERY_R_SIZE},
     {"clojure", tree_sitter_clojure, edc_query_clojure, EDC_QUERY_CLOJURE_SIZE},
+    {"hcl", tree_sitter_hcl, edc_query_hcl, EDC_QUERY_HCL_SIZE},
+    {"vim", tree_sitter_vim, edc_query_vim, EDC_QUERY_VIM_SIZE},
 };
 
 static const size_t NLANGS = sizeof(LANGS) / sizeof(LANGS[0]);
