@@ -347,9 +347,13 @@ bool ToolMessage::OnEvent(::ftxui::Event event)
                 preview_ += "\n";
             preview_ready_ = true;
         }
+        /* The "..." belongs at the end of the preview text -- i.e. on the line just above
+         * the +Click to expand footer -- exactly like the unhighlighted path below. Putting
+         * it in an hbox beside the code (previous behaviour) let the flex HighlightedCode
+         * stretch and pushed the dots to the far right, reading as a stray extra column.
+         * Appending to the string keeps the two paths identical in shape. */
         body = !highlight_lang_.empty()
-                   ? ::ftxui::hbox({HighlightedCode(preview_, highlight_lang_.c_str()) | ::ftxui::flex,
-                                    ::ftxui::text("...") | ::ftxui::color(pal.text_dim)})
+                   ? HighlightedCode(preview_ + "...", highlight_lang_.c_str())
                    : WrappedText(preview_ + "...", BodyWidth());
     }
 
